@@ -38,12 +38,14 @@ It should be fine to have schedule descriptions, aggregation transforms and pass
 
 This project should have the same initial purpose as the LLVM Test Suite [https://github.com/llvm/llvm-test-suite], but for MLIR.
 
-### How To Run Tests
+## Current Status
 
-#### Choose Your Ingress
+Since this is a new project, we're separating the work in branches that will eventually be merged to `main`.
+After the initial period, when we have a reasonable testing infrastructure, we can fork & create pull requests.
 
-#### Choose Your Schedules
-
-#### Choose Your Target
-
-#### Run The Tests
+The planned work is:
+* **Ingress**: PyTorch to Linalg extraction on branch [TBD] (note: since `main` already has partial Torch support, this work can continue on `main`).
+* **Harness**: Python harness to bind the MLIR tools, dialects and transforms together on branch [harness](https://github.com/llvm/lighthouse/tree/harness).
+* **Schedule**: MLIR schedules to combine into pipelines and combination strategy on branch [TBD].
+* **Runtime**: Dependencies, tools and environments to run on various hardware on branch [TBD].
+* **Build System**: CMake / Bazel magic to check dependencies, track repositories, run CI on branch [TBD].
