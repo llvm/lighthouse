@@ -44,7 +44,7 @@ Since this is a new project, we're separating the work in branches that will eve
 After the initial period, when we have a reasonable testing infrastructure, we can fork & create pull requests.
 
 The planned work is:
-* **Ingress**: PyTorch to Linalg extraction on branch [TBD] (note: since `main` already has partial Torch support, this work can continue on `main`).
+* **Ingress**: PyTorch to Linalg extraction on branch [TBD].
 * **Harness**: Python harness to bind the MLIR tools, dialects and transforms together on branch [harness](https://github.com/llvm/lighthouse/tree/harness).
 * **Schedule**: MLIR schedules to combine into pipelines and combination strategy on branch [TBD].
 * **Runtime**: Dependencies, tools and environments to run on various hardware on branch [TBD].
