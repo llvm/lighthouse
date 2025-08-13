@@ -11,6 +11,7 @@
 import argparse
 import os
 import sys
+import tempfile
 
 from Logger import Logger
 from Execute import Execute
@@ -23,6 +24,9 @@ def parse_args():
     )
     parser.add_argument(
         "-o", "--output", type=str, default="", help="Output file (defaults to stdout)"
+    )
+    parser.add_argument(
+        "-s", "--schedule", type=str, default="", help="Schedule file to apply to the input (must exist)"
     )
     parser.add_argument(
         "-f", "--force", action="store_true", help="Overwrite the output if it exists"
@@ -100,17 +104,21 @@ def parse_args():
 
     return parser.parse_args()
 
-# Main function
-def main():
-    args = parse_args()
-    logger = Logger("driver", args.verbose)
-
+# Validate command line arguments
+def validate_args(args, logger):
     # Validate Input/Output arguments
+    args.schedule = os.path.abspath(args.schedule)
+    if not os.path.isfile(args.schedule):
+        logger.error(f"Invalid (mandatory) schedule file: '{args.schedule}'")
+        exit(1)
+    logger.info(f"Schedule file: {args.schedule}")
+
     args.input = os.path.abspath(args.input) if args.input else "-"
     if args.input and args.input != "-" and not os.path.isfile(args.input):
         logger.error(f"Invalid input file: {args.input}")
         exit(1)
     logger.info(f"Input file: {args.input}")
+
     args.output = os.path.abspath(args.output) if args.output else "-"
     if (
         not args.force
@@ -120,8 +128,8 @@ def main():
     ):
         logger.error(f"Output file already exists: {args.output}")
         exit(1)
-
     logger.info(f"Output file: {args.output}")
+
     logger.info(f"Force: {args.force}")
 
     # Check arguments
@@ -137,8 +145,72 @@ def main():
     if args.library_path:
         logger.info(f"Using library path: {args.library_path}")
     logger.info(f"Using target: ({args.target}, {args.chip}, {args.target_features})")
-    # TODO: Implement
     pass
+
+# Prepare the schedule based on the pipeline schedule and the library directory
+def prepare_schedule(args, logger):
+    # Load the pipeline schedule
+    with open(args.schedule, "r") as f:
+        schedule = f.read()
+
+    # TODO: Include other schedules as needed from the library and produce a textual version of the schedule to be included in the payload IR
+
+    return schedule
+
+# Run the optimization
+def optimize_schedule(schedule, args, logger):
+    # Prepend the schedule to the payload IR and save to a temporary
+    temp = tempfile.NamedTemporaryFile(delete=True)
+    payload_ir = f"// Schedule\n{schedule}\n\n// Payload IR\n"
+    with open(args.input, "r") as f:
+        payload_ir += f.read()
+    temp.write(payload_ir.encode())
+    temp.flush()
+
+    # Run optimizer (TODO: )
+    command = [args.opt, temp.name]
+    command.extend(args.opt_args.split())
+    res = Execute(logger).run(command)
+
+    return res, temp
+
+# Run the generated IR
+def run_generated_ir(file, args, logger):
+    # Prepare the command
+    command = [args.runner, file.name]
+    command.extend(args.runner_args.split())
+    res = Execute(logger).run(command)
+
+    return res
+
+# Benchmark the generated IR
+def benchmark_generated_ir(file, args, logger):
+    for i in range(args.benchmark_loops):
+        logger.info(f"Running benchmark iteration {i + 1}")
+        res = run_generated_ir(file, args, logger)
+        logger.info(f"Benchmark iteration {i + 1} result: {res}")
+
+    return res
+
+# Main function
+def main():
+    args = parse_args()
+    logger = Logger("driver", args.verbose)
+    validate_args(args, logger)
+
+    # Prepare the schedule
+    schedule = prepare_schedule(args, logger)
+
+    # Run the optimization
+    res, file = optimize_schedule(schedule, args, logger)
+
+    # Run the generated IR
+    if args.run:
+        res = run_generated_ir(file, args, logger)
+
+    # Benchmark the generated IR
+    if args.benchmark:
+        res = benchmark_generated_ir(file, args, logger)
 
 # Init
 if __name__ == "__main__":

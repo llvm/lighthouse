@@ -13,12 +13,11 @@ import subprocess
 
 from Logger import Logger
 
-
 class Execute(object):
     """Executes commands, returns out/err"""
 
-    def __init__(self, loglevel = logging.INFO):
-        self.logger = Logger("execute", loglevel)
+    def __init__(self, logger):
+        self.logger = logger.clone("execute")
 
     def run(self, program, input=""):
         """Execute Commands, return out/err"""

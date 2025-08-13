@@ -41,3 +41,6 @@ class Logger(object):
 
     def silent(self):
         return self.logger.getEffectiveLevel() > logging.INFO
+
+    def clone(self, name):
+        return Logger(self.logger.name + "." + name, self.logger.level)

@@ -12,10 +12,10 @@ import Logger
 import Execute
 
 class CPUInfo(object):
-    def __init__(self, loglevel):
-        self.logger = Logger("cpuinfo", loglevel)
+    def __init__(self, logger):
+        self.logger = logger.clone("cpuinfo")
 
-        with Execute(loglevel).run(["uname", "-m"]) as r:
+        with Execute(self.logger).run(["uname", "-m"]) as r:
             self.arch = r.stdout.strip()
 
         with open("/proc/cpuinfo", "r") as f:
@@ -58,8 +58,8 @@ class CPUInfo(object):
 
 
 class Environment(object):
-    def __init__(self, args, loglevel):
-        self.logger = Logger("environment", loglevel)
+    def __init__(self, args, logger):
+        self.logger = logger.clone("environment")
         self.base_dir = os.path.realpath(os.path.dirname(__file__))
         self.root_dir = self.findGitRoot(self.base_dir)
         self.build_dir = args.build
