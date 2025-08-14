@@ -1,0 +1,7 @@
+source mlir-gen-venv/bin/activate
+
+LAYERS=1024,2048,4096,512
+
+python -m mlir-gen --output named --kernel args --layers $LAYERS --batch 256 --bias --relu > cache/linalg-named-3layer-mlp.mlir
+python -m mlir-gen --output einsum --kernel args --layers $LAYERS --batch 256 --bias --relu > cache/linalg-einsum-3layer-mlp.mlir
+python -m mlir-gen --output generic --kernel args --layers $LAYERS --batch 256 --bias --relu > cache/linalg-generic-3layer-mlp.mlir
