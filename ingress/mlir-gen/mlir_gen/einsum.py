@@ -1,10 +1,10 @@
 from typing import Union
 
 from mlir import ir
-from mlir.dialects import linalg, tensor
+from mlir.dialects import arith, linalg, tensor
 
 from . import named, generic
-from .utils import get_outputs, get_weights
+from .utils import get_outputs, get_weights, get_bias
 
 
 def times_weights(
@@ -40,12 +40,38 @@ def times_weights(
     return linalg.contract(inputs, weights, outs=[outputs], indexing_maps=affine_maps)
 
 
-# TODO: enable python-bindings for elementwise ops and use add with affine_maps
-add_bias = named.add_bias
+def add_bias(inputs: ir.Value, bias_or_bias_type: Union[ir.Value, ir.Type]) -> ir.Value:
+    bias: ir.Value = get_bias(bias_or_bias_type)
+
+    if inputs.type.rank == 2:
+        bcast_map = ir.AffineMap.get(2, 0, [ir.AffineDimExpr.get(0)])
+    elif inputs.type.rank == 4:
+        bcast_map = ir.AffineMap.get(
+            4, 0, [ir.AffineDimExpr.get(0), ir.AffineDimExpr.get(2)]
+        )
+    else:
+        assert False
+
+    out_uninit = tensor.EmptyOp(inputs.type.shape, inputs.type.element_type)
+    return linalg.elementwise(
+        bias,
+        inputs,
+        outs=(out_uninit,),
+        kind=linalg.ElementwiseKind.add,
+        indexing_maps=[bcast_map, ir.AffineMap.get_identity(inputs.type.rank)],
+    )
 
 
-# TODO: enable python-bindings for elementwise ops and use max with affine_maps
-relu = named.relu
+def relu(inputs: ir.Value) -> ir.Value:
+    zero = arith.constant(inputs.type.element_type, 0.0)
+    out_uninit = tensor.EmptyOp(inputs.type.shape, inputs.type.element_type)
+    out = linalg.fill(zero, outs=out_uninit)
+    return linalg.elementwise(
+        inputs,
+        out,
+        outs=(out_uninit,),
+        kind=linalg.ElementwiseKind.maximumf,
+    )
 
 
 softmax = named.softmax
