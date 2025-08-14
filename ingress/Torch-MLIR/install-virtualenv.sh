@@ -11,10 +11,17 @@ fi
 
 
 # Install torch-mlir inside a virtual environment
+echo "First ensure uv is installed"
+
+python -m pip install uv --upgrade
+
 echo "Preparing the virtual environment"
-python3 -m venv torch-mlir-venv
+python -m uv venv torch-mlir-venv --python 3.12
+
+#echo "Preparing the virtual environment"
+#python3 -m venv torch-mlir-venv
 source torch-mlir-venv/bin/activate
-python -m pip install --upgrade pip wheel
+uv pip install --upgrade pip wheel
 
 # GPU support ("AMD", "NVIDIA", "Intel")
 EXTRA_INDEX_URL=""
@@ -34,7 +41,7 @@ else
 fi
 
 echo "Installing torch and models"
-pip3 install --pre torch torchvision torchrec transformers $EXTRA_INDEX_URL
+uv pip install --pre torch torchvision torchrec transformers $EXTRA_INDEX_URL
 if [ $? != 0 ]; then
   exit 1
 fi
@@ -42,7 +49,7 @@ fi
 
 echo "Installing torch-mlir"
 # This only seems to work on Ubuntu
-pip3 install --pre torch-mlir \
+uv pip install --pre torch-mlir \
   --extra-index-url https://download.pytorch.org/whl/nightly/cpu \
   -f https://github.com/llvm/torch-mlir-release/releases/expanded_assets/dev-wheels
 if [ $? != 0 ]; then
