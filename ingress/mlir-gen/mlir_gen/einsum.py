@@ -72,7 +72,7 @@ def relu(inputs: ir.Value) -> ir.Value:
         inputs,
         out,
         outs=(out_uninit,),
-        kind=linalg.ElementwiseKind.max_signed,  # NB: gives arith.maximumf on float args
+        kind=linalg.ElementwiseKind.max_signed,  # NB: on float args, gives arith.maximumf in body
     )
 
 

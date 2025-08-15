@@ -1,3 +1,5 @@
+#!/usr/bin/env bash
+
 source mlir-gen-venv/bin/activate
 
 LAYERS=1024,2048,4096,512

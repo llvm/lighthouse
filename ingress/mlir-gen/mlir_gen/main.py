@@ -255,11 +255,7 @@ def create_metadata(config: Dict[str, Any]) -> str:
     if config["softmax"]:
         flops += (_softmax_flops := 4 * M * N)
 
-    return f"""\
-// RUN: tpp-run %s -n 10 \\
-// RUN:   -e entry -entry-point-result=void
-// BENCH_TOTAL_FLOPS: {flops}
-"""
+    return f"// TOTAL_FLOPS: {flops}\n"
 
 
 def main(args: Sequence[str]) -> ir.Module:
