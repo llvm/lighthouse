@@ -4,7 +4,7 @@ from mlir import ir
 from mlir.dialects import arith, linalg, tensor
 
 from . import named, generic
-from .utils import get_outputs, get_weights, get_bias
+from .utils import get_outputs, get_weights, get_bias, affine_map
 
 
 def times_weights(
@@ -43,14 +43,15 @@ def times_weights(
 def add_bias(inputs: ir.Value, bias_or_bias_type: Union[ir.Value, ir.Type]) -> ir.Value:
     bias: ir.Value = get_bias(bias_or_bias_type)
 
-    if inputs.type.rank == 2:
-        bcast_map = ir.AffineMap.get(2, 0, [ir.AffineDimExpr.get(0)])
-    elif inputs.type.rank == 4:
-        bcast_map = ir.AffineMap.get(
-            4, 0, [ir.AffineDimExpr.get(0), ir.AffineDimExpr.get(2)]
-        )
-    else:
-        assert False
+    M, N, mb, nb = [ir.AffineDimExpr.get(i) for i in range(4)]
+    affine_maps = {
+        2: [affine_map(2, [N]), affine_map(2, [M, N]), affine_map(2, [M, N])],
+        4: [
+            affine_map(4, [N, nb]),
+            affine_map(4, [M, N, mb, nb]),
+            affine_map(4, [M, N, mb, nb]),
+        ],
+    }[inputs.type.rank]
 
     out_uninit = tensor.EmptyOp(inputs.type.shape, inputs.type.element_type)
     return linalg.elementwise(
@@ -58,7 +59,7 @@ def add_bias(inputs: ir.Value, bias_or_bias_type: Union[ir.Value, ir.Type]) -> i
         inputs,
         outs=(out_uninit,),
         kind=linalg.ElementwiseKind.add,
-        indexing_maps=[bcast_map, ir.AffineMap.get_identity(inputs.type.rank)],
+        indexing_maps=affine_maps,
     )
 
 
@@ -66,11 +67,12 @@ def relu(inputs: ir.Value) -> ir.Value:
     zero = arith.constant(inputs.type.element_type, 0.0)
     out_uninit = tensor.EmptyOp(inputs.type.shape, inputs.type.element_type)
     out = linalg.fill(zero, outs=out_uninit)
+
     return linalg.elementwise(
         inputs,
         out,
         outs=(out_uninit,),
-        kind=linalg.ElementwiseKind.maximumf,
+        kind=linalg.ElementwiseKind.max_signed,  # NB: gives arith.maximumf on float args
     )
 
 
