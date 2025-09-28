@@ -30,7 +30,7 @@ option(LIGHTHOUSE_INPUT_TORCH "Builds support for compiling Torch MLIR programs"
 # If building features that require Python development, find them early in
 # one invocation (some CMake versions are sensitive to resolving out of order).
 #-------------------------------------------------------------------------------
-option(LIGHTHOUSE_BUILD_PYTHON_BINDINGS "Builds the Lighthouse python bindings" OFF)
+option(LIGHTHOUSE_BUILD_PYTHON_BINDINGS "Builds the Lighthouse python bindings" ON)
 
 if (LIGHTHOUSE_BUILD_PYTHON_BINDINGS)
   # After CMake 3.18, we are able to limit the scope of the search to just
@@ -114,11 +114,12 @@ set(LLVM_ENABLE_ZSTD OFF CACHE BOOL "Default disable")
 set(LLVM_FORCE_ENABLE_STATS ON CACHE BOOL "Default enable")
 
 # Unconditionally enable mlir.
-set(LLVM_ENABLE_PROJECTS mlir)
+set(LLVM_ENABLE_PROJECTS "" CACHE STRING "")
+list(APPEND LLVM_ENABLE_PROJECTS "mlir")
 
 # Setup LLVM lib and bin directories.
-set(LLVM_LIBRARY_OUTPUT_INTDIR "${CMAKE_CURRENT_BINARY_DIR}/llvm-project/lib")
-set(LLVM_RUNTIME_OUTPUT_INTDIR "${CMAKE_CURRENT_BINARY_DIR}/llvm-project/bin")
+set(LLVM_LIBRARY_OUTPUT_INTDIR "${CMAKE_BINARY_DIR}/llvm-project/lib")
+set(LLVM_RUNTIME_OUTPUT_INTDIR "${CMAKE_BINARY_DIR}/llvm-project/bin")
 
 set(_BUNDLED_LLVM_CMAKE_SOURCE_SUBDIR "third_party/llvm-project/llvm")
 add_subdirectory("${_BUNDLED_LLVM_CMAKE_SOURCE_SUBDIR}" "llvm-project" EXCLUDE_FROM_ALL)
@@ -127,7 +128,7 @@ add_subdirectory("${_BUNDLED_LLVM_CMAKE_SOURCE_SUBDIR}" "llvm-project" EXCLUDE_F
 # world. Source of truth for these is in an installed LLVMConfig.cmake,
 # MLIRConfig.cmake, LLDConfig.cmake (etc) and in the various standalone
 # build segments of each project's top-level CMakeLists.
-set(LLVM_CMAKE_DIR "${CMAKE_CURRENT_BINARY_DIR}/llvm-project/lib/cmake/llvm")
+set(LLVM_CMAKE_DIR "${CMAKE_BINARY_DIR}/llvm-project/lib/cmake/llvm")
 list(APPEND CMAKE_MODULE_PATH "${LLVM_CMAKE_DIR}")
 # TODO: Fix MLIR upstream so it doesn't spew into the containing project
 # binary dir. See mlir/cmake/modules/CMakeLists.txt
@@ -135,16 +136,35 @@ list(APPEND CMAKE_MODULE_PATH "${LLVM_CMAKE_DIR}")
 set(MLIR_CMAKE_DIR "${CMAKE_BINARY_DIR}/lib/cmake/mlir")
 list(APPEND CMAKE_MODULE_PATH "${MLIR_CMAKE_DIR}")
 
+message(STATUS "LLVM_CMAKE_DIR: ${LLVM_CMAKE_DIR}")
+message(STATUS "MLIR_CMAKE_DIR: ${MLIR_CMAKE_DIR}")
+
+set(LLVM_INCLUDE_DIRS
+  ${CMAKE_SOURCE_DIR}/${_BUNDLED_LLVM_CMAKE_SOURCE_SUBDIR}/include
+  ${CMAKE_BINARY_DIR}/llvm-project/include
+)
+set(MLIR_INCLUDE_DIRS
+  ${CMAKE_SOURCE_DIR}/third_party/llvm-project/mlir/include
+  ${CMAKE_BINARY_DIR}/llvm-project/tools/mlir/include
+)
+
+include_directories(${LLVM_INCLUDE_DIRS})
+include_directories(${MLIR_INCLUDE_DIRS})
+
 #-------------------------------------------------------------------------------
 # Torch-MLIR Dependency
 #-------------------------------------------------------------------------------
 
 if (LIGHTHOUSE_INPUT_TORCH)
-  set(TORCH_MLIR_ROOT_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/torch-mlir" CACHE PATH "")
+  set(TORCH_MLIR_ROOT_DIR "${CMAKE_SOURCE_DIR}/third_party/torch-mlir" CACHE PATH "")
 endif()
 
 #-------------------------------------------------------------------------------
 # Top-level libraries
 #-------------------------------------------------------------------------------
 
+include_directories(${CMAKE_SOURCE_DIR}/include)
+include_directories(${CMAKE_BINARY_DIR}/include)
+
+add_subdirectory(lib)
 add_subdirectory(python)

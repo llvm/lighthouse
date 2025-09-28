@@ -8,24 +8,20 @@
 # don't understand what this does.
 ################################################################################
 
-include(AddLLVM)
-include(AddMLIR)
 include(AddMLIRPython)
 
 # Specifies that all MLIR packages are co-located under lighthouse.
-# TODO: Currently, we are building this under lightouse. , but we should be
+# TODO: Currently, we are building this under lighthouse. , but we should be
 # ideally building this under lighthouse.compiler. , when we have a proper
 # seperation between the compiler and the runtime. The runtime bindings have no
 # reason to ship with the mlir python bindings.
 # TODO: Add an upstream cmake param for this vs having a global here.
 add_compile_definitions("MLIR_PYTHON_PACKAGE_PREFIX=lighthouse.")
 
-set(_PYTHON_BUILD_PREFIX "${CMAKE_CURRENT_BINARY_DIR}/python")
+set(_PYTHON_BUILD_PREFIX "${CMAKE_BINARY_DIR}/python")
 set(_PYTHON_INSTALL_PREFIX "python_packages/lighthouse")
 
-include_directories(
-  "${CMAKE_CURRENT_SOURCE_DIR}/third_party/llvm-project/mlir/include"
-)
+set(CMAKE_PLATFORM_NO_VERSIONED_SONAME 1)
 
 declare_mlir_python_sources(LighthousePythonSources)
 
@@ -55,23 +51,10 @@ set(_SOURCE_COMPONENTS
   MLIRPythonSources.Dialects.func
 )
 
-# TODO: I have no idea what I'm doing with this and someone who knows what they
-# are doing should have a better look. I think ideally, we should be building a
-# c-api library seperately and sharing it with the python implementation. I
-# just don't know how to do it, so this is copied directly from mlir python
-# binding configuration.
-add_mlir_python_common_capi_library(LighthousePythonCAPI
-  INSTALL_COMPONENT LighthousePythonModules
-  INSTALL_DESTINATION "${_PYTHON_INSTALL_PREFIX}/lighthouse/mlir/_mlir_libs"
-  OUTPUT_DIRECTORY "${_PYTHON_BUILD_PREFIX}/lighthouse/mlir/_mlir_libs"
-  DECLARED_HEADERS MLIRPythonCAPI.HeaderSources
-  DECLARED_SOURCES ${_SOURCE_COMPONENTS}
-)
-
-add_mlir_python_modules(LighthousePythonModules
+add_mlir_python_modules(IREECompilerPythonModules
   ROOT_PREFIX "${_PYTHON_BUILD_PREFIX}/lighthouse"
   INSTALL_PREFIX "${_PYTHON_INSTALL_PREFIX}/lighthouse"
   DECLARED_SOURCES ${_SOURCE_COMPONENTS}
   COMMON_CAPI_LINK_LIBS
-    ${LighthousePythonCAPI}
+    Lighthouse-C
 )
