@@ -25,10 +25,8 @@ endforeach ()
 set(CMAKE_CXX_VISIBILITY_PRESET "hidden")
 set(CMAKE_VISIBILITY_INLINES_HIDDEN "ON")
 
-add_mlir_library(Lighthouse-C
+add_library(Lighthouse-C SHARED
   CAPI.cpp
-  SHARED
-  EXCLUDE_FROM_LIBMLIR
 )
 
 target_sources(Lighthouse-C PRIVATE
