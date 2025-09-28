@@ -51,7 +51,7 @@ set(_SOURCE_COMPONENTS
   MLIRPythonSources.Dialects.func
 )
 
-add_mlir_python_modules(IREECompilerPythonModules
+add_mlir_python_modules(LighthousePythonModules
   ROOT_PREFIX "${_PYTHON_BUILD_PREFIX}/lighthouse"
   INSTALL_PREFIX "${_PYTHON_INSTALL_PREFIX}/lighthouse"
   DECLARED_SOURCES ${_SOURCE_COMPONENTS}
