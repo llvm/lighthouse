@@ -1,0 +1,60 @@
+[project]
+name = "lighthouse"
+version = "0.1.0a1"
+requires-python = ">=3.12,<3.13"  # Upperbound is due to torch-mlir's packaging
+dependencies = [
+    "mlir-python-bindings==20251011+3af43e303",
+]
+
+[project.optional-dependencies]
+ingress_torch_cpu = [
+    "torch==v2.8.0+cpu",
+    "torch-mlir==v20251004.590"
+]
+ingress_torch = [
+    "torch==v2.8.0",  # Nvidia-enabled version of torch
+    "torch-mlir==v20251004.590"
+]
+ingress_torch_rocm = [
+    "torch==v2.8.0+rocm6.4",  # AMD-enabled version of torch
+    "torch-mlir==v20251004.590",
+    "pytorch_triton_rocm"
+]
+ingress_torch_xpu = [
+    "torch==v2.8.0+xpu",  # Intel-enabled version of torch
+    "torch-mlir==v20251004.590",
+    "pytorch_triton_xpu"
+]
+
+[tool.uv]
+conflicts = [
+    [
+        {extra = "ingress_torch_cpu" },
+        {extra = "ingress_torch" },
+        {extra = "ingress_torch_rocm" },
+        {extra = "ingress_torch_xpu" }
+    ]
+]
+
+[tool.uv.sources]
+mlir_python_bindings = { index = "eudsl" }
+torch = { index = "pytorch" }
+pytorch_triton_xpu = { index = "pytorch" }
+pytorch_triton_rocm = { index = "pytorch" }
+torch_mlir = { index = "torch_mlir" }
+
+[[tool.uv.index]]
+name = "pytorch"
+url = "https://download.pytorch.org/whl"
+explicit = true
+
+[[tool.uv.index]]
+name = "eudsl"
+url = "https://llvm.github.io/eudsl"
+explicit = true
+format = "flat"
+
+[[tool.uv.index]]
+name = "torch_mlir"
+url = "https://github.com/llvm/torch-mlir-release/releases/expanded_assets/dev-wheels"
+explicit = true
