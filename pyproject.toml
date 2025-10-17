@@ -1,58 +1,62 @@
 [project]
 name = "lighthouse"
 version = "0.1.0a1"
-requires-python = ">=3.12,<3.13"  # Upperbound is due to torch-mlir's packaging
+requires-python = ">=3.10,<3.13"  # Bounds are due to torch-mlir's packaging
 dependencies = [
     "mlir-python-bindings==20251011+3af43e303",
 ]
 
 [project.optional-dependencies]
+# Additional "targets" which pull in optional dependencies -- use `uv sync --extra TARGET`
 ingress_torch_cpu = [
     "torch==v2.8.0+cpu",
-    "torch-mlir==v20251004.590"
+    "torch-mlir==20251003.589"
 ]
-ingress_torch = [
-    "torch==v2.8.0",  # Nvidia-enabled version of torch
-    "torch-mlir==v20251004.590"
+ingress_torch_nvidia = [
+    "torch==2.8.0",  # Nvidia-enabled version of torch
+    "torch-mlir==20251003.589"
 ]
 ingress_torch_rocm = [
-    "torch==v2.8.0+rocm6.4",  # AMD-enabled version of torch
-    "torch-mlir==v20251004.590",
-    "pytorch_triton_rocm"
+    "torch==2.8.0+rocm6.4",  # AMD-enabled version of torch
+    "torch-mlir==20251003.589",
+    "pytorch_triton_rocm"  # Transitive dependency listed explicitly so that we can state which package repository it is supposed to come from
 ]
 ingress_torch_xpu = [
-    "torch==v2.8.0+xpu",  # Intel-enabled version of torch
-    "torch-mlir==v20251004.590",
-    "pytorch_triton_xpu"
+    "torch==2.8.0+xpu",  # Intel-enabled version of torch
+    "torch-mlir==20251003.589",
+    "pytorch_triton_xpu"  # Transitive dependency listed explicitly so that we can state which package repository it is supposed to come from
 ]
 
 [tool.uv]
+# Declare that the following "targets" are mutually exclusive of one another
 conflicts = [
     [
         {extra = "ingress_torch_cpu" },
-        {extra = "ingress_torch" },
+        {extra = "ingress_torch_nvidia" },
         {extra = "ingress_torch_rocm" },
         {extra = "ingress_torch_xpu" }
     ]
 ]
 
 [tool.uv.sources]
+# Bind packages to particular package repositories
 mlir_python_bindings = { index = "eudsl" }
 torch = { index = "pytorch" }
 pytorch_triton_xpu = { index = "pytorch" }
 pytorch_triton_rocm = { index = "pytorch" }
 torch_mlir = { index = "torch_mlir" }
 
-[[tool.uv.index]]
-name = "pytorch"
-url = "https://download.pytorch.org/whl"
-explicit = true
-
+# The following are the different non-Pypi package repositories we depend on
 [[tool.uv.index]]
 name = "eudsl"
 url = "https://llvm.github.io/eudsl"
 explicit = true
 format = "flat"
+
+[[tool.uv.index]]
+name = "pytorch"
+url = "https://download.pytorch.org/whl"
+explicit = true
 
 [[tool.uv.index]]
 name = "torch_mlir"
