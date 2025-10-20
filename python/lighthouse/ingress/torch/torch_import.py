@@ -97,6 +97,7 @@ def import_from_model(
     text_module = str(module)
     if ir_context is None:
         return text_module
+    # Cross boundary from torch-mlir's mlir to environment's mlir
     return ir.Module.parse(text_module, context=ir_context)
 
 
