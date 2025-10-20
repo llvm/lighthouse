@@ -2,12 +2,12 @@
 Example demonstrating how to load an already instantiated PyTorch model
 to MLIR using Lighthouse.
 
-The script uses 'lighthouse.ingress.torch.import_from_model' function that
-takes an already instantiated PyTorch model, along with its sample inputs.
+The script uses the 'lighthouse.ingress.torch.import_from_model' function that
+takes a PyTorch model that has already been instantiated, along with its sample inputs.
 The function passes the model to torch_mlir to get a MLIR module in the
 specified dialect.
 
-The script uses model from 'DummyMLP/model.py' as an example.
+The script uses a model from 'DummyMLP/model.py' as an example.
 """
 
 import torch
@@ -27,12 +27,18 @@ model = DummyMLP()
 sample_input = torch.randn(1, 10)
 
 ir_context = ir.Context()
-# Step 2: Convert PyTorch model to MLIR
+# Step 2: Convert the PyTorch model to MLIR
 mlir_module_ir : ir.Module = import_from_model(
     model,
     sample_args=(sample_input,),
     ir_context=ir_context
 )
+
+# The PyTorch model is now converted to MLIR at this point. You can now convert
+# the MLIR module to a text form (e.g. 'str(mlir_module_ir)') and save it to a file.
+#
+# Further are optional MLIR processing steps to give you an idea of what can
+# also be done with the MLIR module.
 
 # Step 3: Extract the main function operation from the MLIR module and print its metadata
 func_op : func.FuncOp = mlir_module_ir.operation.regions[0].blocks[0].operations[0]

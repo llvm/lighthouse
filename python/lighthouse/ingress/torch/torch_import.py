@@ -164,7 +164,7 @@ def import_from_file(
         return (torch.randn(1, 10),)
     ```
 
-    The import script would look line:
+    The import script would look like:
     >>> from lighthouse.ingress.torch_import import import_from_file
     >>> # option 1: get MLIR module as a string
     >>> mlir_module : str = import_from_file(
@@ -200,9 +200,9 @@ def import_from_file(
     if init_args_fn_name is None:
         init_args_fn = lambda *args, **kwargs: ()
     else:
-      init_args_fn = getattr(module, init_args_fn_name, None)
-      if init_args_fn is None:
-          raise ValueError(f"Init args function '{init_args_fn_name}' not found in {filepath}")
+        init_args_fn = getattr(module, init_args_fn_name, None)
+        if init_args_fn is None:
+            raise ValueError(f"Init args function '{init_args_fn_name}' not found in {filepath}")
 
     inputs_args_fn = getattr(module, inputs_args_fn_name, None)
     if inputs_args_fn is None:
