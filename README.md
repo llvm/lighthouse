@@ -53,10 +53,10 @@ The planned work is:
 ## Getting up and running
 
 For the time being, `lighthouse` depends on just the Python bindings for [`mlir`](https://github.com/llvm/eudsl/releases).
-To install this dependency, obtain the [`uv`](https://docs.astral.sh/uv/getting-started/installation/#pypi) Python package manager and run the following in the root of the project:
+To install this dependency along with `lighthouse` python package, obtain the [`uv`](https://docs.astral.sh/uv/getting-started/installation/#pypi) Python package manager and run the following in the root of the project:
 ```
 $ uv venv  # Create a .venv virtualenv
-$ uv sync  # Install the `mlir-python-bindings` dependency into the virtualenv
+$ uv sync  # Install the `mlir-python-bindings` and `lighthouse` into the virtualenv
 $ uv sync --extra ingress-torch-cpu  # Optionally install the dependencies for torch ingress
 ```
 
@@ -69,22 +69,51 @@ For vendor-specific versions of `torch` use the targets `ingress-torch-nvidia`, 
 
 To run the Python programs in this repo, either enter the virtual environment (`$ source .venv/bin/activate`) and execute a program _or_ execute each of the programs through `uv` (i.e. `$ uv run $EXE`), which will automatically run them inside the virtualenv.
 
-## Installing lighthouse as a python package
+## Installing Lighthouse as a Python package
 
-You can also install lighthouse as a python package using `uv` and `pip`:
+You can install `lighthouse` as a Python package using `uv` or `pip`:
+
+#### Installing via `uv`
+
+If you've run the steps from the [Getting up and running](#getting-up-and-running) section,
+you already have `lighthouse` installed in your virtual environment:
 
 ```
-$ uv pip install .
-$ python
-Python 3.12.11 | packaged by conda-forge | (main, Jun  4 2025, 14:45:31) [GCC 13.3.0] on linux
+$ uv run python
+Python 3.12.11 | (main, Jun  4 2025, 14:45:31) [GCC 13.3.0] on linux
 Type "help", "copyright", "credits" or "license" for more information.
 >>> import lighthouse
 >>> lighthouse.__version__
 '0.1.0a1'
 ```
 
-In order to install the package including `ingress-torch` dependencies:
+If you don't want to use the virtual environment created by `uv`, you can skip `uv venv; uv sync` steps and install Lighthouse in your current environment using:
 
 ```
-$ uv pip install .[ingress_torch_cpu]
+$ source ../my_custom_venv/bin/activate # or conda activate my-venv
+(my-venv) $ uv pip install . # installs Lighthouse along with its basic dependencies
+(my-venv) $ uv pip install .[ingress_torch_cpu] # installs Lighthouse along with its torch-ingress dependencies
+```
+
+#### Installing via `pip`
+
+If you don't want to use `uv` to install the package, you can install it directly with `pip`.
+You'll need to specify the custom sources so `pip` can find all required dependencies (e.g., mlir-bindings). The sources are listed in the `pyproject.toml` file.
+
+Here are some common installation examples:
+
+1. Install Lighthouse only
+```
+pip install . \
+  --find-links https://llvm.github.io/eudsl/ \
+  --only-binary :all:
+```
+
+2. Install Lighthouse and torch-ingress dependencies
+```
+pip install .[ingress_torch_cpu] \
+  --find-links https://llvm.github.io/eudsl/ \
+  --find-links https://github.com/llvm/torch-mlir-release/releases/expanded_assets/dev-wheels \
+  --extra-index-url https://download.pytorch.org/whl \
+  --only-binary :all:
 ```
