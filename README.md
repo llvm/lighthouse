@@ -49,3 +49,22 @@ The planned work is:
 * **Schedule**: MLIR schedules to combine into pipelines and combination strategy on branch [TBD].
 * **Runtime**: Dependencies, tools and environments to run on various hardware on branch [TBD].
 * **Build System**: CMake / Bazel magic to check dependencies, track repositories, run CI on branch [TBD].
+
+## Getting up and running
+
+For the time being, `lighthouse` depends on just the Python bindings for [`mlir`](https://github.com/llvm/eudsl/releases).
+To install this dependency, obtain the [`uv`](https://docs.astral.sh/uv/getting-started/installation/#pypi) Python package manager and run the following in the root of the project:
+```
+$ uv venv  # Create a .venv virtualenv
+$ uv sync  # Install the `mlir-python-bindings` dependency into the virtualenv
+$ uv sync --extra ingress-torch-cpu  # Optionally install the dependencies for torch ingress
+```
+
+<details>
+<summary>
+A note on vendor-specific `torch` versions.
+</summary>
+For vendor-specific versions of `torch` use the targets `ingress-torch-nvidia`, `ingress-torch-rocm` or `ingress-torch-xpu` for Nvidia, AMD, and Intel-enabled versions, respectively.
+</details>
+
+To run the Python programs in this repo, either enter the virtual environment (`$ source .venv/bin/activate`) and execute a program _or_ execute each of the programs through `uv` (i.e. `$ uv run $EXE`), which will automatically run them inside the virtualenv.
