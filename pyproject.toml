@@ -1,6 +1,6 @@
 [project]
 name = "lighthouse"
-version = "0.1.0a1"
+dynamic = ["version"]
 requires-python = ">=3.10,<3.13"  # Bounds are due to torch-mlir's packaging
 dependencies = [
     "mlir-python-bindings==20251011+3af43e303",
@@ -70,3 +70,6 @@ build-backend = "setuptools.build_meta"
 [tool.setuptools.packages.find]
 where = ["python"]
 include = ["lighthouse*"]
+
+[tool.setuptools.dynamic]
+version = {attr = "lighthouse.__version__"}
