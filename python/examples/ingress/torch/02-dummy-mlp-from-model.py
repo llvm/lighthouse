@@ -20,7 +20,7 @@ from mlir import ir, passmanager
 from lighthouse.ingress.torch import import_from_model
 
 # Import a sample model definition
-from .DummyMLP.model import DummyMLP
+from DummyMLP.model import DummyMLP
 
 # Step 1: Instantiate a model and prepare sample input
 model = DummyMLP()
