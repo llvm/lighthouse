@@ -68,3 +68,23 @@ For vendor-specific versions of `torch` use the targets `ingress-torch-nvidia`, 
 </details>
 
 To run the Python programs in this repo, either enter the virtual environment (`$ source .venv/bin/activate`) and execute a program _or_ execute each of the programs through `uv` (i.e. `$ uv run $EXE`), which will automatically run them inside the virtualenv.
+
+## Installing lighthouse as a python package
+
+You can also install lighthouse as a python package using `uv` and `pip`:
+
+```
+$ uv pip install .
+$ python
+Python 3.12.11 | packaged by conda-forge | (main, Jun  4 2025, 14:45:31) [GCC 13.3.0] on linux
+Type "help", "copyright", "credits" or "license" for more information.
+>>> import lighthouse
+>>> lighthouse.__version__
+'0.1.0a1'
+```
+
+In order to install the package including `ingress-torch` dependencies:
+
+```
+$ uv pip install .[ingress_torch_cpu]
+```
