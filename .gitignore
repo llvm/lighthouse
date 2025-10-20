@@ -1,0 +1,9 @@
+# Python caches
+__pycache__/
+*.py[cod]
+.pytest_cache
+
+# Lighthouse Python module builds
+dist/
+python/lighthouse*.egg-info/
+*.whl

@@ -62,3 +62,7 @@ explicit = true
 name = "torch_mlir"
 url = "https://github.com/llvm/torch-mlir-release/releases/expanded_assets/dev-wheels"
 explicit = true
+
+[tool.setuptools.packages.find]
+where = ["python"]
+include = ["lighthouse*"]
