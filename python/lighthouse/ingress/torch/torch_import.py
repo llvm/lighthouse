@@ -3,6 +3,8 @@ import importlib.util
 from pathlib import Path
 from typing import Iterable, Mapping
 
+from lighthouse.ingress.torch.utils import load_and_run_callable
+
 try:
     import torch
     import torch.nn as nn
@@ -96,7 +98,9 @@ def import_from_file(
     filepath: str | Path,
     model_class_name: str = "Model",
     init_args_fn_name: str | None = "get_init_inputs",
-    inputs_args_fn_name: str = "get_inputs",
+    init_kwargs_fn_name: str | None = None,
+    sample_args_fn_name: str = "get_inputs",
+    sample_kwargs_fn_name: str | None = None,
     state_path : str | Path | None = None,
     dialect : OutputType | str = OutputType.LINALG_ON_TENSORS,
     ir_context : ir.Context | None = None,
@@ -116,8 +120,13 @@ def import_from_file(
         init_args_fn_name (str | None, optional): The name of the function in the file
             that returns the arguments for initializing the model. If None, the model
             is initialized without arguments. Defaults to "get_init_inputs".
-        inputs_args_fn_name (str, optional): The name of the function in the file that
+        init_kwargs_fn_name (str | None, optional): The name of the function in the file
+            that returns the keyword arguments for initializing the model. If None, the model
+            is initialized without keyword arguments.
+        sample_args_fn_name (str, optional): The name of the function in the file that
             returns the sample input arguments for the model. Defaults to "get_inputs".
+        sample_kwargs_fn_name (str, optional): The name of the function in the file that
+            returns the sample keyword input arguments for the model. Defaults to None.
         state_path (str | Path | None, optional): Optional path to a file containing
             the model's ``state_dict``. Defaults to None.
         dialect (torch_mlir.fx.OutputType | {"linalg-on-tensors", "torch", "tosa"}, optional):
@@ -180,20 +189,43 @@ def import_from_file(
     if model is None:
         raise ValueError(f"Model class '{model_class_name}' not found in {filepath}")
 
-    if init_args_fn_name is None:
-        init_args_fn = lambda *args, **kwargs: ()
-    else:
-        init_args_fn = getattr(module, init_args_fn_name, None)
-        if init_args_fn is None:
-            raise ValueError(f"Init args function '{init_args_fn_name}' not found in {filepath}")
+    model_init_args = load_and_run_callable(
+        module,
+        init_args_fn_name,
+        raise_on_missing=False,
+        default=tuple(),
+        error_msg=f"Init args function '{init_args_fn_name}' not found in {filepath}"
+    )
+    model_init_kwargs = load_and_run_callable(
+        module,
+        init_kwargs_fn_name,
+        raise_on_missing=False,
+        default=tuple(),
+        error_msg=f"Init kwargs function '{init_kwargs_fn_name}' not found in {filepath}"
+    )
+    sample_args = load_and_run_callable(
+        module,
+        sample_args_fn_name,
+        f"Sample args function '{sample_args_fn_name}' not found in {filepath}"
+    )
+    sample_kwargs = load_and_run_callable(
+        module,
+        sample_kwargs_fn_name,
+        raise_on_missing=False,
+        default={},
+        error_msg=f"Sample kwargs function '{sample_kwargs_fn_name}' not found in {filepath}"
+    )
 
-    inputs_args_fn = getattr(module, inputs_args_fn_name, None)
-    if inputs_args_fn is None:
-        raise ValueError(f"Inputs args function '{inputs_args_fn_name}' not found in {filepath}")
-
-    nn_model : nn.Module = model(*init_args_fn())
+    nn_model : nn.Module = model(*model_init_args, **model_init_kwargs)
     if state_path is not None:
         state_dict = torch.load(state_path)
         nn_model.load_state_dict(state_dict)
 
-    return import_from_model(nn_model, *inputs_args_fn(), dialect=dialect, ir_context=ir_context, **kwargs)
+    return import_from_model(
+        nn_model,
+        sample_args=sample_args,
+        sample_kwargs=sample_kwargs,
+        dialect=dialect,
+        ir_context=ir_context,
+        **kwargs,
+    )
