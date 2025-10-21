@@ -37,7 +37,7 @@ mlir_module_ir : ir.Module = import_from_model(
 # The PyTorch model is now converted to MLIR at this point. You can now convert
 # the MLIR module to a text form (e.g. 'str(mlir_module_ir)') and save it to a file.
 #
-# Further are optional MLIR processing steps to give you an idea of what can
+# The following optional MLIR-processing steps are to give you an idea of what can
 # also be done with the MLIR module.
 
 # Step 3: Extract the main function operation from the MLIR module and print its metadata
@@ -45,12 +45,12 @@ func_op : func.FuncOp = mlir_module_ir.operation.regions[0].blocks[0].operations
 print(f"entry-point name: {func_op.name}")
 print(f"entry-point type: {func_op.type}")
 
-# Step 4: Apply some MLIR passes using a PassManager (optional)
+# Step 4: Apply some MLIR passes using a PassManager
 pm = passmanager.PassManager(context=ir_context)
-pm.add("one-shot-bufferize")
 pm.add("linalg-specialize-generic-ops")
+pm.add("one-shot-bufferize")
 pm.run(mlir_module_ir.operation)
 
 # Step 5: Output the final MLIR
-print("\n\nModule dump after running pm.Pipeline:")
+print("\n\nModule dump after running the pipeline:")
 mlir_module_ir.dump()

@@ -12,7 +12,7 @@ The script uses the model from 'DummyMLP/model.py' as an example.
 """
 
 import os
-from pyparsing import Path
+from pathlib import Path
 
 # MLIR infrastructure imports (only needed if you want to manipulate the MLIR module)
 import mlir.dialects.func as func
@@ -41,9 +41,10 @@ mlir_module_ir : ir.Module = import_from_file(
     ir_context=ir_context                    # MLIR context for the conversion
 )
 
-# The model is converted at this point. You can now convert the MLIR module
-# to a text form (e.g. 'str(mlir_module_ir)') and save it to a file.
-# Futher are optional MLIR processing steps to give you an idea of what can
+# The PyTorch model is now converted to MLIR at this point. You can now convert
+# the MLIR module to a text form (e.g. 'str(mlir_module_ir)') and save it to a file.
+#
+# The following optional MLIR-processing steps are to give you an idea of what can
 # also be done with the MLIR module.
 
 # Step 3: Extract the main function operation from the MLIR module and print its metadata
@@ -53,11 +54,10 @@ print(f"entry-point type: {func_op.type}")
 
 # Step 4: Apply some MLIR passes using a PassManager
 pm = passmanager.PassManager(context=ir_context)
-
-pm.add("one-shot-bufferize")
 pm.add("linalg-specialize-generic-ops")
+pm.add("one-shot-bufferize")
 pm.run(mlir_module_ir.operation)
 
 # Step 5: Output the final MLIR
-print("\n\nModule dump after running pm.Pipeline:")
+print("\n\nModule dump after running the pipeline:")
 mlir_module_ir.dump()

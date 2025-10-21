@@ -72,7 +72,6 @@ def import_from_model(
         >>> # option 2: get MLIR module as an ir.Module
         >>> ir_context = ir.Context()
         >>> mlir_module_ir : ir.Module = import_from_model(model, sample_input, dialect="tosa", ir_context=ir_context)
-        >>> # ... run pm.Pipeline on the ir.Module ...
     """
     if dialect == "linalg":
         raise ValueError(
@@ -111,7 +110,7 @@ def import_from_file(
     The function takes a `filepath` to a Python file containing the model definition,
     along with the names of functions to get model init arguments and sample inputs.
     The function imports the model class on its own, instantiates it, and passes
-    it ``torch_mlir`` to get a MLIR module in the specified `dialect`.
+    it to ``torch_mlir`` to get a MLIR module in the specified `dialect`.
 
     Args:
         filepath (str | Path): Path to the Python file containing the model definition.
@@ -175,7 +174,6 @@ def import_from_file(
         ...     dialect="linalg-on-tensors",
         ...     ir_context=ir_context
         ... )
-        >>> # ... run pm.Pipeline on the ir.Module ...
     """
     if isinstance(filepath, str):
         filepath = Path(filepath)
