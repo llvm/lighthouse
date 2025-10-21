@@ -28,7 +28,7 @@ sample_input = torch.randn(1, 10)
 
 ir_context = ir.Context()
 # Step 2: Convert the PyTorch model to MLIR
-mlir_module_ir : ir.Module = import_from_model(
+mlir_module_ir: ir.Module = import_from_model(
     model,
     sample_args=(sample_input,),
     ir_context=ir_context
@@ -41,7 +41,7 @@ mlir_module_ir : ir.Module = import_from_model(
 # also be done with the MLIR module.
 
 # Step 3: Extract the main function operation from the MLIR module and print its metadata
-func_op : func.FuncOp = mlir_module_ir.operation.regions[0].blocks[0].operations[0]
+func_op: func.FuncOp = mlir_module_ir.operation.regions[0].blocks[0].operations[0]
 print(f"entry-point name: {func_op.name}")
 print(f"entry-point type: {func_op.type}")
 

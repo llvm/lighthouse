@@ -32,7 +32,7 @@ ir_context = ir.Context()
 # - Loads the DummyMLP class and instantiates it with arguments obtained from 'get_init_inputs()'
 # - Calls get_sample_inputs() to get sample input tensors for shape inference
 # - Converts PyTorch model to linalg-on-tensors dialect operations using torch_mlir
-mlir_module_ir : ir.Module = import_from_file(
+mlir_module_ir: ir.Module = import_from_file(
     model_path,                              # Path to the Python file containing the model
     model_class_name="DummyMLP",             # Name of the PyTorch nn.Module class to convert
     init_args_fn_name="get_init_inputs",     # Function that returns args for model.__init__()
@@ -48,7 +48,7 @@ mlir_module_ir : ir.Module = import_from_file(
 # also be done with the MLIR module.
 
 # Step 3: Extract the main function operation from the MLIR module and print its metadata
-func_op : func.FuncOp = mlir_module_ir.operation.regions[0].blocks[0].operations[0]
+func_op: func.FuncOp = mlir_module_ir.operation.regions[0].blocks[0].operations[0]
 print(f"entry-point name: {func_op.name}")
 print(f"entry-point type: {func_op.type}")
 

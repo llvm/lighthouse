@@ -27,10 +27,10 @@ from mlir import ir
 
 def import_from_model(
     model: nn.Module,
-    sample_args : Iterable,
-    sample_kwargs : Mapping = None,
-    dialect : OutputType | str = OutputType.LINALG_ON_TENSORS,
-    ir_context : ir.Context | None = None,
+    sample_args: Iterable,
+    sample_kwargs: Mapping = None,
+    dialect: OutputType | str = OutputType.LINALG_ON_TENSORS,
+    ir_context: ir.Context | None = None,
     **kwargs,
 ) -> str | ir.Module:
     """Import a PyTorch nn.Module into MLIR.
@@ -100,9 +100,9 @@ def import_from_file(
     init_kwargs_fn_name: str | None = None,
     sample_args_fn_name: str = "get_inputs",
     sample_kwargs_fn_name: str | None = None,
-    state_path : str | Path | None = None,
-    dialect : OutputType | str = OutputType.LINALG_ON_TENSORS,
-    ir_context : ir.Context | None = None,
+    state_path: str | Path | None = None,
+    dialect: OutputType | str = OutputType.LINALG_ON_TENSORS,
+    ir_context: ir.Context | None = None,
     **kwargs,
 ) -> str | ir.Module:
     """Load a PyTorch nn.Module from a file and import it into MLIR.
@@ -211,7 +211,7 @@ def import_from_file(
         error_msg=f"Sample kwargs function '{sample_kwargs_fn_name}' not found in {filepath}"
     )
 
-    nn_model : nn.Module = model(*model_init_args, **model_init_kwargs)
+    nn_model: nn.Module = model(*model_init_args, **model_init_kwargs)
     if state_path is not None:
         state_dict = torch.load(state_path)
         nn_model.load_state_dict(state_dict)
