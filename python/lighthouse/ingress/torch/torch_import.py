@@ -11,7 +11,7 @@ try:
 except ImportError as e:
     raise ImportError(
         "PyTorch is required to use the torch import functionality. "
-        "Please run 'uv pip install .[torch-mlir]'"
+        "Make sure to install ingress-torch dependencies e.g. 'uv sync --extra ingress-torch-cpu'"
     ) from e
 
 try:
@@ -20,7 +20,7 @@ try:
 except ImportError as e:
     raise ImportError(
         "torch-mlir is required to use the torch import functionality. "
-        "Please run 'uv pip install .[torch-mlir]'"
+        "Make sure to install ingress-torch dependencies e.g. 'uv sync --extra ingress-torch-cpu'"
     ) from e
 
 from mlir import ir
