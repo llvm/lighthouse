@@ -1,12 +1,10 @@
 #!/usr/bin/env python3
 
-import importlib
-import importlib.util
-
 from pathlib import Path
 
 from mlir import ir, passmanager
-from torch_mlir import fx
+from lighthouse.ingress import torch as torch_ingress
+
 
 kernels_as_pytorch_folder = Path(__file__).parent / "KernelBench" / "KernelBench"
 kernels_as_pytorch_level1 = kernels_as_pytorch_folder / "level1"
@@ -121,9 +119,9 @@ for pytorch_level, mlir_level in (
             )
             continue
 
-        module_name = kernel_pytorch_file.stem
+        kernel_name = kernel_pytorch_file.stem
 
-        kernel_as_mlir_path = mlir_level / (module_name + ".mlir")
+        kernel_as_mlir_path = mlir_level / (kernel_name + ".mlir")
         if kernel_as_mlir_path.exists():
             print(
                 f"Already in cache: {kernel_pytorch_file.parent.name}/{kernel_pytorch_file.name}"
@@ -132,49 +130,19 @@ for pytorch_level, mlir_level in (
         print(
             f"Processing: {kernel_pytorch_file.parent.name}/{kernel_pytorch_file.name}"
         )
-
-        module_spec = importlib.util.spec_from_file_location(
-            module_name, kernel_pytorch_file
+        mlir_kernel = torch_ingress.import_from_file(
+            kernel_pytorch_file, ir_context=ctx
         )
 
-        if module_spec is None or module_spec.loader is None:
-            print(f"Error: Could not create module spec for {kernel_pytorch_file}")
-            continue
-
-        module = importlib.util.module_from_spec(module_spec)
-        # Execute the module to load its contents
-        module_spec.loader.exec_module(module)
-
-        if not all(
-            hasattr(module, a) for a in ("Model", "get_inputs", "get_init_inputs")
-        ):
-            print(f"Error: module in file {kernel_pytorch_file} not a proper benchmark")
-            continue
-
-        # TODO: check hasattr(module, "in_features") etc and adjust to sizes that are more tractable for torch-mlir
-
+        before_clean_up = "//" + str(mlir_kernel)[:-1].replace("\n", "\n//") + "\n"
         try:
-            m = fx.export_and_import(
-                module.Model(*module.get_init_inputs()),
-                *module.get_inputs(),
-                output_type=fx.OutputType.LINALG_ON_TENSORS,
-            )
+            pm.run(mlir_kernel.operation)  # cleanup
         except Exception as e:
-            print(f"Error: got the following error converting {kernel_pytorch_file}")
-            raise e
-
-        before_clean_up = "//" + str(m)[:-1].replace("\n", "\n//") + "\n"
-        # Cross boundary from torch-mlir's mlir to environment's mlir
-        m = ir.Module.parse(str(m), context=ctx)
-        # Run clean-up, e.g. linalg-"specialization" passes to raise within Linalg.
-        try:
-            pm.run(m.operation)  # cleanup
-        except Exception as e:
-            print(f"Error: got the following error cleaning up {module_name}")
+            print(f"Error: got the following error cleaning up {kernel_name}")
             raise e
 
         with kernel_as_mlir_path.open("w") as f:
             print("// Torch-MLIR output:", file=f)
             print(before_clean_up, file=f)
             print("// MLIR output after clean-up:", file=f)
-            print(m, file=f)
+            print(mlir_kernel, file=f)
