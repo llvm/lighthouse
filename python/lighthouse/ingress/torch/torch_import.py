@@ -3,7 +3,7 @@ import importlib.util
 from pathlib import Path
 from typing import Iterable, Mapping
 
-from lighthouse.ingress.torch.utils import load_and_run_callable
+from lighthouse.ingress.torch.utils import load_and_run_callable, maybe_load_and_run_callable
 
 try:
     import torch
@@ -187,18 +187,16 @@ def import_from_file(
     if model is None:
         raise ValueError(f"Model class '{model_class_name}' not found in {filepath}")
 
-    model_init_args = load_and_run_callable(
+    model_init_args = maybe_load_and_run_callable(
         module,
         init_args_fn_name,
-        raise_on_missing=False,
         default=tuple(),
         error_msg=f"Init args function '{init_args_fn_name}' not found in {filepath}"
     )
-    model_init_kwargs = load_and_run_callable(
+    model_init_kwargs = maybe_load_and_run_callable(
         module,
         init_kwargs_fn_name,
-        raise_on_missing=False,
-        default=tuple(),
+        default={},
         error_msg=f"Init kwargs function '{init_kwargs_fn_name}' not found in {filepath}"
     )
     sample_args = load_and_run_callable(
@@ -206,10 +204,9 @@ def import_from_file(
         sample_args_fn_name,
         f"Sample args function '{sample_args_fn_name}' not found in {filepath}"
     )
-    sample_kwargs = load_and_run_callable(
+    sample_kwargs = maybe_load_and_run_callable(
         module,
         sample_kwargs_fn_name,
-        raise_on_missing=False,
         default={},
         error_msg=f"Sample kwargs function '{sample_kwargs_fn_name}' not found in {filepath}"
     )
