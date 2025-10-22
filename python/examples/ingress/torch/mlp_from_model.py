@@ -1,29 +1,29 @@
 """
-Example demonstrating how to load an already instantiated PyTorch model
+Example demonstrating how to load an already initialized PyTorch model
 to MLIR using Lighthouse.
 
 The script uses the 'lighthouse.ingress.torch.import_from_model' function that
-takes a PyTorch model that has already been instantiated, along with its sample inputs.
+takes a PyTorch model that has already been initialized, along with its sample inputs.
 The function passes the model to torch_mlir to get a MLIR module in the
 specified dialect.
 
-The script uses a model from 'DummyMLP/model.py' as an example.
+The script uses a model from 'MLPModel/model.py' as an example.
 """
 
 import torch
 
 # MLIR infrastructure imports (only needed if you want to manipulate the MLIR module)
 import mlir.dialects.func as func
-from mlir import ir, passmanager
+from mlir import ir
 
 # Lighthouse imports
 from lighthouse.ingress.torch import import_from_model
 
 # Import a sample model definition
-from DummyMLP.model import DummyMLP
+from MLPModel.model import MLPModel
 
 # Step 1: Instantiate a model and prepare sample input
-model = DummyMLP()
+model = MLPModel()
 sample_input = torch.randn(1, 10)
 
 ir_context = ir.Context()
@@ -45,12 +45,16 @@ func_op: func.FuncOp = mlir_module_ir.operation.regions[0].blocks[0].operations[
 print(f"entry-point name: {func_op.name}")
 print(f"entry-point type: {func_op.type}")
 
-# Step 4: Apply some MLIR passes using a PassManager
-pm = passmanager.PassManager(context=ir_context)
-pm.add("linalg-specialize-generic-ops")
-pm.add("one-shot-bufferize")
-pm.run(mlir_module_ir.operation)
-
-# Step 5: Output the final MLIR
-print("\n\nModule dump after running the pipeline:")
+# Step 4: output the imported MLIR module
+print("\n\nModule dump:")
 mlir_module_ir.dump()
+
+# You can alternatively write the MLIR module to a file:
+# with open("output.mlir", "w") as f:
+#     f.write(str(mlir_module_ir))
+#
+# Or apply some MLIR passes using a PassManager:
+# pm = passmanager.PassManager(context=ir_context)
+# pm.add("linalg-specialize-generic-ops")
+# pm.add(...)
+# pm.run(mlir_module_ir.operation)

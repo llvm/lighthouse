@@ -5,7 +5,7 @@ import torch.nn as nn
 
 import os
 
-class DummyMLP(nn.Module):
+class MLPModel(nn.Module):
     def __init__(self):
         super().__init__()
         self.net = nn.Sequential(
@@ -19,15 +19,15 @@ class DummyMLP(nn.Module):
 
 
 def get_init_inputs():
-    """Function to return args to pass to DummyMLP.__init__()"""
+    """Function to return args to pass to MLPModel.__init__()"""
     return ()
 
 
 def get_sample_inputs():
-    """Arguments to pass to DummyMLP.forward()"""
+    """Arguments to pass to MLPModel.forward()"""
     return (torch.randn(1, 10),)
 
 
 if __name__ == "__main__":
     script_dir = os.path.dirname(os.path.abspath(__file__))
-    torch.save(DummyMLP().state_dict(), os.path.join(script_dir, "dummy_mlp.pth"))
+    torch.save(MLPModel().state_dict(), os.path.join(script_dir, "dummy_mlp.pth"))

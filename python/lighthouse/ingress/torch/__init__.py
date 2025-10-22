@@ -1,1 +1,3 @@
-from .torch_import import import_from_file, import_from_model
+"""Provides functions to convert PyTorch models to MLIR."""
+
+from .importer import import_from_file, import_from_model
