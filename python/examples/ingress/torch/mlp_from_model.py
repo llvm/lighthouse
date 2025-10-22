@@ -52,9 +52,3 @@ mlir_module_ir.dump()
 # You can alternatively write the MLIR module to a file:
 # with open("output.mlir", "w") as f:
 #     f.write(str(mlir_module_ir))
-#
-# Or apply some MLIR passes using a PassManager:
-# pm = passmanager.PassManager(context=ir_context)
-# pm.add("linalg-specialize-generic-ops")
-# pm.add(...)
-# pm.run(mlir_module_ir.operation)
