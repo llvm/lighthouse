@@ -3,9 +3,9 @@ Example demonstrating how to load an already initialized PyTorch model
 to MLIR using Lighthouse.
 
 The script uses the 'lighthouse.ingress.torch.import_from_model' function that
-takes a PyTorch model that has already been initialized, along with its sample inputs.
-The function passes the model to torch_mlir to get a MLIR module in the
-specified dialect.
+takes an initialized PyTorch model (an instance of a Python class derived from 'nn.Module'),
+along with its sample inputs. The function passes the model to torch_mlir
+to get a MLIR module in the specified dialect.
 
 The script uses a model from 'MLPModel/model.py' as an example.
 """
@@ -22,7 +22,7 @@ from lighthouse.ingress.torch import import_from_model
 # Import a sample model definition
 from MLPModel.model import MLPModel
 
-# Step 1: Instantiate a model and prepare sample input
+# Step 1: Instantiate a model class and prepare sample input
 model = MLPModel()
 sample_input = torch.randn(1, 10)
 
