@@ -26,8 +26,3 @@ def get_init_inputs():
 def get_sample_inputs():
     """Arguments to pass to MLPModel.forward()"""
     return (torch.randn(1, 10),)
-
-
-if __name__ == "__main__":
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    torch.save(MLPModel().state_dict(), os.path.join(script_dir, "dummy_mlp.pth"))
