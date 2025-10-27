@@ -7,3 +7,6 @@ __pycache__/
 dist/
 python/lighthouse*.egg-info/
 *.whl
+
+# Miscellaneous
+uv.lock
