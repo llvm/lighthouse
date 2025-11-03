@@ -96,7 +96,7 @@ def create_schedule(ctx: ir.Context) -> ir.Module:
     return schedule
 
 
-def apply_schedule(kernel: ir.Module, schedule: ir.Module) -> ir.Module:
+def apply_schedule(kernel: ir.Module, schedule: ir.Module) -> None:
     """
     Apply transformation schedule to a kernel module.
     The kernel is modified in-place.
@@ -127,6 +127,7 @@ def main():
     ctx = ir.Context()
     kernel = create_kernel(ctx)
     schedule = create_schedule(ctx)
+
     # Lower the kernel to LLVM dialect.
     apply_schedule(kernel, schedule)
 
