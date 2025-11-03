@@ -1,12 +1,22 @@
 import torch
+<<<<<<< HEAD
 import argparse
+=======
+import os
+>>>>>>> 9647a7f ([examples][mlir] Basic MLIR compilation and execution example)
 
 from mlir import ir
 from mlir.dialects import transform
 from mlir.dialects.transform import structured
 from mlir.dialects.transform import interpreter
 from mlir.execution_engine import ExecutionEngine
+<<<<<<< HEAD
 from mlir.passmanager import PassManager
+=======
+from mlir.runtime.np_to_memref import (
+    get_ranked_memref_descriptor,
+)
+>>>>>>> 9647a7f ([examples][mlir] Basic MLIR compilation and execution example)
 
 from lighthouse import utils as lh_utils
 
@@ -35,7 +45,7 @@ def create_kernel(ctx: ir.Context) -> ir.Module:
 def create_schedule(ctx: ir.Context) -> ir.Module:
     """
     Create an MLIR module containing transformation schedule.
-    The schedule provides partial lowering to scalar operations.
+    The schedule provides necessary steps to lower the kernel to LLVM IR.
 
     Args:
         ctx: MLIR context.
@@ -47,26 +57,25 @@ def create_schedule(ctx: ir.Context) -> ir.Module:
             ir.UnitAttr.get()
         )
 
-        # For simplicity, use generic matchers without requiring specific types.
-        anytype = transform.any_op_t()
-
         # Create entry point transformation sequence.
         with ir.InsertionPoint(schedule.body):
             named_seq = transform.NamedSequenceOp(
-                sym_name="__transform_main",
-                input_types=[anytype],
-                result_types=[],
+                "__transform_main",
+                [transform.AnyOpType.get()],
+                [],
                 arg_attrs=[{"transform.readonly": ir.UnitAttr.get()}],
             )
 
         # Create the schedule.
         with ir.InsertionPoint(named_seq.body):
+            # For simplicity, use generic transform matchers.
+            anytype = transform.AnyOpType.get()
+
             # Find the kernel's function op.
             func = structured.MatchOp.match_op_names(
                 named_seq.bodyTarget, ["func.func"]
             )
-            # Use C interface wrappers - required to make function executable
-            # after jitting.
+            # Use C interface wrappers - required to make function executable after jitting.
             func = transform.apply_registered_pass(
                 anytype, func, "llvm-request-c-wrappers"
             )
@@ -80,16 +89,22 @@ def create_schedule(ctx: ir.Context) -> ir.Module:
                 anytype, mod, "convert-linalg-to-loops"
             )
             # Cleanup.
-            transform.apply_cse(mod)
+            transform.ApplyCommonSubexpressionEliminationOp(mod)
             with ir.InsertionPoint(transform.ApplyPatternsOp(mod).patterns):
-                transform.apply_patterns_canonicalization()
+                transform.ApplyCanonicalizationPatternsOp()
+            # Lower to LLVM.
+            mod = transform.apply_registered_pass(anytype, mod, "convert-scf-to-cf")
+            mod = transform.apply_registered_pass(anytype, mod, "convert-to-llvm")
+            mod = transform.apply_registered_pass(
+                anytype, mod, "reconcile-unrealized-casts"
+            )
 
             # Terminate the schedule.
-            transform.yield_([])
+            transform.YieldOp()
     return schedule
 
 
-def apply_schedule(kernel: ir.Module, schedule: ir.Module) -> None:
+def apply_schedule(kernel: ir.Module, schedule: ir.Module) -> ir.Module:
     """
     Apply transformation schedule to a kernel module.
     The kernel is modified in-place.
@@ -105,29 +120,8 @@ def apply_schedule(kernel: ir.Module, schedule: ir.Module) -> None:
     )
 
 
-def create_pass_pipeline(ctx: ir.Context) -> PassManager:
-    """
-    Create an MLIR pass pipeline.
-    The pipeline lowers operations further down to LLVM dialect.
-
-    Args:
-        ctx: MLIR context.
-    """
-    with ctx:
-        # Create a pass manager that applies passes to the whole module.
-        pm = PassManager("builtin.module")
-        # Lower to LLVM.
-        pm.add("convert-scf-to-cf")
-        pm.add("convert-to-llvm")
-        pm.add("reconcile-unrealized-casts")
-        # Cleanup
-        pm.add("cse")
-        pm.add("canonicalize")
-    return pm
-
-
 # The example's entry point.
-def main(args):
+def main():
     ### Baseline computation ###
     # Create inputs.
     a = torch.randn(16, 32, dtype=torch.float32)
@@ -137,50 +131,36 @@ def main(args):
     out_ref = torch.add(a, b)
 
     ### MLIR payload preparation ###
-    # Create payload kernel.
+    # Create payload kernel and lowering schedule.
     ctx = ir.Context()
     kernel = create_kernel(ctx)
-
-    # Create a transform schedule and apply initial lowering.
     schedule = create_schedule(ctx)
+    # Lower the kernel to LLVM dialect.
     apply_schedule(kernel, schedule)
 
-    # Create a pass pipeline and lower the kernel to LLVM dialect.
-    pm = create_pass_pipeline(ctx)
-    pm.run(kernel.operation)
-
     ### Compilation ###
-    # Parse additional libraries if present.
+    # External shared libraries, containing MLIR runner utilities, are are generally
+    # required to execute the compiled module.
     #
-    # External shared libraries, runtime utilities, might be needed to execute
-    # the compiled module.
-    # The execution engine requires full paths to the libraries.
-    mlir_libs = []
-    if args.shared_libs:
-        mlir_libs += args.shared_libs.split(",")
+    # Get paths to MLIR runner shared libraries through an environment variable.
+    mlir_libs = os.environ.get("LIGHTHOUSE_SHARED_LIBS").split(":")
 
     # JIT the kernel.
     eng = ExecutionEngine(kernel, opt_level=2, shared_libs=mlir_libs)
-
-    # Initialize the JIT engine.
-    #
-    # The deferred initialization executes global constructors that might
-    # have been created by the module during engine creation (for example,
-    # when `gpu.module` is present) or registered afterwards.
-    #
-    # Initialization is not strictly necessary in this case.
-    # However, it is a good practice to perform it regardless.
-    eng.initialize()
-
     # Get the kernel function.
     add_func = eng.lookup("add")
 
     ### Execution ###
+    # Create corresponding memref descriptors containing input data.
+    a_mem = get_ranked_memref_descriptor(a.numpy())
+    b_mem = get_ranked_memref_descriptor(b.numpy())
+
     # Create an empty buffer to hold results.
     out = torch.empty_like(out_ref)
+    out_mem = get_ranked_memref_descriptor(out.numpy())
 
     # Execute the kernel.
-    args = lh_utils.torch_to_packed_args([a, b, out])
+    args = lh_utils.memrefs_to_packed_args([a_mem, b_mem, out_mem])
     add_func(args)
 
     ### Verification ###
@@ -192,21 +172,4 @@ def main(args):
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-
-    # External shared libraries, runtime utilities, might be needed to
-    # execute the compiled module.
-    # For example, MLIR runner utils libraries such as:
-    #   - libmlir_runner_utils.so
-    #   - libmlir_c_runner_utils.so
-    #
-    # Full paths to the libraries should be provided.
-    # For example:
-    #   --shared-libs=$LLVM_BUILD/lib/lib1.so,$LLVM_BUILD/lib/lib2.so
-    parser.add_argument(
-        "--shared-libs",
-        type=str,
-        help="Comma-separated list of libraries to link dynamically",
-    )
-    args = parser.parse_args()
-    main(args)
+    main()

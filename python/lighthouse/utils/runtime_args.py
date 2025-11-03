@@ -1,9 +1,12 @@
 import ctypes
+<<<<<<< HEAD
 import torch
 
 from mlir.runtime.np_to_memref import (
     get_ranked_memref_descriptor,
 )
+=======
+>>>>>>> 9647a7f ([examples][mlir] Basic MLIR compilation and execution example)
 
 
 def get_packed_arg(ctypes_args) -> list[ctypes.c_void_p]:
