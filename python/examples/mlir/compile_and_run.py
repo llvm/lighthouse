@@ -6,6 +6,7 @@ from mlir.dialects import transform
 from mlir.dialects.transform import structured
 from mlir.dialects.transform import interpreter
 from mlir.execution_engine import ExecutionEngine
+from mlir.passmanager import PassManager
 from mlir.runtime.np_to_memref import (
     get_ranked_memref_descriptor,
 )
@@ -37,7 +38,7 @@ def create_kernel(ctx: ir.Context) -> ir.Module:
 def create_schedule(ctx: ir.Context) -> ir.Module:
     """
     Create an MLIR module containing transformation schedule.
-    The schedule provides necessary steps to lower the kernel to LLVM IR.
+    The schedule provides partial lowering to scalar operations.
 
     Args:
         ctx: MLIR context.
@@ -84,12 +85,6 @@ def create_schedule(ctx: ir.Context) -> ir.Module:
             transform.ApplyCommonSubexpressionEliminationOp(mod)
             with ir.InsertionPoint(transform.ApplyPatternsOp(mod).patterns):
                 transform.ApplyCanonicalizationPatternsOp()
-            # Lower to LLVM.
-            mod = transform.apply_registered_pass(anytype, mod, "convert-scf-to-cf")
-            mod = transform.apply_registered_pass(anytype, mod, "convert-to-llvm")
-            mod = transform.apply_registered_pass(
-                anytype, mod, "reconcile-unrealized-casts"
-            )
 
             # Terminate the schedule.
             transform.YieldOp()
@@ -112,6 +107,27 @@ def apply_schedule(kernel: ir.Module, schedule: ir.Module) -> None:
     )
 
 
+def create_pass_pipeline(ctx: ir.Context) -> PassManager:
+    """
+    Create an MLIR pass pipeline.
+    The pipeline lowers operations further down to LLVM dialect.
+
+    Args:
+        ctx: MLIR context.
+    """
+    with ctx:
+        # Create a pass manager that applies passes to the whole module.
+        pm = PassManager("builtin.module")
+        # Lower to LLVM.
+        pm.add("convert-scf-to-cf")
+        pm.add("convert-to-llvm")
+        pm.add("reconcile-unrealized-casts")
+        # Cleanup
+        pm.add("cse")
+        pm.add("canonicalize")
+    return pm
+
+
 # The example's entry point.
 def main():
     ### Baseline computation ###
@@ -123,20 +139,24 @@ def main():
     out_ref = torch.add(a, b)
 
     ### MLIR payload preparation ###
-    # Create payload kernel and lowering schedule.
+    # Create payload kernel.
     ctx = ir.Context()
     kernel = create_kernel(ctx)
-    schedule = create_schedule(ctx)
 
-    # Lower the kernel to LLVM dialect.
+    # Create a transform schedule and apply initial lowering.
+    schedule = create_schedule(ctx)
     apply_schedule(kernel, schedule)
+
+    # Create a pass pipeline and lower the kernel to LLVM dialect.
+    pm = create_pass_pipeline(ctx)
+    pm.run(kernel.operation)
 
     ### Compilation ###
     # External shared libraries, containing MLIR runner utilities, are are generally
     # required to execute the compiled module.
     #
     # Get paths to MLIR runner shared libraries through an environment variable.
-    mlir_libs = os.environ.get("LIGHTHOUSE_SHARED_LIBS").split(":")
+    mlir_libs = os.environ.get("LIGHTHOUSE_SHARED_LIBS", default="").split(":")
 
     # JIT the kernel.
     eng = ExecutionEngine(kernel, opt_level=2, shared_libs=mlir_libs)
