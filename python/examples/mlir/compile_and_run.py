@@ -7,9 +7,6 @@ from mlir.dialects.transform import structured
 from mlir.dialects.transform import interpreter
 from mlir.execution_engine import ExecutionEngine
 from mlir.passmanager import PassManager
-from mlir.runtime.np_to_memref import (
-    get_ranked_memref_descriptor,
-)
 
 from lighthouse import utils as lh_utils
 
@@ -164,16 +161,11 @@ def main():
     add_func = eng.lookup("add")
 
     ### Execution ###
-    # Create corresponding memref descriptors containing input data.
-    a_mem = get_ranked_memref_descriptor(a.numpy())
-    b_mem = get_ranked_memref_descriptor(b.numpy())
-
     # Create an empty buffer to hold results.
     out = torch.empty_like(out_ref)
-    out_mem = get_ranked_memref_descriptor(out.numpy())
 
     # Execute the kernel.
-    args = lh_utils.memrefs_to_packed_args([a_mem, b_mem, out_mem])
+    args = lh_utils.torch_to_packed_args([a, b, out])
     add_func(args)
 
     ### Verification ###

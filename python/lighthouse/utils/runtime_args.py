@@ -1,4 +1,9 @@
 import ctypes
+import torch
+
+from mlir.runtime.np_to_memref import (
+    get_ranked_memref_descriptor,
+)
 
 
 def get_packed_arg(ctypes_args) -> list[ctypes.c_void_p]:
@@ -34,3 +39,24 @@ def memrefs_to_packed_args(memref_descs) -> list[ctypes.c_void_p]:
     """
     ctype_args = [memref_to_ctype(memref) for memref in memref_descs]
     return get_packed_arg(ctype_args)
+
+
+def torch_to_memref(input: torch.Tensor) -> ctypes.Structure:
+    """
+    Convert a PyTorch tensor into a memref descriptor.
+
+    Args:
+        input: PyTorch tensor.
+    """
+    return get_ranked_memref_descriptor(input.numpy())
+
+
+def torch_to_packed_args(inputs: list[torch.Tensor]) -> list[ctypes.c_void_p]:
+    """
+    Convert a list of PyTorch tensors into packed ctype arguments.
+
+    Args:
+        inputs: A list of PyTorch tensors.
+    """
+    memrefs = [torch_to_memref(input) for input in inputs]
+    return memrefs_to_packed_args(memrefs)
