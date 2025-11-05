@@ -157,6 +157,17 @@ def main():
 
     # JIT the kernel.
     eng = ExecutionEngine(kernel, opt_level=2, shared_libs=mlir_libs)
+
+    # Initialize the JIT engine.
+    #
+    # The deferred initialization executes global constructors that might have been
+    # created by the module during engine creation (for example, when `gpu.module`
+    # is present) or registered afterwards.
+    #
+    # Initialization is not strictly necessary in this case.
+    # However, it is a good practice to perform it regardless.
+    eng.initialize()
+
     # Get the kernel function.
     add_func = eng.lookup("add")
 
