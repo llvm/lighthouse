@@ -151,8 +151,14 @@ def main():
     ### Compilation ###
     # External shared libraries, containing MLIR runner utilities, are generally
     # required to execute the compiled module.
+    # In this case, MLIR runner utils libraries are expected:
+    #   - libmlir_runner_utils.so
+    #   - libmlir_c_runner_utils.so
     #
     # Get paths to MLIR runner shared libraries through an environment variable.
+    # The execution engine requires full paths to the libraries.
+    # For example, the env variable can be set as:
+    #   LIGHTHOUSE_SHARED_LIBS=$PATH_TO_LLVM/build/lib/lib1.so:$PATH_TO_LLVM/build/lib/lib2.so
     mlir_libs = os.environ.get("LIGHTHOUSE_SHARED_LIBS", default="").split(":")
 
     # JIT the kernel.
