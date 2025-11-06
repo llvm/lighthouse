@@ -47,20 +47,20 @@ def create_schedule(ctx: ir.Context) -> ir.Module:
             ir.UnitAttr.get()
         )
 
+        # For simplicity, use generic matchers without requiring specific types.
+        anytype = transform.any_op_t()
+
         # Create entry point transformation sequence.
         with ir.InsertionPoint(schedule.body):
             named_seq = transform.NamedSequenceOp(
-                "__transform_main",
-                [transform.AnyOpType.get()],
-                [],
+                sym_name="__transform_main",
+                input_types=[anytype],
+                result_types=[],
                 arg_attrs=[{"transform.readonly": ir.UnitAttr.get()}],
             )
 
         # Create the schedule.
         with ir.InsertionPoint(named_seq.body):
-            # For simplicity, use generic transform matchers.
-            anytype = transform.AnyOpType.get()
-
             # Find the kernel's function op.
             func = structured.MatchOp.match_op_names(
                 named_seq.bodyTarget, ["func.func"]
@@ -79,12 +79,12 @@ def create_schedule(ctx: ir.Context) -> ir.Module:
                 anytype, mod, "convert-linalg-to-loops"
             )
             # Cleanup.
-            transform.ApplyCommonSubexpressionEliminationOp(mod)
+            transform.apply_cse(mod)
             with ir.InsertionPoint(transform.ApplyPatternsOp(mod).patterns):
-                transform.ApplyCanonicalizationPatternsOp()
+                transform.apply_patterns_canonicalization()
 
             # Terminate the schedule.
-            transform.YieldOp()
+            transform.yield_([])
     return schedule
 
 
@@ -149,7 +149,7 @@ def main():
     pm.run(kernel.operation)
 
     ### Compilation ###
-    # External shared libraries, containing MLIR runner utilities, are are generally
+    # External shared libraries, containing MLIR runner utilities, are generally
     # required to execute the compiled module.
     #
     # Get paths to MLIR runner shared libraries through an environment variable.
