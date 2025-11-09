@@ -119,6 +119,7 @@ pm = passmanager.PassManager(context=ctx)
 pm.add("linalg-specialize-generic-ops")
 
 print("Output directory:", kernels_as_mlir_folder)
+exitcode = 0
 for pytorch_level, mlir_level in (
     (kernels_as_pytorch_level1, kernels_as_mlir_level1),
     (kernels_as_pytorch_level2, kernels_as_mlir_level2),
@@ -129,7 +130,8 @@ for pytorch_level, mlir_level in (
         )
         if level_and_kernel in ignore_list or not kernel_pytorch_file.is_file():
             print(
-                f"Skipping: {kernel_pytorch_file.parent.name}/{kernel_pytorch_file.name}"
+                f"Skipping: {kernel_pytorch_file.parent.name}/{kernel_pytorch_file.name}",
+                file=sys.stderr,
             )
             continue
 
@@ -152,7 +154,10 @@ for pytorch_level, mlir_level in (
         try:
             pm.run(mlir_kernel.operation)  # cleanup
         except Exception as e:
-            print(f"Error: got the following error cleaning up '{kernel_name}'")
+            print(
+                f"ERROR: got the following error cleaning up '{kernel_name}'",
+                file=sys.stderr,
+            )
             raise e
 
         with kernel_as_mlir_path.open("w") as f:
