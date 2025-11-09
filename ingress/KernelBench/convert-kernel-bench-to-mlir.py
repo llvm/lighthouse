@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+import sys
 from pathlib import Path
 
 from mlir import ir, passmanager
@@ -7,6 +8,18 @@ from lighthouse.ingress import torch as torch_ingress
 
 
 kernels_as_pytorch_folder = Path(__file__).parent / "KernelBench" / "KernelBench"
+
+if not (kernels_as_pytorch_folder.exists() and kernels_as_pytorch_folder.is_dir()):
+    print(
+        "ERROR: KernelBench repo not found.\n"
+        "NOTE: Pull in dependency with: git submodule update "
+        + str(kernels_as_pytorch_folder.parent.relative_to(Path.cwd()))
+        + "",
+        file=sys.stderr,
+    )
+    sys.exit(1)
+
+
 kernels_as_pytorch_level1 = kernels_as_pytorch_folder / "level1"
 kernels_as_pytorch_level2 = kernels_as_pytorch_folder / "level2"
 
@@ -105,6 +118,7 @@ ctx = ir.Context()
 pm = passmanager.PassManager(context=ctx)
 pm.add("linalg-specialize-generic-ops")
 
+print("Output directory:", kernels_as_mlir_folder)
 for pytorch_level, mlir_level in (
     (kernels_as_pytorch_level1, kernels_as_mlir_level1),
     (kernels_as_pytorch_level2, kernels_as_mlir_level2),
@@ -133,16 +147,14 @@ for pytorch_level, mlir_level in (
         mlir_kernel = torch_ingress.import_from_file(
             kernel_pytorch_file, ir_context=ctx
         )
+        assert isinstance(mlir_kernel, ir.Module)
 
-        before_clean_up = "//" + str(mlir_kernel)[:-1].replace("\n", "\n//") + "\n"
         try:
             pm.run(mlir_kernel.operation)  # cleanup
         except Exception as e:
-            print(f"Error: got the following error cleaning up {kernel_name}")
+            print(f"Error: got the following error cleaning up '{kernel_name}'")
             raise e
 
         with kernel_as_mlir_path.open("w") as f:
-            print("// Torch-MLIR output:", file=f)
-            print(before_clean_up, file=f)
-            print("// MLIR output after clean-up:", file=f)
+            print("// MLIR output after conversion and clean-up:", file=f)
             print(mlir_kernel, file=f)
