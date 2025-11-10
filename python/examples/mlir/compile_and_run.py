@@ -149,9 +149,9 @@ def main():
     pm.run(kernel.operation)
 
     ### Compilation ###
-    # External shared libraries, containing MLIR runner utilities, are generally
-    # required to execute the compiled module.
-    # In this case, MLIR runner utils libraries are expected:
+    # External shared libraries, runtime utilities, might be needed to execute
+    # the compiled module.
+    # For example, MLIR runner utils libraries such as:
     #   - libmlir_runner_utils.so
     #   - libmlir_c_runner_utils.so
     #
@@ -159,7 +159,10 @@ def main():
     # The execution engine requires full paths to the libraries.
     # For example, the env variable can be set as:
     #   LIGHTHOUSE_SHARED_LIBS=$PATH_TO_LLVM/build/lib/lib1.so:$PATH_TO_LLVM/build/lib/lib2.so
-    mlir_libs = os.environ.get("LIGHTHOUSE_SHARED_LIBS", default="").split(":")
+    mlir_libs = []
+    lh_shared_libs = os.environ.get("LIGHTHOUSE_SHARED_LIBS")
+    if lh_shared_libs:
+        mlir_libs += lh_shared_libs.split(":")
 
     # JIT the kernel.
     eng = ExecutionEngine(kernel, opt_level=2, shared_libs=mlir_libs)
