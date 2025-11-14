@@ -3,7 +3,7 @@ import torch
 from typing import Tuple
 
 from mlir import ir
-from mlir.dialects import transform, func, linalg, tensor, arith, complex
+from mlir.dialects import transform, func, linalg, tensor, arith, complex, math
 from mlir.dialects.transform import structured
 from mlir.dialects.transform import interpreter
 from mlir.passmanager import PassManager
@@ -28,6 +28,8 @@ def create_pass_pipeline(ctx: ir.Context) -> PassManager:
     with ctx:
         pm = PassManager("builtin.module")
         pm.add("convert-scf-to-cf")
+        pm.add("expand-strided-metadata")
+        pm.add("lower-affine")
         pm.add("finalize-memref-to-llvm")
         pm.add("convert-func-to-llvm")
         pm.add("convert-to-llvm")
@@ -110,6 +112,18 @@ def bufferize_module(ctx: ir.Context, kernel: ir.Module) -> None:
         pm.run(kernel.operation)
 
 
+def repeat_kv(x: torch.Tensor, n_rep: int) -> torch.Tensor:
+    """torch.repeat_interleave(x, dim=2, repeats=n_rep)"""
+    bs, slen, n_kv_heads, head_dim = x.shape
+    if n_rep == 1:
+        return x
+    return (
+        x[:, :, :, None, :]
+        .expand(bs, slen, n_kv_heads, n_rep, head_dim)
+        .reshape(bs, slen, n_kv_heads * n_rep, head_dim)
+    )
+
+
 #### IR builders #####
 # TODO: Move to mlir_gen module
 
@@ -169,6 +183,184 @@ def get_mean(a: ir.Value, out: ir.Value) -> ir.Value:
     return mean_op
 
 
+# repeat_kv
+def get_repeat_kv(x: ir.Value, n_rep: int, out: ir.Value) -> ir.Value:
+    bs, slen, n_kv_heads, head_dim = x.type.shape
+    if n_rep == 1:
+        return x
+
+    b, s, h_out, d = [ir.AffineDimExpr.get(i) for i in range(4)]
+
+    # For output head h_out, we read from input head h_out // n_rep
+    # This is equivalent to: x[:, :, :, None, :].expand(...).reshape(...)
+    h_in = ir.AffineExpr.get_floor_div(h_out, ir.AffineConstantExpr.get(n_rep))
+
+    # Affine maps
+    x_map = affine_map(4, [b, s, h_in, d])
+    out_map = affine_map(4, [b, s, h_out, d])
+
+    @linalg.generic(
+        [x],
+        [out],
+        [x_map, out_map],
+        [parallel] * 4,
+    )
+    def repeat_kv_op(a, _out):
+        return a
+
+    return repeat_kv_op
+
+
+# equivalent to torch.nn.functional.silu
+def get_silu(inputs: ir.Value, out: ir.Value) -> ir.Value:
+    elty = inputs.type.element_type
+    one = arith.constant(elty, 1.0)
+
+    dims = [ir.AffineDimExpr.get(i) for i in range(inputs.type.rank)]
+    par_affine_map = affine_map(inputs.type.rank, dims)
+    par_iterator_types = [parallel] * inputs.type.rank
+
+    @linalg.generic(
+        [inputs],
+        [out],
+        [par_affine_map, par_affine_map],
+        par_iterator_types,
+    )
+    def silu_op(a, _out):
+        sigmoid = arith.DivFOp(
+            one,
+            arith.AddFOp(
+                one,
+                math.exp(arith.NegFOp(a).result),
+            ).result,
+        ).result
+        return arith.MulFOp(a, sigmoid).result
+
+    return silu_op
+
+
+# equivalent to torch.softmax(a, dim=-1)
+# this should be just linalg.softmax, but there's no decomposition
+def get_softmax(a: ir.Value, out: ir.Value) -> ir.Value:
+    elty = a.type.element_type
+
+    reduced_shape = list(a.type.shape)
+    reduced_shape[-1] = 1
+    max_uninit = tensor.EmptyOp(reduced_shape, elty)
+
+    neg_inf = arith.ConstantOp(elty, float("-inf"))
+    max_init = linalg.fill(neg_inf, outs=[max_uninit.result])
+
+    reduce_map = affine_map(
+        a.type.rank,
+        [ir.AffineDimExpr.get(i) for i in range(a.type.rank - 1)]
+        + [ir.AffineConstantExpr.get(0)],
+    )
+    identity_map = affine_map(
+        a.type.rank,
+        [ir.AffineDimExpr.get(i) for i in range(a.type.rank)],
+    )
+
+    iterator_types = [parallel] * (a.type.rank - 1) + [reduction]
+
+    @linalg.generic(
+        [a],
+        [max_init],
+        [identity_map, reduce_map],
+        iterator_types,
+    )
+    def compute_max(val, acc):
+        return arith.MaximumFOp(val, acc).result
+
+    shifted_uninit = tensor.EmptyOp(a.type.shape, elty)
+
+    @linalg.generic(
+        [a, compute_max],
+        [shifted_uninit.result],
+        [identity_map, reduce_map, identity_map],
+        [parallel] * a.type.rank,
+    )
+    def subtract_max(val, max_val, _out):
+        return arith.SubFOp(val, max_val).result
+
+    exp_uninit = tensor.EmptyOp(a.type.shape, elty)
+
+    @linalg.generic(
+        [subtract_max],
+        [exp_uninit.result],
+        [identity_map, identity_map],
+        [parallel] * a.type.rank,
+    )
+    def compute_exp(val, _out):
+        return math.exp(val)
+
+    sum_uninit = tensor.EmptyOp(reduced_shape, elty)
+    zero = arith.ConstantOp(elty, 0.0)
+    sum_init = linalg.fill(zero, outs=[sum_uninit.result])
+
+    @linalg.generic(
+        [compute_exp],
+        [sum_init],
+        [identity_map, reduce_map],
+        iterator_types,
+    )
+    def compute_sum(val, acc):
+        return arith.AddFOp(val, acc).result
+
+    @linalg.generic(
+        [compute_exp, compute_sum],
+        [out],
+        [identity_map, reduce_map, identity_map],
+        [parallel] * a.type.rank,
+    )
+    def divide_by_sum(exp_val, sum_val, _out):
+        return arith.DivFOp(exp_val, sum_val).result
+
+    return divide_by_sum
+
+
+# torch.matmul
+def get_matmul(a: ir.Value, b: ir.Value, out: ir.Value) -> ir.Value:
+    return linalg.matmul(a, b, outs=[out])
+
+
+# torch.nn.functional.linear
+def get_linear(a: ir.Value, w: ir.Value, b: ir.Value, out: ir.Value) -> ir.Value:
+    # a[i, k] * w[j, k] -> out[i, j]
+    i, j, k = [ir.AffineDimExpr.get(d) for d in range(3)]
+    a_map = affine_map(3, [i, k])  # (batch, in_feat)
+    w_map = affine_map(3, [j, k])  # (out_feat, in_feat) - note: we use j for first dim
+    out_map = affine_map(3, [i, j])  # (batch, out_feat)
+
+    # First compute the matmul into out (which will accumulate)
+    @linalg.generic(
+        [a, w],
+        [out],
+        [a_map, w_map, out_map],
+        [parallel, parallel, reduction],
+    )
+    def matmul_op(a_elem, w_elem, out_elem):
+        prod = arith.MulFOp(a_elem, w_elem).result
+        return arith.AddFOp(out_elem, prod).result
+
+    # Step 2: Add bias using broadcasting
+    # b[j] -> out[i, j]
+    i2, j2 = [ir.AffineDimExpr.get(d) for d in range(2)]
+    b_map = affine_map(2, [j2])  # (out_feat,)
+    out_map2 = affine_map(2, [i2, j2])  # (batch, out_feat)
+
+    @linalg.generic(
+        [matmul_op, b],
+        [out],
+        [out_map2, b_map, out_map2],
+        [parallel, parallel],
+    )
+    def add_bias_op(matmul_elem, b_elem, _out):
+        return arith.AddFOp(matmul_elem, b_elem).result
+
+    return add_bias_op
+
+
 def get_l2_norm(a: ir.Value, out: ir.Value, eps: float = 1e-5) -> ir.Value:
     """
     Compute x * rsqrt(mean(x^2, dim=-1, keepdim=True) + eps)
@@ -222,116 +414,299 @@ def get_l2_norm(a: ir.Value, out: ir.Value, eps: float = 1e-5) -> ir.Value:
     return get_mul(a, broadcast_rsqrt, out)
 
 
+# equivalent to torch.polar
+def get_polar(abs: ir.Value, angle: ir.Value, out: ir.Value) -> ir.Value:
+    """
+    Convert magnitude and angle to complex number: out = abs * (cos(angle) + i*sin(angle))
+    """
+    elty = abs.type.element_type
+    shape = abs.type.shape
+    rank = len(shape)
+
+    # Identity map for element-wise operations
+    id_map = affine_map(rank, [ir.AffineDimExpr.get(i) for i in range(rank)])
+
+    # Compute cos(angle) and sin(angle), then multiply by abs to get real and imag parts
+    @linalg.generic(
+        [abs, angle],
+        [out],
+        [id_map, id_map, id_map],
+        [parallel] * rank,
+    )
+    def polar_convert(abs_val, angle_val, _out):
+        cos_val = math.CosOp(angle_val).result
+        sin_val = math.SinOp(angle_val).result
+        real_part = arith.MulFOp(abs_val, cos_val).result
+        imag_part = arith.MulFOp(abs_val, sin_val).result
+        return complex.CreateOp(ir.ComplexType.get(elty), real_part, imag_part).result
+
+    return polar_convert
+
+
+# equivalent to torch.outer
+def get_outer(a: ir.Value, b: ir.Value, out: ir.Value) -> ir.Value:
+    """
+    Compute outer product: out[i,j] = a[i] * b[j]
+
+    Assumes inputs are 1-D tensors.
+    """
+    # Affine maps for outer product: a[i] broadcasts to (i,j), b[j] broadcasts to (i,j)
+    a_map = affine_map(2, [ir.AffineDimExpr.get(0)])
+    b_map = affine_map(2, [ir.AffineDimExpr.get(1)])
+    out_map = affine_map(2, [ir.AffineDimExpr.get(0), ir.AffineDimExpr.get(1)])
+
+    @linalg.generic(
+        [a, b],
+        [out],
+        [a_map, b_map, out_map],
+        [parallel, parallel],
+    )
+    def outer_product(a_val, b_val, _out):
+        return arith.MulFOp(a_val, b_val).result
+
+    return outer_product
+
+
+# with b broadcasting, assuming it has smaller rank
+def get_complex_mul(a: ir.Value, b: ir.Value, out: ir.Value) -> ir.Value:
+    rank_b = b.type.rank
+    rank_out = out.type.rank
+
+    dim_exprs_a = [ir.AffineDimExpr.get(i) for i in range(rank_out)]
+
+    if rank_b < rank_out:
+        offset = rank_out - rank_b
+        dim_exprs_b = [ir.AffineConstantExpr.get(0)] * offset + [
+            ir.AffineDimExpr.get(i) for i in range(offset, rank_out)
+        ]
+    else:
+        b_shape = list(b.type.shape)
+        dim_exprs_b = []
+        for i in range(rank_out):
+            if i < len(b_shape) and b_shape[i] == 1:
+                dim_exprs_b.append(ir.AffineConstantExpr.get(0))
+            else:
+                dim_exprs_b.append(ir.AffineDimExpr.get(i))
+
+    dim_exprs_out = [ir.AffineDimExpr.get(i) for i in range(rank_out)]
+
+    map_a = affine_map(rank_out, dim_exprs_a)
+    map_b = affine_map(rank_out, dim_exprs_b)
+    map_out = affine_map(rank_out, dim_exprs_out)
+
+    @linalg.generic(
+        [a, b],
+        [out],
+        [map_a, map_b, map_out],
+        [parallel] * rank_out,
+    )
+    def complex_mul_op(a_val, b_val, _out):
+        result = complex.MulOp(a_val, b_val).result
+        return result
+
+    return complex_mul_op
+
+
 def get_rotary_emb(
     xq: ir.Value, xk: ir.Value, freqs_cis: ir.Value, xq_out: ir.Value, xk_out: ir.Value
 ):
-    """
-    Apply rotary embeddings to query and key tensors.
-
-    This implements the transformation:
-    1. View xq, xk as complex: [B, S, H, D] -> [B, S, H, D//2] complex
-    2. Broadcast freqs_cis: [S, D//2] -> [1, S, 1, D//2]
-    3. Complex multiply: xq_ * freqs_cis, xk_ * freqs_cis
-    4. View back as real: [B, S, H, D//2] complex -> [B, S, H, D] real
-
-    Args:
-        xq: Query tensor of shape [B, S, H, D]
-        xk: Key tensor of shape [B, S, H_kv, D]
-        freqs_cis: Rotary embeddings of shape [S, D//2]
-                   Note: In PyTorch this is complex64, but here it's f32
-                   We need to interpret as pairs or pass cos/sin separately
-        xq_out: Output tensor for queries [B, S, H, D]
-        xk_out: Output tensor for keys [B, S, H_kv, D]
-
-    TODO: Properly implement rotary embeddings
-    Current implementation is just a placeholder passthrough.
-
-    For a correct implementation, we need to:
-    1. Either:
-       a) Pass freqs_cis as [S, D] with interleaved cos/sin values, OR
-       b) Pass separate cos and sin tensors of shape [S, D//2]
-    2. Extract pairs of elements from xq/xk to treat as complex (real, imag)
-    3. Apply complex rotation:
-       (real', imag') = (real*cos - imag*sin, real*sin + imag*cos)
-    4. Interleave results back into output
-    """
     elty = xq.type.element_type
 
-    # Get shapes
-    xq_shape = list(xq.type.shape)  # [B, S, H, D]
-    xk_shape = list(xk.type.shape)  # [B, S, H_kv, D]
+    xq_shape = list(xq.type.shape)
+    xk_shape = list(xk.type.shape)
+    batch, seq_len, n_heads, head_dim = xq_shape
+    n_kv_heads = xk_shape[2]
 
-    # Placeholder implementation: just copy inputs to outputs
-    # This allows the test infrastructure to work but doesn't compute correct results
+    # Reshape xq to (batch, seq_len, n_heads, head_dim//2, 2)
+    xq_reshaped_shape = [batch, seq_len, n_heads, head_dim // 2, 2]
+    xq_reshaped_type = ir.RankedTensorType.get(xq_reshaped_shape, elty)
+    xq_reshaped = tensor.expand_shape(
+        xq_reshaped_type,
+        xq,
+        reassociation=[[0], [1], [2], [3, 4]],
+        output_shape=[],
+        static_output_shape=xq_reshaped_shape,
+    )
 
-    b, s, h, d = [ir.AffineDimExpr.get(i) for i in range(4)]
+    # View xq as complex: (batch, seq_len, n_heads, head_dim//2, 2) -> (batch, seq_len, n_heads, head_dim//2) complex
+    xq_complex_shape = [batch, seq_len, n_heads, head_dim // 2]
+    xq_complex_uninit = tensor.EmptyOp(
+        xq_complex_shape, ir.ComplexType.get(elty)
+    ).result
+    xq_complex = get_view_as_complex(xq_reshaped, xq_complex_uninit)
+
+    # same for xk
+    xk_reshaped_shape = [batch, seq_len, n_kv_heads, head_dim // 2, 2]
+    xk_reshaped_type = ir.RankedTensorType.get(xk_reshaped_shape, elty)
+    xk_reshaped = tensor.expand_shape(
+        xk_reshaped_type,
+        xk,
+        reassociation=[[0], [1], [2], [3, 4]],
+        output_shape=[],
+        static_output_shape=xk_reshaped_shape,
+    )
+
+    xk_complex_shape = [batch, seq_len, n_kv_heads, head_dim // 2]
+    xk_complex_uninit = tensor.EmptyOp(
+        xk_complex_shape, ir.ComplexType.get(elty)
+    ).result
+    xk_complex = get_view_as_complex(xk_reshaped, xk_complex_uninit)
+
+    # Reshape freqs_cis for broadcasting: (seq_len, head_dim//2) -> (1, seq_len, 1, head_dim//2)
+    freqs_broadcast_shape = [1, seq_len, 1, head_dim // 2]
+    freqs_broadcast_uninit = tensor.EmptyOp(freqs_broadcast_shape, elty).result
+    freqs_broadcast = get_reshape_for_broadcast(
+        freqs_cis, xq_complex, freqs_broadcast_uninit
+    )
+
+    # cast freqs_broadcast to complex
+    freqs_broadcast_complex_uninit = tensor.EmptyOp(
+        freqs_broadcast_shape, ir.ComplexType.get(elty)
+    ).result
+
+    d0, d1, d2, d3 = [ir.AffineDimExpr.get(i) for i in range(4)]
+    indexing_maps = [
+        ir.AffineMap.get(4, 0, [d0, d1, d2, d3]),
+        ir.AffineMap.get(4, 0, [d0, d1, d2, d3]),
+    ]
 
     @linalg.generic(
-        [xq],
-        [xq_out],
-        [affine_map(4, [b, s, h, d]), affine_map(4, [b, s, h, d])],
-        [parallel] * 4,
+        inputs=[freqs_broadcast],
+        outputs=[freqs_broadcast_complex_uninit],
+        indexing_maps=indexing_maps,
+        iterator_types=["parallel", "parallel", "parallel", "parallel"],
     )
-    def copy_xq(x, _out):
-        return x
+    def real_to_complex(r, out):
+        zero = arith.constant(elty, 0.0)
+        return complex.CreateOp(ir.ComplexType.get(elty), r, zero).result
+
+    freqs_broadcast_complex = real_to_complex
+
+    # Multiply xq_complex with freqs_broadcast_complex
+    xq_rotated_uninit = tensor.EmptyOp(
+        xq_complex_shape, ir.ComplexType.get(elty)
+    ).result
+    xq_rotated = get_complex_mul(xq_complex, freqs_broadcast_complex, xq_rotated_uninit)
+
+    xk_rotated_uninit = tensor.EmptyOp(
+        xk_complex_shape, ir.ComplexType.get(elty)
+    ).result
+    xk_rotated = get_complex_mul(xk_complex, freqs_broadcast_complex, xk_rotated_uninit)
+
+    # view as real
+    xq_real_shape = [batch, seq_len, n_heads, head_dim // 2, 2]
+    xq_real_uninit = tensor.EmptyOp(xq_real_shape, elty).result
+    xq_real = get_view_as_real(xq_rotated, xq_real_uninit)
+
+    xk_real_shape = [batch, seq_len, n_kv_heads, head_dim // 2, 2]
+    xk_real_uninit = tensor.EmptyOp(xk_real_shape, elty).result
+    xk_real = get_view_as_real(xk_rotated, xk_real_uninit)
+
+    # flatten back to original shape
+    xq_final = tensor.collapse_shape(
+        xq.type,
+        xq_real,
+        reassociation=[[0], [1], [2], [3, 4]],
+    )
+
+    xk_final = tensor.collapse_shape(
+        xk.type,
+        xk_real,
+        reassociation=[[0], [1], [2], [3, 4]],
+    )
+
+    linalg.copy(xq_final, outs=[xq_out])
+    linalg.copy(xk_final, outs=[xk_out])
+
+
+def get_reshape_for_broadcast(freqs_cis: ir.Value, x: ir.Value, out: ir.Value):
+    # broadcast freqs_cis[seq, head] -> out[0, seq, 0, head]
+    d0, d1, d2, d3 = [ir.AffineDimExpr.get(i) for i in range(4)]
+
+    in_map = affine_map(4, [d1, d3])
+    out_map = affine_map(4, [d0, d1, d2, d3])
 
     @linalg.generic(
-        [xk],
-        [xk_out],
-        [
-            affine_map(4, [b, s, ir.AffineDimExpr.get(2), d]),
-            affine_map(4, [b, s, ir.AffineDimExpr.get(2), d]),
-        ],
-        [parallel] * 4,
+        [freqs_cis],
+        [out],
+        [in_map, out_map],
+        [parallel, parallel, parallel, parallel],
     )
-    def copy_xk(x, _out):
-        return x
+    def reshape_op(val, _out):
+        return val
 
-    return (copy_xq, copy_xk)
+    return reshape_op
 
 
-def get_as_complex(x: ir.Value, out: ir.Value) -> ir.Value:
-    """
-    Interpret the input tensor as complex numbers by grouping pairs of elements.
-
-    Args:
-        x: Input tensor of shape [..., 2] representing complex numbers as pairs (real, imag)
-        out: Output tensor of shape [...] with complex type
-    """
+# torch.view_as_complex
+def get_view_as_complex(x: ir.Value, out: ir.Value) -> ir.Value:
     elty = x.type.element_type
     rank = x.type.rank
     shape = list(x.type.shape)
     assert shape[-1] == 2, "Last dimension must be of size 2 to form complex numbers"
-    complex_shape = shape[:-1]
+
+    rank_out = rank - 1
+    dim_exprs_out = [ir.AffineDimExpr.get(i) for i in range(rank_out)]
+
+    # real part: access input[d0, d1, ..., d_{rank-2}, 0]
+    dim_exprs_real = dim_exprs_out + [ir.AffineConstantExpr.get(0)]
+    # imag part: access input[d0, d1, ..., d_{rank-2}, 1]
+    dim_exprs_imag = dim_exprs_out + [ir.AffineConstantExpr.get(1)]
+
+    input_map_real = affine_map(rank_out, dim_exprs_real)
+    input_map_imag = affine_map(rank_out, dim_exprs_imag)
+    output_map = affine_map(rank_out, dim_exprs_out)
+
+    @linalg.generic(
+        [x, x],  # Same input tensor accessed twice with different maps
+        [out],
+        [input_map_real, input_map_imag, output_map],
+        [parallel] * rank_out,
+    )
+    def view_as_complex_op(r, i, _out):
+        cplx = complex.CreateOp(ir.ComplexType.get(elty), r, i).result
+        return cplx
+
+    return view_as_complex_op
+
+
+# torch.view_as_real
+def get_view_as_real(x: ir.Value, out: ir.Value) -> ir.Value:
+    rank = x.type.rank
+
+    # Output has shape [..., 2]
+    # extract real part to [..., 0] and imag part to [..., 1]
 
     dim_exprs_in = [ir.AffineDimExpr.get(i) for i in range(rank)]
-    dim_exprs_out = [ir.AffineDimExpr.get(i) for i in range(rank - 1)]
 
-    input_map = affine_map(
-        rank,
-        dim_exprs_in,
-    )
-    output_map = affine_map(
-        rank - 1,
-        dim_exprs_out,
-    )
-    iterator_types = [parallel] * (rank - 1)
+    # For real part: write to output[..., 0]
+    dim_exprs_real = dim_exprs_in + [ir.AffineConstantExpr.get(0)]
+    # For imag part: write to output[..., 1]
+    dim_exprs_imag = dim_exprs_in + [ir.AffineConstantExpr.get(1)]
+
+    input_map = affine_map(rank, dim_exprs_in)
+    output_map_real = affine_map(rank, dim_exprs_real)
+    output_map_imag = affine_map(rank, dim_exprs_imag)
 
     @linalg.generic(
         [x],
         [out],
-        [input_map, output_map],
-        iterator_types,
+        [input_map, output_map_real],
+        [parallel] * rank,
     )
-    def as_complex_op(a, _out):
-        real_part = a[0]
-        imag_part = a[1]
-        cplx = complex.CreateOp(
-            complex.ComplexType.get(elty), real_part, imag_part
-        ).result
-        return cplx
+    def write_real(cplx, _out):
+        return complex.ReOp(cplx).result
 
-    return as_complex_op
+    @linalg.generic(
+        [x],
+        [write_real],
+        [input_map, output_map_imag],
+        [parallel] * rank,
+    )
+    def write_imag(cplx, _out):
+        return complex.ImOp(cplx).result
+
+    return write_imag
 
 
 #### Test cases #####
@@ -361,9 +736,16 @@ def rotary_emb_ref(
 references = {
     get_add: torch.add,
     get_mul: torch.mul,
+    get_matmul: torch.matmul,
     get_rsqrt: torch.rsqrt,
     get_sqr: torch.square,
     get_mean: lambda x: torch.mean(x, dim=-1, keepdim=True),
+    get_silu: lambda x: torch.nn.functional.silu(x),
+    get_softmax: lambda x: torch.softmax(x, dim=-1),
+    get_polar: torch.polar,
+    get_outer: torch.outer,
+    get_linear: torch.nn.functional.linear,
+    get_repeat_kv: repeat_kv,
     get_l2_norm: lambda x, eps: x
     * torch.rsqrt(torch.mean(x.pow(2), dim=-1, keepdim=True) + eps),
     get_rotary_emb: rotary_emb_ref,
@@ -381,7 +763,13 @@ def to_ir_type(type_str, ctx):
 
 
 @pytest.mark.parametrize(
-    "op,shape,elem_type", [(get_add, (4, 16), "f32"), (get_mul, (4, 16), "f32")]
+    "op,shape,elem_type",
+    [
+        (get_add, (4, 16), "f32"),
+        (get_mul, (4, 16), "f32"),
+        (get_matmul, (16, 16), "f32"),
+        (get_outer, (16,), "f32"),
+    ],
 )
 def test_bin_op(op, shape, elem_type):
     def generate_module(ctx, elty):
@@ -390,8 +778,15 @@ def test_bin_op(op, shape, elem_type):
             with ir.InsertionPoint(module.body):
                 tensor_type = ir.RankedTensorType.get(shape, elty)
 
+                # Outer product produces [M, M] output for 1-D input of size M
+                if op == get_outer:
+                    out_shape = (shape[0], shape[0])
+                    out_tensor_type = ir.RankedTensorType.get(out_shape, elty)
+                else:
+                    out_tensor_type = tensor_type
+
                 @func.FuncOp.from_py_func(
-                    tensor_type, tensor_type, tensor_type, name="bin_op"
+                    tensor_type, tensor_type, out_tensor_type, name="bin_op"
                 )
                 def bin_op(a, b, out):
                     op(a, b, out)
@@ -415,6 +810,7 @@ def test_bin_op(op, shape, elem_type):
     b = torch.randn(*shape, dtype=torch_dtype)
     out_ref = references[op](a, b)
     out = torch.empty_like(out_ref)
+    out.zero_()
 
     a_mem = get_ranked_memref_descriptor(a.numpy())
     b_mem = get_ranked_memref_descriptor(b.numpy())
@@ -431,6 +827,8 @@ def test_bin_op(op, shape, elem_type):
         (get_rsqrt, (4, 16), "f32"),
         (get_mean, (4, 16), "f32"),
         (get_sqr, (4, 16), "f32"),
+        (get_silu, (4, 16), "f32"),
+        (get_softmax, (4, 16), "f32"),
     ],
 )
 def test_unary_op(op, shape, elem_type):
@@ -518,6 +916,265 @@ def test_rms_norm(shape, elem_type):
     assert torch.allclose(out, out_ref, rtol=0.01, atol=0.01, equal_nan=True)
 
 
+def test_linear():
+    def generate_module(ctx, elty):
+        with ctx, ir.Location.unknown():
+            module = ir.Module.create()
+            with ir.InsertionPoint(module.body):
+                input_type = ir.RankedTensorType.get((4, 16), elty)
+                weight_type = ir.RankedTensorType.get((32, 16), elty)
+                bias_type = ir.RankedTensorType.get((32,), elty)
+                output_type = ir.RankedTensorType.get((4, 32), elty)
+
+                @func.FuncOp.from_py_func(
+                    input_type, weight_type, bias_type, output_type, name="linear_op"
+                )
+                def linear_op(x, w, b, out):
+                    get_linear(x, w, b, out)
+
+        return module
+
+    ctx = ir.Context()
+    ir_type = to_ir_type("f32", ctx)
+    module = generate_module(ctx, ir_type)
+    bufferize_module(ctx, module)
+    schedule = create_schedule(ctx)
+    apply_schedule(module, schedule)
+    pm = create_pass_pipeline(ctx)
+    pm.run(module.operation)
+
+    eng = ExecutionEngine(module, opt_level=2)
+    func_ptr = eng.lookup("linear_op")
+    torch_dtype = lh_utils.mlir_type_to_torch_dtype(ir_type)
+    x = torch.randn(4, 16, dtype=torch_dtype)
+    w = torch.randn(32, 16, dtype=torch_dtype)
+    b = torch.randn(32, dtype=torch_dtype)
+    out_ref = references[get_linear](x, w, b)
+    out = torch.empty_like(out_ref)
+    out.zero_()
+    x_mem = get_ranked_memref_descriptor(x.numpy())
+    w_mem = get_ranked_memref_descriptor(w.numpy())
+    b_mem = get_ranked_memref_descriptor(b.numpy())
+    out_mem = get_ranked_memref_descriptor(out.numpy())
+    args = lh_utils.memrefs_to_packed_args([x_mem, w_mem, b_mem, out_mem])
+    func_ptr(args)
+    assert torch.allclose(out, out_ref, rtol=0.01, atol=0.01, equal_nan=True)
+
+
+def test_polar():
+    def generate_module(ctx, elty):
+        with ctx, ir.Location.unknown():
+            module = ir.Module.create()
+            with ir.InsertionPoint(module.body):
+                tensor_type = ir.RankedTensorType.get((4, 16), elty)
+                complex_tensor_type = ir.RankedTensorType.get(
+                    (4, 16), ir.ComplexType.get(elty)
+                )
+
+                @func.FuncOp.from_py_func(
+                    tensor_type, tensor_type, complex_tensor_type, name="polar_op"
+                )
+                def polar_op(magnitude, angle, out):
+                    get_polar(magnitude, angle, out)
+
+        return module
+
+    ctx = ir.Context()
+    ir_type = to_ir_type("f32", ctx)
+    module = generate_module(ctx, ir_type)
+    bufferize_module(ctx, module)
+    schedule = create_schedule(ctx)
+    apply_schedule(module, schedule)
+    pm = create_pass_pipeline(ctx)
+    pm.run(module.operation)
+
+    eng = ExecutionEngine(module, opt_level=2)
+    func_ptr = eng.lookup("polar_op")
+    torch_dtype = lh_utils.mlir_type_to_torch_dtype(ir_type)
+    magnitude = torch.randn(4, 16, dtype=torch_dtype)
+    angle = torch.randn(4, 16, dtype=torch_dtype)
+    out_ref = references[get_polar](magnitude, angle)
+    out = torch.empty_like(out_ref)
+    magnitude_mem = get_ranked_memref_descriptor(magnitude.numpy())
+    angle_mem = get_ranked_memref_descriptor(angle.numpy())
+    out_mem = get_ranked_memref_descriptor(out.numpy())
+    args = lh_utils.memrefs_to_packed_args([magnitude_mem, angle_mem, out_mem])
+    func_ptr(args)
+    assert torch.allclose(out, out_ref, rtol=0.01, atol=0.01, equal_nan=True)
+
+
+def test_repeat_kv():
+    def generate_module(ctx, elty, n_rep):
+        with ctx, ir.Location.unknown():
+            module = ir.Module.create()
+            with ir.InsertionPoint(module.body):
+                x_type = ir.RankedTensorType.get((2, 512, 8, 64), elty)
+                out_type = ir.RankedTensorType.get((2, 512, 8 * n_rep, 64), elty)
+
+                @func.FuncOp.from_py_func(x_type, out_type, name="repeat_kv_op")
+                def repeat_kv_op(x, out):
+                    get_repeat_kv(x, n_rep, out)
+
+        return module
+
+    n_rep = 4
+    ctx = ir.Context()
+    ir_type = to_ir_type("f32", ctx)
+    module = generate_module(ctx, ir_type, n_rep)
+    bufferize_module(ctx, module)
+    schedule = create_schedule(ctx)
+    apply_schedule(module, schedule)
+    pm = create_pass_pipeline(ctx)
+    pm.run(module.operation)
+
+    eng = ExecutionEngine(module, opt_level=2)
+    func_ptr = eng.lookup("repeat_kv_op")
+
+    torch_dtype = lh_utils.mlir_type_to_torch_dtype(ir_type)
+    x = torch.randn(2, 512, 8, 64, dtype=torch_dtype)
+    out_ref = references[get_repeat_kv](x, n_rep)
+    out = torch.empty_like(out_ref)
+
+    x_mem = get_ranked_memref_descriptor(x.numpy())
+    out_mem = get_ranked_memref_descriptor(out.numpy())
+    args = lh_utils.memrefs_to_packed_args([x_mem, out_mem])
+    func_ptr(args)
+
+    assert torch.allclose(out, out_ref, rtol=0.01, atol=0.01, equal_nan=True)
+
+
+def test_reshape_for_broadcast():
+    def generate_module(ctx, elty):
+        with ctx, ir.Location.unknown():
+            module = ir.Module.create()
+            with ir.InsertionPoint(module.body):
+                freqs_cis_type = ir.RankedTensorType.get((512, 64), elty)
+                x_type = ir.RankedTensorType.get((2, 512, 32, 128), elty)
+                out_type = ir.RankedTensorType.get((1, 512, 1, 64), elty)
+
+                @func.FuncOp.from_py_func(
+                    freqs_cis_type, x_type, out_type, name="reshape_for_broadcast"
+                )
+                def reshape_for_broadcast_op(freqs_cis, x, out):
+                    get_reshape_for_broadcast(freqs_cis, x, out)
+
+        return module
+
+    ctx = ir.Context()
+    ir_type = to_ir_type("f32", ctx)
+    module = generate_module(ctx, ir_type)
+    bufferize_module(ctx, module)
+    schedule = create_schedule(ctx)
+    apply_schedule(module, schedule)
+    pm = create_pass_pipeline(ctx)
+    pm.run(module.operation)
+
+    eng = ExecutionEngine(module, opt_level=2)
+    func_ptr = eng.lookup("reshape_for_broadcast")
+
+    torch_dtype = lh_utils.mlir_type_to_torch_dtype(ir_type)
+    freqs_cis = torch.randn(512, 64, dtype=torch_dtype)
+    x = torch.randn(2, 512, 32, 128, dtype=torch_dtype)
+    # Convert x to complex view as expected by reshape_for_broadcast
+    x_complex = torch.view_as_complex(x.reshape(*x.shape[:-1], -1, 2))
+    out_ref = reshape_for_broadcast(freqs_cis, x_complex)
+    out = torch.empty_like(out_ref)
+
+    freqs_cis_mem = get_ranked_memref_descriptor(freqs_cis.numpy())
+    x_mem = get_ranked_memref_descriptor(x.numpy())
+    out_mem = get_ranked_memref_descriptor(out.numpy())
+    args = lh_utils.memrefs_to_packed_args([freqs_cis_mem, x_mem, out_mem])
+    func_ptr(args)
+
+    assert torch.allclose(out, out_ref, rtol=0.01, atol=0.01, equal_nan=True)
+
+
+def test_view_as_complex():
+    def generate_module(ctx, elty):
+        with ctx, ir.Location.unknown():
+            module = ir.Module.create()
+            with ir.InsertionPoint(module.body):
+                # Input should be reshaped to have last dim = 2
+                x_type = ir.RankedTensorType.get((2, 512, 32, 64, 2), elty)
+                out_type = ir.RankedTensorType.get(
+                    (2, 512, 32, 64), ir.ComplexType.get(elty)
+                )
+
+                @func.FuncOp.from_py_func(x_type, out_type, name="view_as_complex_op")
+                def view_as_complex_op(x, out):
+                    get_view_as_complex(x, out)
+
+        return module
+
+    ctx = ir.Context()
+    ir_type = to_ir_type("f32", ctx)
+    module = generate_module(ctx, ir_type)
+    bufferize_module(ctx, module)
+    schedule = create_schedule(ctx)
+    apply_schedule(module, schedule)
+    pm = create_pass_pipeline(ctx)
+    pm.run(module.operation)
+
+    eng = ExecutionEngine(module, opt_level=2)
+    func_ptr = eng.lookup("view_as_complex_op")
+
+    torch_dtype = lh_utils.mlir_type_to_torch_dtype(ir_type)
+    x = torch.randn(2, 512, 32, 128, dtype=torch_dtype)
+    # Reshape to (2, 512, 32, 64, 2) before passing to the function
+    x_reshaped = x.reshape(2, 512, 32, 64, 2)
+    out_ref = torch.view_as_complex(x_reshaped)
+    out = torch.empty_like(out_ref)
+
+    x_mem = get_ranked_memref_descriptor(x_reshaped.numpy())
+    out_mem = get_ranked_memref_descriptor(out.numpy())
+    args = lh_utils.memrefs_to_packed_args([x_mem, out_mem])
+    func_ptr(args)
+
+    assert torch.allclose(out, out_ref, rtol=0.01, atol=0.01, equal_nan=True)
+
+
+def test_view_as_real():
+    def generate_module(ctx, elty):
+        with ctx, ir.Location.unknown():
+            module = ir.Module.create()
+            with ir.InsertionPoint(module.body):
+                x_type = ir.RankedTensorType.get(
+                    (2, 512, 32, 64), ir.ComplexType.get(elty)
+                )
+                out_type = ir.RankedTensorType.get((2, 512, 32, 64, 2), elty)
+
+                @func.FuncOp.from_py_func(x_type, out_type, name="as_real_op")
+                def as_real_op(x, out):
+                    get_view_as_real(x, out)
+
+        return module
+
+    ctx = ir.Context()
+    ir_type = to_ir_type("f32", ctx)
+    module = generate_module(ctx, ir_type)
+    bufferize_module(ctx, module)
+    schedule = create_schedule(ctx)
+    apply_schedule(module, schedule)
+    pm = create_pass_pipeline(ctx)
+    pm.run(module.operation)
+
+    eng = ExecutionEngine(module, opt_level=2)
+    func_ptr = eng.lookup("as_real_op")
+
+    torch_dtype = lh_utils.mlir_type_to_torch_dtype(ir_type)
+    x = torch.randn(2, 512, 32, 64, 2, dtype=torch_dtype)
+    x_complex = torch.view_as_complex(x)
+    out_ref = torch.view_as_real(x_complex)
+    out = torch.empty_like(out_ref)
+
+    x_mem = get_ranked_memref_descriptor(x_complex.numpy())
+    out_mem = get_ranked_memref_descriptor(out.numpy())
+    args = lh_utils.memrefs_to_packed_args([x_mem, out_mem])
+    func_ptr(args)
+
+    assert torch.allclose(out, out_ref, rtol=0.01, atol=0.01, equal_nan=True)
+
+
 @pytest.mark.parametrize(
     "batch_size,seq_len,n_heads,head_dim,n_kv_heads,elem_type",
     [(2, 512, 32, 128, 8, "f32")],
@@ -586,66 +1243,3 @@ def test_rotary_emb(batch_size, seq_len, n_heads, head_dim, n_kv_heads, elem_typ
 
     assert torch.allclose(out1, xq_out, rtol=0.01, atol=0.01, equal_nan=True)
     assert torch.allclose(out2, xk_out, rtol=0.01, atol=0.01, equal_nan=True)
-
-
-def test_to_complex():
-    def generate_module(ctx, elty):
-        with ctx, ir.Location.unknown():
-            module = ir.Module.create()
-            with ir.InsertionPoint(module.body):
-                a_type = ir.RankedTensorType.get((2, 2), elty)
-                b_type = ir.RankedTensorType.get((2, 2), elty)
-                out_type = ir.RankedTensorType.get((2, 2), elty)
-
-                @func.FuncOp.from_py_func(
-                    a_type, b_type, out_type, name="mul_as_complex"
-                )
-                def mul_as_complex(a, b, out):
-                    # Convert both inputs to complex
-                    # (d0, d1) -> (d0, d1//2) complex<f32>
-                    # multiply with linalg.mul
-                    # Convert back to real
-                    # (d0, d1//2) complex -> (d0, d1)
-
-                    complex_shape = list(a.type.shape)
-                    complex_shape[-1] = complex_shape[-1] // 2
-                    a_complex_uninit = ir.RankedTensorType.get(
-                        complex_shape, complex.ComplexType.get(elty)
-                    )
-                    b_complex_uninit = ir.RankedTensorType.get(
-                        complex_shape, complex.ComplexType.get(elty)
-                    )
-                    mul_out = ir.RankedTensorType.get(
-                        complex_shape, complex.ComplexType.get(elty)
-                    )
-                    mul = linalg.mul(
-                        a_complex_uninit, b_complex_uninit, outs=(mul_out,)
-                    )
-
-        return module
-
-    a = torch.randn(2, 2, dtype=torch.float32)
-    b = torch.randn(2, 2, dtype=torch.float32)
-    x_complex = torch.view_as_complex(a)
-    y_complex = torch.view_as_complex(b)
-    res = torch.view_as_real(x_complex * y_complex).flatten(1)
-
-    ctx = ir.Context()
-    ir_type = to_ir_type("f32", ctx)
-    module = generate_module(ctx, ir_type)
-    bufferize_module(ctx, module)
-    schedule = create_schedule(ctx)
-    apply_schedule(module, schedule)
-    pm = create_pass_pipeline(ctx)
-    pm.run(module.operation)
-
-    eng = ExecutionEngine(module, opt_level=2)
-    func_ptr = eng.lookup("mul_as_complex")
-    out = torch.empty_like(a)
-    a_mem = get_ranked_memref_descriptor(a.numpy())
-    b_mem = get_ranked_memref_descriptor(b.numpy())
-    out_mem = get_ranked_memref_descriptor(out.numpy())
-    args = lh_utils.memrefs_to_packed_args([a_mem, b_mem, out_mem])
-    func_ptr(args)
-
-    assert torch.allclose(out, res, rtol=0.01, atol=0.01, equal_nan=True)
