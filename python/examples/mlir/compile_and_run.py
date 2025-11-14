@@ -1,5 +1,5 @@
 import torch
-import os
+import argparse
 
 from mlir import ir
 from mlir.dialects import transform
@@ -7,9 +7,6 @@ from mlir.dialects.transform import structured
 from mlir.dialects.transform import interpreter
 from mlir.execution_engine import ExecutionEngine
 from mlir.passmanager import PassManager
-from mlir.runtime.np_to_memref import (
-    get_ranked_memref_descriptor,
-)
 
 from lighthouse import utils as lh_utils
 
@@ -50,25 +47,26 @@ def create_schedule(ctx: ir.Context) -> ir.Module:
             ir.UnitAttr.get()
         )
 
+        # For simplicity, use generic matchers without requiring specific types.
+        anytype = transform.any_op_t()
+
         # Create entry point transformation sequence.
         with ir.InsertionPoint(schedule.body):
             named_seq = transform.NamedSequenceOp(
-                "__transform_main",
-                [transform.AnyOpType.get()],
-                [],
+                sym_name="__transform_main",
+                input_types=[anytype],
+                result_types=[],
                 arg_attrs=[{"transform.readonly": ir.UnitAttr.get()}],
             )
 
         # Create the schedule.
         with ir.InsertionPoint(named_seq.body):
-            # For simplicity, use generic transform matchers.
-            anytype = transform.AnyOpType.get()
-
             # Find the kernel's function op.
             func = structured.MatchOp.match_op_names(
                 named_seq.bodyTarget, ["func.func"]
             )
-            # Use C interface wrappers - required to make function executable after jitting.
+            # Use C interface wrappers - required to make function executable
+            # after jitting.
             func = transform.apply_registered_pass(
                 anytype, func, "llvm-request-c-wrappers"
             )
@@ -82,12 +80,12 @@ def create_schedule(ctx: ir.Context) -> ir.Module:
                 anytype, mod, "convert-linalg-to-loops"
             )
             # Cleanup.
-            transform.ApplyCommonSubexpressionEliminationOp(mod)
+            transform.apply_cse(mod)
             with ir.InsertionPoint(transform.ApplyPatternsOp(mod).patterns):
-                transform.ApplyCanonicalizationPatternsOp()
+                transform.apply_patterns_canonicalization()
 
             # Terminate the schedule.
-            transform.YieldOp()
+            transform.yield_([])
     return schedule
 
 
@@ -129,7 +127,7 @@ def create_pass_pipeline(ctx: ir.Context) -> PassManager:
 
 
 # The example's entry point.
-def main():
+def main(args):
     ### Baseline computation ###
     # Create inputs.
     a = torch.randn(16, 32, dtype=torch.float32)
@@ -152,28 +150,37 @@ def main():
     pm.run(kernel.operation)
 
     ### Compilation ###
-    # External shared libraries, containing MLIR runner utilities, are are generally
-    # required to execute the compiled module.
+    # Parse additional libraries if present.
     #
-    # Get paths to MLIR runner shared libraries through an environment variable.
-    mlir_libs = os.environ.get("LIGHTHOUSE_SHARED_LIBS", default="").split(":")
+    # External shared libraries, runtime utilities, might be needed to execute
+    # the compiled module.
+    # The execution engine requires full paths to the libraries.
+    mlir_libs = []
+    if args.shared_libs:
+        mlir_libs += args.shared_libs.split(",")
 
     # JIT the kernel.
     eng = ExecutionEngine(kernel, opt_level=2, shared_libs=mlir_libs)
+
+    # Initialize the JIT engine.
+    #
+    # The deferred initialization executes global constructors that might
+    # have been created by the module during engine creation (for example,
+    # when `gpu.module` is present) or registered afterwards.
+    #
+    # Initialization is not strictly necessary in this case.
+    # However, it is a good practice to perform it regardless.
+    eng.initialize()
+
     # Get the kernel function.
     add_func = eng.lookup("add")
 
     ### Execution ###
-    # Create corresponding memref descriptors containing input data.
-    a_mem = get_ranked_memref_descriptor(a.numpy())
-    b_mem = get_ranked_memref_descriptor(b.numpy())
-
     # Create an empty buffer to hold results.
     out = torch.empty_like(out_ref)
-    out_mem = get_ranked_memref_descriptor(out.numpy())
 
     # Execute the kernel.
-    args = lh_utils.memrefs_to_packed_args([a_mem, b_mem, out_mem])
+    args = lh_utils.torch_to_packed_args([a, b, out])
     add_func(args)
 
     ### Verification ###
@@ -185,4 +192,21 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser()
+
+    # External shared libraries, runtime utilities, might be needed to
+    # execute the compiled module.
+    # For example, MLIR runner utils libraries such as:
+    #   - libmlir_runner_utils.so
+    #   - libmlir_c_runner_utils.so
+    #
+    # Full paths to the libraries should be provided.
+    # For example:
+    #   --shared-libs=$LLVM_BUILD/lib/lib1.so,$LLVM_BUILD/lib/lib2.so
+    parser.add_argument(
+        "--shared-libs",
+        type=str,
+        help="Comma-separated list of libraries to link dynamically",
+    )
+    args = parser.parse_args()
+    main(args)

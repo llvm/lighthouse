@@ -21,36 +21,5 @@ def setup_mlir_environment():
 
     yield
 
-    # Cleanup after all tests (if needed)
+    # todo: cleanup
     pass
-
-
-@pytest.fixture
-def mlir_context():
-    """
-    Provide a fresh MLIR context for each test.
-    """
-    from mlir import ir
-
-    return ir.Context()
-
-
-@pytest.fixture
-def sample_shapes():
-    """
-    Provide common tensor shapes for testing.
-    """
-    return [
-        (4, 16),
-        (8, 8),
-        (16, 32),
-        (1, 64),
-    ]
-
-
-@pytest.fixture
-def sample_types():
-    """
-    Provide common element types for testing.
-    """
-    return ["f32", "f64"]
