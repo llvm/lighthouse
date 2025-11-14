@@ -34,3 +34,7 @@ jobs:
       - name: Run apply basic schedule to basic payload
         run: |-
           uv run python/examples/schedule/transform_a_payload_according_to_a_schedule.py
+
+      - name: Run MemRef Management
+        run: |-
+          uv run python/examples/mlir/memref_management.py
