@@ -326,16 +326,19 @@ def get_matmul(a: ir.Value, b: ir.Value, out: ir.Value) -> ir.Value:
 
 # torch.nn.functional.linear
 def get_linear(a: ir.Value, w: ir.Value, b: ir.Value, out: ir.Value) -> ir.Value:
+    elty = out.type.element_type
+    zero = arith.constant(elty, 0.0)
+    out_zeroed = linalg.fill(zero, outs=[out])
+
     # a[i, k] * w[j, k] -> out[i, j]
     i, j, k = [ir.AffineDimExpr.get(d) for d in range(3)]
     a_map = affine_map(3, [i, k])  # (batch, in_feat)
-    w_map = affine_map(3, [j, k])  # (out_feat, in_feat) - note: we use j for first dim
+    w_map = affine_map(3, [j, k])  # (out_feat, in_feat)
     out_map = affine_map(3, [i, j])  # (batch, out_feat)
 
-    # First compute the matmul into out (which will accumulate)
     @linalg.generic(
         [a, w],
-        [out],
+        [out_zeroed],
         [a_map, w_map, out_map],
         [parallel, parallel, reduction],
     )
@@ -343,7 +346,6 @@ def get_linear(a: ir.Value, w: ir.Value, b: ir.Value, out: ir.Value) -> ir.Value
         prod = arith.MulFOp(a_elem, w_elem).result
         return arith.AddFOp(out_elem, prod).result
 
-    # Step 2: Add bias using broadcasting
     # b[j] -> out[i, j]
     i2, j2 = [ir.AffineDimExpr.get(d) for d in range(2)]
     b_map = affine_map(2, [j2])  # (out_feat,)
@@ -351,7 +353,7 @@ def get_linear(a: ir.Value, w: ir.Value, b: ir.Value, out: ir.Value) -> ir.Value
 
     @linalg.generic(
         [matmul_op, b],
-        [out],
+        [out_zeroed],
         [out_map2, b_map, out_map2],
         [parallel, parallel],
     )
@@ -1243,3 +1245,93 @@ def test_rotary_emb(batch_size, seq_len, n_heads, head_dim, n_kv_heads, elem_typ
 
     assert torch.allclose(out1, xq_out, rtol=0.01, atol=0.01, equal_nan=True)
     assert torch.allclose(out2, xk_out, rtol=0.01, atol=0.01, equal_nan=True)
+
+
+def test_feed_forward():
+    def generate_module(ctx, elty):
+        with ctx, ir.Location.unknown():
+            module = ir.Module.create()
+            with ir.InsertionPoint(module.body):
+                input_type = ir.RankedTensorType.get((4, 16), elty)
+                hidden_type = ir.RankedTensorType.get((4, 64), elty)
+                output_type = ir.RankedTensorType.get((4, 16), elty)
+                weight1_type = ir.RankedTensorType.get((64, 16), elty)
+                bias1_type = ir.RankedTensorType.get((64,), elty)
+                weight2_type = ir.RankedTensorType.get((16, 64), elty)
+                bias2_type = ir.RankedTensorType.get((16,), elty)
+                weight3_type = ir.RankedTensorType.get((64, 16), elty)
+                bias3_type = ir.RankedTensorType.get((64,), elty)
+
+                @func.FuncOp.from_py_func(
+                    input_type,
+                    weight1_type,
+                    bias1_type,
+                    weight2_type,
+                    bias2_type,
+                    weight3_type,
+                    bias3_type,
+                    output_type,
+                    name="feed_forward",
+                )
+                def feed_forward(x, w1, b1, w2, b2, w3, b3, out):
+                    # Compute hidden = linear(x, w1, b1)
+                    hidden_uninit = tensor.EmptyOp(hidden_type.shape, elty).result
+                    hidden = get_linear(x, w1, b1, hidden_uninit)
+
+                    # Compute hidden_silu = silu(hidden)
+                    hidden_silu_uninit = tensor.EmptyOp(hidden_type.shape, elty).result
+                    hidden_silu = get_silu(hidden, hidden_silu_uninit)
+
+                    # Compute gate = linear(x, w3, b3)
+                    gate_uninit = tensor.EmptyOp(hidden_type.shape, elty).result
+                    gate = get_linear(x, w3, b3, gate_uninit)
+
+                    # Compute activated = hidden_silu * gate
+                    activated_uninit = tensor.EmptyOp(hidden_type.shape, elty).result
+                    activated = get_mul(hidden_silu, gate, activated_uninit)
+
+                    # Compute out = linear(activated, w2, b2)
+                    get_linear(activated, w2, b2, out)
+
+        return module
+
+    ctx = ir.Context()
+    ir_type = to_ir_type("f32", ctx)
+    module = generate_module(ctx, ir_type)
+    bufferize_module(ctx, module)
+    schedule = create_schedule(ctx)
+    apply_schedule(module, schedule)
+    pm = create_pass_pipeline(ctx)
+    pm.run(module.operation)
+
+    eng = ExecutionEngine(module, opt_level=2)
+    func_ptr = eng.lookup("feed_forward")
+
+    torch_dtype = lh_utils.mlir_type_to_torch_dtype(ir_type)
+    x = torch.randn(4, 16, dtype=torch_dtype)
+    w1 = torch.randn(64, 16, dtype=torch_dtype)
+    b1 = torch.randn(64, dtype=torch_dtype)
+    w2 = torch.randn(16, 64, dtype=torch_dtype)
+    b2 = torch.randn(16, dtype=torch_dtype)
+    w3 = torch.randn(64, 16, dtype=torch_dtype)
+    b3 = torch.randn(64, dtype=torch_dtype)
+
+    hidden_ref = torch.nn.functional.linear(x, w1, b1)
+    activated_ref = torch.nn.functional.silu(hidden_ref)
+    activated_ref *= torch.nn.functional.linear(x, w3, b3)
+    out_ref = torch.nn.functional.linear(activated_ref, w2, b2)
+    out = torch.empty_like(out_ref)
+    out.zero_()
+    x_mem = get_ranked_memref_descriptor(x.numpy())
+    w1_mem = get_ranked_memref_descriptor(w1.numpy())
+    b1_mem = get_ranked_memref_descriptor(b1.numpy())
+    w2_mem = get_ranked_memref_descriptor(w2.numpy())
+    b2_mem = get_ranked_memref_descriptor(b2.numpy())
+    w3_mem = get_ranked_memref_descriptor(w3.numpy())
+    b3_mem = get_ranked_memref_descriptor(b3.numpy())
+    out_mem = get_ranked_memref_descriptor(out.numpy())
+    args = lh_utils.memrefs_to_packed_args(
+        [x_mem, w1_mem, b1_mem, w2_mem, b2_mem, w3_mem, b3_mem, out_mem]
+    )
+    func_ptr(args)
+    assert torch.allclose(out, out_ref, rtol=0.01, atol=0.01, equal_nan=True)
