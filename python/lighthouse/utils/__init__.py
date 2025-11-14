@@ -1,5 +1,7 @@
 """A collection of utility tools"""
 
+from .memref_manager import MemRefManager
+
 from .runtime_args import (
     get_packed_arg,
     memref_to_ctype,
