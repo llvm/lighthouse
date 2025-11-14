@@ -4,6 +4,7 @@ dynamic = ["version"]
 requires-python = ">=3.10,<3.13"  # Bounds are due to torch-mlir's packaging
 dependencies = [
     "mlir-python-bindings==20251105+4c2a9c4ba",
+    "pytest>=8.2.0",
 ]
 
 [project.optional-dependencies]
@@ -73,3 +74,21 @@ include = ["lighthouse*"]
 
 [tool.setuptools.dynamic]
 version = {attr = "lighthouse.__version__"}
+
+[tool.pytest.ini_options]
+# Pytest configuration
+testpaths = ["python/tests", "ingress/mlir-gen/mlir_gen/test"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = [
+    "-v",
+    "--tb=short",
+    "--strict-markers",
+]
+markers = [
+    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+    "integration: marks tests as integration tests",
+]
+# Set PYTHONPATH to include project directories
+pythonpath = ["python", "ingress/mlir-gen"]
