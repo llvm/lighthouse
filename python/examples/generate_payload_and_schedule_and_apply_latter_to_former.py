@@ -5,8 +5,6 @@ from mlir import ir
 from mlir.dialects import arith, func, linalg, tensor, transform
 from mlir.dialects.transform import structured
 
-from lighthouse import transform as lh_transform
-
 
 def example_payload() -> ir.Module:
     payload = ir.Module.create()
@@ -35,7 +33,7 @@ def example_schedule() -> ir.Module:
     schedule = ir.Module.create()
     schedule.operation.attributes["transform.with_named_sequence"] = ir.UnitAttr.get()
     with ir.InsertionPoint(schedule.body):
-        named_seq = transform.NamedSequenceOp(  # TODO: fix snake_case wrapper upstream
+        named_seq = transform.named_sequence(
             sym_name="__transform_main",
             input_types=[transform.any_op_t()],
             result_types=[],
@@ -46,9 +44,7 @@ def example_schedule() -> ir.Module:
             func = structured.MatchOp.match_op_names(
                 named_seq.bodyTarget, ["func.func"]
             )  # TODO: fix syntax upstream
-            with ir.InsertionPoint(
-                transform.apply_patterns(func).patterns.blocks.append()
-            ):  # TODO: fix snake_case wrapper upstream
+            with ir.InsertionPoint(transform.apply_patterns(func).patterns):
                 ir.Operation.create(
                     "transform.apply_patterns.linalg.fold_add_into_dest"
                 )  # TODO: expose dedicated builder upstream
@@ -64,16 +60,17 @@ with ir.Context(), ir.Location.unknown():
     print("NOTE: example schedule module:")
     print(schedule_module)
 
-    print("NOTE: output of applying schedule to payload directly within Python process:")
+    print(
+        "NOTE: output of applying schedule to payload directly within Python process:"
+    )
     schedule = schedule_module.body.operations[0]
-    lh_transform.apply(schedule, payload_module)
+    schedule.apply(payload_module)
     print(payload_module)
 
-    with tempfile.NamedTemporaryFile(
-        "w", prefix="payload_"
-    ) as payload_file, tempfile.NamedTemporaryFile(
-        "w", prefix="schedule_"
-    ) as schedule_file:
+    with (
+        tempfile.NamedTemporaryFile("w", prefix="payload_") as payload_file,
+        tempfile.NamedTemporaryFile("w", prefix="schedule_") as schedule_file,
+    ):
         print(payload_module, file=payload_file, flush=True)
         print("NOTE: Have dumped payload to temp file:", payload_file.name)
         print(schedule_module, file=schedule_file, flush=True)
@@ -82,12 +79,14 @@ with ir.Context(), ir.Location.unknown():
         cmdline = [
             "python",
             "-m",
-            "lighthouse.transform",
+            "lighthouse.schedule",
             schedule_file.name,
             payload_file.name,
         ]
-        print("NOTE: output of applying schedule to payload from commandline:", *cmdline)
-        subprocess.run(cmdline)
+        print(
+            "NOTE: output of applying schedule to payload from commandline:", *cmdline
+        )
+        print(subprocess.run(cmdline, capture_output=True).stdout.decode())
         print(
             f"NOTE: cleaning-up temp files: {payload_file.name}, {schedule_file.name}"
         )
