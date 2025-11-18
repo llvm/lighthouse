@@ -1,4 +1,9 @@
-# RUN: %PYTHON %s | FileCheck %s --check-prefixes=CHECK
+# RUN: %PYTHON %s | FileCheck %s
+
+# A basic example of generating a payload, a schedule, and applying the latter
+# to the former. Shows how to do it from Python and from the cmd given the
+# payload and schedule are .mlir files. Run this file to see the concrete
+# schedule IR, pre-transform payload IR and transformed payload IR.
 
 import tempfile
 import subprocess
@@ -10,34 +15,39 @@ from mlir.dialects.transform import structured
 
 
 def example_payload() -> Module:
+    """Example payload where the results of two matmuls are summed together.
+
+    Can be re-written so that the second matmul accumulates top of the the result of the first.
+    """
+
     print("NOTE: example payload module:")
     payload = Module.create()
     with InsertionPoint(payload.body):
         matrixType = RankedTensorType.get([16, 16], F32Type.get())
 
-        # NB: Do the CHECKing on the transformed output
-        # CHECK-LABEL: output of applying schedule to payload
+        # NB: Do the CHECKing on the transformed output:
+        # CHECK-LABEL: result of applying schedule to payload
         # CHECK: func.func @fold_add_on_two_matmuls
         # CHECK-SAME:      (%[[MATRIX_A:.*]]: {{.*}}, %[[MATRIX_B:.*]]: {{.*}})
         @func.func(matrixType, matrixType)
         def fold_add_on_two_matmuls(matrixA, matrixB):
             splat_float = FloatAttr.get(F32Type.get(), 1.111111)
             splat_attr = DenseElementsAttr.get_splat(matrixType, splat_float)
-            # CHECK: %[[WEIGHTS:.*]] = arith.constant splat
+            # CHECK: %[[WEIGHTS:.*]] = arith.constant dense<1.11
             weights = arith.constant(matrixType, splat_attr)
             c0 = arith.constant(F32Type.get(), 0.0)
             empty = tensor.empty(matrixType.shape, matrixType.element_type)
             # CHECK: %[[ZERO_INIT:.*]] = linalg.fill
             zero_init = linalg.fill(c0, outs=[empty])
-            # CHECK: %[[A_X_WEIGHTS]] = linalg.matmul ins(%[[MATRIX_A]], %[[WEIGHTS]]: {{.*}}) outs(%[[ZERO_INIT]]
+            # CHECK: %[[A_X_WEIGHTS:.*]] = linalg.matmul ins(%[[MATRIX_A]], %[[WEIGHTS]]{{.*}}) outs(%[[ZERO_INIT]]
             A_x_weights = linalg.matmul(matrixA, weights, outs=[zero_init])
             empty2 = tensor.empty(matrixType.shape, matrixType.element_type)
             zero_init2 = linalg.fill(c0, outs=[empty2])
-            # CHECK: %[[RES]] = linalg.matmul ins(%[[MATRIX_B]], %[[WEIGHTS]]: {{.*}}) outs(%[[A_X_WEIGHTS]]
+            # CHECK: %[[RES:.*]] = linalg.matmul ins(%[[MATRIX_B]], %[[WEIGHTS]]{{.*}}) outs(%[[A_X_WEIGHTS]]
             B_x_weights = linalg.matmul(matrixB, weights, outs=[zero_init2])
             # CHECK-NOT: linalg.add
             added = linalg.add(A_x_weights, B_x_weights, outs=[empty])
-            # CHECK: func.yield %[[RES]]
+            # CHECK: return %[[RES]]
             return added
 
     print(payload)
@@ -45,14 +55,17 @@ def example_payload() -> Module:
 
 
 def example_schedule() -> Module:
+    """Most basic schedule which doesn't just wrap a pass -- wraps a single rewrite pattern."""
     print("NOTE: example schedule module:")
     schedule_module = Module.create()
-    schedule_module.operation.attributes["transform.with_named_sequence"] = UnitAttr.get()
+    schedule_module.operation.attributes["transform.with_named_sequence"] = (
+        UnitAttr.get()
+    )
     with InsertionPoint(schedule_module.body):
-        # CHECK-LABEL: transform.named_sequence @__transform_main
         named_seq = transform.named_sequence(
-            sym_name="__transform_main",
+            "__transform_main",
             input_types=[transform.any_op_t()],
+            result_types=[],
             arg_attrs=[{"transform.readonly": UnitAttr.get()}],
         )
 
@@ -71,22 +84,22 @@ def example_schedule() -> Module:
 
 
 with Context(), Location.unknown():
-    payload_module = example_payload()
+    payload = example_payload()
     schedule_module = example_schedule()
-    schedule = schedule_module.body.operations[0]
+    schedule: transform.NamedSequenceOp = schedule_module.body.operations[0]
 
     print(
-        "NOTE: output of applying schedule to payload directly within Python process:"
+        "NOTE: result of applying schedule to payload directly within Python process:"
     )
-    schedule.apply(payload_module)
-    print(payload_module)
+    schedule.apply(payload)
+    print(payload)
 
-    # Demonstrate apply a schedule from file to a payload from file
+    # Demonstrate applying a schedule from file to a payload from file
     with (
         tempfile.NamedTemporaryFile("w", prefix="payload_") as payload_file,
         tempfile.NamedTemporaryFile("w", prefix="schedule_") as schedule_file,
     ):
-        print(payload_module, file=payload_file, flush=True)
+        print(payload, file=payload_file, flush=True)
         print("NOTE: Have dumped payload to temp file:", payload_file.name)
         print(schedule_module, file=schedule_file, flush=True)
         print("NOTE: Have dumped schedule to temp file:", schedule_file.name)
