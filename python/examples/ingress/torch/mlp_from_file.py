@@ -1,3 +1,5 @@
+# RUN: %PYTHON %s
+
 """
 Example demonstrating how to load a PyTorch model to MLIR using Lighthouse
 without initializing the model class on the user's side.

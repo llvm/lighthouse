@@ -1,3 +1,5 @@
+# RUN: %PYTHON %s
+
 import torch
 import argparse
 

@@ -1,3 +1,5 @@
+# RUN: %PYTHON %s | FileCheck %s
+
 # Simply demonstrates applying a schedule to a payload.
 # To do so generates a basic payload and a basic schedule, purely as an example.
 
@@ -24,16 +26,23 @@ def example_payload() -> Module:
     with InsertionPoint(payload.body):
         matrixType = RankedTensorType.get([16, 16], F32Type.get())
 
+        # NB: Do the CHECKing on the transformed output:
+        # CHECK-LABEL: result of applying schedule to payload
+        # CHECK: func.func @fold_add_on_two_matmuls
+        # CHECK-SAME:      (%[[MATRIX_A:.*]]: {{.*}}, %[[MATRIX_B:.*]]: {{.*}}, %[[WEIGHTS:.*]]: {{.*}})
         @func.func(matrixType, matrixType, matrixType)
         def fold_add_on_two_matmuls(matrixA, matrixB, weights):
             empty = tensor.empty(matrixType.shape, matrixType.element_type)
             c0 = arith.constant(F32Type.get(), 0.0)
+            # CHECK: %[[ZERO_INIT:.*]] = linalg.fill
             zero_init = linalg.fill(c0, outs=[empty])
+            # CHECK: %[[A_X_WEIGHTS:.*]] = linalg.matmul ins(%[[MATRIX_A]], %[[WEIGHTS]]{{.*}}) outs(%[[ZERO_INIT]]
             A_x_weights = linalg.matmul(matrixA, weights, outs=[zero_init])
-            empty2 = tensor.empty(matrixType.shape, matrixType.element_type)
-            zero_init2 = linalg.fill(c0, outs=[empty2])
-            B_x_weights = linalg.matmul(matrixB, weights, outs=[zero_init2])
+            # CHECK: %[[RES:.*]] = linalg.matmul ins(%[[MATRIX_B]], %[[WEIGHTS]]{{.*}}) outs(%[[A_X_WEIGHTS]]
+            B_x_weights = linalg.matmul(matrixB, weights, outs=[zero_init])
+            # CHECK-NOT: linalg.add
             added = linalg.add(A_x_weights, B_x_weights, outs=[empty])
+            # CHECK: return %[[RES]]
             return added
 
     print(payload)
