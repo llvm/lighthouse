@@ -75,7 +75,6 @@ with Context(), Location.unknown():
     schedule_module = example_schedule()
     # Actual schedule is defined by the contained transfomr.named_sequence:
     schedule: transform.NamedSequenceOp = schedule_module.body.operations[0]
-    schedule_module.body
 
     schedule.apply(payload)  # The actual transformation happens here.
 
