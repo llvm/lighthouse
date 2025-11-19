@@ -4,7 +4,6 @@ import argparse
 from mlir import ir
 from mlir.dialects import transform
 from mlir.dialects.transform import structured
-from mlir.dialects.transform import interpreter
 from mlir.execution_engine import ExecutionEngine
 from mlir.passmanager import PassManager
 
@@ -89,22 +88,6 @@ def create_schedule(ctx: ir.Context) -> ir.Module:
     return schedule
 
 
-def apply_schedule(kernel: ir.Module, schedule: ir.Module) -> None:
-    """
-    Apply transformation schedule to a kernel module.
-    The kernel is modified in-place.
-
-    Args:
-        kernel: A module with payload function.
-        schedule: A module with transform schedule.
-    """
-    interpreter.apply_named_sequence(
-        payload_root=kernel,
-        transform_root=schedule.body.operations[0],
-        transform_module=schedule,
-    )
-
-
 def create_pass_pipeline(ctx: ir.Context) -> PassManager:
     """
     Create an MLIR pass pipeline.
@@ -141,9 +124,11 @@ def main(args):
     ctx = ir.Context()
     kernel = create_kernel(ctx)
 
-    # Create a transform schedule and apply initial lowering.
-    schedule = create_schedule(ctx)
-    apply_schedule(kernel, schedule)
+    # Create a transform schedule and apply initial lowering to kernel.
+    # The kernel is modified in-place.
+    schedule_module = create_schedule(ctx)
+    named_seq: transform.NamedSequenceOp = schedule_module.body.operations[0]
+    named_seq.apply(kernel)
 
     # Create a pass pipeline and lower the kernel to LLVM dialect.
     pm = create_pass_pipeline(ctx)
