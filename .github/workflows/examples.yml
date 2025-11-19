@@ -26,3 +26,7 @@ jobs:
       - name: Run MLP From Module
         run: |-
           uv run python/examples/ingress/torch/mlp_from_model.py
+
+      - name: Run Compile And Run
+        run: |-
+          uv run python/examples/mlir/compile_and_run.py
