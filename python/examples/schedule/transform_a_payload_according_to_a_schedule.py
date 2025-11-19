@@ -1,12 +1,15 @@
 # RUN: %PYTHON %s | FileCheck %s
 
-# A basic example of generating a payload, a schedule, and applying the latter
-# to the former. Shows how to do it from Python and from the cmd given the
-# payload and schedule are .mlir files. Run this file to see the concrete
-# schedule IR, pre-transform payload IR and transformed payload IR.
+# Simply demonstrates applying a schedule to a payload.
+#
+# To do so generates a basic payload and a basic schedule, purely as an example.
+# Shows how to do it contained to a single Python process and how do invoke the
+# same functionality from the cmdline. The latter to facilitate the case where
+# the payload and schedule already exist as .mlir files. Run this file to see
+# the concrete schedule IR, pre-transform payload IR and transformed payload IR.
 
-import tempfile
 import subprocess
+from tempfile import NamedTemporaryFile
 
 from mlir.ir import Context, Location, InsertionPoint, Operation, Module
 from mlir.ir import RankedTensorType, F32Type, FloatAttr, DenseElementsAttr, UnitAttr
@@ -15,9 +18,15 @@ from mlir.dialects.transform import structured
 
 
 def example_payload() -> Module:
-    """Example payload where the results of two matmuls are summed together.
+    """IR for:
+    Zero = ...
+    X = matmul(..., C=Zero)
+    Y = matmul(..., C=Zero)
+    Res = add(X, Y)
 
-    Can be re-written so that the second matmul accumulates top of the the result of the first.
+    Can be re-written to:
+    X = matmul(..., C=Zero)
+    Res = matmul(..., C=X)
     """
 
     print("NOTE: example payload module:")
@@ -55,7 +64,8 @@ def example_payload() -> Module:
 
 
 def example_schedule() -> Module:
-    """Most basic schedule which doesn't just wrap a pass -- wraps a single rewrite pattern."""
+    """Basic schedule wrapping a single rewrite pattern."""
+
     print("NOTE: example schedule module:")
     schedule_module = Module.create()
     schedule_module.operation.attributes["transform.with_named_sequence"] = (
@@ -86,6 +96,7 @@ def example_schedule() -> Module:
 with Context(), Location.unknown():
     payload = example_payload()
     schedule_module = example_schedule()
+    # Demonstrate applying a schedule to a payload, both generated in-process:
     schedule: transform.NamedSequenceOp = schedule_module.body.operations[0]
 
     print(
@@ -94,10 +105,11 @@ with Context(), Location.unknown():
     schedule.apply(payload)
     print(payload)
 
-    # Demonstrate applying a schedule from file to a payload from file
+    # Demonstrate applying a schedule to a payload, both as .mlir files, on the cmdline
+    # (to facilitate the same functionality for out-of-process generated schedules and payloads):
     with (
-        tempfile.NamedTemporaryFile("w", prefix="payload_") as payload_file,
-        tempfile.NamedTemporaryFile("w", prefix="schedule_") as schedule_file,
+        NamedTemporaryFile("w", prefix="payload_", suffix=".mlir") as payload_file,
+        NamedTemporaryFile("w", prefix="schedule_", suffix=".mlir") as schedule_file,
     ):
         print(payload, file=payload_file, flush=True)
         print("NOTE: Have dumped payload to temp file:", payload_file.name)
