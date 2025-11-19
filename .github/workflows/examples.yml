@@ -26,3 +26,7 @@ jobs:
       - name: Run MLP From Module
         run: |-
           uv run python/examples/ingress/torch/mlp_from_model.py
+
+      - name: Run schedule application example
+        run: |-
+          uv run python/examples/schedule/transform_a_payload_according_to_a_schedule.py
