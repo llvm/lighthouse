@@ -12,35 +12,33 @@ from mlir.passmanager import PassManager
 import lighthouse.utils as lh_utils
 
 
-def create_mlir_module(ctx: ir.Context, shape: list[int]) -> ir.Module:
-    with ctx, ir.Location.unknown():
-        module = ir.Module.create()
-        with ir.InsertionPoint(module.body):
-            mem_type = ir.MemRefType.get(shape, ir.F32Type.get())
+def create_mlir_module(shape: list[int]) -> ir.Module:
+    module = ir.Module.create()
+    with ir.InsertionPoint(module.body):
+        mem_type = ir.MemRefType.get(shape, ir.F32Type.get())
 
-            # Return a new buffer initialized with input's data.
-            @func.func(mem_type)
-            def copy(input):
-                new_buf = memref.alloc(mem_type, [], [])
-                memref.copy(input, new_buf)
-                return new_buf
+        # Return a new buffer initialized with input's data.
+        @func.func(mem_type)
+        def copy(input):
+            new_buf = memref.alloc(mem_type, [], [])
+            memref.copy(input, new_buf)
+            return new_buf
 
-            # Free given buffer.
-            @func.func(mem_type)
-            def module_dealloc(input):
-                memref.dealloc(input)
+        # Free given buffer.
+        @func.func(mem_type)
+        def module_dealloc(input):
+            memref.dealloc(input)
 
     return module
 
 
 def lower_to_llvm(operation: ir.Operation) -> None:
-    with operation.context:
-        pm = PassManager("builtin.module")
-        pm.add("func.func(llvm-request-c-wrappers)")
-        pm.add("convert-to-llvm")
-        pm.add("reconcile-unrealized-casts")
-        pm.add("cse")
-        pm.add("canonicalize")
+    pm = PassManager("builtin.module")
+    pm.add("func.func(llvm-request-c-wrappers)")
+    pm.add("convert-to-llvm")
+    pm.add("reconcile-unrealized-casts")
+    pm.add("cse")
+    pm.add("canonicalize")
     pm.run(operation)
 
 
@@ -75,8 +73,7 @@ def main():
     shape = [16, 32]
 
     # Create and compile test module.
-    ctx = ir.Context()
-    kernel = create_mlir_module(ctx, shape)
+    kernel = create_mlir_module(shape)
     lower_to_llvm(kernel.operation)
     eng = ExecutionEngine(kernel, opt_level=3)
     eng.initialize()
@@ -116,4 +113,5 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    with ir.Context(), ir.Location.unknown():
+        main()
