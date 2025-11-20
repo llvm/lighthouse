@@ -1,5 +1,6 @@
-import torch
 import argparse
+
+import torch
 
 from mlir import ir
 from mlir.dialects import transform

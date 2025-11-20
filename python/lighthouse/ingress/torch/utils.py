@@ -43,8 +43,4 @@ def maybe_load_and_run_callable(
     """
     if symbol_name is None:
         return default
-    return load_and_run_callable(
-        module,
-        symbol_name,
-        error_msg=error_msg
-    )
+    return load_and_run_callable(module, symbol_name, error_msg=error_msg)

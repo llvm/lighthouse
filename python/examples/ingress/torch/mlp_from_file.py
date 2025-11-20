@@ -15,8 +15,8 @@ import os
 from pathlib import Path
 
 # MLIR infrastructure imports (only needed if you want to manipulate the MLIR module)
-import mlir.dialects.func as func
 from mlir import ir
+import mlir.dialects.func as func
 
 # Lighthouse imports
 from lighthouse.ingress.torch import import_from_file
@@ -32,6 +32,7 @@ ir_context = ir.Context()
 # - Loads the MLPModel class and instantiates it with arguments obtained from 'get_init_inputs()'
 # - Calls get_sample_inputs() to get sample input tensors for shape inference
 # - Converts PyTorch model to linalg-on-tensors dialect operations using torch_mlir
+# fmt: off
 mlir_module_ir: ir.Module = import_from_file(
     model_path,                              # Path to the Python file containing the model
     model_class_name="MLPModel",             # Name of the PyTorch nn.Module class to convert
@@ -40,6 +41,7 @@ mlir_module_ir: ir.Module = import_from_file(
     dialect="linalg-on-tensors",             # Target MLIR dialect (linalg ops on tensor types)
     ir_context=ir_context                    # MLIR context for the conversion
 )
+# fmt: on
 
 # The PyTorch model is now converted to MLIR at this point. You can now convert
 # the MLIR module to a text form (e.g. 'str(mlir_module_ir)') and save it to a file.

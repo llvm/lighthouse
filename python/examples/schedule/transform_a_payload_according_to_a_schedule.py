@@ -1,10 +1,20 @@
 # Simply demonstrates applying a schedule to a payload.
 # To do so generates a basic payload and a basic schedule, purely as an example.
 
-from mlir.ir import Context, Location, InsertionPoint, Operation, Module
-from mlir.ir import RankedTensorType, F32Type, UnitAttr
-from mlir.dialects import arith, func, linalg, tensor, transform
+from mlir.dialects import arith
+from mlir.dialects import func
+from mlir.dialects import linalg
+from mlir.dialects import tensor
+from mlir.dialects import transform
 from mlir.dialects.transform import structured
+from mlir.ir import Context
+from mlir.ir import F32Type
+from mlir.ir import InsertionPoint
+from mlir.ir import Location
+from mlir.ir import Module
+from mlir.ir import Operation
+from mlir.ir import RankedTensorType
+from mlir.ir import UnitAttr
 
 
 def example_payload() -> Module:
