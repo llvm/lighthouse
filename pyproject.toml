@@ -10,7 +10,7 @@ dependencies = [
 # Additional "targets" which pull in optional dependencies -- use `uv sync --extra TARGET`
 ingress_torch_cpu = [
     "torch==v2.8.0+cpu",
-    "torch-mlir==20251003.589"
+    "torch-mlir==20251120.637"
 ]
 ingress_torch_nvidia = [
     "torch==2.8.0",  # Nvidia-enabled version of torch
