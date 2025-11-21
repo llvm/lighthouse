@@ -1,0 +1,36 @@
+name: Lighthouse Examples
+
+on:
+  workflow_dispatch:
+  push:
+  pull_request:
+
+jobs:
+  Examples:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+
+      - name: Install the project and its dependencies
+        run: |
+          uv sync
+          uv sync --extra ingress-torch-cpu
+
+      - name: Run MLP From File
+        run: |-
+          uv run python/examples/ingress/torch/mlp_from_file.py
+
+      - name: Run MLP From Module
+        run: |-
+          uv run python/examples/ingress/torch/mlp_from_model.py
+
+      - name: Run Compile And Run
+        run: |-
+          uv run python/examples/mlir/compile_and_run.py
+
+      - name: Run apply basic schedule to basic payload
+        run: |-
+          uv run python/examples/schedule/transform_a_payload_according_to_a_schedule.py
