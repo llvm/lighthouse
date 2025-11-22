@@ -6,6 +6,11 @@ dependencies = [
     "mlir-python-bindings==20251118+99630eb1b"
 ]
 
+[dependency-groups]
+test = [
+  "lit==18.1.8"  # Tool to configure, discover and run tests
+]
+
 [project.optional-dependencies]
 ingress_torch_mlir = [
     "torch-mlir==20251122.639"
@@ -66,6 +71,7 @@ name = "torch_mlir"
 url = "https://github.com/llvm/torch-mlir-release/releases/expanded_assets/dev-wheels"
 explicit = true
 
+# Derive package version from version in code
 [build-system]
 requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
