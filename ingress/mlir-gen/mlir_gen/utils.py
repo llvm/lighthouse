@@ -1,12 +1,15 @@
-import struct
-from enum import Enum, auto
 from collections import abc
+from enum import Enum
+from enum import auto
+import struct
 from typing import Union
 
 import numpy as np
 
 from mlir import ir
-from mlir.dialects import arith, linalg, tensor
+from mlir.dialects import arith
+from mlir.dialects import linalg
+from mlir.dialects import tensor
 
 
 class ConstantInitKind(Enum):

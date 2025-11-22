@@ -1,9 +1,13 @@
 from typing import Union
 
 from mlir import ir
-from mlir.dialects import linalg, tensor, arith
+from mlir.dialects import arith
+from mlir.dialects import linalg
+from mlir.dialects import tensor
 
-from .utils import get_outputs, get_weights, get_bias
+from .utils import get_bias
+from .utils import get_outputs
+from .utils import get_weights
 
 
 def times_weights(

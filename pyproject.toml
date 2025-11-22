@@ -29,6 +29,10 @@ ingress_torch_xpu = [
     "pytorch_triton_xpu",  # Transitive dependency listed explicitly so that we can state which package repository it is supposed to come from
     "lighthouse[ingress_torch_mlir]"
 ]
+dev_tools = [
+  "pre-commit",
+  "ruff==0.14.5"
+]
 
 [tool.uv]
 # Declare that the following "targets" are mutually exclusive of one another
@@ -76,3 +80,36 @@ include = ["lighthouse*"]
 
 [tool.setuptools.dynamic]
 version = {attr = "lighthouse.__version__"}
+
+[tool.ruff]
+src = ["lighthouse"]
+target-version = "py310"
+line-length = 88
+
+[tool.ruff.format]
+docstring-code-format = true
+quote-style = "double"
+
+# List of rules:
+# https://docs.astral.sh/ruff/rules/
+[tool.ruff.lint]
+select = [
+  "D419", # empty-docstring
+  "E", # Error
+  "F", # Pyflakes
+  "I", # isort
+  "PERF", # Perflint
+  "W", # Warning
+]
+ignore = [
+    "E501", # line-too-long
+    "PERF203", # try-except-in-loop
+    "PERF401", # manual-list-comprehension
+]
+
+[tool.ruff.lint.isort]
+known-local-folder = ["lighthouse", "MLPModel"]
+known-third-party = ["torch", "numpy"]
+known-first-party = ["mlir"]
+force-single-line = true # Improves merge conflicts
+force-sort-within-sections = true

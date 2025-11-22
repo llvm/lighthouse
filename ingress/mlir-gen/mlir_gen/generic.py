@@ -1,16 +1,17 @@
 from typing import Union
 
 from mlir import ir
-from mlir.dialects import linalg, arith, tensor, math
+from mlir.dialects import arith
+from mlir.dialects import linalg
+from mlir.dialects import math
+from mlir.dialects import tensor
 
-from .utils import (
-    affine_map,
-    get_bias,
-    get_outputs,
-    get_weights,
-    parallel,
-    reduction,
-)
+from .utils import affine_map
+from .utils import get_bias
+from .utils import get_outputs
+from .utils import get_weights
+from .utils import parallel
+from .utils import reduction
 
 
 def affine_maps_and_iter_types(rank: int):

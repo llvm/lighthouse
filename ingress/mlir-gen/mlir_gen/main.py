@@ -1,17 +1,21 @@
+from argparse import ArgumentParser
+from collections import namedtuple
 import random
 import sys
-
-from argparse import ArgumentParser
-from typing import Sequence, Dict, Any, Optional
-from collections import namedtuple
+from typing import Any
+from typing import Dict
+from typing import Optional
+from typing import Sequence
 
 import numpy as np
 
 from mlir import ir
 from mlir.dialects import func
 
-from . import named, generic, einsum, utils as gen_utils
-
+from . import einsum
+from . import generic
+from . import named
+from . import utils as gen_utils
 
 BlockFactors = namedtuple("BlockFactors", "m n k vnni")
 
@@ -136,9 +140,9 @@ class TensorType:
             assert k_as_num_inputs % block.k == 0, "invalid tile size for K dim"
             assert n_as_num_outputs % block.n == 0, "invalid tile size for N dim"
             if block.vnni:
-                assert (
-                    block.n % block.vnni == 0
-                ), "incompatible tile sizes for N and VNNI dims"
+                assert block.n % block.vnni == 0, (
+                    "incompatible tile sizes for N and VNNI dims"
+                )
                 shape = (
                     n_as_num_outputs // block.n,
                     k_as_num_inputs // block.k,
