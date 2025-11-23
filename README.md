@@ -123,4 +123,11 @@ pip install .[ingress_torch_cpu] \
 Running the tests is as simple as `lit .` in the root of the project.
 
 We assume that the [`FileCheck`](https://llvm.org/docs/CommandGuide/FileCheck.html) and [`lit`](https://llvm.org/docs/CommandGuide/lit.html) executables are available on the `PATH`.
+
+<details>
+<summary>
+Obtaining `FileCheck` and `lit`.
+</summary>
 To obtain the [Python package for `lit`](https://pypi.org/project/lit/), simply run `uv sync --group test`.
+In case the `FileCheck` executable happens to be available under a different name/location, e.g. as `FileCheck-18` from Ubuntu's `llvm-dev` package, set the `FILECHECK` environment variable when invoking `lit`.
+</details>
