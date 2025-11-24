@@ -3,11 +3,17 @@ name: Lighthouse Examples
 on:
   workflow_dispatch:
   push:
+    branches:
+      - 'main'
   pull_request:
 
 jobs:
   Examples:
-    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        arch: [x86_64, AArch64]
+
+    runs-on: ${{ matrix.arch == 'AArch64' && 'ubuntu-24.04-arm' || 'ubuntu-24.04' }}
     steps:
       - uses: actions/checkout@v5
 
@@ -16,21 +22,10 @@ jobs:
 
       - name: Install the project and its dependencies
         run: |
-          uv sync
+          sudo apt-get install -y llvm-dev # Obtain FileCheck, used in testing.
           uv sync --extra ingress-torch-cpu
 
-      - name: Run MLP From File
-        run: |-
-          uv run python/examples/ingress/torch/mlp_from_file.py
-
-      - name: Run MLP From Module
-        run: |-
-          uv run python/examples/ingress/torch/mlp_from_model.py
-
-      - name: Run Compile And Run
-        run: |-
-          uv run python/examples/mlir/compile_and_run.py
-
-      - name: Run apply basic schedule to basic payload
-        run: |-
-          uv run python/examples/schedule/transform_a_payload_according_to_a_schedule.py
+      - name: Run lit-enabled examples as tests
+        run: |
+          export FILECHECK=FileCheck-18 # Ubuntu's llvm-dev appends a version number.
+          uv run lit python/examples  # Makes sure to substitute FileCheck for $FILECHECK
