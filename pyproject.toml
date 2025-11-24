@@ -11,6 +11,7 @@ dev = [
   "lit==18.1.8",  # Tool to configure, discover and run tests
   "ruff==0.14.5", # Python linter and formatter
   "pre-commit", # Tool to manage and apply pre-commit hooks
+  "pytest>=8.0.0",
 ]
 
 [project.optional-dependencies]

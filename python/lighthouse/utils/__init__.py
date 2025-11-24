@@ -6,6 +6,7 @@ from .runtime_args import (
     memrefs_to_packed_args,
     torch_to_memref,
     torch_to_packed_args,
+    mlir_type_to_torch_dtype,
 )
 
 __all__ = [
