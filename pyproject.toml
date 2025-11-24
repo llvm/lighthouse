@@ -7,7 +7,7 @@ dependencies = [
 ]
 
 [dependency-groups]
-test = [
+dev = [
   "lit==18.1.8"  # Tool to configure, discover and run tests
 ]
 

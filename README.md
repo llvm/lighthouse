@@ -128,6 +128,6 @@ We assume that the [`FileCheck`](https://llvm.org/docs/CommandGuide/FileCheck.ht
 <summary>
 Obtaining <code>FileCheck</code> and <code>lit</code>.
 </summary>
-To obtain the <a href="https://pypi.org/project/lit">Python package for <code>lit</code></a>, simply run <code>uv sync --group test</code>.
+To obtain the <a href="https://pypi.org/project/lit">Python package for <code>lit</code></a>, simply run <code>uv sync</code> (<code>lit</code> is included in the "dev" dependency group).
 In case the <code>FileCheck</code> executable happens to be available under a different name/location, e.g. as <code>FileCheck-18</code> from Ubuntu's <code>llvm-dev</code> package, set the <code>FILECHECK</code> environment variable when invoking <code>lit</code>.
 </details>
