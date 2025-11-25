@@ -19,50 +19,40 @@ def get_schedule_module(
     has_relu=False,
     dump_kernel="",
     params=None,
-    context=None,
-    location=None,
 ) -> ir.Module:
     """Generate transform schedule module."""
-    if context is None:
-        context = ir.Context()
-    if location is None:
-        location = ir.Location.unknown(context)
-
-    with context, location:
-        mod = ir.Module.create()
-        mod.operation.attributes["transform.with_named_sequence"] = ir.UnitAttr.get()
-        with ir.InsertionPoint(mod.body):
-            named_sequence = transform.NamedSequenceOp(
-                "__transform_main",
-                [transform.AnyOpType.get()],  # input types
-                [],  # output types
-                arg_attrs=[{"transform.readonly": ir.UnitAttr.get()}],
+    mod = ir.Module.create()
+    mod.operation.attributes["transform.with_named_sequence"] = ir.UnitAttr.get()
+    with ir.InsertionPoint(mod.body):
+        named_sequence = transform.NamedSequenceOp(
+            "__transform_main",
+            [transform.AnyOpType.get()],  # input types
+            [],  # output types
+            arg_attrs=[{"transform.readonly": ir.UnitAttr.get()}],
+        )
+        with ir.InsertionPoint(named_sequence.body):
+            xegpu_matmul_transform_schedule(
+                named_sequence,
+                has_bias=has_bias,
+                has_relu=has_relu,
+                dump_kernel=dump_kernel,
+                params=params,
             )
-            with ir.InsertionPoint(named_sequence.body):
-                xegpu_matmul_transform_schedule(
-                    named_sequence,
-                    has_bias=has_bias,
-                    has_relu=has_relu,
-                    dump_kernel=dump_kernel,
-                    params=params,
-                )
-            # placeholder for parameter division op
-            i32 = ir.IntegerType.get_signless(32)
-            paramInt32Type = transform.ParamType.get(i32)
-            div_named_sequence = transform.NamedSequenceOp(
-                "param_div",
-                [paramInt32Type, paramInt32Type],  # input types
-                [paramInt32Type],  # output types
-                arg_attrs=[
-                    {"transform.readonly": ir.UnitAttr.get()},
-                    {"transform.readonly": ir.UnitAttr.get()},
-                ],
-            )
-            with ir.InsertionPoint(div_named_sequence.body):
-                p = transform.ParamConstantOp(
-                    paramInt32Type, ir.IntegerAttr.get(i32, 1)
-                )
-                transform.YieldOp(p)
+        # placeholder for parameter division op
+        i32 = ir.IntegerType.get_signless(32)
+        paramInt32Type = transform.ParamType.get(i32)
+        div_named_sequence = transform.NamedSequenceOp(
+            "param_div",
+            [paramInt32Type, paramInt32Type],  # input types
+            [paramInt32Type],  # output types
+            arg_attrs=[
+                {"transform.readonly": ir.UnitAttr.get()},
+                {"transform.readonly": ir.UnitAttr.get()},
+            ],
+        )
+        with ir.InsertionPoint(div_named_sequence.body):
+            p = transform.ParamConstantOp(paramInt32Type, ir.IntegerAttr.get(i32, 1))
+            transform.YieldOp(p)
 
     return mod
 

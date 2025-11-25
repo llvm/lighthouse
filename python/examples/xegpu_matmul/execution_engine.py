@@ -14,8 +14,6 @@ from mlir_utils import get_mlir_library_path
 
 
 def get_engine(payload_module, opt_level=3) -> ExecutionEngine:
-    context = ir.Context()
-    location = ir.Location.unknown(context)
     lib_dir = get_mlir_library_path()
     libs = [
         "libmlir_levelzero_runtime.so",
@@ -23,30 +21,26 @@ def get_engine(payload_module, opt_level=3) -> ExecutionEngine:
         "libmlir_c_runner_utils.so",
     ]
     libs = [os.path.join(lib_dir, lib) for lib in libs]
-    with context, location:
-        execution_engine = ExecutionEngine(
-            payload_module, opt_level=opt_level, shared_libs=libs
-        )
-        execution_engine.initialize()
+    execution_engine = ExecutionEngine(
+        payload_module, opt_level=opt_level, shared_libs=libs
+    )
+    execution_engine.initialize()
     return execution_engine
 
 
 def apply_transform_schedule(
     payload_module,
     schedule_module,
-    context,
-    location,
     dump_kernel: Optional[str] = None,
     dump_schedule: bool = False,
 ):
     if not dump_kernel or dump_kernel != "initial":
-        with context, location:
-            # invoke transform interpreter directly
-            transform_interpreter.apply_named_sequence(
-                payload_root=payload_module,
-                transform_root=schedule_module.body.operations[0],
-                transform_module=schedule_module,
-            )
+        # invoke transform interpreter directly
+        transform_interpreter.apply_named_sequence(
+            payload_root=payload_module,
+            transform_root=schedule_module.body.operations[0],
+            transform_module=schedule_module,
+        )
     if dump_kernel:
         print(payload_module)
     if dump_schedule:
@@ -66,8 +60,6 @@ def lower_payload(
     apply_transform_schedule(
         payload_module,
         schedule_module,
-        workload.context,
-        workload.location,
         dump_kernel=dump_kernel,
         dump_schedule=dump_schedule,
     )
@@ -125,43 +117,40 @@ def benchmark(
     payload_arguments = payload_func.type.inputs
 
     # emit benchmark function that calls payload and times it
-    with workload.context, workload.location:
-        with ir.InsertionPoint(payload_module.body):
-            # define rtclock function
-            f64_t = ir.F64Type.get()
-            f = func.FuncOp("rtclock", ((), (f64_t,)), visibility="private")
-            # emit benchmark function
-            time_memref_t = ir.MemRefType.get((nruns,), f64_t)
-            args = payload_arguments + [time_memref_t]
-            f = func.FuncOp("benchmark", (tuple(args), ()))
-            f.attributes["llvm.emit_c_interface"] = ir.UnitAttr.get()
-        with ir.InsertionPoint(f.add_entry_block()):
-            index_t = ir.IndexType.get()
-            zero = arith.ConstantOp(index_t, 0)
-            one = arith.ConstantOp(index_t, 1)
-            nwarmup_cst = arith.ConstantOp(index_t, nwarmup)
-            for_op = scf.ForOp(zero, nwarmup_cst, one)
-            with ir.InsertionPoint(for_op.body):
-                func.CallOp(payload_func, list(f.arguments[: len(payload_arguments)]))
-                scf.YieldOp(())
-            nruns_cst = arith.ConstantOp(index_t, nruns)
-            for_op = scf.ForOp(zero, nruns_cst, one)
-            i = for_op.induction_variable
-            with ir.InsertionPoint(for_op.body):
-                tic = func.CallOp((f64_t,), "rtclock", ()).result
-                func.CallOp(payload_func, list(f.arguments[: len(payload_arguments)]))
-                toc = func.CallOp((f64_t,), "rtclock", ()).result
-                time = arith.SubFOp(toc, tic)
-                memref.StoreOp(time, f.arguments[-1], [i])
-                scf.YieldOp(())
-            func.ReturnOp(())
+    with ir.InsertionPoint(payload_module.body):
+        # define rtclock function
+        f64_t = ir.F64Type.get()
+        f = func.FuncOp("rtclock", ((), (f64_t,)), visibility="private")
+        # emit benchmark function
+        time_memref_t = ir.MemRefType.get((nruns,), f64_t)
+        args = payload_arguments + [time_memref_t]
+        f = func.FuncOp("benchmark", (tuple(args), ()))
+        f.attributes["llvm.emit_c_interface"] = ir.UnitAttr.get()
+    with ir.InsertionPoint(f.add_entry_block()):
+        index_t = ir.IndexType.get()
+        zero = arith.ConstantOp(index_t, 0)
+        one = arith.ConstantOp(index_t, 1)
+        nwarmup_cst = arith.ConstantOp(index_t, nwarmup)
+        for_op = scf.ForOp(zero, nwarmup_cst, one)
+        with ir.InsertionPoint(for_op.body):
+            func.CallOp(payload_func, list(f.arguments[: len(payload_arguments)]))
+            scf.YieldOp(())
+        nruns_cst = arith.ConstantOp(index_t, nruns)
+        for_op = scf.ForOp(zero, nruns_cst, one)
+        i = for_op.induction_variable
+        with ir.InsertionPoint(for_op.body):
+            tic = func.CallOp((f64_t,), "rtclock", ()).result
+            func.CallOp(payload_func, list(f.arguments[: len(payload_arguments)]))
+            toc = func.CallOp((f64_t,), "rtclock", ()).result
+            time = arith.SubFOp(toc, tic)
+            memref.StoreOp(time, f.arguments[-1], [i])
+            scf.YieldOp(())
+        func.ReturnOp(())
 
     # lower
     apply_transform_schedule(
         payload_module,
         workload.schedule_module(parameters=schedule_parameters),
-        workload.context,
-        workload.location,
     )
     # get execution engine, rtclock requires mlir_c_runner
     engine = get_engine(payload_module)

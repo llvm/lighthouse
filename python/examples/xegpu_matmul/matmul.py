@@ -58,8 +58,6 @@ class XeGPUMatMul:
         self.has_relu = has_relu
         if has_bias:
             raise NotImplementedError("Bias is not implemented yet")
-        self.context = ir.Context()
-        self.location = ir.Location.unknown(context=self.context)
         # cache allocated memrefs
         self.gpu_memrefs = {}
 
@@ -192,15 +190,11 @@ class XeGPUMatMul:
             c_type_str=self.c_type,
             has_bias=self.has_bias,
             has_relu=self.has_relu,
-            context=self.context,
-            location=self.location,
         )
         return mod
 
     def schedule_module(self, dump_kernel=None, parameters=None) -> ir.Module:
         return get_schedule_module(
-            context=self.context,
-            location=self.location,
             has_bias=self.has_bias,
             has_relu=self.has_relu,
             dump_kernel=dump_kernel,
@@ -351,51 +345,53 @@ if __name__ == "__main__":
     }
 
     M, N, K = args.sizes
-    wload = XeGPUMatMul(
-        M=M,
-        N=N,
-        K=K,
-        ab_type=args.ab_type,
-        c_type=args.c_type,
-        has_bias=False,
-        has_relu=args.relu,
-    )
 
-    if args.dump_kernel or args.dump_schedule:
-        lower_payload(
-            wload,
-            dump_kernel=args.dump_kernel,
-            dump_schedule=args.dump_schedule,
-            schedule_parameters=params,
+    with ir.Context(), ir.Location.unknown():
+        wload = XeGPUMatMul(
+            M=M,
+            N=N,
+            K=K,
+            ab_type=args.ab_type,
+            c_type=args.c_type,
+            has_bias=False,
+            has_relu=args.relu,
         )
-    else:
-        times = benchmark(
-            wload,
-            nruns=args.nruns,
-            nwarmup=15,
-            check_correctness=args.check_result,
-            schedule_parameters=params,
-            verbose=1,
-        )
-        times *= 1e6  # convert to microseconds
-        elapsed = np.mean(times)
-        flop_count = wload.get_complexity()[0]
-        gflops = flop_count / (elapsed * 1e-6) / 1e9
 
-        def list2str(a):
-            return ",".join(map(str, a))
+        if args.dump_kernel or args.dump_schedule:
+            lower_payload(
+                wload,
+                dump_kernel=args.dump_kernel,
+                dump_schedule=args.dump_schedule,
+                schedule_parameters=params,
+            )
+        else:
+            times = benchmark(
+                wload,
+                nruns=args.nruns,
+                nwarmup=15,
+                check_correctness=args.check_result,
+                schedule_parameters=params,
+                verbose=1,
+            )
+            times *= 1e6  # convert to microseconds
+            elapsed = np.mean(times)
+            flop_count = wload.get_complexity()[0]
+            gflops = flop_count / (elapsed * 1e-6) / 1e9
 
-        parts = [
-            f"sizes={list2str(args.sizes)}",
-            f"dt={args.ab_type},{args.c_type}",
-            f"wg-tile={list2str(args.wg_tile)}",
-            f"sg-tile={list2str(args.sg_tile)}",
-            f"k-tile={args.k_tile}",
-            f"load-a-tile={list2str(args.load_tile_a)}",
-            f"load-b-tile={list2str(args.load_tile_b)}",
-            f"pf-a-tile={list2str(args.prefetch_tile_a)}",
-            f"pf-b-tile={list2str(args.prefetch_tile_b)}",
-            f"time(us): {elapsed:.2f}",
-            f"GFLOPS: {gflops:.2f}",
-        ]
-        print(" ".join(parts))
+            def list2str(a):
+                return ",".join(map(str, a))
+
+            parts = [
+                f"sizes={list2str(args.sizes)}",
+                f"dt={args.ab_type},{args.c_type}",
+                f"wg-tile={list2str(args.wg_tile)}",
+                f"sg-tile={list2str(args.sg_tile)}",
+                f"k-tile={args.k_tile}",
+                f"load-a-tile={list2str(args.load_tile_a)}",
+                f"load-b-tile={list2str(args.load_tile_b)}",
+                f"pf-a-tile={list2str(args.prefetch_tile_a)}",
+                f"pf-b-tile={list2str(args.prefetch_tile_b)}",
+                f"time(us): {elapsed:.2f}",
+                f"GFLOPS: {gflops:.2f}",
+            ]
+            print(" ".join(parts))
