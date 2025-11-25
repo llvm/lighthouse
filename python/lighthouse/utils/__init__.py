@@ -11,6 +11,7 @@ from .runtime_args import (
 )
 
 __all__ = [
+    "MemRefManager",
     "get_packed_arg",
     "memref_to_ctype",
     "memrefs_to_packed_args",
