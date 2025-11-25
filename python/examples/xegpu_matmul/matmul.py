@@ -9,6 +9,8 @@ from mlir.runtime.np_to_memref import (
     make_nd_memref_descriptor,
     as_ctype,
 )
+from mlir.execution_engine import ExecutionEngine
+from typing import Optional
 import ctypes
 from contextlib import contextmanager
 from functools import cached_property
@@ -20,7 +22,7 @@ from execution_engine import lower_payload, benchmark
 import argparse
 
 
-def numpy_to_ctype(arr) -> ctypes._Pointer:
+def numpy_to_ctype(arr: np.ndarray) -> ctypes._Pointer:
     """Convert numpy array to memref and ctypes **void pointer."""
     return memref_to_ctype(get_ranked_memref_descriptor(arr))
 
@@ -38,7 +40,14 @@ class XeGPUMatMul:
     payload_function_name = "payload"
 
     def __init__(
-        self, M, N, K, ab_type="f32", c_type="f32", has_bias=False, has_relu=False
+        self,
+        M: int,
+        N: int,
+        K: int,
+        ab_type: str = "f32",
+        c_type: str = "f32",
+        has_bias: bool = False,
+        has_relu: bool = False,
     ):
         self.M = M
         self.N = N
@@ -62,7 +71,11 @@ class XeGPUMatMul:
         self.gpu_memrefs = {}
 
     def _allocate_array(
-        self, name, shape, dtype_str, execution_engine
+        self,
+        name: str,
+        shape: tuple[int, ...],
+        dtype_str: str,
+        execution_engine: ExecutionEngine,
     ) -> ctypes.Structure:
         key = (name, dtype_str)
         if key in self.gpu_memrefs:
@@ -79,12 +92,12 @@ class XeGPUMatMul:
         self.gpu_memrefs[key] = mref
         return mref
 
-    def _allocate_inputs(self, execution_engine):
+    def _allocate_inputs(self, execution_engine: ExecutionEngine):
         self._allocate_array("A", self.a_shape, self.ab_type, execution_engine)
         self._allocate_array("B", self.b_shape, self.ab_type, execution_engine)
         self._allocate_array("C", self.c_shape, self.c_type, execution_engine)
 
-    def _deallocate_all(self, execution_engine):
+    def _deallocate_all(self, execution_engine: ExecutionEngine):
         for (_, dtype_str), mref in self.gpu_memrefs.items():
             dealloc_func = execution_engine.lookup("gpu_dealloc_" + dtype_str)
             ptr_mref = ctypes.pointer(ctypes.pointer(mref))
@@ -92,7 +105,7 @@ class XeGPUMatMul:
         self.gpu_memrefs = {}
 
     @contextmanager
-    def allocate(self, execution_engine):
+    def allocate(self, execution_engine: ExecutionEngine):
         try:
             self._allocate_inputs(execution_engine)
             yield None
@@ -128,7 +141,9 @@ class XeGPUMatMul:
             raise NotImplementedError("Bias verification not implemented")
         return C_ref
 
-    def get_input_arrays(self, execution_engine) -> list[ctypes.Structure]:
+    def get_input_arrays(
+        self, execution_engine: ExecutionEngine
+    ) -> list[ctypes.Structure]:
         A_gpu = self._allocate_array("A", self.a_shape, self.ab_type, execution_engine)
         B_gpu = self._allocate_array("B", self.b_shape, self.ab_type, execution_engine)
         C_gpu = self._allocate_array("C", self.c_shape, self.c_type, execution_engine)
@@ -144,7 +159,9 @@ class XeGPUMatMul:
         # return memrefs for the payload function
         return [A_gpu, B_gpu, C_gpu]
 
-    def check_correctness(self, execution_engine, verbose: int = 0) -> bool:
+    def check_correctness(
+        self, execution_engine: ExecutionEngine, verbose: int = 0
+    ) -> bool:
         # copy result from device to host
         C_gpu = self.gpu_memrefs[("C", self.c_type)]
         C_host_copy = np.zeros((self.M, self.N), dtype=self.c_dtype)
@@ -193,7 +210,9 @@ class XeGPUMatMul:
         )
         return mod
 
-    def schedule_module(self, dump_kernel=None, parameters=None) -> ir.Module:
+    def schedule_module(
+        self, dump_kernel: str = None, parameters: Optional[dict] = None
+    ) -> ir.Module:
         return get_schedule_module(
             has_bias=self.has_bias,
             has_relu=self.has_relu,

@@ -6,6 +6,7 @@ from mlir.dialects.bufferization import LayoutMapOption
 from mlir.dialects import transform
 from mlir.dialects.transform import structured
 from mlir_utils import apply_registered_pass, match, cse, canonicalize
+from typing import Optional
 
 
 # hardware constraints
@@ -15,10 +16,10 @@ nb_workitems = 16  # workitems in subgroup
 
 
 def get_schedule_module(
-    has_bias=False,
-    has_relu=False,
-    dump_kernel="",
-    params=None,
+    has_bias: bool = False,
+    has_relu: bool = False,
+    dump_kernel: str = "",
+    params: Optional[dict] = None,
 ) -> ir.Module:
     """Generate transform schedule module."""
     mod = ir.Module.create()
@@ -58,11 +59,11 @@ def get_schedule_module(
 
 
 def xegpu_matmul_transform_schedule(
-    named_sequence,
-    has_bias=False,
-    has_relu=False,
-    dump_kernel="",
-    params=None,
+    named_sequence: transform.NamedSequenceOp,
+    has_bias: bool = False,
+    has_relu: bool = False,
+    dump_kernel: str = "",
+    params: Optional[dict] = None,
 ):
     """Transform schedule for matmul-like payload."""
     mod = bundle_header(named_sequence)
@@ -84,7 +85,7 @@ def xegpu_matmul_transform_schedule(
     transform.YieldOp()
 
 
-def bundle_header(named_sequence):
+def bundle_header(named_sequence: transform.NamedSequenceOp):
     """Matches the payload module."""
     anytype = transform.AnyOpType.get()
     func = match(named_sequence.bodyTarget, ops={"func.func"})
@@ -97,44 +98,12 @@ def bundle_header(named_sequence):
     return mod
 
 
-def geo_range(start, stop, factor):
-    """
-    Returns a geometric range dict attribute.
-
-    `stop` is inclusive.
-    """
-    i32 = ir.IntegerType.get_signless(32)
-    return ir.DictAttr.get(
-        {
-            "start": ir.IntegerAttr.get(i32, start),
-            "stop": ir.IntegerAttr.get(i32, stop + 1),
-            "factor": ir.IntegerAttr.get(i32, factor),
-        }
-    )
-
-
-def lin_range(start, stop, step):
-    """
-    Returns a linear range dict attribute.
-
-    `stop` is inclusive.
-    """
-    i32 = ir.IntegerType.get_signless(32)
-    return ir.DictAttr.get(
-        {
-            "start": ir.IntegerAttr.get(i32, start),
-            "stop": ir.IntegerAttr.get(i32, stop + 1),
-            "step": ir.IntegerAttr.get(i32, step),
-        }
-    )
-
-
 def bundle_xepu_matmul_schedule(
     mod,
-    has_bias=False,
-    has_relu=False,
-    dump_kernel="",
-    params=None,
+    has_bias: bool = False,
+    has_relu: bool = False,
+    dump_kernel: str = "",
+    params: Optional[dict] = None,
 ):
     """Schedule for lowering matmul-like payload to xegpu wg level."""
     if params is None:
@@ -416,7 +385,7 @@ def bundle_xepu_matmul_schedule(
     return mod, False
 
 
-def bundle_xegpu_to_binary(mod, dump_kernel=""):
+def bundle_xegpu_to_binary(mod, dump_kernel: str = ""):
     """Schedule for lowering xegpu wg level to binary."""
     # This schedule corresponds to upstream MLIR XeVM lowering pipeline
     # and is payload independent.

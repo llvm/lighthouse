@@ -3,7 +3,6 @@ import ctypes
 import os
 from typing import Optional
 
-from mlir.dialects.transform import interpreter as transform_interpreter
 from mlir.dialects import func, arith, scf, memref
 from mlir.execution_engine import ExecutionEngine
 from mlir import ir
@@ -13,7 +12,7 @@ from lighthouse.utils import get_packed_arg
 from mlir_utils import get_mlir_library_path
 
 
-def get_engine(payload_module, opt_level=3) -> ExecutionEngine:
+def get_engine(payload_module: ir.Module, opt_level: int = 3) -> ExecutionEngine:
     lib_dir = get_mlir_library_path()
     libs = [
         "libmlir_levelzero_runtime.so",
@@ -29,18 +28,15 @@ def get_engine(payload_module, opt_level=3) -> ExecutionEngine:
 
 
 def apply_transform_schedule(
-    payload_module,
-    schedule_module,
+    payload_module: ir.Module,
+    schedule_module: ir.Module,
     dump_kernel: Optional[str] = None,
     dump_schedule: bool = False,
 ):
     if not dump_kernel or dump_kernel != "initial":
-        # invoke transform interpreter directly
-        transform_interpreter.apply_named_sequence(
-            payload_root=payload_module,
-            transform_root=schedule_module.body.operations[0],
-            transform_module=schedule_module,
-        )
+        # apply schedule on payload module
+        named_seq = schedule_module.body.operations[0]
+        named_seq.apply(payload_module)
     if dump_kernel:
         print(payload_module)
     if dump_schedule:
@@ -48,7 +44,7 @@ def apply_transform_schedule(
 
 
 def lower_payload(
-    workload,
+    workload: object,
     dump_kernel: Optional[str] = None,
     dump_schedule: bool = False,
     schedule_parameters: Optional[dict] = None,
@@ -67,7 +63,7 @@ def lower_payload(
 
 
 def execute(
-    workload,
+    workload: object,
     check_correctness: bool = True,
     schedule_parameters: Optional[dict] = None,
     verbose: int = 0,
@@ -94,7 +90,7 @@ def execute(
 
 
 def benchmark(
-    workload,
+    workload: object,
     nruns: int = 100,
     nwarmup: int = 10,
     schedule_parameters: Optional[dict] = None,

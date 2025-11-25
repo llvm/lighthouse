@@ -2,7 +2,7 @@ from mlir import ir
 from mlir.dialects import func, linalg, gpu, bufferization, arith, tensor
 
 
-def emit_gpu_alloc(mod, suffix, element_type, rank=2):
+def emit_gpu_alloc(mod: ir.Module, suffix: str, element_type: ir.Type, rank: int = 2):
     dyn = ir.ShapedType.get_dynamic_size()
     memref_dyn_t = ir.MemRefType.get(rank * (dyn,), element_type)
     index_t = ir.IndexType.get()
@@ -19,7 +19,7 @@ def emit_gpu_alloc(mod, suffix, element_type, rank=2):
         func.ReturnOp((alloc,))
 
 
-def emit_gpu_dealloc(mod, suffix, element_type, rank=2):
+def emit_gpu_dealloc(mod: ir.Module, suffix: str, element_type: ir.Type, rank: int = 2):
     dyn = ir.ShapedType.get_dynamic_size()
     memref_dyn_t = ir.MemRefType.get(rank * (dyn,), element_type)
     with ir.InsertionPoint(mod.body):
@@ -30,7 +30,7 @@ def emit_gpu_dealloc(mod, suffix, element_type, rank=2):
         func.ReturnOp(())
 
 
-def emit_gpu_copy(mod, suffix, element_type, rank=2):
+def emit_gpu_copy(mod: ir.Module, suffix: str, element_type: ir.Type, rank: int = 2):
     """Emit GPU copy function."""
     dyn = ir.ShapedType.get_dynamic_size()
     memref_dyn_t = ir.MemRefType.get(rank * (dyn,), element_type)
@@ -44,7 +44,7 @@ def emit_gpu_copy(mod, suffix, element_type, rank=2):
         func.ReturnOp(())
 
 
-def emit_gpu_util_funcs(mod, element_type):
+def emit_gpu_util_funcs(mod: ir.Module, element_type: ir.Type):
     """Emit GPU utility functions for allocation, deallocation and copy."""
     suffix = {
         ir.F16Type.get(): "f16",
