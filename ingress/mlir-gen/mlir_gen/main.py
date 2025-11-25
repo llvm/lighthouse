@@ -136,9 +136,9 @@ class TensorType:
             assert k_as_num_inputs % block.k == 0, "invalid tile size for K dim"
             assert n_as_num_outputs % block.n == 0, "invalid tile size for N dim"
             if block.vnni:
-                assert (
-                    block.n % block.vnni == 0
-                ), "incompatible tile sizes for N and VNNI dims"
+                assert block.n % block.vnni == 0, (
+                    "incompatible tile sizes for N and VNNI dims"
+                )
                 shape = (
                     n_as_num_outputs // block.n,
                     k_as_num_inputs // block.k,
