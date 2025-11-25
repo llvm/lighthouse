@@ -3,7 +3,10 @@ import importlib.util
 from pathlib import Path
 from typing import Iterable, Mapping
 
-from lighthouse.ingress.torch.utils import load_and_run_callable, maybe_load_and_run_callable
+from lighthouse.ingress.torch.utils import (
+    load_and_run_callable,
+    maybe_load_and_run_callable,
+)
 
 try:
     import torch
@@ -24,6 +27,7 @@ except ImportError as e:
     ) from e
 
 from mlir import ir
+
 
 def import_from_model(
     model: nn.Module,
@@ -49,10 +53,10 @@ def import_from_model(
         ir_context (ir.Context, optional): An optional MLIR context to use for parsing
             the module. If not provided, the module is returned as a string.
         **kwargs: Additional keyword arguments passed to the ``torch_mlir.fx.export_and_import`` function.
-    
+
     Returns:
         str | ir.Module: The imported MLIR module as a string or an ir.Module if `ir_context` is provided.
-    
+
     Examples:
         >>> import torch
         >>> import torch.nn as nn
@@ -61,17 +65,22 @@ def import_from_model(
         ...     def __init__(self):
         ...         super().__init__()
         ...         self.fc = nn.Linear(10, 5)
+        ...
         ...     def forward(self, x):
         ...         return self.fc(x)
         >>> model = SimpleModel()
         >>> sample_input = (torch.randn(1, 10),)
         >>> #
         >>> # option 1: get MLIR module as a string
-        >>> mlir_module : str = import_from_model(model, sample_input, dialect="linalg-on-tensors")
-        >>> print(mlir_module) # prints the MLIR module in linalg-on-tensors dialect
+        >>> mlir_module: str = import_from_model(
+        ...     model, sample_input, dialect="linalg-on-tensors"
+        ... )
+        >>> print(mlir_module)  # prints the MLIR module in linalg-on-tensors dialect
         >>> # option 2: get MLIR module as an ir.Module
         >>> ir_context = ir.Context()
-        >>> mlir_module_ir : ir.Module = import_from_model(model, sample_input, dialect="tosa", ir_context=ir_context)
+        >>> mlir_module_ir: ir.Module = import_from_model(
+        ...     model, sample_input, dialect="tosa", ir_context=ir_context
+        ... )
     """
     if dialect == "linalg":
         raise ValueError(
@@ -134,22 +143,25 @@ def import_from_file(
         ir_context (ir.Context, optional): An optional MLIR context to use for parsing
             the module. If not provided, the module is returned as a string.
         **kwargs: Additional keyword arguments passed to the ``torch_mlir.fx.export_and_import`` function.
-    
+
     Returns:
         str | ir.Module: The imported MLIR module as a string or an ir.Module if `ir_context` is provided.
-    
+
     Examples:
         Given a file `path/to/model_file.py` with the following content:
         ```python
         import torch
         import torch.nn as nn
 
+
         class MyModel(nn.Module):
             def __init__(self):
                 super().__init__()
                 self.fc = nn.Linear(10, 5)
+
             def forward(self, x):
                 return self.fc(x)
+
 
         def get_inputs():
             return (torch.randn(1, 10),)
@@ -158,21 +170,21 @@ def import_from_file(
         The import script would look like:
         >>> from lighthouse.ingress.torch_import import import_from_file
         >>> # option 1: get MLIR module as a string
-        >>> mlir_module : str = import_from_file(
-        ...     "path/to/model_file.py",
-        ...     model_class_name="MyModel",
-        ...     init_args_fn_name=None,
-        ...     dialect="linalg-on-tensors"
-        ... )
-        >>> print(mlir_module) # prints the MLIR module in linalg-on-tensors dialect
-        >>> # option 2: get MLIR module as an ir.Module
-        >>> ir_context = ir.Context()
-        >>> mlir_module_ir : ir.Module = import_from_file(
+        >>> mlir_module: str = import_from_file(
         ...     "path/to/model_file.py",
         ...     model_class_name="MyModel",
         ...     init_args_fn_name=None,
         ...     dialect="linalg-on-tensors",
-        ...     ir_context=ir_context
+        ... )
+        >>> print(mlir_module)  # prints the MLIR module in linalg-on-tensors dialect
+        >>> # option 2: get MLIR module as an ir.Module
+        >>> ir_context = ir.Context()
+        >>> mlir_module_ir: ir.Module = import_from_file(
+        ...     "path/to/model_file.py",
+        ...     model_class_name="MyModel",
+        ...     init_args_fn_name=None,
+        ...     dialect="linalg-on-tensors",
+        ...     ir_context=ir_context,
         ... )
     """
     if isinstance(filepath, str):
@@ -191,24 +203,24 @@ def import_from_file(
         module,
         init_args_fn_name,
         default=tuple(),
-        error_msg=f"Init args function '{init_args_fn_name}' not found in {filepath}"
+        error_msg=f"Init args function '{init_args_fn_name}' not found in {filepath}",
     )
     model_init_kwargs = maybe_load_and_run_callable(
         module,
         init_kwargs_fn_name,
         default={},
-        error_msg=f"Init kwargs function '{init_kwargs_fn_name}' not found in {filepath}"
+        error_msg=f"Init kwargs function '{init_kwargs_fn_name}' not found in {filepath}",
     )
     sample_args = load_and_run_callable(
         module,
         sample_args_fn_name,
-        f"Sample args function '{sample_args_fn_name}' not found in {filepath}"
+        f"Sample args function '{sample_args_fn_name}' not found in {filepath}",
     )
     sample_kwargs = maybe_load_and_run_callable(
         module,
         sample_kwargs_fn_name,
         default={},
-        error_msg=f"Sample kwargs function '{sample_kwargs_fn_name}' not found in {filepath}"
+        error_msg=f"Sample kwargs function '{sample_kwargs_fn_name}' not found in {filepath}",
     )
 
     nn_model: nn.Module = model(*model_init_args, **model_init_kwargs)

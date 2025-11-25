@@ -8,7 +8,9 @@ dependencies = [
 
 [dependency-groups]
 dev = [
-  "lit==18.1.8"  # Tool to configure, discover and run tests
+  "lit==18.1.8",  # Tool to configure, discover and run tests
+  "ruff==0.14.5", # Python linter and formatter
+  "pre-commit", # Tool to manage and apply pre-commit hooks
 ]
 
 [project.optional-dependencies]
@@ -82,3 +84,33 @@ include = ["lighthouse*"]
 
 [tool.setuptools.dynamic]
 version = {attr = "lighthouse.__version__"}
+
+[tool.ruff]
+src = ["lighthouse"]
+target-version = "py310"
+line-length = 88
+
+[tool.ruff.format]
+docstring-code-format = true
+quote-style = "double"
+
+# List of rules:
+# https://docs.astral.sh/ruff/rules/
+[tool.ruff.lint]
+select = [
+  "D419", # empty-docstring
+  "E", # Error
+  "F", # Pyflakes
+  "PERF", # Perflint
+  "RUF022", # __all__ is not sorted
+  "RUF030", # print() call in assert
+  "RUF034", # useless if-else
+  "RUF047", # empty else
+  "RUF200", # invalid pyproject.toml
+  "W", # Warning
+]
+ignore = [
+    "E501", # line-too-long
+    "PERF203", # try-except-in-loop
+    "PERF401", # manual-list-comprehension
+]

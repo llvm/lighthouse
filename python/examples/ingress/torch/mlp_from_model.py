@@ -31,9 +31,7 @@ sample_input = torch.randn(1, 10)
 ir_context = ir.Context()
 # Step 2: Convert the PyTorch model to MLIR
 mlir_module_ir: ir.Module = import_from_model(
-    model,
-    sample_args=(sample_input,),
-    ir_context=ir_context
+    model, sample_args=(sample_input,), ir_context=ir_context
 )
 
 # The PyTorch model is now converted to MLIR at this point. You can now convert
