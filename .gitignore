@@ -10,3 +10,4 @@ python/lighthouse*.egg-info/
 
 # Miscellaneous
 uv.lock
+lit.out
