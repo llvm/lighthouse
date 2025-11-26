@@ -2,57 +2,54 @@ from mlir import ir
 from mlir.dialects import func, linalg, gpu, bufferization, arith, tensor
 
 
-def emit_gpu_alloc(mod: ir.Module, suffix: str, element_type: ir.Type, rank: int = 2):
+def emit_gpu_alloc(suffix: str, element_type: ir.Type, rank: int = 2):
     dyn = ir.ShapedType.get_dynamic_size()
     memref_dyn_t = ir.MemRefType.get(rank * (dyn,), element_type)
     index_t = ir.IndexType.get()
     i32_t = ir.IntegerType.get_signless(32)
-    with ir.InsertionPoint(mod.body):
-        inputs = rank * (i32_t,)
+    inputs = rank * (i32_t,)
 
-        @func.func(*inputs, name="gpu_alloc_" + suffix)
-        def alloc_func(*shape):
-            dims = [arith.index_cast(index_t, a) for a in shape]
-            alloc = gpu.alloc(memref_dyn_t, None, [], dims, [])
-            return alloc
+    @func.func(*inputs, name="gpu_alloc_" + suffix)
+    def alloc_func(*shape):
+        dims = [arith.index_cast(index_t, a) for a in shape]
+        alloc = gpu.alloc(memref_dyn_t, None, [], dims, [])
+        return alloc
 
-        alloc_func.func_op.attributes["llvm.emit_c_interface"] = ir.UnitAttr.get()
+    alloc_func.func_op.attributes["llvm.emit_c_interface"] = ir.UnitAttr.get()
 
 
-def emit_gpu_dealloc(mod: ir.Module, suffix: str, element_type: ir.Type, rank: int = 2):
+def emit_gpu_dealloc(suffix: str, element_type: ir.Type, rank: int = 2):
     dyn = ir.ShapedType.get_dynamic_size()
     memref_dyn_t = ir.MemRefType.get(rank * (dyn,), element_type)
-    with ir.InsertionPoint(mod.body):
 
-        @func.func(memref_dyn_t, name="gpu_dealloc_" + suffix)
-        def dealloc_func(memref):
-            gpu.dealloc(None, [], memref)
+    @func.func(memref_dyn_t, name="gpu_dealloc_" + suffix)
+    def dealloc_func(memref):
+        gpu.dealloc(None, [], memref)
 
-        dealloc_func.func_op.attributes["llvm.emit_c_interface"] = ir.UnitAttr.get()
+    dealloc_func.func_op.attributes["llvm.emit_c_interface"] = ir.UnitAttr.get()
 
 
-def emit_gpu_copy(mod: ir.Module, suffix: str, element_type: ir.Type, rank: int = 2):
+def emit_gpu_copy(suffix: str, element_type: ir.Type, rank: int = 2):
     """Emit GPU copy function."""
     dyn = ir.ShapedType.get_dynamic_size()
     memref_dyn_t = ir.MemRefType.get(rank * (dyn,), element_type)
-    with ir.InsertionPoint(mod.body):
 
-        @func.func(memref_dyn_t, memref_dyn_t, name="gpu_copy_" + suffix)
-        def copy_func(src, dst):
-            gpu.memcpy(None, [], dst, src)
+    @func.func(memref_dyn_t, memref_dyn_t, name="gpu_copy_" + suffix)
+    def copy_func(src, dst):
+        gpu.memcpy(None, [], dst, src)
 
-        copy_func.func_op.attributes["llvm.emit_c_interface"] = ir.UnitAttr.get()
+    copy_func.func_op.attributes["llvm.emit_c_interface"] = ir.UnitAttr.get()
 
 
-def emit_gpu_util_funcs(mod: ir.Module, element_type: ir.Type):
+def emit_gpu_util_funcs(element_type: ir.Type):
     """Emit GPU utility functions for allocation, deallocation and copy."""
     suffix = {
         ir.F16Type.get(): "f16",
         ir.F32Type.get(): "f32",
     }[element_type]
-    emit_gpu_alloc(mod, suffix, element_type)
-    emit_gpu_dealloc(mod, suffix, element_type)
-    emit_gpu_copy(mod, suffix, element_type)
+    emit_gpu_alloc(suffix, element_type)
+    emit_gpu_dealloc(suffix, element_type)
+    emit_gpu_copy(suffix, element_type)
 
 
 def generate_matmul_payload(
@@ -120,8 +117,8 @@ def generate_matmul_payload(
 
         payload.func_op.attributes["llvm.emit_c_interface"] = ir.UnitAttr.get()
 
-    emit_gpu_util_funcs(mod, ab_type)
-    if c_type != ab_type:
-        emit_gpu_util_funcs(mod, c_type)
+        emit_gpu_util_funcs(ab_type)
+        if c_type != ab_type:
+            emit_gpu_util_funcs(c_type)
 
     return mod
