@@ -105,7 +105,7 @@ def benchmark(
     for op in payload_module.operation.regions[0].blocks[0]:
         if (
             isinstance(op, func.FuncOp)
-            and str(op.name).strip('"') == workload.payload_function_name
+            and op.name.value == workload.payload_function_name
         ):
             payload_func = op
             break
@@ -116,32 +116,31 @@ def benchmark(
     with ir.InsertionPoint(payload_module.body):
         # define rtclock function
         f64_t = ir.F64Type.get()
-        f = func.FuncOp("rtclock", ((), (f64_t,)), visibility="private")
+        func.FuncOp("rtclock", ((), (f64_t,)), visibility="private")
         # emit benchmark function
         time_memref_t = ir.MemRefType.get((nruns,), f64_t)
         args = payload_arguments + [time_memref_t]
-        f = func.FuncOp("benchmark", (tuple(args), ()))
-        f.attributes["llvm.emit_c_interface"] = ir.UnitAttr.get()
-    with ir.InsertionPoint(f.add_entry_block()):
-        index_t = ir.IndexType.get()
-        zero = arith.ConstantOp(index_t, 0)
-        one = arith.ConstantOp(index_t, 1)
-        nwarmup_cst = arith.ConstantOp(index_t, nwarmup)
-        for_op = scf.ForOp(zero, nwarmup_cst, one)
-        with ir.InsertionPoint(for_op.body):
-            func.CallOp(payload_func, list(f.arguments[: len(payload_arguments)]))
-            scf.YieldOp(())
-        nruns_cst = arith.ConstantOp(index_t, nruns)
-        for_op = scf.ForOp(zero, nruns_cst, one)
-        i = for_op.induction_variable
-        with ir.InsertionPoint(for_op.body):
-            tic = func.CallOp((f64_t,), "rtclock", ()).result
-            func.CallOp(payload_func, list(f.arguments[: len(payload_arguments)]))
-            toc = func.CallOp((f64_t,), "rtclock", ()).result
-            time = arith.SubFOp(toc, tic)
-            memref.StoreOp(time, f.arguments[-1], [i])
-            scf.YieldOp(())
-        func.ReturnOp(())
+
+        @func.func(*args)
+        def benchmark(*args):
+            index_t = ir.IndexType.get()
+            zero = arith.constant(index_t, 0)
+            one = arith.constant(index_t, 1)
+            nwarmup_cst = arith.constant(index_t, nwarmup)
+            for i in scf.for_(zero, nwarmup_cst, one):
+                # FIXME(upstream): func.call is broken for this use case?
+                func.CallOp(payload_func, list(args[: len(payload_arguments)]))
+                scf.yield_(())
+            nruns_cst = arith.constant(index_t, nruns)
+            for i in scf.for_(zero, nruns_cst, one):
+                tic = func.call((f64_t,), "rtclock", ())
+                func.CallOp(payload_func, list(args[: len(payload_arguments)]))
+                toc = func.call((f64_t,), "rtclock", ())
+                time = arith.subf(toc, tic)
+                memref.store(time, args[-1], [i])
+                scf.yield_(())
+
+        benchmark.func_op.attributes["llvm.emit_c_interface"] = ir.UnitAttr.get()
 
     # lower
     apply_transform_schedule(
