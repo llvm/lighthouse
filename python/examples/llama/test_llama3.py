@@ -87,7 +87,7 @@ def create_schedule(ctx: ir.Context) -> ir.Module:
 
         # Create entry point transformation sequence.
         with ir.InsertionPoint(schedule.body):
-            named_seq = transform.NamedSequenceOp(
+            named_seq = transform.named_sequence(
                 "__transform_main",
                 [transform.AnyOpType.get()],
                 [],
@@ -119,7 +119,7 @@ def create_schedule(ctx: ir.Context) -> ir.Module:
                 anytype, mod, "convert-linalg-to-loops"
             )
             # Cleanup.
-            transform.ApplyCommonSubexpressionEliminationOp(mod)
+            transform.apply_cse(mod)
             with ir.InsertionPoint(transform.ApplyPatternsOp(mod).patterns):
                 transform.ApplyCanonicalizationPatternsOp()
 
@@ -245,14 +245,14 @@ def get_silu(inputs: ir.Value, out: ir.Value) -> ir.Value:
         par_iterator_types,
     )
     def silu_op(a, _out):
-        sigmoid = arith.DivFOp(
+        sigmoid = arith.divf(
             one,
-            arith.AddFOp(
+            arith.addf(
                 one,
-                math.exp(arith.NegFOp(a).result),
-            ).result,
-        ).result
-        return arith.MulFOp(a, sigmoid).result
+                math.exp(arith.negf(a)),
+            ),
+        )
+        return arith.mulf(a, sigmoid)
 
     return silu_op
 
@@ -264,10 +264,10 @@ def get_softmax(a: ir.Value, out: ir.Value) -> ir.Value:
 
     reduced_shape = list(a.type.shape)
     reduced_shape[-1] = 1
-    max_uninit = tensor.EmptyOp(reduced_shape, elty)
+    max_uninit = tensor.empty(reduced_shape, elty)
 
-    neg_inf = arith.ConstantOp(elty, float("-inf"))
-    max_init = linalg.fill(neg_inf, outs=[max_uninit.result])
+    neg_inf = arith.constant(elty, float("-inf"))
+    max_init = linalg.fill(neg_inf, outs=[max_uninit])
 
     reduce_map = affine_map(
         a.type.rank,
@@ -288,33 +288,33 @@ def get_softmax(a: ir.Value, out: ir.Value) -> ir.Value:
         iterator_types,
     )
     def compute_max(val, acc):
-        return arith.MaximumFOp(val, acc).result
+        return arith.maximumf(val, acc)
 
-    shifted_uninit = tensor.EmptyOp(a.type.shape, elty)
+    shifted_uninit = tensor.empty(a.type.shape, elty)
 
     @linalg.generic(
         [a, compute_max],
-        [shifted_uninit.result],
+        [shifted_uninit],
         [identity_map, reduce_map, identity_map],
         [parallel] * a.type.rank,
     )
     def subtract_max(val, max_val, _out):
-        return arith.SubFOp(val, max_val).result
+        return arith.subf(val, max_val)
 
-    exp_uninit = tensor.EmptyOp(a.type.shape, elty)
+    exp_uninit = tensor.empty(a.type.shape, elty)
 
     @linalg.generic(
         [subtract_max],
-        [exp_uninit.result],
+        [exp_uninit],
         [identity_map, identity_map],
         [parallel] * a.type.rank,
     )
     def compute_exp(val, _out):
         return math.exp(val)
 
-    sum_uninit = tensor.EmptyOp(reduced_shape, elty)
-    zero = arith.ConstantOp(elty, 0.0)
-    sum_init = linalg.fill(zero, outs=[sum_uninit.result])
+    sum_uninit = tensor.empty(reduced_shape, elty)
+    zero = arith.constant(elty, 0.0)
+    sum_init = linalg.fill(zero, outs=[sum_uninit])
 
     @linalg.generic(
         [compute_exp],
@@ -323,7 +323,7 @@ def get_softmax(a: ir.Value, out: ir.Value) -> ir.Value:
         iterator_types,
     )
     def compute_sum(val, acc):
-        return arith.AddFOp(val, acc).result
+        return arith.addf(val, acc)
 
     @linalg.generic(
         [compute_exp, compute_sum],
@@ -332,7 +332,7 @@ def get_softmax(a: ir.Value, out: ir.Value) -> ir.Value:
         [parallel] * a.type.rank,
     )
     def divide_by_sum(exp_val, sum_val, _out):
-        return arith.DivFOp(exp_val, sum_val).result
+        return arith.divf(exp_val, sum_val)
 
     return divide_by_sum
 
@@ -403,8 +403,8 @@ def get_linear(a: ir.Value, w: ir.Value, b: ir.Value, out: ir.Value) -> ir.Value
         iterator_types,
     )
     def matmul_op(a_elem, w_elem, out_elem):
-        prod = arith.MulFOp(a_elem, w_elem).result
-        return arith.AddFOp(out_elem, prod).result
+        prod = arith.mulf(a_elem, w_elem)
+        return arith.addf(out_elem, prod)
 
     out_dims = [ir.AffineDimExpr.get(d) for d in range(out_rank)]
     b_map = affine_map(out_rank, [out_dims[-1]])
@@ -419,7 +419,7 @@ def get_linear(a: ir.Value, w: ir.Value, b: ir.Value, out: ir.Value) -> ir.Value
         bias_iterator_types,
     )
     def add_bias_op(matmul_elem, b_elem, _out):
-        return arith.AddFOp(matmul_elem, b_elem).result
+        return arith.addf(matmul_elem, b_elem)
 
     return add_bias_op
 
@@ -430,17 +430,17 @@ def get_l2_norm(a: ir.Value, out: ir.Value, eps: float = 1e-5) -> ir.Value:
     # Broadcast epsilon scalar to tensor with reduced shape
     reduced_shape = list(a.type.shape)
     reduced_shape[-1] = 1
-    eps_const = arith.ConstantOp(elty, eps)
-    eps_tensor_uninit = tensor.EmptyOp(reduced_shape, elty)
+    eps_const = arith.constant(elty, eps)
+    eps_tensor_uninit = tensor.empty(reduced_shape, elty)
     eps_tensor = linalg.fill(eps_const, outs=[eps_tensor_uninit])
     # Square the input
-    squared_input = tensor.EmptyOp(a.type.shape, elty)
+    squared_input = tensor.empty(a.type.shape, elty)
     sqr = get_sqr(a, squared_input)
 
     # Compute mean along last dimension
     reduced_shape = list(a.type.shape)
     reduced_shape[-1] = 1
-    mean_uninit = tensor.EmptyOp(reduced_shape, elty)
+    mean_uninit = tensor.empty(reduced_shape, elty)
 
     mean = get_mean(sqr, mean_uninit)
     mean_plus_eps = get_add(mean, eps_tensor, mean_uninit)
@@ -487,11 +487,11 @@ def get_polar(abs: ir.Value, angle: ir.Value, out: ir.Value) -> ir.Value:
         [parallel] * rank,
     )
     def polar_convert(abs_val, angle_val, _out):
-        cos_val = math.CosOp(angle_val).result
-        sin_val = math.SinOp(angle_val).result
-        real_part = arith.MulFOp(abs_val, cos_val).result
-        imag_part = arith.MulFOp(abs_val, sin_val).result
-        return complex.CreateOp(ir.ComplexType.get(elty), real_part, imag_part).result
+        cos_val = math.cos(angle_val)
+        sin_val = math.sin(angle_val)
+        real_part = arith.mulf(abs_val, cos_val)
+        imag_part = arith.mulf(abs_val, sin_val)
+        return complex.create_(ir.ComplexType.get(elty), real_part, imag_part)
 
     return polar_convert
 
@@ -510,7 +510,7 @@ def get_outer(a: ir.Value, b: ir.Value, out: ir.Value) -> ir.Value:
         [parallel, parallel],
     )
     def outer_product(a_val, b_val, _out):
-        return arith.MulFOp(a_val, b_val).result
+        return arith.mulf(a_val, b_val)
 
     return outer_product
 
@@ -549,8 +549,7 @@ def get_complex_mul(a: ir.Value, b: ir.Value, out: ir.Value) -> ir.Value:
         [parallel] * rank_out,
     )
     def complex_mul_op(a_val, b_val, _out):
-        result = complex.MulOp(a_val, b_val).result
-        return result
+        return complex.mul(a_val, b_val)
 
     return complex_mul_op
 
@@ -578,9 +577,7 @@ def get_rotary_emb(
 
     # View xq as complex: (batch, seq_len, n_heads, head_dim//2, 2) -> (batch, seq_len, n_heads, head_dim//2) complex
     xq_complex_shape = [batch, seq_len, n_heads, head_dim // 2]
-    xq_complex_uninit = tensor.EmptyOp(
-        xq_complex_shape, ir.ComplexType.get(elty)
-    ).result
+    xq_complex_uninit = tensor.empty(xq_complex_shape, ir.ComplexType.get(elty))
     xq_complex = get_view_as_complex(xq_reshaped, xq_complex_uninit)
 
     # same for xk
@@ -595,22 +592,20 @@ def get_rotary_emb(
     )
 
     xk_complex_shape = [batch, seq_len, n_kv_heads, head_dim // 2]
-    xk_complex_uninit = tensor.EmptyOp(
-        xk_complex_shape, ir.ComplexType.get(elty)
-    ).result
+    xk_complex_uninit = tensor.empty(xk_complex_shape, ir.ComplexType.get(elty))
     xk_complex = get_view_as_complex(xk_reshaped, xk_complex_uninit)
 
     # Reshape freqs_cis for broadcasting: (seq_len, head_dim//2) -> (1, seq_len, 1, head_dim//2)
     freqs_broadcast_shape = [1, seq_len, 1, head_dim // 2]
-    freqs_broadcast_uninit = tensor.EmptyOp(freqs_broadcast_shape, elty).result
+    freqs_broadcast_uninit = tensor.empty(freqs_broadcast_shape, elty)
     freqs_broadcast = get_reshape_for_broadcast(
         freqs_cis, xq_complex, freqs_broadcast_uninit
     )
 
     # cast freqs_broadcast to complex
-    freqs_broadcast_complex_uninit = tensor.EmptyOp(
+    freqs_broadcast_complex_uninit = tensor.empty(
         freqs_broadcast_shape, ir.ComplexType.get(elty)
-    ).result
+    )
 
     d0, d1, d2, d3 = [ir.AffineDimExpr.get(i) for i in range(4)]
     indexing_maps = [
@@ -626,28 +621,24 @@ def get_rotary_emb(
     )
     def real_to_complex(r, out):
         zero = arith.constant(elty, 0.0)
-        return complex.CreateOp(ir.ComplexType.get(elty), r, zero).result
+        return complex.create_(ir.ComplexType.get(elty), r, zero)
 
     freqs_broadcast_complex = real_to_complex
 
     # Multiply xq_complex with freqs_broadcast_complex
-    xq_rotated_uninit = tensor.EmptyOp(
-        xq_complex_shape, ir.ComplexType.get(elty)
-    ).result
+    xq_rotated_uninit = tensor.empty(xq_complex_shape, ir.ComplexType.get(elty))
     xq_rotated = get_complex_mul(xq_complex, freqs_broadcast_complex, xq_rotated_uninit)
 
-    xk_rotated_uninit = tensor.EmptyOp(
-        xk_complex_shape, ir.ComplexType.get(elty)
-    ).result
+    xk_rotated_uninit = tensor.empty(xk_complex_shape, ir.ComplexType.get(elty))
     xk_rotated = get_complex_mul(xk_complex, freqs_broadcast_complex, xk_rotated_uninit)
 
     # view as real
     xq_real_shape = [batch, seq_len, n_heads, head_dim // 2, 2]
-    xq_real_uninit = tensor.EmptyOp(xq_real_shape, elty).result
+    xq_real_uninit = tensor.empty(xq_real_shape, elty)
     xq_real = get_view_as_real(xq_rotated, xq_real_uninit)
 
     xk_real_shape = [batch, seq_len, n_kv_heads, head_dim // 2, 2]
-    xk_real_uninit = tensor.EmptyOp(xk_real_shape, elty).result
+    xk_real_uninit = tensor.empty(xk_real_shape, elty)
     xk_real = get_view_as_real(xk_rotated, xk_real_uninit)
 
     # flatten back to original shape
@@ -712,8 +703,7 @@ def get_view_as_complex(x: ir.Value, out: ir.Value) -> ir.Value:
         [parallel] * rank_out,
     )
     def view_as_complex_op(r, i, _out):
-        cplx = complex.CreateOp(ir.ComplexType.get(elty), r, i).result
-        return cplx
+        return complex.create_(ir.ComplexType.get(elty), r, i)
 
     return view_as_complex_op
 
@@ -743,7 +733,7 @@ def get_view_as_real(x: ir.Value, out: ir.Value) -> ir.Value:
         [parallel] * rank,
     )
     def write_real(cplx, _out):
-        return complex.ReOp(cplx).result
+        return complex.re(cplx)
 
     @linalg.generic(
         [x],
@@ -752,7 +742,7 @@ def get_view_as_real(x: ir.Value, out: ir.Value) -> ir.Value:
         [parallel] * rank,
     )
     def write_imag(cplx, _out):
-        return complex.ImOp(cplx).result
+        return complex.im(cplx)
 
     return write_imag
 
@@ -778,8 +768,8 @@ def get_attention(
     # Q, K, V projections
     # xq = linear(x, wq) -> (batch, seq_len, n_heads * head_dim)
     xq_shape = [batch, seq_len, n_heads * head_dim]
-    xq_uninit = tensor.EmptyOp(xq_shape, elty).result
-    bq_zeros = tensor.EmptyOp([n_heads * head_dim], elty).result
+    xq_uninit = tensor.empty(xq_shape, elty)
+    bq_zeros = tensor.empty([n_heads * head_dim], elty)
     zero = arith.constant(elty, 0.0)
     bq = linalg.fill(zero, outs=[bq_zeros])
     xq_flat = get_linear(x, wq, bq, xq_uninit)
@@ -797,8 +787,8 @@ def get_attention(
 
     # xk = linear(x, wk) -> (batch, seq_len, n_kv_heads * head_dim)
     xk_shape = [batch, seq_len, n_kv_heads * head_dim]
-    xk_uninit = tensor.EmptyOp(xk_shape, elty).result
-    bk_zeros = tensor.EmptyOp([n_kv_heads * head_dim], elty).result
+    xk_uninit = tensor.empty(xk_shape, elty)
+    bk_zeros = tensor.empty([n_kv_heads * head_dim], elty)
     bk = linalg.fill(zero, outs=[bk_zeros])
     xk_flat = get_linear(x, wk, bk, xk_uninit)
 
@@ -815,8 +805,8 @@ def get_attention(
 
     # xv = linear(x, wv) -> (batch, seq_len, n_kv_heads * head_dim)
     xv_shape = [batch, seq_len, n_kv_heads * head_dim]
-    xv_uninit = tensor.EmptyOp(xv_shape, elty).result
-    bv_zeros = tensor.EmptyOp([n_kv_heads * head_dim], elty).result
+    xv_uninit = tensor.empty(xv_shape, elty)
+    bv_zeros = tensor.empty([n_kv_heads * head_dim], elty)
     bv = linalg.fill(zero, outs=[bv_zeros])
     xv_flat = get_linear(x, wv, bv, xv_uninit)
 
@@ -832,21 +822,17 @@ def get_attention(
     )
 
     # Apply rotary embeddings
-    xq_rot_uninit = tensor.EmptyOp([batch, seq_len, n_heads, head_dim], elty).result
-    xk_rot_uninit = tensor.EmptyOp([batch, seq_len, n_kv_heads, head_dim], elty).result
+    xq_rot_uninit = tensor.empty([batch, seq_len, n_heads, head_dim], elty)
+    xk_rot_uninit = tensor.empty([batch, seq_len, n_kv_heads, head_dim], elty)
     get_rotary_emb(xq, xk, freqs_cis, xq_rot_uninit, xk_rot_uninit)
     xq_rot = xq_rot_uninit
     xk_rot = xk_rot_uninit
 
     # Repeat K/V if using GQA (n_kv_heads < n_heads)
     if n_rep > 1:
-        keys_repeated_uninit = tensor.EmptyOp(
-            [batch, seq_len, n_heads, head_dim], elty
-        ).result
+        keys_repeated_uninit = tensor.empty([batch, seq_len, n_heads, head_dim], elty)
         keys = get_repeat_kv(xk_rot, n_rep, keys_repeated_uninit)
-        values_repeated_uninit = tensor.EmptyOp(
-            [batch, seq_len, n_heads, head_dim], elty
-        ).result
+        values_repeated_uninit = tensor.empty([batch, seq_len, n_heads, head_dim], elty)
         values = get_repeat_kv(xv, n_rep, values_repeated_uninit)
     else:
         keys = xk_rot
@@ -854,7 +840,7 @@ def get_attention(
 
     # Transpose for attention: (batch, n_heads, seq_len, head_dim)
     xq_t_shape = [batch, n_heads, seq_len, head_dim]
-    xq_t = tensor.EmptyOp(xq_t_shape, elty).result
+    xq_t = tensor.empty(xq_t_shape, elty)
 
     # Permute [0, 2, 1, 3]
     d0, d1, d2, d3 = [ir.AffineDimExpr.get(i) for i in range(4)]
@@ -873,7 +859,7 @@ def get_attention(
     xq_transposed = transpose_xq
 
     # Transpose keys and values similarly
-    keys_t = tensor.EmptyOp(xq_t_shape, elty).result
+    keys_t = tensor.empty(xq_t_shape, elty)
 
     @linalg.generic(
         [keys],
@@ -886,7 +872,7 @@ def get_attention(
 
     keys_transposed = transpose_k
 
-    values_t = tensor.EmptyOp(xq_t_shape, elty).result
+    values_t = tensor.empty(xq_t_shape, elty)
 
     @linalg.generic(
         [values],
@@ -904,7 +890,7 @@ def get_attention(
     # keys_transposed: (batch, n_heads, seq_len, head_dim) -> transpose to (batch, n_heads, head_dim, seq_len)
     # scores: (batch, n_heads, seq_len, seq_len)
     scores_shape = [batch, n_heads, seq_len, seq_len]
-    scores_uninit = tensor.EmptyOp(scores_shape, elty).result
+    scores_uninit = tensor.empty(scores_shape, elty)
     scores_zeroed = linalg.fill(zero, outs=[scores_uninit])
 
     # Batched matmul with transpose
@@ -920,15 +906,15 @@ def get_attention(
         [parallel, parallel, parallel, parallel, reduction],
     )
     def compute_scores(q_val, k_val, score_val):
-        prod = arith.MulFOp(q_val, k_val).result
-        return arith.AddFOp(score_val, prod).result
+        prod = arith.mulf(q_val, k_val)
+        return arith.addf(score_val, prod)
 
     scores_raw = compute_scores
 
     # Scale by 1/sqrt(head_dim)
     scale_val = 1.0 / pymath.sqrt(head_dim)
     scale_const = arith.constant(elty, scale_val)
-    scores_scaled_uninit = tensor.EmptyOp(scores_shape, elty).result
+    scores_scaled_uninit = tensor.empty(scores_shape, elty)
 
     d0, d1, d2, d3 = [ir.AffineDimExpr.get(i) for i in range(4)]
     identity_map = affine_map(4, [d0, d1, d2, d3])
@@ -940,19 +926,19 @@ def get_attention(
         [parallel] * 4,
     )
     def scale_scores(score, _out):
-        return arith.MulFOp(score, scale_const).result
+        return arith.mulf(score, scale_const)
 
     scores_scaled = scale_scores
 
     # Apply mask if provided (add mask to scores)
     if mask is not None:
-        scores_masked_uninit = tensor.EmptyOp(scores_shape, elty).result
+        scores_masked_uninit = tensor.empty(scores_shape, elty)
         scores_final = get_add(scores_scaled, mask, scores_masked_uninit)
     else:
         scores_final = scores_scaled
 
     # Apply softmax
-    scores_softmax_uninit = tensor.EmptyOp(scores_shape, elty).result
+    scores_softmax_uninit = tensor.empty(scores_shape, elty)
     attn_weights = get_softmax(scores_final, scores_softmax_uninit)
 
     # Compute output: matmul(attn_weights, values)
@@ -960,7 +946,7 @@ def get_attention(
     # values_transposed: (batch, n_heads, seq_len, head_dim)
     # output: (batch, n_heads, seq_len, head_dim)
     attn_out_shape = [batch, n_heads, seq_len, head_dim]
-    attn_out_uninit = tensor.EmptyOp(attn_out_shape, elty).result
+    attn_out_uninit = tensor.empty(attn_out_shape, elty)
     attn_out_zeroed = linalg.fill(zero, outs=[attn_out_uninit])
 
     b, h, s1, s2, d = [ir.AffineDimExpr.get(i) for i in range(5)]
@@ -975,14 +961,14 @@ def get_attention(
         [parallel, parallel, parallel, parallel, reduction],
     )
     def compute_attn_out(attn_val, v_val, out_val):
-        prod = arith.MulFOp(attn_val, v_val).result
-        return arith.AddFOp(out_val, prod).result
+        prod = arith.mulf(attn_val, v_val)
+        return arith.addf(out_val, prod)
 
     attn_out = compute_attn_out
 
     # Transpose back: (batch, n_heads, seq_len, head_dim) -> (batch, seq_len, n_heads, head_dim)
     attn_out_perm_shape = [batch, seq_len, n_heads, head_dim]
-    attn_out_perm = tensor.EmptyOp(attn_out_perm_shape, elty).result
+    attn_out_perm = tensor.empty(attn_out_perm_shape, elty)
 
     d0, d1, d2, d3 = [ir.AffineDimExpr.get(i) for i in range(4)]
     from_map = affine_map(4, [d0, d1, d2, d3])
@@ -1009,7 +995,7 @@ def get_attention(
     )
 
     # Output projection
-    bo_zeros = tensor.EmptyOp([dim], elty).result
+    bo_zeros = tensor.empty([dim], elty)
     bo = linalg.fill(zero, outs=[bo_zeros])
     output_final = get_linear(attn_out_flat, wo, bo, out)
 
@@ -1706,19 +1692,19 @@ def test_feed_forward():
             )
             def feed_forward(x, w1, b1, w2, b2, w3, b3, out):
                 # Compute hidden = linear(x, w1, b1)
-                hidden_uninit = tensor.EmptyOp(hidden_type.shape, elty).result
+                hidden_uninit = tensor.empty(hidden_type.shape, elty)
                 hidden = get_linear(x, w1, b1, hidden_uninit)
 
                 # Compute hidden_silu = silu(hidden)
-                hidden_silu_uninit = tensor.EmptyOp(hidden_type.shape, elty).result
+                hidden_silu_uninit = tensor.empty(hidden_type.shape, elty)
                 hidden_silu = get_silu(hidden, hidden_silu_uninit)
 
                 # Compute gate = linear(x, w3, b3)
-                gate_uninit = tensor.EmptyOp(hidden_type.shape, elty).result
+                gate_uninit = tensor.empty(hidden_type.shape, elty)
                 gate = get_linear(x, w3, b3, gate_uninit)
 
                 # Compute activated = hidden_silu * gate
-                activated_uninit = tensor.EmptyOp(hidden_type.shape, elty).result
+                activated_uninit = tensor.empty(hidden_type.shape, elty)
                 activated = get_mul(hidden_silu, gate, activated_uninit)
 
                 # Compute out = linear(activated, w2, b2)
