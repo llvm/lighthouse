@@ -13,6 +13,7 @@ __all__ = [
     "get_packed_arg",
     "memref_to_ctype",
     "memrefs_to_packed_args",
+    "mlir_type_to_torch_dtype",
     "torch_to_memref",
     "torch_to_packed_args",
 ]
