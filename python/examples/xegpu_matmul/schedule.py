@@ -25,48 +25,41 @@ def get_schedule_module(
     mod = ir.Module.create()
     mod.operation.attributes["transform.with_named_sequence"] = ir.UnitAttr.get()
     with ir.InsertionPoint(mod.body):
-        named_sequence = transform.NamedSequenceOp(
+        named_sequence = transform.named_sequence(
             "__transform_main",
             [transform.AnyOpType.get()],  # input types
             [],  # output types
             arg_attrs=[{"transform.readonly": ir.UnitAttr.get()}],
         )
         with ir.InsertionPoint(named_sequence.body):
+            # match the payload module
+            anytype = transform.AnyOpType.get()
+            func = match(named_sequence.bodyTarget, ops={"func.func"})
+            payload_mod = transform.get_parent_op(
+                anytype,
+                func,
+                op_name="builtin.module",
+                deduplicate=True,
+            )
             xegpu_matmul_transform_schedule(
-                named_sequence,
+                payload_mod,
                 has_bias=has_bias,
                 has_relu=has_relu,
                 dump_kernel=dump_kernel,
                 params=params,
             )
-        # placeholder for parameter division op
-        i32 = ir.IntegerType.get_signless(32)
-        paramInt32Type = transform.ParamType.get(i32)
-        div_named_sequence = transform.NamedSequenceOp(
-            "param_div",
-            [paramInt32Type, paramInt32Type],  # input types
-            [paramInt32Type],  # output types
-            arg_attrs=[
-                {"transform.readonly": ir.UnitAttr.get()},
-                {"transform.readonly": ir.UnitAttr.get()},
-            ],
-        )
-        with ir.InsertionPoint(div_named_sequence.body):
-            p = transform.ParamConstantOp(paramInt32Type, ir.IntegerAttr.get(i32, 1))
-            transform.YieldOp(p)
 
     return mod
 
 
 def xegpu_matmul_transform_schedule(
-    named_sequence: transform.NamedSequenceOp,
+    mod: ir.Value,
     has_bias: bool = False,
     has_relu: bool = False,
     dump_kernel: str = "",
     params: Optional[dict] = None,
 ):
     """Transform schedule for matmul-like payload."""
-    mod = bundle_header(named_sequence)
     mod, interrupted = bundle_xepu_matmul_schedule(
         mod,
         has_bias=has_bias,
@@ -75,27 +68,14 @@ def xegpu_matmul_transform_schedule(
         params=params,
     )
     if interrupted:
-        transform.YieldOp()
+        transform.yield_()
         return
 
     mod, interrupted = bundle_xegpu_to_binary(
         mod,
         dump_kernel=dump_kernel,
     )
-    transform.YieldOp()
-
-
-def bundle_header(named_sequence: transform.NamedSequenceOp):
-    """Matches the payload module."""
-    anytype = transform.AnyOpType.get()
-    func = match(named_sequence.bodyTarget, ops={"func.func"})
-    mod = transform.get_parent_op(
-        anytype,
-        func,
-        op_name="builtin.module",
-        deduplicate=True,
-    )
-    return mod
+    transform.yield_()
 
 
 def bundle_xepu_matmul_schedule(
@@ -217,7 +197,7 @@ def bundle_xepu_matmul_schedule(
 
     # convert forall to parallel
     wg_loop = match(mod, ops={"scf.forall"})
-    wg_loop = loop.ForallToParallelOp([anytype], wg_loop)
+    wg_loop = loop.loop_forall_to_parallel([anytype], wg_loop)
     func = transform.get_parent_op(anytype, wg_loop)
 
     # convert to scf.parallel to gpu.launch
@@ -257,9 +237,9 @@ def bundle_xepu_matmul_schedule(
     # add layouts to DPAS op operands
     k_loop = match(gpu_func, ops={"scf.for"})
     dpas_op = match(k_loop, ops={"xegpu.dpas"})
-    tile_a = transform.GetOperandOp(anyvalue, dpas_op, [0])
-    tile_b = transform.GetOperandOp(anyvalue, dpas_op, [1])
-    tile_c = transform.GetOperandOp(anyvalue, dpas_op, [2])
+    tile_a = transform.get_operand(anyvalue, dpas_op, [0])
+    tile_b = transform.get_operand(anyvalue, dpas_op, [1])
+    tile_c = transform.get_operand(anyvalue, dpas_op, [2])
 
     def convert_layout(value, input, target):
         xegpu.convert_layout(
