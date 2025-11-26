@@ -15,9 +15,7 @@ from mlir import ir, passmanager
 from lighthouse.ingress import torch as torch_ingress
 
 project_root = Path(__file__).parent.parent.parent.parent
-kernels_as_torch_folder = (
-    project_root / "third_party" / "KernelBench" / "KernelBench"
-)
+kernels_as_torch_folder = project_root / "third_party" / "KernelBench" / "KernelBench"
 
 if not kernels_as_torch_folder.is_dir():
     print(
