@@ -18,7 +18,15 @@ from mlir.runtime.np_to_memref import (
 )
 from mlir.execution_engine import ExecutionEngine
 
-
+from ref_model import (
+    Attention,
+    ModelArgs,
+    reshape_for_broadcast,
+    apply_rotary_emb,
+    repeat_kv,
+    TransformerBlock,
+    Transformer,
+)
 from lighthouse import utils as lh_utils
 
 
@@ -29,22 +37,6 @@ def with_mlir_ctx_and_location(func):
             return func(*args, **kwargs)
 
     return wrapper
-
-
-@dataclass
-class ModelArgs:
-    dim: int = 4096
-    n_layers: int = 32
-    n_heads: int = 32
-    n_kv_heads: Optional[int] = None
-    vocab_size: int = -1
-    multiple_of: int = 256  # make SwiGLU hidden layer size multiple of large power of 2
-    ffn_dim_multiplier: Optional[float] = None
-    norm_eps: float = 1e-5
-    rope_theta: float = 500000
-
-    max_batch_size: int = 32
-    max_seq_len: int = 2048
 
 
 def affine_map(dim_count, exprs, *, symb_count=0):
@@ -118,14 +110,14 @@ def create_schedule() -> ir.Module:
     return schedule
 
 
-def bufferize_module(ctx: ir.Context, kernel: ir.Module) -> None:
+def bufferize_module(kernel: ir.Module) -> None:
     pm = PassManager("builtin.module")
     pm.add("one-shot-bufferize{bufferize-function-boundaries}")
     pm.run(kernel.operation)
 
 
 def apply_schedule(kernel: ir.Module, schedule: ir.Module) -> None:
-    bufferize_module(kernel.context, kernel)
+    bufferize_module(kernel)
     interpreter.apply_named_sequence(
         payload_root=kernel,
         transform_root=schedule.body.operations[0],
@@ -994,133 +986,129 @@ def get_attention(
     return output_final
 
 
-#### Test cases #####
+def get_transformer_block(
+    args: ModelArgs,
+    x: ir.Value,
+    wq: ir.Value,
+    wk: ir.Value,
+    wv: ir.Value,
+    wo: ir.Value,
+    freqs_cis: ir.Value,
+    attn_mask: ir.Value,
+    w1: ir.Value,
+    b1: ir.Value,
+    w2: ir.Value,
+    b2: ir.Value,
+    w3: ir.Value,
+    b3: ir.Value,
+    out: ir.Value,
+) -> ir.Value:
+    elty = x.type.element_type
 
+    x_norm_uninit = tensor.empty(x.type.shape, elty)
+    x_norm = get_l2_norm(x, x_norm_uninit, eps=args.norm_eps)
 
-def reshape_for_broadcast(freqs_cis: torch.Tensor, x: torch.Tensor):
-    ndim = x.ndim
-    assert 0 <= 1 < ndim
-    assert freqs_cis.shape == (x.shape[1], x.shape[-1])
-    shape = [d if i == 1 or i == ndim - 1 else 1 for i, d in enumerate(x.shape)]
-    return freqs_cis.view(*shape)
-
-
-def rotary_emb_ref(
-    xq: torch.Tensor,
-    xk: torch.Tensor,
-    freqs_cis: torch.Tensor,
-) -> Tuple[torch.Tensor, torch.Tensor]:
-    xq_ = torch.view_as_complex(xq.float().reshape(*xq.shape[:-1], -1, 2))
-    xk_ = torch.view_as_complex(xk.float().reshape(*xk.shape[:-1], -1, 2))
-    freqs_cis = reshape_for_broadcast(freqs_cis, xq_)
-    xq_out = torch.view_as_real(xq_ * freqs_cis).flatten(3)
-    xk_out = torch.view_as_real(xk_ * freqs_cis).flatten(3)
-    return xq_out.type_as(xq), xk_out.type_as(xk)
-
-
-def repeat_kv(x: torch.Tensor, n_rep: int) -> torch.Tensor:
-    """torch.repeat_interleave(x, dim=2, repeats=n_rep)"""
-    bs, slen, n_kv_heads, head_dim = x.shape
-    if n_rep == 1:
-        return x
-    return (
-        x[:, :, :, None, :]
-        .expand(bs, slen, n_kv_heads, n_rep, head_dim)
-        .reshape(bs, slen, n_kv_heads * n_rep, head_dim)
+    attn_out_uninit = tensor.empty(x.type.shape, elty)
+    attn_out = get_attention(
+        args,
+        x_norm,
+        wq,
+        wk,
+        wv,
+        wo,
+        freqs_cis,
+        attn_mask,
+        attn_out_uninit,
     )
 
+    h = get_add(x, attn_out, attn_out_uninit)
 
-# Attention implementation without fairscale parrallel linear layers
-class StandaloneAttention(torch.nn.Module):
-    def __init__(self, args: ModelArgs):
-        super().__init__()
-        self.n_kv_heads = args.n_heads if args.n_kv_heads is None else args.n_kv_heads
-        self.dim = args.dim
-        self.n_heads = args.n_heads
-        self.n_rep = self.n_heads // self.n_kv_heads
-        self.head_dim = args.dim // args.n_heads
+    h_norm_uninit = tensor.empty(h.type.shape, elty)
+    ffn_norm = get_l2_norm(h, h_norm_uninit, eps=args.norm_eps)
 
-        self.wq = torch.nn.Linear(
-            args.dim,
-            args.n_heads * self.head_dim,
-            bias=False,
+    hidden_dim = int(2 * (4 * x.type.shape[-1]) / 3)
+    if args.ffn_dim_multiplier is not None:
+        hidden_dim = int(args.ffn_dim_multiplier * hidden_dim)
+    hidden_dim = args.multiple_of * (
+        (hidden_dim + args.multiple_of - 1) // args.multiple_of
+    )
+
+    ffn_intermediate_shape = list(x.type.shape)
+    ffn_intermediate_shape[-1] = hidden_dim
+
+    ffn_w1_uninit = tensor.empty(ffn_intermediate_shape, elty)
+    ffn_w1_out = get_linear(ffn_norm, w1, b1, ffn_w1_uninit)
+    silu_out = get_silu(ffn_w1_out, ffn_w1_uninit)
+
+    ffn_w3_uninit = tensor.empty(ffn_intermediate_shape, elty)
+    ffn_w3_out = get_linear(ffn_norm, w3, b3, ffn_w3_uninit)
+    gated = get_mul(silu_out, ffn_w3_out, ffn_w3_uninit)
+
+    ffn_output = get_linear(gated, w2, b2, out)
+    final_out = get_add(h, ffn_output, out)
+
+    return final_out
+
+
+def get_transformer(
+    args: ModelArgs,
+    x: ir.Value,
+    freqs_cis: ir.Value,
+    mask: ir.Value,
+    layer_weights: list,
+    out: ir.Value,
+) -> ir.Value:
+    elty = x.type.element_type
+    h = x
+
+    # Apply each transformer block sequentially
+    for layer_id in range(args.n_layers):
+        weights = layer_weights[layer_id]
+
+        # Create output tensor for this layer
+        layer_out_uninit = tensor.empty(h.type.shape, elty)
+
+        # Apply transformer block
+        h = get_transformer_block(
+            args,
+            h,
+            weights["wq"],
+            weights["wk"],
+            weights["wv"],
+            weights["wo"],
+            freqs_cis,
+            mask,
+            weights["w1"],
+            weights["b1"],
+            weights["w2"],
+            weights["b2"],
+            weights["w3"],
+            weights["b3"],
+            layer_out_uninit,
         )
-        self.wk = torch.nn.Linear(
-            args.dim,
-            self.n_kv_heads * self.head_dim,
-            bias=False,
-        )
-        self.wv = torch.nn.Linear(
-            args.dim,
-            self.n_kv_heads * self.head_dim,
-            bias=False,
-        )
-        self.wo = torch.nn.Linear(
-            args.n_heads * self.head_dim,
-            args.dim,
-            bias=False,
-        )
 
-        self.cache_k = torch.zeros(
-            (
-                args.max_batch_size,
-                args.max_seq_len,
-                self.n_kv_heads,
-                self.head_dim,
-            )
-        )
-        self.cache_v = torch.zeros(
-            (
-                args.max_batch_size,
-                args.max_seq_len,
-                self.n_kv_heads,
-                self.head_dim,
-            )
-        )
+    # Apply final norm
+    final_norm_uninit = tensor.empty(h.type.shape, elty)
+    final_norm = get_l2_norm(h, final_norm_uninit, eps=args.norm_eps)
 
-    def forward(
-        self,
-        x: torch.Tensor,
-        start_pos: int,
-        freqs_cis: torch.Tensor,
-        mask: Optional[torch.Tensor],
-    ):
-        bsz, seqlen, _ = x.shape
-        xq, xk, xv = self.wq(x), self.wk(x), self.wv(x)
+    # Copy to output
+    rank = len(h.type.shape)
+    dims = [ir.AffineDimExpr.get(i) for i in range(rank)]
+    id_map = affine_map(rank, dims)
 
-        xq = xq.view(bsz, seqlen, self.n_heads, self.head_dim)
-        xk = xk.view(bsz, seqlen, self.n_kv_heads, self.head_dim)
-        xv = xv.view(bsz, seqlen, self.n_kv_heads, self.head_dim)
+    @linalg.generic(
+        [final_norm],
+        [out],
+        [id_map, id_map],
+        [parallel] * rank,
+    )
+    def copy_op(val, _out):
+        return val
 
-        xq, xk = rotary_emb_ref(xq, xk, freqs_cis=freqs_cis)
+    return copy_op
 
-        self.cache_k = self.cache_k.to(xq)
-        self.cache_v = self.cache_v.to(xq)
 
-        self.cache_k[:bsz, start_pos : start_pos + seqlen] = xk
-        self.cache_v[:bsz, start_pos : start_pos + seqlen] = xv
-
-        keys = self.cache_k[:bsz, : start_pos + seqlen]
-        values = self.cache_v[:bsz, : start_pos + seqlen]
-
-        # repeat k/v heads if n_kv_heads < n_heads
-        keys = repeat_kv(
-            keys, self.n_rep
-        )  # (bs, cache_len + seqlen, n_heads, head_dim)
-        values = repeat_kv(
-            values, self.n_rep
-        )  # (bs, cache_len + seqlen, n_heads, head_dim)
-
-        xq = xq.transpose(1, 2)  # (bs, n_heads, seqlen, head_dim)
-        keys = keys.transpose(1, 2)  # (bs, n_heads, cache_len + seqlen, head_dim)
-        values = values.transpose(1, 2)  # (bs, n_heads, cache_len + seqlen, head_dim)
-        scores = torch.matmul(xq, keys.transpose(2, 3)) / pymath.sqrt(self.head_dim)
-        if mask is not None:
-            scores = scores + mask  # (bs, n_heads, seqlen, cache_len + seqlen)
-        scores = torch.nn.functional.softmax(scores.float(), dim=-1).type_as(xq)
-        output = torch.matmul(scores, values)  # (bs, n_heads, seqlen, head_dim)
-        output = output.transpose(1, 2).contiguous().view(bsz, seqlen, -1)
-        return self.wo(output)
+#### Test cases #####
 
 
 references = {
@@ -1139,7 +1127,7 @@ references = {
     get_repeat_kv: repeat_kv,
     get_l2_norm: lambda x, eps: x
     * torch.rsqrt(torch.mean(x.pow(2), dim=-1, keepdim=True) + eps),
-    get_rotary_emb: rotary_emb_ref,
+    get_rotary_emb: apply_rotary_emb,
 }
 
 
@@ -1703,7 +1691,7 @@ def test_smoke_standalone_attention():
         max_seq_len=16,
     )
 
-    attention = StandaloneAttention(args)
+    attention = Attention(args)
 
     batch_size = 2
     seq_len = 4
@@ -1780,7 +1768,7 @@ def test_attention_fwd():
 
         return module
 
-    reference = StandaloneAttention(model_args)
+    reference = Attention(model_args)
 
     torch_dtype = torch.float32
     x = torch.randn(batch, seq_len, dim, dtype=torch_dtype)
@@ -1819,6 +1807,340 @@ def test_attention_fwd():
     args = lh_utils.memrefs_to_packed_args(
         [x_mem, wq_mem, wk_mem, wv_mem, wo_mem, freqs_cis_mem, mask_mem, out_mem]
     )
+    func_ptr(args)
+
+    assert torch.allclose(out, out_ref, rtol=0.01, atol=0.01, equal_nan=True)
+
+
+@with_mlir_ctx_and_location
+def test_transformer_block_fwd():
+    model_args = ModelArgs(
+        dim=32,
+        n_layers=1,
+        n_heads=4,
+        n_kv_heads=2,  # Test GQA
+        vocab_size=1000,
+        multiple_of=8,
+        norm_eps=1e-5,
+        max_batch_size=2,
+        max_seq_len=8,
+    )
+
+    batch = 2
+    seq_len = 4
+    dim = model_args.dim
+    n_heads = model_args.n_heads
+    n_kv_heads = model_args.n_kv_heads
+    head_dim = dim // n_heads
+
+    hidden_dim = int(2 * (4 * dim) / 3)
+    if model_args.ffn_dim_multiplier is not None:
+        hidden_dim = int(model_args.ffn_dim_multiplier * hidden_dim)
+    hidden_dim = model_args.multiple_of * (
+        (hidden_dim + model_args.multiple_of - 1) // model_args.multiple_of
+    )
+
+    def generate_module(elty, args):
+        module = ir.Module.create()
+        with ir.InsertionPoint(module.body):
+            x_type = ir.RankedTensorType.get([batch, seq_len, dim], elty)
+            wq_type = ir.RankedTensorType.get([n_heads * head_dim, dim], elty)
+            wk_type = ir.RankedTensorType.get([n_kv_heads * head_dim, dim], elty)
+            wv_type = ir.RankedTensorType.get([n_kv_heads * head_dim, dim], elty)
+            wo_type = ir.RankedTensorType.get([dim, n_heads * head_dim], elty)
+            freqs_cis_type = ir.RankedTensorType.get([seq_len, head_dim // 2], elty)
+            mask_type = ir.RankedTensorType.get(
+                [batch, n_heads, seq_len, seq_len], elty
+            )
+            w1_type = ir.RankedTensorType.get([hidden_dim, dim], elty)
+            b1_type = ir.RankedTensorType.get([hidden_dim], elty)
+            w2_type = ir.RankedTensorType.get([dim, hidden_dim], elty)
+            b2_type = ir.RankedTensorType.get([dim], elty)
+            w3_type = ir.RankedTensorType.get([hidden_dim, dim], elty)
+            b3_type = ir.RankedTensorType.get([hidden_dim], elty)
+            out_type = ir.RankedTensorType.get([batch, seq_len, dim], elty)
+
+            @func.FuncOp.from_py_func(
+                x_type,
+                wq_type,
+                wk_type,
+                wv_type,
+                wo_type,
+                freqs_cis_type,
+                mask_type,
+                w1_type,
+                b1_type,
+                w2_type,
+                b2_type,
+                w3_type,
+                b3_type,
+                out_type,
+                name="transformer_block_op",
+            )
+            def transformer_block_op(
+                x, wq, wk, wv, wo, freqs_cis, mask, w1, b1, w2, b2, w3, b3, out
+            ):
+                get_transformer_block(
+                    args,
+                    x,
+                    wq,
+                    wk,
+                    wv,
+                    wo,
+                    freqs_cis,
+                    mask,
+                    w1,
+                    b1,
+                    w2,
+                    b2,
+                    w3,
+                    b3,
+                    out,
+                )
+
+        return module
+
+    reference = TransformerBlock(layer_id=0, args=model_args)
+
+    torch_dtype = torch.float32
+    x = torch.randn(batch, seq_len, dim, dtype=torch_dtype)
+    freqs_cis_real = torch.randn(seq_len, head_dim // 2, dtype=torch_dtype)
+    freqs_cis_complex = torch.complex(freqs_cis_real, torch.zeros_like(freqs_cis_real))
+    mask = torch.full(
+        (batch, n_heads, seq_len, seq_len), float("-inf"), dtype=torch_dtype
+    )
+    mask = torch.triu(mask, diagonal=1)
+
+    with torch.no_grad():
+        # Extract weights from reference model
+        wq = reference.attention.wq.weight.data.clone()
+        wk = reference.attention.wk.weight.data.clone()
+        wv = reference.attention.wv.weight.data.clone()
+        wo = reference.attention.wo.weight.data.clone()
+        w1 = reference.feed_forward.w1.weight.data.clone()
+        w2 = reference.feed_forward.w2.weight.data.clone()
+        w3 = reference.feed_forward.w3.weight.data.clone()
+        # No bias
+        b1 = torch.zeros(hidden_dim, dtype=torch_dtype)
+        b2 = torch.zeros(dim, dtype=torch_dtype)
+        b3 = torch.zeros(hidden_dim, dtype=torch_dtype)
+
+        out_ref = reference(x, start_pos=0, freqs_cis=freqs_cis_complex, mask=mask)
+
+    ir_type = to_ir_type("f32")
+    module = generate_module(ir_type, model_args)
+    schedule = create_schedule()
+    apply_schedule(module, schedule)
+
+    eng = ExecutionEngine(module, opt_level=2)
+    func_ptr = eng.lookup("transformer_block_op")
+
+    out = torch.empty_like(out_ref)
+    x_mem = get_ranked_memref_descriptor(x.numpy())
+    wq_mem = get_ranked_memref_descriptor(wq.numpy())
+    wk_mem = get_ranked_memref_descriptor(wk.numpy())
+    wv_mem = get_ranked_memref_descriptor(wv.numpy())
+    wo_mem = get_ranked_memref_descriptor(wo.numpy())
+    freqs_cis_mem = get_ranked_memref_descriptor(freqs_cis_real.numpy())
+    mask_mem = get_ranked_memref_descriptor(mask.numpy())
+    w1_mem = get_ranked_memref_descriptor(w1.numpy())
+    b1_mem = get_ranked_memref_descriptor(b1.numpy())
+    w2_mem = get_ranked_memref_descriptor(w2.numpy())
+    b2_mem = get_ranked_memref_descriptor(b2.numpy())
+    w3_mem = get_ranked_memref_descriptor(w3.numpy())
+    b3_mem = get_ranked_memref_descriptor(b3.numpy())
+    out_mem = get_ranked_memref_descriptor(out.numpy())
+
+    args = lh_utils.memrefs_to_packed_args(
+        [
+            x_mem,
+            wq_mem,
+            wk_mem,
+            wv_mem,
+            wo_mem,
+            freqs_cis_mem,
+            mask_mem,
+            w1_mem,
+            b1_mem,
+            w2_mem,
+            b2_mem,
+            w3_mem,
+            b3_mem,
+            out_mem,
+        ]
+    )
+    func_ptr(args)
+    assert torch.allclose(out, out_ref, rtol=0.01, atol=0.01, equal_nan=True)
+
+
+@with_mlir_ctx_and_location
+def test_transformer_fwd():
+    model_args = ModelArgs(
+        dim=32,
+        n_layers=2,
+        n_heads=4,
+        n_kv_heads=2,  # Test GQA
+        vocab_size=1000,
+        multiple_of=8,
+        norm_eps=1e-5,
+        max_batch_size=2,
+        max_seq_len=8,
+    )
+
+    batch = 2
+    seq_len = 4
+    dim = model_args.dim
+    n_heads = model_args.n_heads
+    n_kv_heads = model_args.n_kv_heads
+    head_dim = dim // n_heads
+
+    hidden_dim = int(2 * (4 * dim) / 3)
+    if model_args.ffn_dim_multiplier is not None:
+        hidden_dim = int(model_args.ffn_dim_multiplier * hidden_dim)
+    hidden_dim = model_args.multiple_of * (
+        (hidden_dim + model_args.multiple_of - 1) // model_args.multiple_of
+    )
+
+    def generate_module(elty, args):
+        module = ir.Module.create()
+        with ir.InsertionPoint(module.body):
+            x_type = ir.RankedTensorType.get([batch, seq_len, dim], elty)
+            freqs_cis_type = ir.RankedTensorType.get([seq_len, head_dim // 2], elty)
+            mask_type = ir.RankedTensorType.get(
+                [batch, n_heads, seq_len, seq_len], elty
+            )
+            out_type = ir.RankedTensorType.get([batch, seq_len, dim], elty)
+            wq_type = ir.RankedTensorType.get([n_heads * head_dim, dim], elty)
+            wk_type = ir.RankedTensorType.get([n_kv_heads * head_dim, dim], elty)
+            wv_type = ir.RankedTensorType.get([n_kv_heads * head_dim, dim], elty)
+            wo_type = ir.RankedTensorType.get([dim, n_heads * head_dim], elty)
+            w1_type = ir.RankedTensorType.get([hidden_dim, dim], elty)
+            b1_type = ir.RankedTensorType.get([hidden_dim], elty)
+            w2_type = ir.RankedTensorType.get([dim, hidden_dim], elty)
+            b2_type = ir.RankedTensorType.get([dim], elty)
+            w3_type = ir.RankedTensorType.get([hidden_dim, dim], elty)
+            b3_type = ir.RankedTensorType.get([hidden_dim], elty)
+
+            param_types = [x_type, freqs_cis_type, mask_type]
+            for _ in range(args.n_layers):
+                param_types.extend(
+                    [
+                        wq_type,
+                        wk_type,
+                        wv_type,
+                        wo_type,
+                        w1_type,
+                        b1_type,
+                        w2_type,
+                        b2_type,
+                        w3_type,
+                        b3_type,
+                    ]
+                )
+            param_types.append(out_type)
+
+            @func.FuncOp.from_py_func(*param_types, name="transformer_op")
+            def transformer_op(*params):
+                x = params[0]
+                freqs_cis = params[1]
+                mask = params[2]
+
+                # Extract weights for each layer
+                layer_weights = []
+                idx = 3
+                for _ in range(args.n_layers):
+                    layer_weights.append(
+                        {
+                            "wq": params[idx],
+                            "wk": params[idx + 1],
+                            "wv": params[idx + 2],
+                            "wo": params[idx + 3],
+                            "w1": params[idx + 4],
+                            "b1": params[idx + 5],
+                            "w2": params[idx + 6],
+                            "b2": params[idx + 7],
+                            "w3": params[idx + 8],
+                            "b3": params[idx + 9],
+                        }
+                    )
+                    idx += 10
+                out = params[idx]
+
+                get_transformer(args, x, freqs_cis, mask, layer_weights, out)
+
+        return module
+
+    ir_type = to_ir_type("f32")
+    module = generate_module(ir_type, model_args)
+    schedule = create_schedule()
+    apply_schedule(module, schedule)
+    eng = ExecutionEngine(module, opt_level=2)
+    func_ptr = eng.lookup("transformer_op")
+
+    reference = Transformer(model_args)
+
+    torch_dtype = torch.float32
+    x = torch.randn(batch, seq_len, dim, dtype=torch_dtype)
+    freqs_cis_real = torch.randn(seq_len, head_dim // 2, dtype=torch_dtype)
+    freqs_cis_complex = torch.complex(freqs_cis_real, torch.zeros_like(freqs_cis_real))
+    mask = torch.full(
+        (batch, n_heads, seq_len, seq_len), float("-inf"), dtype=torch_dtype
+    )
+    mask = torch.triu(mask, diagonal=1)
+
+    with torch.no_grad():
+        # Extract weights from all layers
+        layer_weights_torch = []
+        for layer_id in range(model_args.n_layers):
+            layer = reference.layers[layer_id]
+            layer_weights_torch.append(
+                {
+                    "wq": layer.attention.wq.weight.data.clone(),
+                    "wk": layer.attention.wk.weight.data.clone(),
+                    "wv": layer.attention.wv.weight.data.clone(),
+                    "wo": layer.attention.wo.weight.data.clone(),
+                    "w1": layer.feed_forward.w1.weight.data.clone(),
+                    "b1": torch.zeros(hidden_dim, dtype=torch_dtype),
+                    "w2": layer.feed_forward.w2.weight.data.clone(),
+                    "b2": torch.zeros(dim, dtype=torch_dtype),
+                    "w3": layer.feed_forward.w3.weight.data.clone(),
+                    "b3": torch.zeros(hidden_dim, dtype=torch_dtype),
+                }
+            )
+
+        # Supply embeddings instead of tokens
+        h = x
+        for layer in reference.layers:
+            h = layer(h, start_pos=0, freqs_cis=freqs_cis_complex, mask=mask)
+        out_ref = reference.norm(h)
+
+    out = torch.empty_like(out_ref)
+    x_mem = get_ranked_memref_descriptor(x.numpy())
+    freqs_cis_mem = get_ranked_memref_descriptor(freqs_cis_real.numpy())
+    mask_mem = get_ranked_memref_descriptor(mask.numpy())
+
+    # Add memrefs for all layer weights
+    memrefs = [x_mem, freqs_cis_mem, mask_mem]
+    for layer_weights in layer_weights_torch:
+        memrefs.extend(
+            [
+                get_ranked_memref_descriptor(layer_weights["wq"].numpy()),
+                get_ranked_memref_descriptor(layer_weights["wk"].numpy()),
+                get_ranked_memref_descriptor(layer_weights["wv"].numpy()),
+                get_ranked_memref_descriptor(layer_weights["wo"].numpy()),
+                get_ranked_memref_descriptor(layer_weights["w1"].numpy()),
+                get_ranked_memref_descriptor(layer_weights["b1"].numpy()),
+                get_ranked_memref_descriptor(layer_weights["w2"].numpy()),
+                get_ranked_memref_descriptor(layer_weights["b2"].numpy()),
+                get_ranked_memref_descriptor(layer_weights["w3"].numpy()),
+                get_ranked_memref_descriptor(layer_weights["b3"].numpy()),
+            ]
+        )
+
+    out_mem = get_ranked_memref_descriptor(out.numpy())
+    memrefs.append(out_mem)
+
+    args = lh_utils.memrefs_to_packed_args(memrefs)
     func_ptr(args)
 
     assert torch.allclose(out, out_ref, rtol=0.01, atol=0.01, equal_nan=True)
