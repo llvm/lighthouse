@@ -1,34 +1,44 @@
-#!/usr/bin/env python3
+# RUN: %PYTHON %s
+
+# Basic conversion of KernelBench PyTorch kernels to mlir kernels, relying on
+# torch-mlir for the conversion. As there are a number of kernels for which
+# conversion fails (or is prohibitively slow/gives prohibitively large IR),
+# there's an ingore list. Runs the conversion in parallel.
 
 import sys
+
+from concurrent.futures import ProcessPoolExecutor
+from dataclasses import dataclass
 from pathlib import Path
 
 from mlir import ir, passmanager
 from lighthouse.ingress import torch as torch_ingress
 
+project_root = Path(__file__).parent.parent.parent.parent
+kernels_as_torch_folder = (
+    project_root / "third_party" / "KernelBench" / "KernelBench"
+)
 
-kernels_as_pytorch_folder = Path(__file__).parent / "KernelBench" / "KernelBench"
-
-if not (kernels_as_pytorch_folder.exists() and kernels_as_pytorch_folder.is_dir()):
+if not kernels_as_torch_folder.is_dir():
     print(
         "ERROR: KernelBench repo not found.\n"
-        "NOTE: Pull in dependency with: git submodule update "
-        + str(kernels_as_pytorch_folder.parent.relative_to(Path.cwd()))
-        + "",
+        "NOTE: Pull in dependency with: git submodule update --init "
+        + str(kernels_as_torch_folder.parent.relative_to(Path.cwd(), walk_up=True)),
         file=sys.stderr,
     )
     sys.exit(1)
 
 
-kernels_as_pytorch_level1 = kernels_as_pytorch_folder / "level1"
-kernels_as_pytorch_level2 = kernels_as_pytorch_folder / "level2"
+kernels_as_torch_level1 = kernels_as_torch_folder / "level1"
+kernels_as_torch_level2 = kernels_as_torch_folder / "level2"
 
-kernels_as_mlir_folder = Path(__file__).parent / "cache"
+kernels_as_mlir_folder = project_root / "cache" / "ingress" / "KernelBench"
 kernels_as_mlir_level1 = kernels_as_mlir_folder / "level1"
 kernels_as_mlir_level1.mkdir(parents=True, exist_ok=True)
 kernels_as_mlir_level2 = kernels_as_mlir_folder / "level2"
 kernels_as_mlir_level2.mkdir(parents=True, exist_ok=True)
 
+# The following kernels won't get converted:
 level1, level2 = Path("level1"), Path("level2")
 ignore_list = [
     level1 / "12_Matmul_with_diagonal_matrices_.py",  # torch.operator "torch.aten.diag"
@@ -118,48 +128,72 @@ ctx = ir.Context()
 pm = passmanager.PassManager(context=ctx)
 pm.add("linalg-specialize-generic-ops")
 
-print("Output directory:", kernels_as_mlir_folder)
-exitcode = 0
-for pytorch_level, mlir_level in (
-    (kernels_as_pytorch_level1, kernels_as_mlir_level1),
-    (kernels_as_pytorch_level2, kernels_as_mlir_level2),
-):
-    for kernel_pytorch_file in pytorch_level.iterdir():
-        level_and_kernel = (
-            Path(kernel_pytorch_file.parent.name) / kernel_pytorch_file.name
-        )
-        if level_and_kernel in ignore_list or not kernel_pytorch_file.is_file():
-            print(
-                f"Skipping: {kernel_pytorch_file.parent.name}/{kernel_pytorch_file.name}",
-                file=sys.stderr,
-            )
-            continue
 
-        kernel_name = kernel_pytorch_file.stem
+@dataclass
+class KernelConversionTask:
+    name: str
+    torch_path: Path
+    mlir_path: Path
 
-        kernel_as_mlir_path = mlir_level / (kernel_name + ".mlir")
-        if kernel_as_mlir_path.exists():
-            print(
-                f"Already in cache: {kernel_pytorch_file.parent.name}/{kernel_pytorch_file.name}"
+
+def tasks():
+    for torch_level, mlir_level in (
+        (kernels_as_torch_level1, kernels_as_mlir_level1),
+        (kernels_as_torch_level2, kernels_as_mlir_level2),
+    ):
+        for kernel_torch_file in torch_level.iterdir():
+            level_and_kernel = (
+                Path(kernel_torch_file.parent.name) / kernel_torch_file.name
             )
-            continue
-        print(
-            f"Processing: {kernel_pytorch_file.parent.name}/{kernel_pytorch_file.name}"
-        )
-        mlir_kernel = torch_ingress.import_from_file(
-            kernel_pytorch_file, ir_context=ctx
-        )
+            kernel_torch_path = torch_level / kernel_torch_file
+            if level_and_kernel in ignore_list or not kernel_torch_path.is_file():
+                print(
+                    f"Skipping: {kernel_torch_file.parent.name}/{kernel_torch_file.name}",
+                    file=sys.stderr,
+                )
+                continue
+
+            kernel_name = kernel_torch_file.stem
+
+            kernel_mlir_path = mlir_level / (kernel_name + ".mlir")
+            if kernel_mlir_path.exists():
+                print(
+                    f"Already in cache: {kernel_torch_file.parent.name}/{kernel_torch_file.name}"
+                )
+                continue
+            yield KernelConversionTask(
+                kernel_name, torch_path=kernel_torch_path, mlir_path=kernel_mlir_path
+            )
+
+
+def process_task(task: KernelConversionTask):
+    print(f"Processing: {task.torch_path.parent.name}/{task.torch_path.name}")
+
+    try:
+        mlir_kernel = torch_ingress.import_from_file(task.torch_path, ir_context=ctx)
         assert isinstance(mlir_kernel, ir.Module)
+    except Exception as e:
+        print(
+            f"ERROR: got the following error converting '{task.name}':\n",
+            e,
+            file=sys.stderr,
+        )
+        raise e
 
-        try:
-            pm.run(mlir_kernel.operation)  # cleanup
-        except Exception as e:
-            print(
-                f"ERROR: got the following error cleaning up '{kernel_name}'",
-                file=sys.stderr,
-            )
-            raise e
+    try:
+        pm.run(mlir_kernel.operation)  # cleanup
+    except Exception as e:
+        print(
+            f"ERROR: got the following error cleaning up '{task.name}':\n",
+            e,
+            file=sys.stderr,
+        )
+        raise e
 
-        with kernel_as_mlir_path.open("w") as f:
-            print("// MLIR output after conversion and clean-up:", file=f)
-            print(mlir_kernel, file=f)
+    with task.mlir_path.open("w") as f:
+        print("// MLIR output after conversion and clean-up:", file=f)
+        print(mlir_kernel, file=f)
+
+
+print("Output directory:", kernels_as_mlir_folder)
+ProcessPoolExecutor().map(process_task, tasks())
