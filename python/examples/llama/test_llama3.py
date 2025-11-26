@@ -128,19 +128,22 @@ def create_schedule(ctx: ir.Context) -> ir.Module:
     return schedule
 
 
-def apply_schedule(kernel: ir.Module, schedule: ir.Module) -> None:
-    interpreter.apply_named_sequence(
-        payload_root=kernel,
-        transform_root=schedule.body.operations[0],
-        transform_module=schedule,
-    )
-
-
 def bufferize_module(ctx: ir.Context, kernel: ir.Module) -> None:
     with ctx:
         pm = PassManager("builtin.module")
         pm.add("one-shot-bufferize{bufferize-function-boundaries}")
         pm.run(kernel.operation)
+
+
+def apply_schedule(kernel: ir.Module, schedule: ir.Module) -> None:
+    bufferize_module(kernel.context, kernel)
+    interpreter.apply_named_sequence(
+        payload_root=kernel,
+        transform_root=schedule.body.operations[0],
+        transform_module=schedule,
+    )
+    pm = create_pass_pipeline(kernel.context)
+    pm.run(kernel.operation)
 
 
 #### IR builders #####
@@ -1196,11 +1199,8 @@ def test_bin_op(op, shape, elem_type):
 
     ir_type = to_ir_type(elem_type, ctx)
     module = generate_module(ir_type)
-    bufferize_module(ctx, module)
     schedule = create_schedule(ctx)
     apply_schedule(module, schedule)
-    pm = create_pass_pipeline(ctx)
-    pm.run(module.operation)
 
     eng = ExecutionEngine(module, opt_level=2)
     func_ptr = eng.lookup("bin_op")
@@ -1257,11 +1257,8 @@ def test_unary_op(op, shape, elem_type):
 
     ir_type = to_ir_type(elem_type, ctx)
     module = generate_module(ir_type)
-    bufferize_module(ctx, module)
     schedule = create_schedule(ctx)
     apply_schedule(module, schedule)
-    pm = create_pass_pipeline(ctx)
-    pm.run(module.operation)
 
     eng = ExecutionEngine(module, opt_level=2)
     func_ptr = eng.lookup("unary_op")
@@ -1299,12 +1296,9 @@ def test_rms_norm(shape, elem_type):
 
     ir_type = to_ir_type(elem_type, ctx)
     module = generate_module(ir_type)
-    print(module)
-    bufferize_module(ctx, module)
     schedule = create_schedule(ctx)
     apply_schedule(module, schedule)
-    pm = create_pass_pipeline(ctx)
-    pm.run(module.operation)
+
     eng = ExecutionEngine(module, opt_level=2)
     func_ptr = eng.lookup("rms_norm")
     torch_dtype = lh_utils.mlir_type_to_torch_dtype(ir_type)
@@ -1352,11 +1346,8 @@ def test_linear(shape, in_features, out_features):
 
     ir_type = to_ir_type("f32", ctx)
     module = generate_module(ir_type, shape, in_features, out_features)
-    bufferize_module(ctx, module)
     schedule = create_schedule(ctx)
     apply_schedule(module, schedule)
-    pm = create_pass_pipeline(ctx)
-    pm.run(module.operation)
 
     eng = ExecutionEngine(module, opt_level=2)
     func_ptr = eng.lookup("linear_op")
@@ -1398,11 +1389,8 @@ def test_polar():
 
     ir_type = to_ir_type("f32", ctx)
     module = generate_module(ir_type)
-    bufferize_module(ctx, module)
     schedule = create_schedule(ctx)
     apply_schedule(module, schedule)
-    pm = create_pass_pipeline(ctx)
-    pm.run(module.operation)
 
     eng = ExecutionEngine(module, opt_level=2)
     func_ptr = eng.lookup("polar_op")
@@ -1438,11 +1426,8 @@ def test_repeat_kv():
     n_rep = 4
     ir_type = to_ir_type("f32", ctx)
     module = generate_module(ir_type, n_rep)
-    bufferize_module(ctx, module)
     schedule = create_schedule(ctx)
     apply_schedule(module, schedule)
-    pm = create_pass_pipeline(ctx)
-    pm.run(module.operation)
 
     eng = ExecutionEngine(module, opt_level=2)
     func_ptr = eng.lookup("repeat_kv_op")
@@ -1481,11 +1466,8 @@ def test_reshape_for_broadcast():
 
     ir_type = to_ir_type("f32", ctx)
     module = generate_module(ir_type)
-    bufferize_module(ctx, module)
     schedule = create_schedule(ctx)
     apply_schedule(module, schedule)
-    pm = create_pass_pipeline(ctx)
-    pm.run(module.operation)
 
     eng = ExecutionEngine(module, opt_level=2)
     func_ptr = eng.lookup("reshape_for_broadcast")
@@ -1528,11 +1510,8 @@ def test_view_as_complex():
 
     ir_type = to_ir_type("f32", ctx)
     module = generate_module(ir_type)
-    bufferize_module(ctx, module)
     schedule = create_schedule(ctx)
     apply_schedule(module, schedule)
-    pm = create_pass_pipeline(ctx)
-    pm.run(module.operation)
 
     eng = ExecutionEngine(module, opt_level=2)
     func_ptr = eng.lookup("view_as_complex_op")
@@ -1569,11 +1548,8 @@ def test_view_as_real():
 
     ir_type = to_ir_type("f32", ctx)
     module = generate_module(ir_type)
-    bufferize_module(ctx, module)
     schedule = create_schedule(ctx)
     apply_schedule(module, schedule)
-    pm = create_pass_pipeline(ctx)
-    pm.run(module.operation)
 
     eng = ExecutionEngine(module, opt_level=2)
     func_ptr = eng.lookup("as_real_op")
@@ -1636,11 +1612,8 @@ def test_rotary_emb(batch_size, seq_len, n_heads, head_dim, n_kv_heads, elem_typ
         freqs_cis_shape=freqs_cis_shape,
         elty=ir_type,
     )
-    bufferize_module(ctx, module)
     schedule = create_schedule(ctx)
     apply_schedule(module, schedule)
-    pm = create_pass_pipeline(ctx)
-    pm.run(module.operation)
 
     eng = ExecutionEngine(module, opt_level=2)
     func_ptr = eng.lookup("rotary_emb")
@@ -1714,11 +1687,8 @@ def test_feed_forward():
 
     ir_type = to_ir_type("f32", ctx)
     module = generate_module(ir_type)
-    bufferize_module(ctx, module)
     schedule = create_schedule(ctx)
     apply_schedule(module, schedule)
-    pm = create_pass_pipeline(ctx)
-    pm.run(module.operation)
 
     eng = ExecutionEngine(module, opt_level=2)
     func_ptr = eng.lookup("feed_forward")
@@ -1866,11 +1836,9 @@ def test_attention_fwd():
 
     ir_type = to_ir_type("f32", ctx)
     module = generate_module(ir_type, model_args)
-    bufferize_module(ctx, module)
     schedule = create_schedule(ctx)
     apply_schedule(module, schedule)
-    pm = create_pass_pipeline(ctx)
-    pm.run(module.operation)
+
     eng = ExecutionEngine(module, opt_level=2)
     func_ptr = eng.lookup("attention_op")
 
