@@ -194,4 +194,4 @@ def process_task(task: KernelConversionTask):
 
 
 print("Output directory:", kernels_as_mlir_folder)
-ProcessPoolExecutor(1).map(process_task, tasks())
+ProcessPoolExecutor(2).map(process_task, tasks())
