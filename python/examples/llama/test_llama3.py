@@ -7,6 +7,7 @@ import pytest
 import torch
 from typing import Optional, Tuple
 
+
 from mlir import ir
 from mlir.dialects import transform, func, linalg, tensor, arith, complex, math
 from mlir.dialects.transform import structured
@@ -21,16 +22,13 @@ from mlir.execution_engine import ExecutionEngine
 from lighthouse import utils as lh_utils
 
 
-def with_mlir_ctx(ctx: ir.Context):
-    def with_mlir_ctx_decorator(func):
-        @functools.wraps(func)
-        def wrapper(*args, **kwargs):
-            with ctx, ir.Location.unknown(context=ctx):
-                return func(*args, **kwargs)
+def with_mlir_ctx_and_location(func):
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs):
+        with ir.Context(), ir.Location.unknown():
+            return func(*args, **kwargs)
 
-        return wrapper
-
-    return with_mlir_ctx_decorator
+    return wrapper
 
 
 @dataclass
@@ -58,21 +56,20 @@ reduction = linalg.IteratorType.reduction
 
 
 def create_pass_pipeline(ctx: ir.Context) -> PassManager:
-    with ctx:
-        pm = PassManager("builtin.module")
-        pm.add("convert-scf-to-cf")
-        pm.add("expand-strided-metadata")
-        pm.add("lower-affine")
-        pm.add("finalize-memref-to-llvm")
-        pm.add("convert-func-to-llvm")
-        pm.add("convert-to-llvm")
-        pm.add("reconcile-unrealized-casts")
-        pm.add("cse")
-        pm.add("canonicalize")
+    pm = PassManager("builtin.module")
+    pm.add("convert-scf-to-cf")
+    pm.add("expand-strided-metadata")
+    pm.add("lower-affine")
+    pm.add("finalize-memref-to-llvm")
+    pm.add("convert-func-to-llvm")
+    pm.add("convert-to-llvm")
+    pm.add("reconcile-unrealized-casts")
+    pm.add("cse")
+    pm.add("canonicalize")
     return pm
 
 
-def create_schedule(ctx: ir.Context) -> ir.Module:
+def create_schedule() -> ir.Module:
     """
     Create an MLIR module containing transformation schedule.
     The schedule provides partial lowering to scalar operations.
@@ -80,61 +77,51 @@ def create_schedule(ctx: ir.Context) -> ir.Module:
     Args:
         ctx: MLIR context.
     """
-    with ctx, ir.Location.unknown(context=ctx):
-        # Create transform module.
-        schedule = ir.Module.create()
-        schedule.operation.attributes["transform.with_named_sequence"] = (
-            ir.UnitAttr.get()
+    # Create transform module.
+    schedule = ir.Module.create()
+    schedule.operation.attributes["transform.with_named_sequence"] = ir.UnitAttr.get()
+
+    # Create entry point transformation sequence.
+    with ir.InsertionPoint(schedule.body):
+        named_seq = transform.named_sequence(
+            "__transform_main",
+            [transform.AnyOpType.get()],
+            [],
+            arg_attrs=[{"transform.readonly": ir.UnitAttr.get()}],
         )
 
-        # Create entry point transformation sequence.
-        with ir.InsertionPoint(schedule.body):
-            named_seq = transform.named_sequence(
-                "__transform_main",
-                [transform.AnyOpType.get()],
-                [],
-                arg_attrs=[{"transform.readonly": ir.UnitAttr.get()}],
-            )
+    # Create the schedule.
+    with ir.InsertionPoint(named_seq.body):
+        # For simplicity, use generic transform matchers.
+        anytype = transform.AnyOpType.get()
 
-        # Create the schedule.
-        with ir.InsertionPoint(named_seq.body):
-            # For simplicity, use generic transform matchers.
-            anytype = transform.AnyOpType.get()
+        # Find the kernel's function op.
+        func = structured.MatchOp.match_op_names(named_seq.bodyTarget, ["func.func"])
 
-            # Find the kernel's function op.
-            func = structured.MatchOp.match_op_names(
-                named_seq.bodyTarget, ["func.func"]
-            )
+        # Use C interface wrappers - required to make function executable after jitting.
+        func = transform.apply_registered_pass(anytype, func, "llvm-request-c-wrappers")
 
-            # Use C interface wrappers - required to make function executable after jitting.
-            func = transform.apply_registered_pass(
-                anytype, func, "llvm-request-c-wrappers"
-            )
+        # Find the kernel's module op.
+        mod = transform.get_parent_op(
+            anytype, func, op_name="builtin.module", deduplicate=True
+        )
 
-            # Find the kernel's module op.
-            mod = transform.get_parent_op(
-                anytype, func, op_name="builtin.module", deduplicate=True
-            )
+        # Naive lowering to loops.
+        mod = transform.apply_registered_pass(anytype, mod, "convert-linalg-to-loops")
+        # Cleanup.
+        transform.apply_cse(mod)
+        with ir.InsertionPoint(transform.ApplyPatternsOp(mod).patterns):
+            transform.ApplyCanonicalizationPatternsOp()
 
-            # Naive lowering to loops.
-            mod = transform.apply_registered_pass(
-                anytype, mod, "convert-linalg-to-loops"
-            )
-            # Cleanup.
-            transform.apply_cse(mod)
-            with ir.InsertionPoint(transform.ApplyPatternsOp(mod).patterns):
-                transform.ApplyCanonicalizationPatternsOp()
-
-            # Terminate the schedule.
-            transform.YieldOp()
+        # Terminate the schedule.
+        transform.YieldOp()
     return schedule
 
 
 def bufferize_module(ctx: ir.Context, kernel: ir.Module) -> None:
-    with ctx:
-        pm = PassManager("builtin.module")
-        pm.add("one-shot-bufferize{bufferize-function-boundaries}")
-        pm.run(kernel.operation)
+    pm = PassManager("builtin.module")
+    pm.add("one-shot-bufferize{bufferize-function-boundaries}")
+    pm.run(kernel.operation)
 
 
 def apply_schedule(kernel: ir.Module, schedule: ir.Module) -> None:
@@ -1157,15 +1144,16 @@ references = {
 
 
 # TODO: torch_dtype_to_mlir_type
-def to_ir_type(type_str, ctx):
+def to_ir_type(type_str):
     if type_str == "f32":
-        return ir.F32Type.get(context=ctx)
+        return ir.F32Type.get()
     elif type_str == "f64":
-        return ir.F64Type.get(context=ctx)
+        return ir.F64Type.get()
     else:
         raise ValueError(f"Unsupported type: {type_str}")
 
 
+@with_mlir_ctx_and_location
 @pytest.mark.parametrize(
     "op,shape,elem_type",
     [
@@ -1176,9 +1164,6 @@ def to_ir_type(type_str, ctx):
     ],
 )
 def test_bin_op(op, shape, elem_type):
-    ctx = ir.Context()
-
-    @with_mlir_ctx(ctx)
     def generate_module(elty):
         module = ir.Module.create()
         with ir.InsertionPoint(module.body):
@@ -1199,9 +1184,9 @@ def test_bin_op(op, shape, elem_type):
 
         return module
 
-    ir_type = to_ir_type(elem_type, ctx)
+    ir_type = to_ir_type(elem_type)
     module = generate_module(ir_type)
-    schedule = create_schedule(ctx)
+    schedule = create_schedule()
     apply_schedule(module, schedule)
 
     eng = ExecutionEngine(module, opt_level=2)
@@ -1234,10 +1219,8 @@ def test_bin_op(op, shape, elem_type):
         (get_triu, (4, 4), "f32"),
     ],
 )
+@with_mlir_ctx_and_location
 def test_unary_op(op, shape, elem_type):
-    ctx = ir.Context()
-
-    @with_mlir_ctx(ctx)
     def generate_module(elty):
         module = ir.Module.create()
         with ir.InsertionPoint(module.body):
@@ -1257,9 +1240,9 @@ def test_unary_op(op, shape, elem_type):
 
         return module
 
-    ir_type = to_ir_type(elem_type, ctx)
+    ir_type = to_ir_type(elem_type)
     module = generate_module(ir_type)
-    schedule = create_schedule(ctx)
+    schedule = create_schedule()
     apply_schedule(module, schedule)
 
     eng = ExecutionEngine(module, opt_level=2)
@@ -1279,12 +1262,10 @@ def test_unary_op(op, shape, elem_type):
 
 
 @pytest.mark.parametrize("shape,elem_type", [((4, 16), "f32")])
+@with_mlir_ctx_and_location
 def test_rms_norm(shape, elem_type):
     eps = 1e-5
 
-    ctx = ir.Context()
-
-    @with_mlir_ctx(ctx)
     def generate_module(elty):
         module = ir.Module.create()
         with ir.InsertionPoint(module.body):
@@ -1296,9 +1277,9 @@ def test_rms_norm(shape, elem_type):
 
         return module
 
-    ir_type = to_ir_type(elem_type, ctx)
+    ir_type = to_ir_type(elem_type)
     module = generate_module(ir_type)
-    schedule = create_schedule(ctx)
+    schedule = create_schedule()
     apply_schedule(module, schedule)
 
     eng = ExecutionEngine(module, opt_level=2)
@@ -1326,10 +1307,8 @@ def test_rms_norm(shape, elem_type):
         ((3, 5, 7), 16, 24),
     ],
 )
+@with_mlir_ctx_and_location
 def test_linear(shape, in_features, out_features):
-    ctx = ir.Context()
-
-    @with_mlir_ctx(ctx)
     def generate_module(elty, input_shape, in_feat, out_feat):
         module = ir.Module.create()
         with ir.InsertionPoint(module.body):
@@ -1346,9 +1325,9 @@ def test_linear(shape, in_features, out_features):
 
         return module
 
-    ir_type = to_ir_type("f32", ctx)
+    ir_type = to_ir_type("f32")
     module = generate_module(ir_type, shape, in_features, out_features)
-    schedule = create_schedule(ctx)
+    schedule = create_schedule()
     apply_schedule(module, schedule)
 
     eng = ExecutionEngine(module, opt_level=2)
@@ -1369,10 +1348,8 @@ def test_linear(shape, in_features, out_features):
     assert torch.allclose(out, out_ref, rtol=0.01, atol=0.01, equal_nan=True)
 
 
+@with_mlir_ctx_and_location
 def test_polar():
-    ctx = ir.Context()
-
-    @with_mlir_ctx(ctx)
     def generate_module(elty):
         module = ir.Module.create()
         with ir.InsertionPoint(module.body):
@@ -1389,9 +1366,9 @@ def test_polar():
 
         return module
 
-    ir_type = to_ir_type("f32", ctx)
+    ir_type = to_ir_type("f32")
     module = generate_module(ir_type)
-    schedule = create_schedule(ctx)
+    schedule = create_schedule()
     apply_schedule(module, schedule)
 
     eng = ExecutionEngine(module, opt_level=2)
@@ -1409,10 +1386,8 @@ def test_polar():
     assert torch.allclose(out, out_ref, rtol=0.01, atol=0.01, equal_nan=True)
 
 
+@with_mlir_ctx_and_location
 def test_repeat_kv():
-    ctx = ir.Context()
-
-    @with_mlir_ctx(ctx)
     def generate_module(elty, n_rep):
         module = ir.Module.create()
         with ir.InsertionPoint(module.body):
@@ -1426,9 +1401,9 @@ def test_repeat_kv():
         return module
 
     n_rep = 4
-    ir_type = to_ir_type("f32", ctx)
+    ir_type = to_ir_type("f32")
     module = generate_module(ir_type, n_rep)
-    schedule = create_schedule(ctx)
+    schedule = create_schedule()
     apply_schedule(module, schedule)
 
     eng = ExecutionEngine(module, opt_level=2)
@@ -1447,10 +1422,8 @@ def test_repeat_kv():
     assert torch.allclose(out, out_ref, rtol=0.01, atol=0.01, equal_nan=True)
 
 
+@with_mlir_ctx_and_location
 def test_reshape_for_broadcast():
-    ctx = ir.Context()
-
-    @with_mlir_ctx(ctx)
     def generate_module(elty):
         module = ir.Module.create()
         with ir.InsertionPoint(module.body):
@@ -1466,9 +1439,9 @@ def test_reshape_for_broadcast():
 
         return module
 
-    ir_type = to_ir_type("f32", ctx)
+    ir_type = to_ir_type("f32")
     module = generate_module(ir_type)
-    schedule = create_schedule(ctx)
+    schedule = create_schedule()
     apply_schedule(module, schedule)
 
     eng = ExecutionEngine(module, opt_level=2)
@@ -1491,10 +1464,8 @@ def test_reshape_for_broadcast():
     assert torch.allclose(out, out_ref, rtol=0.01, atol=0.01, equal_nan=True)
 
 
+@with_mlir_ctx_and_location
 def test_view_as_complex():
-    ctx = ir.Context()
-
-    @with_mlir_ctx(ctx)
     def generate_module(elty):
         module = ir.Module.create()
         with ir.InsertionPoint(module.body):
@@ -1510,9 +1481,9 @@ def test_view_as_complex():
 
         return module
 
-    ir_type = to_ir_type("f32", ctx)
+    ir_type = to_ir_type("f32")
     module = generate_module(ir_type)
-    schedule = create_schedule(ctx)
+    schedule = create_schedule()
     apply_schedule(module, schedule)
 
     eng = ExecutionEngine(module, opt_level=2)
@@ -1532,10 +1503,8 @@ def test_view_as_complex():
     assert torch.allclose(out, out_ref, rtol=0.01, atol=0.01, equal_nan=True)
 
 
+@with_mlir_ctx_and_location
 def test_view_as_real():
-    ctx = ir.Context()
-
-    @with_mlir_ctx(ctx)
     def generate_module(elty):
         module = ir.Module.create()
         with ir.InsertionPoint(module.body):
@@ -1548,9 +1517,9 @@ def test_view_as_real():
 
         return module
 
-    ir_type = to_ir_type("f32", ctx)
+    ir_type = to_ir_type("f32")
     module = generate_module(ir_type)
-    schedule = create_schedule(ctx)
+    schedule = create_schedule()
     apply_schedule(module, schedule)
 
     eng = ExecutionEngine(module, opt_level=2)
@@ -1574,10 +1543,8 @@ def test_view_as_real():
     "batch_size,seq_len,n_heads,head_dim,n_kv_heads,elem_type",
     [(2, 512, 32, 128, 8, "f32")],
 )
+@with_mlir_ctx_and_location
 def test_rotary_emb(batch_size, seq_len, n_heads, head_dim, n_kv_heads, elem_type):
-    ctx = ir.Context()
-
-    @with_mlir_ctx(ctx)
     def generate_module(elty, xq_shape, xk_shape, freqs_cis_shape):
         module = ir.Module.create()
         with ir.InsertionPoint(module.body):
@@ -1598,7 +1565,7 @@ def test_rotary_emb(batch_size, seq_len, n_heads, head_dim, n_kv_heads, elem_typ
 
         return module
 
-    ir_type = to_ir_type(elem_type, ctx)
+    ir_type = to_ir_type(elem_type)
     torch_dtype = lh_utils.mlir_type_to_torch_dtype(ir_type)
     xq_shape = (batch_size, seq_len, n_heads, head_dim)
     xk_shape = (batch_size, seq_len, n_kv_heads, head_dim)
@@ -1614,7 +1581,7 @@ def test_rotary_emb(batch_size, seq_len, n_heads, head_dim, n_kv_heads, elem_typ
         freqs_cis_shape=freqs_cis_shape,
         elty=ir_type,
     )
-    schedule = create_schedule(ctx)
+    schedule = create_schedule()
     apply_schedule(module, schedule)
 
     eng = ExecutionEngine(module, opt_level=2)
@@ -1637,10 +1604,8 @@ def test_rotary_emb(batch_size, seq_len, n_heads, head_dim, n_kv_heads, elem_typ
     assert torch.allclose(out2, xk_out, rtol=0.01, atol=0.01, equal_nan=True)
 
 
+@with_mlir_ctx_and_location
 def test_feed_forward():
-    ctx = ir.Context()
-
-    @with_mlir_ctx(ctx)
     def generate_module(elty):
         module = ir.Module.create()
         with ir.InsertionPoint(module.body):
@@ -1687,9 +1652,9 @@ def test_feed_forward():
 
         return module
 
-    ir_type = to_ir_type("f32", ctx)
+    ir_type = to_ir_type("f32")
     module = generate_module(ir_type)
-    schedule = create_schedule(ctx)
+    schedule = create_schedule()
     apply_schedule(module, schedule)
 
     eng = ExecutionEngine(module, opt_level=2)
@@ -1764,6 +1729,7 @@ def test_smoke_standalone_attention():
     assert not torch.isinf(output).any(), "Output contains inf"
 
 
+@with_mlir_ctx_and_location
 def test_attention_fwd():
     model_args = ModelArgs(
         dim=32,  # Small for testing
@@ -1784,9 +1750,6 @@ def test_attention_fwd():
     n_kv_heads = model_args.n_kv_heads
     head_dim = dim // n_heads
 
-    ctx = ir.Context()
-
-    @with_mlir_ctx(ctx)
     def generate_module(elty, args):
         module = ir.Module.create()
         with ir.InsertionPoint(module.body):
@@ -1836,9 +1799,9 @@ def test_attention_fwd():
         # Run reference forward
         out_ref = reference(x, start_pos=0, freqs_cis=freqs_cis_complex, mask=mask)
 
-    ir_type = to_ir_type("f32", ctx)
+    ir_type = to_ir_type("f32")
     module = generate_module(ir_type, model_args)
-    schedule = create_schedule(ctx)
+    schedule = create_schedule()
     apply_schedule(module, schedule)
 
     eng = ExecutionEngine(module, opt_level=2)
