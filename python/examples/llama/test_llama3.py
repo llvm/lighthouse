@@ -1,11 +1,9 @@
 # RUN: %pytest %s
 
-from dataclasses import dataclass
 import functools
 import math as pymath
 import pytest
 import torch
-from typing import Optional, Tuple
 
 
 from mlir import ir
