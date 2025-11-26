@@ -29,7 +29,3 @@ jobs:
         run: |
           export FILECHECK=FileCheck-18 # Ubuntu's llvm-dev appends a version number.
           uv run lit python/examples  # Makes sure to substitute FileCheck for $FILECHECK
-
-      - name: Run pytest-enabled examples as tests
-        run: |
-          uv run pytest python/examples

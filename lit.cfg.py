@@ -11,6 +11,7 @@ config.test_format = lit.formats.ShTest(True)
 config.test_source_root = os.path.dirname(__file__)
 config.test_exec_root = os.path.dirname(__file__) + "/lit.out"
 
+config.substitutions.append(("%pytest", "uv run"))
 config.substitutions.append(("%PYTHON", "uv run"))
 if filecheck_path := os.environ.get("FILECHECK"):
     config.substitutions.append(("FileCheck", filecheck_path))

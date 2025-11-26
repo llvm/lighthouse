@@ -1,3 +1,5 @@
+# RUN: %pytest %s
+
 from dataclasses import dataclass
 import functools
 import math as pymath
