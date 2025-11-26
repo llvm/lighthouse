@@ -370,6 +370,11 @@ def bundle_xegpu_to_binary(mod, dump_kernel: str = ""):
     # This schedule corresponds to upstream MLIR XeVM lowering pipeline
     # and is payload independent.
 
+    # TODO applying gpu-lower-to-xevm-pipeline pass affects performance
+    # mod = apply_registered_pass(
+    #     mod, "gpu-lower-to-xevm-pipeline", options={"xegpu-op-level": "workgroup"}
+    # )
+
     gpu_mod = match(mod, ops={"gpu.module"})
     # xegpu distribution
     gpu_func = match(gpu_mod, ops={"gpu.func"})
