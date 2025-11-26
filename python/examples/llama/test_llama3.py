@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+import functools
 import math as pymath
 import pytest
 import torch
@@ -16,6 +17,18 @@ from mlir.execution_engine import ExecutionEngine
 
 
 from lighthouse import utils as lh_utils
+
+
+def with_mlir_ctx(ctx: ir.Context):
+    def with_mlir_ctx_decorator(func):
+        @functools.wraps(func)
+        def wrapper(*args, **kwargs):
+            with ctx, ir.Location.unknown(context=ctx):
+                return func(*args, **kwargs)
+
+        return wrapper
+
+    return with_mlir_ctx_decorator
 
 
 @dataclass
@@ -191,7 +204,6 @@ def get_mean(a: ir.Value, out: ir.Value) -> ir.Value:
 
 # repeat_kv
 def get_repeat_kv(x: ir.Value, n_rep: int, out: ir.Value) -> ir.Value:
-    bs, slen, n_kv_heads, head_dim = x.type.shape
     if n_rep == 1:
         return x
 
@@ -970,7 +982,6 @@ def get_attention(
 
     # Transpose back: (batch, n_heads, seq_len, head_dim) -> (batch, seq_len, n_heads, head_dim)
     attn_out_perm_shape = [batch, seq_len, n_heads, head_dim]
-    attn_out_perm_type = ir.RankedTensorType.get(attn_out_perm_shape, elty)
     attn_out_perm = tensor.EmptyOp(attn_out_perm_shape, elty).result
 
     d0, d1, d2, d3 = [ir.AffineDimExpr.get(i) for i in range(4)]
@@ -1174,30 +1185,31 @@ def to_ir_type(type_str, ctx):
     ],
 )
 def test_bin_op(op, shape, elem_type):
-    def generate_module(ctx, elty):
-        with ctx, ir.Location.unknown():
-            module = ir.Module.create()
-            with ir.InsertionPoint(module.body):
-                tensor_type = ir.RankedTensorType.get(shape, elty)
+    ctx = ir.Context()
 
-                # Outer product produces [M, M] output for 1-D input of size M
-                if op == get_outer:
-                    out_shape = (shape[0], shape[0])
-                    out_tensor_type = ir.RankedTensorType.get(out_shape, elty)
-                else:
-                    out_tensor_type = tensor_type
+    @with_mlir_ctx(ctx)
+    def generate_module(elty):
+        module = ir.Module.create()
+        with ir.InsertionPoint(module.body):
+            tensor_type = ir.RankedTensorType.get(shape, elty)
 
-                @func.FuncOp.from_py_func(
-                    tensor_type, tensor_type, out_tensor_type, name="bin_op"
-                )
-                def bin_op(a, b, out):
-                    op(a, b, out)
+            # Outer product produces [M, M] output for 1-D input of size M
+            if op == get_outer:
+                out_shape = (shape[0], shape[0])
+                out_tensor_type = ir.RankedTensorType.get(out_shape, elty)
+            else:
+                out_tensor_type = tensor_type
+
+            @func.FuncOp.from_py_func(
+                tensor_type, tensor_type, out_tensor_type, name="bin_op"
+            )
+            def bin_op(a, b, out):
+                op(a, b, out)
 
         return module
 
-    ctx = ir.Context()
     ir_type = to_ir_type(elem_type, ctx)
-    module = generate_module(ctx, ir_type)
+    module = generate_module(ir_type)
     bufferize_module(ctx, module)
     schedule = create_schedule(ctx)
     apply_schedule(module, schedule)
@@ -1235,29 +1247,30 @@ def test_bin_op(op, shape, elem_type):
     ],
 )
 def test_unary_op(op, shape, elem_type):
-    def generate_module(ctx, elty):
-        with ctx, ir.Location.unknown():
-            module = ir.Module.create()
-            with ir.InsertionPoint(module.body):
-                tensor_type = ir.RankedTensorType.get(shape, elty)
+    ctx = ir.Context()
 
-                # For mean operation, output has different shape (reduction on last dim)
-                if op == get_mean:
-                    out_shape = list(shape)
-                    out_shape[-1] = 1
-                    out_tensor_type = ir.RankedTensorType.get(out_shape, elty)
-                else:
-                    out_tensor_type = tensor_type
+    @with_mlir_ctx(ctx)
+    def generate_module(elty):
+        module = ir.Module.create()
+        with ir.InsertionPoint(module.body):
+            tensor_type = ir.RankedTensorType.get(shape, elty)
 
-                @func.FuncOp.from_py_func(tensor_type, out_tensor_type, name="unary_op")
-                def unary_op(a, out):
-                    op(a, out)
+            # For mean operation, output has different shape (reduction on last dim)
+            if op == get_mean:
+                out_shape = list(shape)
+                out_shape[-1] = 1
+                out_tensor_type = ir.RankedTensorType.get(out_shape, elty)
+            else:
+                out_tensor_type = tensor_type
+
+            @func.FuncOp.from_py_func(tensor_type, out_tensor_type, name="unary_op")
+            def unary_op(a, out):
+                op(a, out)
 
         return module
 
-    ctx = ir.Context()
     ir_type = to_ir_type(elem_type, ctx)
-    module = generate_module(ctx, ir_type)
+    module = generate_module(ir_type)
     bufferize_module(ctx, module)
     schedule = create_schedule(ctx)
     apply_schedule(module, schedule)
@@ -1284,21 +1297,22 @@ def test_unary_op(op, shape, elem_type):
 def test_rms_norm(shape, elem_type):
     eps = 1e-5
 
-    def generate_module(ctx, elty):
-        with ctx, ir.Location.unknown():
-            module = ir.Module.create()
-            with ir.InsertionPoint(module.body):
-                input_type = ir.RankedTensorType.get(shape, elty)
+    ctx = ir.Context()
 
-                @func.FuncOp.from_py_func(input_type, input_type, name="rms_norm")
-                def rms_norm(a, out):
-                    get_l2_norm(a, out, eps)
+    @with_mlir_ctx(ctx)
+    def generate_module(elty):
+        module = ir.Module.create()
+        with ir.InsertionPoint(module.body):
+            input_type = ir.RankedTensorType.get(shape, elty)
+
+            @func.FuncOp.from_py_func(input_type, input_type, name="rms_norm")
+            def rms_norm(a, out):
+                get_l2_norm(a, out, eps)
 
         return module
 
-    ctx = ir.Context()
     ir_type = to_ir_type(elem_type, ctx)
-    module = generate_module(ctx, ir_type)
+    module = generate_module(ir_type)
     print(module)
     bufferize_module(ctx, module)
     schedule = create_schedule(ctx)
@@ -1331,30 +1345,27 @@ def test_rms_norm(shape, elem_type):
     ],
 )
 def test_linear(shape, in_features, out_features):
-    def generate_module(ctx, elty, input_shape, in_feat, out_feat):
-        with ctx, ir.Location.unknown():
-            module = ir.Module.create()
-            with ir.InsertionPoint(module.body):
-                input_type = ir.RankedTensorType.get(
-                    list(input_shape) + [in_feat], elty
-                )
-                weight_type = ir.RankedTensorType.get((out_feat, in_feat), elty)
-                bias_type = ir.RankedTensorType.get((out_feat,), elty)
-                output_type = ir.RankedTensorType.get(
-                    list(input_shape) + [out_feat], elty
-                )
+    ctx = ir.Context()
 
-                @func.FuncOp.from_py_func(
-                    input_type, weight_type, bias_type, output_type, name="linear_op"
-                )
-                def linear_op(x, w, b, out):
-                    get_linear(x, w, b, out)
+    @with_mlir_ctx(ctx)
+    def generate_module(elty, input_shape, in_feat, out_feat):
+        module = ir.Module.create()
+        with ir.InsertionPoint(module.body):
+            input_type = ir.RankedTensorType.get(list(input_shape) + [in_feat], elty)
+            weight_type = ir.RankedTensorType.get((out_feat, in_feat), elty)
+            bias_type = ir.RankedTensorType.get((out_feat,), elty)
+            output_type = ir.RankedTensorType.get(list(input_shape) + [out_feat], elty)
+
+            @func.FuncOp.from_py_func(
+                input_type, weight_type, bias_type, output_type, name="linear_op"
+            )
+            def linear_op(x, w, b, out):
+                get_linear(x, w, b, out)
 
         return module
 
-    ctx = ir.Context()
     ir_type = to_ir_type("f32", ctx)
-    module = generate_module(ctx, ir_type, shape, in_features, out_features)
+    module = generate_module(ir_type, shape, in_features, out_features)
     bufferize_module(ctx, module)
     schedule = create_schedule(ctx)
     apply_schedule(module, schedule)
@@ -1380,26 +1391,27 @@ def test_linear(shape, in_features, out_features):
 
 
 def test_polar():
-    def generate_module(ctx, elty):
-        with ctx, ir.Location.unknown():
-            module = ir.Module.create()
-            with ir.InsertionPoint(module.body):
-                tensor_type = ir.RankedTensorType.get((4, 16), elty)
-                complex_tensor_type = ir.RankedTensorType.get(
-                    (4, 16), ir.ComplexType.get(elty)
-                )
+    ctx = ir.Context()
 
-                @func.FuncOp.from_py_func(
-                    tensor_type, tensor_type, complex_tensor_type, name="polar_op"
-                )
-                def polar_op(magnitude, angle, out):
-                    get_polar(magnitude, angle, out)
+    @with_mlir_ctx(ctx)
+    def generate_module(elty):
+        module = ir.Module.create()
+        with ir.InsertionPoint(module.body):
+            tensor_type = ir.RankedTensorType.get((4, 16), elty)
+            complex_tensor_type = ir.RankedTensorType.get(
+                (4, 16), ir.ComplexType.get(elty)
+            )
+
+            @func.FuncOp.from_py_func(
+                tensor_type, tensor_type, complex_tensor_type, name="polar_op"
+            )
+            def polar_op(magnitude, angle, out):
+                get_polar(magnitude, angle, out)
 
         return module
 
-    ctx = ir.Context()
     ir_type = to_ir_type("f32", ctx)
-    module = generate_module(ctx, ir_type)
+    module = generate_module(ir_type)
     bufferize_module(ctx, module)
     schedule = create_schedule(ctx)
     apply_schedule(module, schedule)
@@ -1422,23 +1434,24 @@ def test_polar():
 
 
 def test_repeat_kv():
-    def generate_module(ctx, elty, n_rep):
-        with ctx, ir.Location.unknown():
-            module = ir.Module.create()
-            with ir.InsertionPoint(module.body):
-                x_type = ir.RankedTensorType.get((2, 512, 8, 64), elty)
-                out_type = ir.RankedTensorType.get((2, 512, 8 * n_rep, 64), elty)
+    ctx = ir.Context()
 
-                @func.FuncOp.from_py_func(x_type, out_type, name="repeat_kv_op")
-                def repeat_kv_op(x, out):
-                    get_repeat_kv(x, n_rep, out)
+    @with_mlir_ctx(ctx)
+    def generate_module(elty, n_rep):
+        module = ir.Module.create()
+        with ir.InsertionPoint(module.body):
+            x_type = ir.RankedTensorType.get((2, 512, 8, 64), elty)
+            out_type = ir.RankedTensorType.get((2, 512, 8 * n_rep, 64), elty)
+
+            @func.FuncOp.from_py_func(x_type, out_type, name="repeat_kv_op")
+            def repeat_kv_op(x, out):
+                get_repeat_kv(x, n_rep, out)
 
         return module
 
     n_rep = 4
-    ctx = ir.Context()
     ir_type = to_ir_type("f32", ctx)
-    module = generate_module(ctx, ir_type, n_rep)
+    module = generate_module(ir_type, n_rep)
     bufferize_module(ctx, module)
     schedule = create_schedule(ctx)
     apply_schedule(module, schedule)
@@ -1462,25 +1475,26 @@ def test_repeat_kv():
 
 
 def test_reshape_for_broadcast():
-    def generate_module(ctx, elty):
-        with ctx, ir.Location.unknown():
-            module = ir.Module.create()
-            with ir.InsertionPoint(module.body):
-                freqs_cis_type = ir.RankedTensorType.get((512, 64), elty)
-                x_type = ir.RankedTensorType.get((2, 512, 32, 128), elty)
-                out_type = ir.RankedTensorType.get((1, 512, 1, 64), elty)
+    ctx = ir.Context()
 
-                @func.FuncOp.from_py_func(
-                    freqs_cis_type, x_type, out_type, name="reshape_for_broadcast"
-                )
-                def reshape_for_broadcast_op(freqs_cis, x, out):
-                    get_reshape_for_broadcast(freqs_cis, x, out)
+    @with_mlir_ctx(ctx)
+    def generate_module(elty):
+        module = ir.Module.create()
+        with ir.InsertionPoint(module.body):
+            freqs_cis_type = ir.RankedTensorType.get((512, 64), elty)
+            x_type = ir.RankedTensorType.get((2, 512, 32, 128), elty)
+            out_type = ir.RankedTensorType.get((1, 512, 1, 64), elty)
+
+            @func.FuncOp.from_py_func(
+                freqs_cis_type, x_type, out_type, name="reshape_for_broadcast"
+            )
+            def reshape_for_broadcast_op(freqs_cis, x, out):
+                get_reshape_for_broadcast(freqs_cis, x, out)
 
         return module
 
-    ctx = ir.Context()
     ir_type = to_ir_type("f32", ctx)
-    module = generate_module(ctx, ir_type)
+    module = generate_module(ir_type)
     bufferize_module(ctx, module)
     schedule = create_schedule(ctx)
     apply_schedule(module, schedule)
@@ -1508,25 +1522,26 @@ def test_reshape_for_broadcast():
 
 
 def test_view_as_complex():
-    def generate_module(ctx, elty):
-        with ctx, ir.Location.unknown():
-            module = ir.Module.create()
-            with ir.InsertionPoint(module.body):
-                # Input should be reshaped to have last dim = 2
-                x_type = ir.RankedTensorType.get((2, 512, 32, 64, 2), elty)
-                out_type = ir.RankedTensorType.get(
-                    (2, 512, 32, 64), ir.ComplexType.get(elty)
-                )
+    ctx = ir.Context()
 
-                @func.FuncOp.from_py_func(x_type, out_type, name="view_as_complex_op")
-                def view_as_complex_op(x, out):
-                    get_view_as_complex(x, out)
+    @with_mlir_ctx(ctx)
+    def generate_module(elty):
+        module = ir.Module.create()
+        with ir.InsertionPoint(module.body):
+            # Input should be reshaped to have last dim = 2
+            x_type = ir.RankedTensorType.get((2, 512, 32, 64, 2), elty)
+            out_type = ir.RankedTensorType.get(
+                (2, 512, 32, 64), ir.ComplexType.get(elty)
+            )
+
+            @func.FuncOp.from_py_func(x_type, out_type, name="view_as_complex_op")
+            def view_as_complex_op(x, out):
+                get_view_as_complex(x, out)
 
         return module
 
-    ctx = ir.Context()
     ir_type = to_ir_type("f32", ctx)
-    module = generate_module(ctx, ir_type)
+    module = generate_module(ir_type)
     bufferize_module(ctx, module)
     schedule = create_schedule(ctx)
     apply_schedule(module, schedule)
@@ -1551,24 +1566,23 @@ def test_view_as_complex():
 
 
 def test_view_as_real():
-    def generate_module(ctx, elty):
-        with ctx, ir.Location.unknown():
-            module = ir.Module.create()
-            with ir.InsertionPoint(module.body):
-                x_type = ir.RankedTensorType.get(
-                    (2, 512, 32, 64), ir.ComplexType.get(elty)
-                )
-                out_type = ir.RankedTensorType.get((2, 512, 32, 64, 2), elty)
+    ctx = ir.Context()
 
-                @func.FuncOp.from_py_func(x_type, out_type, name="as_real_op")
-                def as_real_op(x, out):
-                    get_view_as_real(x, out)
+    @with_mlir_ctx(ctx)
+    def generate_module(elty):
+        module = ir.Module.create()
+        with ir.InsertionPoint(module.body):
+            x_type = ir.RankedTensorType.get((2, 512, 32, 64), ir.ComplexType.get(elty))
+            out_type = ir.RankedTensorType.get((2, 512, 32, 64, 2), elty)
+
+            @func.FuncOp.from_py_func(x_type, out_type, name="as_real_op")
+            def as_real_op(x, out):
+                get_view_as_real(x, out)
 
         return module
 
-    ctx = ir.Context()
     ir_type = to_ir_type("f32", ctx)
-    module = generate_module(ctx, ir_type)
+    module = generate_module(ir_type)
     bufferize_module(ctx, module)
     schedule = create_schedule(ctx)
     apply_schedule(module, schedule)
@@ -1597,28 +1611,29 @@ def test_view_as_real():
     [(2, 512, 32, 128, 8, "f32")],
 )
 def test_rotary_emb(batch_size, seq_len, n_heads, head_dim, n_kv_heads, elem_type):
-    def generate_module(ctx, elty, xq_shape, xk_shape, freqs_cis_shape):
-        with ctx, ir.Location.unknown():
-            module = ir.Module.create()
-            with ir.InsertionPoint(module.body):
-                xq_type = ir.RankedTensorType.get(xq_shape, elty)
-                xk_type = ir.RankedTensorType.get(xk_shape, elty)
-                freqs_cis_type = ir.RankedTensorType.get(freqs_cis_shape, elty)
+    ctx = ir.Context()
 
-                @func.FuncOp.from_py_func(
-                    xq_type,
-                    xk_type,
-                    freqs_cis_type,
-                    xq_type,
-                    xk_type,
-                    name="rotary_emb",
-                )
-                def rotary_emb(xq, xk, freqs_cis, xq_out, xk_out):
-                    get_rotary_emb(xq, xk, freqs_cis, xq_out, xk_out)
+    @with_mlir_ctx(ctx)
+    def generate_module(elty, xq_shape, xk_shape, freqs_cis_shape):
+        module = ir.Module.create()
+        with ir.InsertionPoint(module.body):
+            xq_type = ir.RankedTensorType.get(xq_shape, elty)
+            xk_type = ir.RankedTensorType.get(xk_shape, elty)
+            freqs_cis_type = ir.RankedTensorType.get(freqs_cis_shape, elty)
+
+            @func.FuncOp.from_py_func(
+                xq_type,
+                xk_type,
+                freqs_cis_type,
+                xq_type,
+                xk_type,
+                name="rotary_emb",
+            )
+            def rotary_emb(xq, xk, freqs_cis, xq_out, xk_out):
+                get_rotary_emb(xq, xk, freqs_cis, xq_out, xk_out)
 
         return module
 
-    ctx = ir.Context()
     ir_type = to_ir_type(elem_type, ctx)
     torch_dtype = lh_utils.mlir_type_to_torch_dtype(ir_type)
     xq_shape = (batch_size, seq_len, n_heads, head_dim)
@@ -1630,7 +1645,6 @@ def test_rotary_emb(batch_size, seq_len, n_heads, head_dim, n_kv_heads, elem_typ
     xq_out, xk_out = references[get_rotary_emb](xq, xk, freqs_cis)
 
     module = generate_module(
-        ctx,
         xq_shape=xq_shape,
         xk_shape=xk_shape,
         freqs_cis_shape=freqs_cis_shape,
@@ -1663,56 +1677,57 @@ def test_rotary_emb(batch_size, seq_len, n_heads, head_dim, n_kv_heads, elem_typ
 
 
 def test_feed_forward():
-    def generate_module(ctx, elty):
-        with ctx, ir.Location.unknown():
-            module = ir.Module.create()
-            with ir.InsertionPoint(module.body):
-                input_type = ir.RankedTensorType.get((4, 16), elty)
-                hidden_type = ir.RankedTensorType.get((4, 64), elty)
-                output_type = ir.RankedTensorType.get((4, 16), elty)
-                weight1_type = ir.RankedTensorType.get((64, 16), elty)
-                bias1_type = ir.RankedTensorType.get((64,), elty)
-                weight2_type = ir.RankedTensorType.get((16, 64), elty)
-                bias2_type = ir.RankedTensorType.get((16,), elty)
-                weight3_type = ir.RankedTensorType.get((64, 16), elty)
-                bias3_type = ir.RankedTensorType.get((64,), elty)
+    ctx = ir.Context()
 
-                @func.FuncOp.from_py_func(
-                    input_type,
-                    weight1_type,
-                    bias1_type,
-                    weight2_type,
-                    bias2_type,
-                    weight3_type,
-                    bias3_type,
-                    output_type,
-                    name="feed_forward",
-                )
-                def feed_forward(x, w1, b1, w2, b2, w3, b3, out):
-                    # Compute hidden = linear(x, w1, b1)
-                    hidden_uninit = tensor.EmptyOp(hidden_type.shape, elty).result
-                    hidden = get_linear(x, w1, b1, hidden_uninit)
+    @with_mlir_ctx(ctx)
+    def generate_module(elty):
+        module = ir.Module.create()
+        with ir.InsertionPoint(module.body):
+            input_type = ir.RankedTensorType.get((4, 16), elty)
+            hidden_type = ir.RankedTensorType.get((4, 64), elty)
+            output_type = ir.RankedTensorType.get((4, 16), elty)
+            weight1_type = ir.RankedTensorType.get((64, 16), elty)
+            bias1_type = ir.RankedTensorType.get((64,), elty)
+            weight2_type = ir.RankedTensorType.get((16, 64), elty)
+            bias2_type = ir.RankedTensorType.get((16,), elty)
+            weight3_type = ir.RankedTensorType.get((64, 16), elty)
+            bias3_type = ir.RankedTensorType.get((64,), elty)
 
-                    # Compute hidden_silu = silu(hidden)
-                    hidden_silu_uninit = tensor.EmptyOp(hidden_type.shape, elty).result
-                    hidden_silu = get_silu(hidden, hidden_silu_uninit)
+            @func.FuncOp.from_py_func(
+                input_type,
+                weight1_type,
+                bias1_type,
+                weight2_type,
+                bias2_type,
+                weight3_type,
+                bias3_type,
+                output_type,
+                name="feed_forward",
+            )
+            def feed_forward(x, w1, b1, w2, b2, w3, b3, out):
+                # Compute hidden = linear(x, w1, b1)
+                hidden_uninit = tensor.EmptyOp(hidden_type.shape, elty).result
+                hidden = get_linear(x, w1, b1, hidden_uninit)
 
-                    # Compute gate = linear(x, w3, b3)
-                    gate_uninit = tensor.EmptyOp(hidden_type.shape, elty).result
-                    gate = get_linear(x, w3, b3, gate_uninit)
+                # Compute hidden_silu = silu(hidden)
+                hidden_silu_uninit = tensor.EmptyOp(hidden_type.shape, elty).result
+                hidden_silu = get_silu(hidden, hidden_silu_uninit)
 
-                    # Compute activated = hidden_silu * gate
-                    activated_uninit = tensor.EmptyOp(hidden_type.shape, elty).result
-                    activated = get_mul(hidden_silu, gate, activated_uninit)
+                # Compute gate = linear(x, w3, b3)
+                gate_uninit = tensor.EmptyOp(hidden_type.shape, elty).result
+                gate = get_linear(x, w3, b3, gate_uninit)
 
-                    # Compute out = linear(activated, w2, b2)
-                    get_linear(activated, w2, b2, out)
+                # Compute activated = hidden_silu * gate
+                activated_uninit = tensor.EmptyOp(hidden_type.shape, elty).result
+                activated = get_mul(hidden_silu, gate, activated_uninit)
+
+                # Compute out = linear(activated, w2, b2)
+                get_linear(activated, w2, b2, out)
 
         return module
 
-    ctx = ir.Context()
     ir_type = to_ir_type("f32", ctx)
-    module = generate_module(ctx, ir_type)
+    module = generate_module(ir_type)
     bufferize_module(ctx, module)
     schedule = create_schedule(ctx)
     apply_schedule(module, schedule)
@@ -1811,34 +1826,36 @@ def test_attention_fwd():
     n_kv_heads = model_args.n_kv_heads
     head_dim = dim // n_heads
 
-    def generate_module(ctx, elty, args):
-        with ctx, ir.Location.unknown():
-            module = ir.Module.create()
-            with ir.InsertionPoint(module.body):
-                x_type = ir.RankedTensorType.get([batch, seq_len, dim], elty)
-                wq_type = ir.RankedTensorType.get([n_heads * head_dim, dim], elty)
-                wk_type = ir.RankedTensorType.get([n_kv_heads * head_dim, dim], elty)
-                wv_type = ir.RankedTensorType.get([n_kv_heads * head_dim, dim], elty)
-                wo_type = ir.RankedTensorType.get([dim, n_heads * head_dim], elty)
-                freqs_cis_type = ir.RankedTensorType.get([seq_len, head_dim // 2], elty)
-                mask_type = ir.RankedTensorType.get(
-                    [batch, n_heads, seq_len, seq_len], elty
-                )
-                out_type = ir.RankedTensorType.get([batch, seq_len, dim], elty)
+    ctx = ir.Context()
 
-                @func.FuncOp.from_py_func(
-                    x_type,
-                    wq_type,
-                    wk_type,
-                    wv_type,
-                    wo_type,
-                    freqs_cis_type,
-                    mask_type,
-                    out_type,
-                    name="attention_op",
-                )
-                def attention_op(x, wq, wk, wv, wo, freqs_cis, mask, out):
-                    get_attention(args, x, wq, wk, wv, wo, freqs_cis, mask, out)
+    @with_mlir_ctx(ctx)
+    def generate_module(elty, args):
+        module = ir.Module.create()
+        with ir.InsertionPoint(module.body):
+            x_type = ir.RankedTensorType.get([batch, seq_len, dim], elty)
+            wq_type = ir.RankedTensorType.get([n_heads * head_dim, dim], elty)
+            wk_type = ir.RankedTensorType.get([n_kv_heads * head_dim, dim], elty)
+            wv_type = ir.RankedTensorType.get([n_kv_heads * head_dim, dim], elty)
+            wo_type = ir.RankedTensorType.get([dim, n_heads * head_dim], elty)
+            freqs_cis_type = ir.RankedTensorType.get([seq_len, head_dim // 2], elty)
+            mask_type = ir.RankedTensorType.get(
+                [batch, n_heads, seq_len, seq_len], elty
+            )
+            out_type = ir.RankedTensorType.get([batch, seq_len, dim], elty)
+
+            @func.FuncOp.from_py_func(
+                x_type,
+                wq_type,
+                wk_type,
+                wv_type,
+                wo_type,
+                freqs_cis_type,
+                mask_type,
+                out_type,
+                name="attention_op",
+            )
+            def attention_op(x, wq, wk, wv, wo, freqs_cis, mask, out):
+                get_attention(args, x, wq, wk, wv, wo, freqs_cis, mask, out)
 
         return module
 
@@ -1861,9 +1878,8 @@ def test_attention_fwd():
         # Run reference forward
         out_ref = reference(x, start_pos=0, freqs_cis=freqs_cis_complex, mask=mask)
 
-    ctx = ir.Context()
     ir_type = to_ir_type("f32", ctx)
-    module = generate_module(ctx, ir_type, model_args)
+    module = generate_module(ir_type, model_args)
     bufferize_module(ctx, module)
     schedule = create_schedule(ctx)
     apply_schedule(module, schedule)
