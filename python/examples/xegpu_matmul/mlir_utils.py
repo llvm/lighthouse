@@ -17,7 +17,7 @@ def cse(op):
 
 
 def canonicalize(op):
-    with ir.InsertionPoint(transform.ApplyPatternsOp(op).patterns):
+    with ir.InsertionPoint(transform.apply_patterns(op).patterns):
         transform.ApplyCanonicalizationPatternsOp()
 
 
