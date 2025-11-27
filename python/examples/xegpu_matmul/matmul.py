@@ -44,7 +44,7 @@ class XeGPUMatMul:
         M: int,
         N: int,
         K: int,
-        ab_type: str = "f32",
+        ab_type: str = "f16",
         c_type: str = "f32",
         has_bias: bool = False,
         has_relu: bool = False,
@@ -55,6 +55,8 @@ class XeGPUMatMul:
         self.a_shape = (M, K)
         self.b_shape = (K, N)
         self.c_shape = (M, N)
+        assert ab_type == "f16", "Only f16 type is supported for A and B"
+        assert c_type == "f32", "Only f32 type is supported for C"
         self.ab_type = ab_type
         self.c_type = c_type
         type_str_to_numpy = {
@@ -283,20 +285,6 @@ def parse_cli():
         help="Number of initial prefetches.",
     )
     parser.add_argument(
-        "--ab-type",
-        type=str,
-        choices=["f16", "f32"],
-        default="f16",
-        help="Data type of A and B matrices.",
-    )
-    parser.add_argument(
-        "--c-type",
-        type=str,
-        choices=["f16", "f32"],
-        default="f32",
-        help="Data type of the C matrix.",
-    )
-    parser.add_argument(
         "--nruns",
         type=int,
         default=1000,
@@ -359,14 +347,16 @@ if __name__ == "__main__":
     }
 
     M, N, K = args.sizes
+    ab_type = "f16"
+    c_type = "f32"
 
     with ir.Context(), ir.Location.unknown():
         wload = XeGPUMatMul(
             M=M,
             N=N,
             K=K,
-            ab_type=args.ab_type,
-            c_type=args.c_type,
+            ab_type=ab_type,
+            c_type=c_type,
             has_bias=False,
             has_relu=args.relu,
         )
@@ -397,7 +387,7 @@ if __name__ == "__main__":
 
             parts = [
                 f"sizes={list2str(args.sizes)}",
-                f"dt={args.ab_type},{args.c_type}",
+                f"dt={ab_type},{c_type}",
                 f"wg-tile={list2str(args.wg_tile)}",
                 f"sg-tile={list2str(args.sg_tile)}",
                 f"k-tile={args.k_tile}",
