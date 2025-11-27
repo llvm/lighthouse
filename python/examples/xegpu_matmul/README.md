@@ -49,7 +49,7 @@ If cmake cannot find LevelZero, set environment variable `LEVEL_ZERO_DIR=<path-t
 
 ### Install Lighthouse
 
-Install Lighthouse as instructed in the main [README](../../../../README.md).
+Install Lighthouse as instructed in the main [README](../../../README.md).
 
 Override the default LLVM package by setting `PYTHONPATH` to the local LLVM Python bindings:
 
