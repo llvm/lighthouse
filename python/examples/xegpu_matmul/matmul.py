@@ -1,3 +1,6 @@
+# RUN: %PYTHON %s --dump-kernel=xegpu-wg | FileCheck %s
+# CHECK: module attributes {gpu.container_module} {
+
 """
 XeGPU matrix multiplication benchmark.
 """
