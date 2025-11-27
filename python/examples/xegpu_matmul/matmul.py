@@ -16,7 +16,7 @@ from contextlib import contextmanager
 from functools import cached_property
 from lighthouse.utils import get_packed_arg, memref_to_ctype
 from schedule import get_schedule_module
-from payload_generator import generate_matmul_payload
+from payload import generate_matmul_payload
 
 from runner import lower_payload, benchmark
 import argparse
