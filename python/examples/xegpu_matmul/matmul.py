@@ -92,11 +92,6 @@ class XeGPUMatMul:
         self.gpu_memrefs[key] = mref
         return mref
 
-    def _allocate_inputs(self, execution_engine: ExecutionEngine):
-        self._allocate_array("A", self.a_shape, self.ab_type, execution_engine)
-        self._allocate_array("B", self.b_shape, self.ab_type, execution_engine)
-        self._allocate_array("C", self.c_shape, self.c_type, execution_engine)
-
     def _deallocate_all(self, execution_engine: ExecutionEngine):
         for (_, dtype_str), mref in self.gpu_memrefs.items():
             dealloc_func = execution_engine.lookup("gpu_dealloc_" + dtype_str)
@@ -105,10 +100,10 @@ class XeGPUMatMul:
         self.gpu_memrefs = {}
 
     @contextmanager
-    def allocate(self, execution_engine: ExecutionEngine):
+    def allocate_inputs(self, execution_engine: ExecutionEngine):
         try:
-            self._allocate_inputs(execution_engine)
-            yield None
+            inputs = self._get_input_arrays(execution_engine)
+            yield inputs
         finally:
             self._deallocate_all(execution_engine)
 
@@ -141,7 +136,7 @@ class XeGPUMatMul:
             raise NotImplementedError("Bias verification not implemented")
         return C_ref
 
-    def get_input_arrays(
+    def _get_input_arrays(
         self, execution_engine: ExecutionEngine
     ) -> list[ctypes.Structure]:
         A_gpu = self._allocate_array("A", self.a_shape, self.ab_type, execution_engine)
