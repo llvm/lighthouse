@@ -4,6 +4,12 @@ This project implements the RFC: https://discourse.llvm.org/t/rfc-mlir-project-l
 
 _"In essence, this project should guide you through using MLIR for your own projects, showing the way, but not forcing you to follow a particular path. Essentially, the role of a lighthouse."_
 
+## Project Status
+
+[![Lighthouse Examples](https://github.com/llvm/lighthouse/actions/workflows/examples.yml/badge.svg)](https://github.com/llvm/lighthouse/actions/workflows/examples.yml)
+
+[![Lint](https://github.com/llvm/lighthouse/actions/workflows/lint.yml/badge.svg)](https://github.com/llvm/lighthouse/actions/workflows/lint.yml)
+
 ### Disclaimer
 
 This project uses LLVM to test and validate various pipelines and assumptions about the MLIR project, but it is not part of any LLVM releases, nor is a dependency for MLIR to operate.
