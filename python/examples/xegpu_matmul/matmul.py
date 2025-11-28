@@ -294,6 +294,12 @@ def parse_cli():
         help="Number of runs to average the execution time.",
     )
     parser.add_argument(
+        "--nwarmup",
+        type=int,
+        default=20,
+        help="Number of warm-up iterations before benchmarking.",
+    )
+    parser.add_argument(
         "--relu",
         action="store_true",
         help="Add relu op after the matrix multiplication (and bias if any).",
@@ -375,7 +381,7 @@ if __name__ == "__main__":
             times = benchmark(
                 wload,
                 nruns=args.nruns,
-                nwarmup=15,
+                nwarmup=args.nwarmup,
                 check_correctness=args.check_result,
                 schedule_parameters=params,
                 verbose=1,
