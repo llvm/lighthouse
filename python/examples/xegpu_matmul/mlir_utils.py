@@ -9,16 +9,12 @@ def apply_registered_pass(*args, **kwargs):
 
 
 def match(*args, **kwargs):
-    return structured.MatchOp(transform.AnyOpType.get(), *args, **kwargs)
-
-
-def cse(op):
-    transform.ApplyCommonSubexpressionEliminationOp(op)
+    return structured.structured_match(transform.AnyOpType.get(), *args, **kwargs)
 
 
 def canonicalize(op):
     with ir.InsertionPoint(transform.apply_patterns(op).patterns):
-        transform.ApplyCanonicalizationPatternsOp()
+        transform.apply_patterns_canonicalization()
 
 
 def get_mlir_library_path():

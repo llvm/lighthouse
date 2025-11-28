@@ -5,7 +5,7 @@ from mlir.dialects.transform import xegpu
 from mlir.dialects.bufferization import LayoutMapOption
 from mlir.dialects import transform
 from mlir.dialects.transform import structured
-from mlir_utils import apply_registered_pass, match, cse, canonicalize
+from mlir_utils import apply_registered_pass, match, canonicalize
 from typing import Optional
 
 
@@ -139,28 +139,31 @@ def bundle_xepu_matmul_schedule(
 
     # wg tiling
     if has_relu:
-        terminal = match(mod, ops={"linalg.max"}).result
+        terminal = match(mod, ops={"linalg.max"})
     elif has_bias:
-        terminal = match(mod, ops={"linalg.add"}).result
+        terminal = match(mod, ops={"linalg.add"})
     else:
-        terminal = match(mod, ops={"linalg.matmul"}).result
+        terminal = match(mod, ops={"linalg.matmul"})
+    # FIXME use structured.structured_fuse
     structured.FuseOp(terminal, tile_sizes=wg_tile, use_forall=True)
-    cse(mod)
+    transform.apply_cse(mod)
     canonicalize(mod)
 
     # k loop tiling
-    wg_matmul = match(mod, ops={"linalg.matmul"}).result
+    wg_matmul = match(mod, ops={"linalg.matmul"})
+    # FIXME use structured.structured_tile_using_for
     wgk_matmul, k_loop = structured.TileUsingForOp(
         wg_matmul, sizes=[0, 0, k_tile]
     ).results
 
-    cse(func)
+    transform.apply_cse(func)
     canonicalize(func)
 
     if dump_kernel == "tiled":
         return mod, True
 
     # vectorize
+    # FIXME use structured.structured_vectorize_children_and_apply_patterns
     func = structured.VectorizeChildrenAndApplyPatternsOp(
         func,
         fold_type_extensions_into_contract=True,
@@ -170,7 +173,7 @@ def bundle_xepu_matmul_schedule(
     k_loop = match(func, ops={"scf.for"})
     loop.HoistLoopInvariantSubsetsOp(k_loop)
 
-    cse(func)
+    transform.apply_cse(func)
     canonicalize(func)
 
     if dump_kernel == "vectorized":
@@ -189,7 +192,7 @@ def bundle_xepu_matmul_schedule(
     ).result
     # fold memref.subviews into vector.transfer_read/write ops
     mod = apply_registered_pass(mod, "fold-memref-alias-ops")
-    cse(mod)
+    transform.apply_cse(mod)
     canonicalize(mod)
 
     if dump_kernel == "bufferized":
@@ -204,7 +207,7 @@ def bundle_xepu_matmul_schedule(
     func = apply_registered_pass(func, "gpu-map-parallel-loops")
     func = apply_registered_pass(func, "convert-parallel-loops-to-gpu")
     func = apply_registered_pass(func, "lower-affine")
-    cse(func)
+    transform.apply_cse(func)
     canonicalize(func)
 
     # set correct number of gpu threads
@@ -216,7 +219,7 @@ def bundle_xepu_matmul_schedule(
     canonicalize(func)
     func = apply_registered_pass(func, "gpu-launch-sink-index-computations")
     mod = apply_registered_pass(mod, "gpu-kernel-outlining")
-    cse(mod)
+    transform.apply_cse(mod)
 
     # set xevm target
     mod = apply_registered_pass(
@@ -229,7 +232,7 @@ def bundle_xepu_matmul_schedule(
     gpu_mod = match(mod, ops={"gpu.module"})
     gpu_func = match(gpu_mod, ops={"gpu.func"})
     gpu_func = apply_registered_pass(gpu_func, "convert-vector-to-xegpu")
-    cse(gpu_func)
+    transform.apply_cse(gpu_func)
 
     if dump_kernel == "xegpu-initial":
         return mod, True
@@ -319,14 +322,14 @@ def bundle_xepu_matmul_schedule(
 
     if has_relu:
         # for post ops we need to add C layout manually
-        max_op = match(gpu_func, ops={"arith.maximumf"}).result
+        max_op = match(gpu_func, ops={"arith.maximumf"})
         xegpu.set_op_layout_attr(max_op, result=True, index=0, **output_layout)
         # find zero constant buffer and annotate it
         const_buffer = transform.get_producer_of_operand(anytype, max_op, 1)
         xegpu.set_op_layout_attr(const_buffer, result=True, index=0, **output_layout)
     if has_bias:
         # for post ops we need to add C layout manually
-        add_op = match(gpu_func, ops={"arith.addf"}).result
+        add_op = match(gpu_func, ops={"arith.addf"})
         xegpu.set_op_layout_attr(add_op, result=True, index=0, **output_layout)
 
         # annotate broadcast op operands
@@ -350,14 +353,14 @@ def bundle_xepu_matmul_schedule(
         mask = transform.get_producer_of_operand(anytype, bcast_load, 2)
         xegpu.set_op_layout_attr(mask, result=True, index=0, **output_layout_dim1)
         raise NotImplementedError("Bias layout propagation is not supported.")
-    cse(gpu_func)
+    transform.apply_cse(gpu_func)
     canonicalize(gpu_func)
 
     # hoist desc ops out of reduction loop
     transform.apply_licm(k_loop)
 
     canonicalize(gpu_func)
-    cse(gpu_func)
+    transform.apply_cse(gpu_func)
 
     if dump_kernel == "xegpu-wg":
         return mod, True
@@ -379,16 +382,16 @@ def bundle_xegpu_to_binary(mod, dump_kernel: str = ""):
     # xegpu distribution
     gpu_func = match(gpu_mod, ops={"gpu.func"})
     gpu_func = apply_registered_pass(gpu_func, "xegpu-wg-to-sg-distribute")
-    cse(gpu_func)
+    transform.apply_cse(gpu_func)
 
     if dump_kernel == "xegpu-sg":
         return mod, True
 
     gpu_func = apply_registered_pass(gpu_func, "lower-affine")
-    cse(gpu_func)
+    transform.apply_cse(gpu_func)
     gpu_func = apply_registered_pass(gpu_func, "xegpu-blocking")
     canonicalize(gpu_func)
-    cse(gpu_func)
+    transform.apply_cse(gpu_func)
 
     if dump_kernel == "xegpu-inst":
         return mod, True
@@ -396,16 +399,16 @@ def bundle_xegpu_to_binary(mod, dump_kernel: str = ""):
     gpu_func = apply_registered_pass(gpu_func, "xegpu-propagate-layout")
     gpu_mod = apply_registered_pass(gpu_mod, "xegpu-subgroup-distribute")
     canonicalize(gpu_mod)
-    cse(gpu_mod)
+    transform.apply_cse(gpu_mod)
     gpu_mod = apply_registered_pass(gpu_mod, "loop-invariant-code-motion")
-    cse(gpu_mod)
+    transform.apply_cse(gpu_mod)
     gpu_mod = apply_registered_pass(gpu_mod, "xegpu-vector-linearize")
     gpu_mod = apply_registered_pass(gpu_mod, "convert-xegpu-to-xevm")
     gpu_mod = apply_registered_pass(
         gpu_mod, "convert-gpu-to-llvm-spv", options={"use-64bit-index": "true"}
     )
     gpu_mod = apply_registered_pass(gpu_mod, "convert-xevm-to-llvm")
-    cse(gpu_mod)
+    transform.apply_cse(gpu_mod)
 
     func = match(mod, ops={"func.func"})
     func = apply_registered_pass(func, "gpu-async-region")
@@ -424,7 +427,7 @@ def bundle_xegpu_to_binary(mod, dump_kernel: str = ""):
     mod = apply_registered_pass(mod, "gpu-to-llvm")
     mod = apply_registered_pass(mod, "lower-affine")
     mod = apply_registered_pass(mod, "reconcile-unrealized-casts")
-    cse(mod)
+    transform.apply_cse(mod)
     mod = apply_registered_pass(mod, "gpu-module-to-binary")
 
     return mod, False
