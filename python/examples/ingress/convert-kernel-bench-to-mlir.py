@@ -115,11 +115,6 @@ ignore_list = [
 ]
 
 
-ctx = ir.Context()
-pm = passmanager.PassManager(context=ctx)
-pm.add("linalg-specialize-generic-ops")
-
-
 @dataclass
 class KernelConversionTask:
     level: int
@@ -160,6 +155,11 @@ def all_tasks() -> Iterable[KernelConversionTask]:
                 kernel_mlir_path,
                 ignore_by_default,
             )
+
+
+ctx = ir.Context()
+pm = passmanager.PassManager(context=ctx)
+pm.add("linalg-specialize-generic-ops")
 
 
 def process_task(task: KernelConversionTask):
@@ -219,4 +219,5 @@ else:
     tasks = tasks_
 
 print("Output directory:", mlir_kernels_dir)
-list(ProcessPoolExecutor().map(process_task, tasks))
+for _ in ProcessPoolExecutor().map(process_task, tasks):
+    pass  # NB: obtain each result so that exceptions are propagated to the main process
