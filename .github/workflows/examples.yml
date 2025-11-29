@@ -28,4 +28,4 @@ jobs:
       - name: Run lit-enabled examples as tests
         run: |
           export FILECHECK=FileCheck-18 # Ubuntu's llvm-dev appends a version number.
-          uv run lit python/examples --verbose  # Makes sure to substitute FileCheck for $FILECHECK
+          uv run lit examples --verbose  # Makes sure to substitute FileCheck for $FILECHECK
