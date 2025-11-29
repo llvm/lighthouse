@@ -15,7 +15,7 @@ from typing import Iterable
 from mlir import ir, passmanager
 from lighthouse.ingress import torch as torch_ingress
 
-project_root = Path(__file__).parent.parent.parent.parent
+project_root = Path(__file__).parent.parent.parent
 torch_kernels_dir = project_root / "third_party" / "KernelBench" / "KernelBench"
 mlir_kernels_dir = project_root / "cache" / "ingress" / "KernelBench"
 
