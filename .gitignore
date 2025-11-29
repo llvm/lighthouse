@@ -1,3 +1,6 @@
+# Lighthouse cache
+cache
+
 # Python caches
 __pycache__/
 *.py[cod]
