@@ -87,7 +87,7 @@ def create_schedule() -> ir.Module:
 
         # Match and decompose softmax operations before bufferization
         softmax = structured.MatchOp(anytype, root, ops=["linalg.softmax"])
-        _ = structured.structured_decompose_interface(anytype, softmax.results[0])
+        structured.structured_decompose_interface(anytype, softmax.results[0])
 
         # Find the kernel's module op.
         func = structured.MatchOp.match_op_names(root, ["func.func"])
