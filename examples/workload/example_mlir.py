@@ -27,58 +27,60 @@ from lighthouse.utils.runner import (
 from example import ElementwiseSum
 
 
-def emit_host_alloc(mod, suffix, element_type, rank=2):
+def emit_host_alloc(suffix: str, element_type: ir.Type, rank: int = 2):
     dyn = ir.ShapedType.get_dynamic_size()
     memref_dyn_t = ir.MemRefType.get(rank * (dyn,), element_type)
     index_t = ir.IndexType.get()
     i32_t = ir.IntegerType.get_signless(32)
-    with ir.InsertionPoint(mod.body):
-        f = func.FuncOp("host_alloc_" + suffix, (rank * (i32_t,), (memref_dyn_t,)))
-        f.attributes["llvm.emit_c_interface"] = ir.UnitAttr.get()
-    with ir.InsertionPoint(f.add_entry_block()):
-        dims = [arith.IndexCastOp(index_t, a) for a in list(f.arguments)]
+    inputs = rank * (i32_t,)
+
+    @func.func(*inputs, name="host_alloc_" + suffix)
+    def alloc_func(*shape):
+        dims = [arith.index_cast(index_t, a) for a in shape]
         alloc = memref.alloc(memref_dyn_t, dims, [])
-        func.ReturnOp((alloc,))
+        return alloc
+
+    alloc_func.func_op.attributes["llvm.emit_c_interface"] = ir.UnitAttr.get()
 
 
-def emit_host_dealloc(mod, suffix, element_type, rank=2):
+def emit_host_dealloc(suffix: str, element_type: ir.Type, rank: int = 2):
     dyn = ir.ShapedType.get_dynamic_size()
     memref_dyn_t = ir.MemRefType.get(rank * (dyn,), element_type)
-    with ir.InsertionPoint(mod.body):
-        f = func.FuncOp("host_dealloc_" + suffix, ((memref_dyn_t,), ()))
-        f.attributes["llvm.emit_c_interface"] = ir.UnitAttr.get()
-    with ir.InsertionPoint(f.add_entry_block()):
-        memref.dealloc(f.arguments[0])
-        func.ReturnOp(())
+
+    @func.func(memref_dyn_t, name="host_dealloc_" + suffix)
+    def dealloc_func(buffer):
+        memref.dealloc(buffer)
+
+    dealloc_func.func_op.attributes["llvm.emit_c_interface"] = ir.UnitAttr.get()
 
 
-def emit_fill_constant(mod, suffix, value, element_type, rank=2):
+def emit_fill_constant(suffix, value, element_type, rank=2):
     dyn = ir.ShapedType.get_dynamic_size()
     memref_dyn_t = ir.MemRefType.get(rank * (dyn,), element_type)
-    with ir.InsertionPoint(mod.body):
-        f = func.FuncOp("host_fill_constant_" + suffix, ((memref_dyn_t,), ()))
-        f.attributes["llvm.emit_c_interface"] = ir.UnitAttr.get()
-    with ir.InsertionPoint(f.add_entry_block()):
+
+    @func.func(memref_dyn_t, name="host_fill_constant_" + suffix)
+    def init_func(buffer):
         const = arith.constant(element_type, value)
-        linalg.fill(const, outs=[f.arguments[0]])
-        func.ReturnOp(())
+        linalg.fill(const, outs=[buffer])
+
+    init_func.func_op.attributes["llvm.emit_c_interface"] = ir.UnitAttr.get()
 
 
-def emit_fill_random(mod, suffix, element_type, min=0.0, max=1.0, seed=2):
+def emit_fill_random(suffix, element_type, min=0.0, max=1.0, seed=2):
     rank = 2
     dyn = ir.ShapedType.get_dynamic_size()
     memref_dyn_t = ir.MemRefType.get(rank * (dyn,), element_type)
     i32_t = ir.IntegerType.get_signless(32)
     f64_t = ir.F64Type.get()
-    with ir.InsertionPoint(mod.body):
-        f = func.FuncOp("host_fill_random_" + suffix, ((memref_dyn_t,), ()))
-        f.attributes["llvm.emit_c_interface"] = ir.UnitAttr.get()
-    with ir.InsertionPoint(f.add_entry_block()):
+
+    @func.func(memref_dyn_t, name="host_fill_random_" + suffix)
+    def init_func(buffer):
         min_cst = arith.constant(f64_t, min)
         max_cst = arith.constant(f64_t, max)
         seed_cst = arith.constant(i32_t, seed)
-        linalg.fill_rng_2d(min_cst, max_cst, seed_cst, outs=[f.arguments[0]])
-        func.ReturnOp(())
+        linalg.fill_rng_2d(min_cst, max_cst, seed_cst, outs=[buffer])
+
+    init_func.func_op.attributes["llvm.emit_c_interface"] = ir.UnitAttr.get()
 
 
 class ElementwiseSumMLIRAlloc(ElementwiseSum):
@@ -171,11 +173,12 @@ class ElementwiseSumMLIRAlloc(ElementwiseSum):
     def payload_module(self):
         mod = super().payload_module()
         # extend the payload module with de/alloc/fill functions
-        float32_t = ir.F32Type.get()
-        emit_host_alloc(mod, "f32", float32_t)
-        emit_host_dealloc(mod, "f32", float32_t)
-        emit_fill_constant(mod, "zero_f32", 0.0, float32_t)
-        emit_fill_random(mod, "f32", float32_t, min=-1.0, max=1.0)
+        with ir.InsertionPoint(mod.body):
+            float32_t = ir.F32Type.get()
+            emit_host_alloc("f32", float32_t)
+            emit_host_dealloc("f32", float32_t)
+            emit_fill_constant("zero_f32", 0.0, float32_t)
+            emit_fill_random("f32", float32_t, min=-1.0, max=1.0)
         return mod
 
 
