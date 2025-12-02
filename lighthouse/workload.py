@@ -44,23 +44,21 @@ class Workload(ABC):
         pass
 
     @abstractmethod
-    def get_input_arrays(self, execution_engine) -> list:
-        """
-        Return the input arrays for the payload function as memrefs.
-
-        Allocation and initialization of the input arrays should be done here.
-        """
-        pass
-
     @contextmanager
-    def allocate(self, execution_engine):
+    def allocate_inputs(self, execution_engine):
         """
-        Allocate any necessary memory for the workload.
+        Context manager that allocates and returns payload input buffers.
 
-        Override this method if the workload requires memory management."""
+        Returns the payload input buffers as memrefs that can be directly
+        passed to the compiled payload function.
+
+        On exit, frees any manually allocated memory (if any).
+        """
         try:
+            # Yield payload function input memrefs here.
             yield None
         finally:
+            # Manually deallocate memory here (if needed).
             pass
 
     @abstractmethod

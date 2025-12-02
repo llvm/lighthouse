@@ -7,6 +7,8 @@ from mlir import ir
 from mlir.runtime.np_to_memref import get_ranked_memref_descriptor
 from mlir.dialects import func, linalg, bufferization
 from mlir.dialects import transform
+from mlir.execution_engine import ExecutionEngine
+from contextlib import contextmanager
 from functools import cached_property
 from lighthouse import Workload
 from lighthouse.utils.mlir import (
@@ -52,8 +54,16 @@ class ElementwiseSum(Workload):
         A, B, _ = self._input_arrays
         return A + B
 
-    def get_input_arrays(self, execution_engine):
+    def _get_input_arrays(self):
         return [get_ranked_memref_descriptor(a) for a in self._input_arrays]
+
+    @contextmanager
+    def allocate_inputs(self, execution_engine: ExecutionEngine):
+        try:
+            yield self._get_input_arrays()
+        finally:
+            # cached numpy arrays are deallocated automatically
+            pass
 
     def check_correctness(self, execution_engine, verbose: int = 0) -> bool:
         C = self._input_arrays[2]

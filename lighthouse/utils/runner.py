@@ -95,9 +95,8 @@ def execute(
     # get execution engine
     engine = get_engine(payload_module, requirements=workload.requirements())
 
-    with workload.allocate(execution_engine=engine):
+    with workload.allocate_inputs(execution_engine=engine) as inputs:
         # prepare function arguments
-        inputs = workload.get_input_arrays(execution_engine=engine)
         pointers = [ctypes.pointer(ctypes.pointer(m)) for m in inputs]
         packed_args = get_packed_arg(pointers)
 
@@ -195,8 +194,7 @@ def benchmark(
         requirements.append("mlir_c_runner")
     engine = get_engine(payload_module, requirements=requirements)
 
-    with workload.allocate(execution_engine=engine):
-        inputs = workload.get_input_arrays(execution_engine=engine)
+    with workload.allocate_inputs(execution_engine=engine) as inputs:
         pointers = [ctypes.pointer(ctypes.pointer(m)) for m in inputs]
         if check_correctness:
             # call payload once to verify correctness
