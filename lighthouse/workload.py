@@ -64,7 +64,7 @@ class Workload(ABC):
             pass
 
     @abstractmethod
-    def verify(self, execution_engine, verbose: int = 0) -> bool:
+    def check_correctness(self, execution_engine, verbose: int = 0) -> bool:
         """Verify the correctness of the computation."""
         pass
 

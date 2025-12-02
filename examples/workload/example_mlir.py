@@ -135,7 +135,7 @@ class ElementwiseSumMLIRAlloc(ElementwiseSum):
 
         return [A, B, C]
 
-    def verify(self, execution_engine, verbose: int = 0) -> bool:
+    def check_correctness(self, execution_engine, verbose: int = 0) -> bool:
         # compute reference solution with numpy
         A = ranked_memref_to_numpy([self.memrefs["A"]])
         B = ranked_memref_to_numpy([self.memrefs["B"]])
@@ -173,33 +173,33 @@ class ElementwiseSumMLIRAlloc(ElementwiseSum):
     def payload_module(self):
         mod = super().payload_module()
         # extend the payload module with de/alloc/fill functions
-        with self.context, self.location:
-            float32_t = ir.F32Type.get()
-            emit_host_alloc(mod, "f32", float32_t)
-            emit_host_dealloc(mod, "f32", float32_t)
-            emit_fill_constant(mod, "zero_f32", 0.0, float32_t)
-            emit_fill_random(mod, "f32", float32_t, min=-1.0, max=1.0)
+        float32_t = ir.F32Type.get()
+        emit_host_alloc(mod, "f32", float32_t)
+        emit_host_dealloc(mod, "f32", float32_t)
+        emit_fill_constant(mod, "zero_f32", 0.0, float32_t)
+        emit_fill_random(mod, "f32", float32_t, min=-1.0, max=1.0)
         return mod
 
 
 if __name__ == "__main__":
-    wload = ElementwiseSumMLIRAlloc(400, 400)
+    with ir.Context(), ir.Location.unknown():
+        wload = ElementwiseSumMLIRAlloc(400, 400)
 
-    print(" Dump kernel ".center(60, "-"))
-    lower_payload(wload, dump_kernel="bufferized", dump_schedule=False)
+        print(" Dump kernel ".center(60, "-"))
+        lower_payload(wload, dump_kernel="bufferized", dump_schedule=False)
 
-    print(" Execute ".center(60, "-"))
-    execute(wload, verbose=2)
+        print(" Execute ".center(60, "-"))
+        execute(wload, verbose=2)
 
-    print(" Benchmark ".center(60, "-"))
-    times = benchmark(wload)
-    times *= 1e6  # convert to microseconds
-    # compute statistics
-    mean = np.mean(times)
-    min = np.min(times)
-    max = np.max(times)
-    std = np.std(times)
-    print(f"Timings (us): mean={mean:.2f}+/-{std:.2f} min={min:.2f} max={max:.2f}")
-    flop_count = wload.get_complexity()[0]
-    gflops = flop_count / (mean * 1e-6) / 1e9
-    print(f"Throughput: {gflops:.2f} GFLOPS")
+        print(" Benchmark ".center(60, "-"))
+        times = benchmark(wload)
+        times *= 1e6  # convert to microseconds
+        # compute statistics
+        mean = np.mean(times)
+        min = np.min(times)
+        max = np.max(times)
+        std = np.std(times)
+        print(f"Timings (us): mean={mean:.2f}+/-{std:.2f} min={min:.2f} max={max:.2f}")
+        flop_count = wload.get_complexity()[0]
+        gflops = flop_count / (mean * 1e-6) / 1e9
+        print(f"Throughput: {gflops:.2f} GFLOPS")

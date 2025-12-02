@@ -12,7 +12,6 @@ from lighthouse import Workload
 from lighthouse.utils.mlir import (
     apply_registered_pass,
     canonicalize,
-    cse,
     match,
 )
 from lighthouse.utils.execution import (
@@ -37,8 +36,6 @@ class ElementwiseSum(Workload):
         self.M = M
         self.N = N
         self.dtype = np.float32
-        self.context = ir.Context()
-        self.location = ir.Location.unknown(context=self.context)
 
     @cached_property
     def _input_arrays(self):
@@ -58,7 +55,7 @@ class ElementwiseSum(Workload):
     def get_input_arrays(self, execution_engine):
         return [get_ranked_memref_descriptor(a) for a in self._input_arrays]
 
-    def verify(self, execution_engine, verbose: int = 0) -> bool:
+    def check_correctness(self, execution_engine, verbose: int = 0) -> bool:
         C = self._input_arrays[2]
         C_ref = self._reference_solution
         if verbose > 1:
@@ -85,95 +82,95 @@ class ElementwiseSum(Workload):
         return (flop_count, memory_reads, memory_writes)
 
     def payload_module(self):
-        with self.context, self.location:
+        mod = ir.Module.create()
+
+        with ir.InsertionPoint(mod.body):
             float32_t = ir.F32Type.get()
             shape = (self.M, self.N)
             tensor_t = ir.RankedTensorType.get(shape, float32_t)
             memref_t = ir.MemRefType.get(shape, float32_t)
-            mod = ir.Module.create()
-            with ir.InsertionPoint(mod.body):
-                args = [memref_t, memref_t, memref_t]
-                f = func.FuncOp(self.payload_function_name, (tuple(args), ()))
-                f.attributes["llvm.emit_c_interface"] = ir.UnitAttr.get()
-            with ir.InsertionPoint(f.add_entry_block()):
-                A = f.arguments[0]
-                B = f.arguments[1]
-                C = f.arguments[2]
-                a_tensor = bufferization.ToTensorOp(tensor_t, A, restrict=True)
-                b_tensor = bufferization.ToTensorOp(tensor_t, B, restrict=True)
-                c_tensor = bufferization.ToTensorOp(
+            fargs = [memref_t, memref_t, memref_t]
+
+            @func.func(*fargs, name=self.payload_function_name)
+            def payload(*args):
+                A, B, C = args
+                a_tensor = bufferization.to_tensor(tensor_t, A, restrict=True)
+                b_tensor = bufferization.to_tensor(tensor_t, B, restrict=True)
+                c_tensor = bufferization.to_tensor(
                     tensor_t, C, restrict=True, writable=True
                 )
                 add = linalg.add(a_tensor, b_tensor, outs=[c_tensor])
-                bufferization.MaterializeInDestinationOp(
+                bufferization.materialize_in_destination(
                     None, add, C, restrict=True, writable=True
                 )
-                func.ReturnOp(())
+
+        payload.func_op.attributes["llvm.emit_c_interface"] = ir.UnitAttr.get()
+
         return mod
 
     def schedule_module(self, dump_kernel=None, parameters=None):
-        with self.context, self.location:
-            schedule_module = ir.Module.create()
-            schedule_module.operation.attributes["transform.with_named_sequence"] = (
-                ir.UnitAttr.get()
+        schedule_module = ir.Module.create()
+        schedule_module.operation.attributes["transform.with_named_sequence"] = (
+            ir.UnitAttr.get()
+        )
+        with ir.InsertionPoint(schedule_module.body):
+            named_sequence = transform.named_sequence(
+                "__transform_main",
+                [transform.AnyOpType.get()],
+                [],
+                arg_attrs=[{"transform.readonly": ir.UnitAttr.get()}],
             )
-            with ir.InsertionPoint(schedule_module.body):
-                named_sequence = transform.NamedSequenceOp(
-                    "__transform_main",
-                    [transform.AnyOpType.get()],
-                    [],
-                    arg_attrs=[{"transform.readonly": ir.UnitAttr.get()}],
+            with ir.InsertionPoint(named_sequence.body):
+                anytype = transform.AnyOpType.get()
+                func = match(named_sequence.bodyTarget, ops={"func.func"})
+                mod = transform.get_parent_op(
+                    anytype,
+                    func,
+                    op_name="builtin.module",
+                    deduplicate=True,
                 )
-                with ir.InsertionPoint(named_sequence.body):
-                    anytype = transform.AnyOpType.get()
-                    func = match(named_sequence.bodyTarget, ops={"func.func"})
-                    mod = transform.get_parent_op(
-                        anytype,
-                        func,
-                        op_name="builtin.module",
-                        deduplicate=True,
-                    )
-                    mod = apply_registered_pass(mod, "one-shot-bufferize")
-                    mod = apply_registered_pass(mod, "convert-linalg-to-loops")
-                    cse(mod)
-                    canonicalize(mod)
+                mod = apply_registered_pass(mod, "one-shot-bufferize")
+                mod = apply_registered_pass(mod, "convert-linalg-to-loops")
+                transform.apply_cse(mod)
+                canonicalize(mod)
 
-                    if dump_kernel == "bufferized":
-                        transform.YieldOp()
-                        return schedule_module
-
-                    mod = apply_registered_pass(mod, "convert-scf-to-cf")
-                    mod = apply_registered_pass(mod, "finalize-memref-to-llvm")
-                    mod = apply_registered_pass(mod, "convert-cf-to-llvm")
-                    mod = apply_registered_pass(mod, "convert-arith-to-llvm")
-                    mod = apply_registered_pass(mod, "convert-func-to-llvm")
-                    mod = apply_registered_pass(mod, "reconcile-unrealized-casts")
+                if dump_kernel == "bufferized":
                     transform.YieldOp()
+                    return schedule_module
+
+                mod = apply_registered_pass(mod, "convert-scf-to-cf")
+                mod = apply_registered_pass(mod, "finalize-memref-to-llvm")
+                mod = apply_registered_pass(mod, "convert-cf-to-llvm")
+                mod = apply_registered_pass(mod, "convert-arith-to-llvm")
+                mod = apply_registered_pass(mod, "convert-func-to-llvm")
+                mod = apply_registered_pass(mod, "reconcile-unrealized-casts")
+                transform.YieldOp()
 
         return schedule_module
 
 
 if __name__ == "__main__":
-    wload = ElementwiseSum(400, 400)
+    with ir.Context(), ir.Location.unknown():
+        wload = ElementwiseSum(400, 400)
 
-    print(" Dump kernel ".center(60, "-"))
-    lower_payload(wload, dump_kernel="bufferized", dump_schedule=True)
+        print(" Dump kernel ".center(60, "-"))
+        lower_payload(wload, dump_kernel="bufferized", dump_schedule=True)
 
-    print(" Execute 1 ".center(60, "-"))
-    execute(wload, verbose=2)
+        print(" Execute 1 ".center(60, "-"))
+        execute(wload, verbose=2)
 
-    print(" Execute 2 ".center(60, "-"))
-    execute(wload, verbose=1)
+        print(" Execute 2 ".center(60, "-"))
+        execute(wload, verbose=1)
 
-    print(" Benchmark ".center(60, "-"))
-    times = benchmark(wload)
-    times *= 1e6  # convert to microseconds
-    # compute statistics
-    mean = np.mean(times)
-    min = np.min(times)
-    max = np.max(times)
-    std = np.std(times)
-    print(f"Timings (us): mean={mean:.2f}+/-{std:.2f} min={min:.2f} max={max:.2f}")
-    flop_count = wload.get_complexity()[0]
-    gflops = flop_count / (mean * 1e-6) / 1e9
-    print(f"Throughput: {gflops:.2f} GFLOPS")
+        print(" Benchmark ".center(60, "-"))
+        times = benchmark(wload)
+        times *= 1e6  # convert to microseconds
+        # compute statistics
+        mean = np.mean(times)
+        min = np.min(times)
+        max = np.max(times)
+        std = np.std(times)
+        print(f"Timings (us): mean={mean:.2f}+/-{std:.2f} min={min:.2f} max={max:.2f}")
+        flop_count = wload.get_complexity()[0]
+        gflops = flop_count / (mean * 1e-6) / 1e9
+        print(f"Throughput: {gflops:.2f} GFLOPS")

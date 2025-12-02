@@ -6,7 +6,6 @@ import numpy as np
 import ctypes
 import os
 from mlir import ir
-from mlir.dialects.transform import interpreter as transform_interpreter
 from mlir.dialects import func, arith, scf, memref
 from mlir.execution_engine import ExecutionEngine
 from mlir.runtime.np_to_memref import get_ranked_memref_descriptor
@@ -53,19 +52,13 @@ def get_engine(payload_module, requirements=None, opt_level=3) -> ExecutionEngin
 def apply_transform_schedule(
     payload_module,
     schedule_module,
-    context,
-    location,
     dump_kernel: Optional[str] = None,
     dump_schedule: bool = False,
 ):
     if not dump_kernel or dump_kernel != "initial":
-        with context, location:
-            # invoke transform interpreter directly
-            transform_interpreter.apply_named_sequence(
-                payload_root=payload_module,
-                transform_root=schedule_module.body.operations[0],
-                transform_module=schedule_module,
-            )
+        # apply schedule on payload module
+        named_seq = schedule_module.body.operations[0]
+        named_seq.apply(payload_module)
     if dump_kernel:
         print(payload_module)
     if dump_schedule:
@@ -85,8 +78,6 @@ def lower_payload(
     apply_transform_schedule(
         payload_module,
         schedule_module,
-        workload.context,
-        workload.location,
         dump_kernel=dump_kernel,
         dump_schedule=dump_schedule,
     )
@@ -117,13 +108,18 @@ def execute(
         payload_func(packed_args)
 
         if check_correctness:
-            success = workload.verify(execution_engine=engine, verbose=verbose)
+            success = workload.check_correctness(
+                execution_engine=engine, verbose=verbose
+            )
             if not success:
                 raise ValueError("Benchmark verification failed.")
 
 
 def emit_benchmark_function(
-    payload_module: ir.Module, workload: Workload, nruns: int, nwarmup: int
+    payload_module: ir.Module,
+    workload: Workload,
+    nruns: int,
+    nwarmup: int,
 ):
     """
     Emit a benchmark function that calls payload function and times it.
@@ -136,49 +132,46 @@ def emit_benchmark_function(
     for op in payload_module.operation.regions[0].blocks[0]:
         if (
             isinstance(op, func.FuncOp)
-            and str(op.name).strip('"') == workload.payload_function_name
+            and op.name.value == workload.payload_function_name
         ):
             payload_func = op
             break
     assert payload_func is not None, "Could not find payload function"
     payload_arguments = payload_func.type.inputs
-    # emit benchmark function
-    with workload.context, workload.location:
-        with ir.InsertionPoint(payload_module.body):
-            # define rtclock function
-            f64_t = ir.F64Type.get()
-            f = func.FuncOp("rtclock", ((), (f64_t,)), visibility="private")
-            # emit new function
-            time_memref_t = ir.MemRefType.get((nruns,), f64_t)
-            args = payload_arguments + [time_memref_t]
-            f = func.FuncOp("benchmark", (tuple(args), ()))
-            f.attributes["llvm.emit_c_interface"] = ir.UnitAttr.get()
-        with ir.InsertionPoint(f.add_entry_block()):
+
+    # emit benchmark function that calls payload and times it
+    with ir.InsertionPoint(payload_module.body):
+        # define rtclock function
+        f64_t = ir.F64Type.get()
+        func.FuncOp("rtclock", ((), (f64_t,)), visibility="private")
+        # emit benchmark function
+        time_memref_t = ir.MemRefType.get((nruns,), f64_t)
+        args = payload_arguments + [time_memref_t]
+
+        @func.func(*args)
+        def benchmark(*args):
             index_t = ir.IndexType.get()
-            zero = arith.ConstantOp(index_t, 0)
-            one = arith.ConstantOp(index_t, 1)
-            # call payload for warmup runs
-            nwarmup_cst = arith.ConstantOp(index_t, nwarmup)
-            for_op = scf.ForOp(zero, nwarmup_cst, one)
-            with ir.InsertionPoint(for_op.body):
-                func.CallOp(payload_func, list(f.arguments[: len(payload_arguments)]))
-                scf.YieldOp(())
-            # call payload for benchmark runs, time every call separately
-            nruns_cst = arith.ConstantOp(index_t, nruns)
-            for_op = scf.ForOp(zero, nruns_cst, one)
-            i = for_op.induction_variable
-            with ir.InsertionPoint(for_op.body):
-                tic = func.CallOp((f64_t,), "rtclock", ()).result
-                func.CallOp(payload_func, list(f.arguments[: len(payload_arguments)]))
-                toc = func.CallOp((f64_t,), "rtclock", ()).result
-                time = arith.SubFOp(toc, tic)
-                memref.StoreOp(time, f.arguments[-1], [i])
-                scf.YieldOp(())
-            func.ReturnOp(())
+            zero = arith.constant(index_t, 0)
+            one = arith.constant(index_t, 1)
+            nwarmup_cst = arith.constant(index_t, nwarmup)
+            for i in scf.for_(zero, nwarmup_cst, one):
+                # FIXME(upstream): func.call is broken for this use case?
+                func.CallOp(payload_func, list(args[: len(payload_arguments)]))
+                scf.yield_(())
+            nruns_cst = arith.constant(index_t, nruns)
+            for i in scf.for_(zero, nruns_cst, one):
+                tic = func.call((f64_t,), "rtclock", ())
+                func.CallOp(payload_func, list(args[: len(payload_arguments)]))
+                toc = func.call((f64_t,), "rtclock", ())
+                time = arith.subf(toc, tic)
+                memref.store(time, args[-1], [i])
+                scf.yield_(())
+
+        benchmark.func_op.attributes["llvm.emit_c_interface"] = ir.UnitAttr.get()
 
 
 def benchmark(
-    workload,
+    workload: Workload,
     nruns: int = 100,
     nwarmup: int = 10,
     schedule_parameters: Optional[dict] = None,
@@ -195,8 +188,6 @@ def benchmark(
     apply_transform_schedule(
         payload_module,
         workload.schedule_module(parameters=schedule_parameters),
-        workload.context,
-        workload.location,
     )
     # get execution engine, rtclock requires mlir_c_runner
     requirements = workload.requirements()
@@ -214,7 +205,9 @@ def benchmark(
 
             payload_func = engine.lookup(workload.payload_function_name)
             payload_func(packed_args)
-            success = workload.verify(execution_engine=engine, verbose=verbose)
+            success = workload.check_correctness(
+                execution_engine=engine, verbose=verbose
+            )
             if not success:
                 raise ValueError("Benchmark verification failed.")
 
