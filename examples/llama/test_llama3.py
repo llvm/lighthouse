@@ -9,7 +9,7 @@ import torch
 from mlir import ir
 from mlir.dialects import transform, func, linalg, tensor, arith, complex, math
 from mlir.dialects.transform import structured, interpreter
-from mlir.dialects._linalg_enum_gen import ElementwiseKind
+from mlir.dialects.linalg import ElementwiseKind
 from mlir.passmanager import PassManager
 from mlir.runtime.np_to_memref import (
     get_ranked_memref_descriptor,
