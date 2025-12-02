@@ -3,14 +3,13 @@ Utility functions for running workloads.
 """
 
 import numpy as np
-import ctypes
 import os
 from mlir import ir
 from mlir.dialects import func, arith, scf, memref
 from mlir.execution_engine import ExecutionEngine
 from mlir.runtime.np_to_memref import get_ranked_memref_descriptor
 from lighthouse.utils.mlir import get_mlir_library_path
-from lighthouse.utils import get_packed_arg
+from lighthouse.utils import memrefs_to_packed_args
 from lighthouse import Workload
 from typing import Optional
 
@@ -49,22 +48,6 @@ def get_engine(payload_module, requirements=None, opt_level=3) -> ExecutionEngin
     return execution_engine
 
 
-def apply_transform_schedule(
-    payload_module,
-    schedule_module,
-    dump_kernel: Optional[str] = None,
-    dump_schedule: bool = False,
-):
-    if not dump_kernel or dump_kernel != "initial":
-        # apply schedule on payload module
-        named_seq = schedule_module.body.operations[0]
-        named_seq.apply(payload_module)
-    if dump_kernel:
-        print(payload_module)
-    if dump_schedule:
-        print(schedule_module)
-
-
 def lower_payload(
     workload,
     dump_kernel: Optional[str] = None,
@@ -75,12 +58,14 @@ def lower_payload(
     schedule_module = workload.schedule_module(
         dump_kernel=dump_kernel, parameters=schedule_parameters
     )
-    apply_transform_schedule(
-        payload_module,
-        schedule_module,
-        dump_kernel=dump_kernel,
-        dump_schedule=dump_schedule,
-    )
+    if not dump_kernel or dump_kernel != "initial":
+        # apply schedule on payload module
+        named_seq = schedule_module.body.operations[0]
+        named_seq.apply(payload_module)
+    if dump_kernel:
+        print(payload_module)
+    if dump_schedule:
+        print(schedule_module)
     return payload_module
 
 
@@ -97,8 +82,7 @@ def execute(
 
     with workload.allocate_inputs(execution_engine=engine) as inputs:
         # prepare function arguments
-        pointers = [ctypes.pointer(ctypes.pointer(m)) for m in inputs]
-        packed_args = get_packed_arg(pointers)
+        packed_args = memrefs_to_packed_args(inputs)
 
         # handle to payload function
         payload_func = engine.lookup(workload.payload_function_name)
@@ -184,10 +168,9 @@ def benchmark(
     emit_benchmark_function(payload_module, workload, nruns, nwarmup)
 
     # lower
-    apply_transform_schedule(
-        payload_module,
-        workload.schedule_module(parameters=schedule_parameters),
-    )
+    schedule_module = workload.schedule_module(parameters=schedule_parameters)
+    schedule_module.body.operations[0].apply(payload_module)
+
     # get execution engine, rtclock requires mlir_c_runner
     requirements = workload.requirements()
     if "mlir_c_runner" not in requirements:
@@ -195,11 +178,10 @@ def benchmark(
     engine = get_engine(payload_module, requirements=requirements)
 
     with workload.allocate_inputs(execution_engine=engine) as inputs:
-        pointers = [ctypes.pointer(ctypes.pointer(m)) for m in inputs]
         if check_correctness:
             # call payload once to verify correctness
             # prepare function arguments
-            packed_args = get_packed_arg(pointers)
+            packed_args = memrefs_to_packed_args(inputs)
 
             payload_func = engine.lookup(workload.payload_function_name)
             payload_func(packed_args)
@@ -212,8 +194,7 @@ def benchmark(
         # allocate buffer for timings and prepare arguments
         time_array = np.zeros((nruns,), dtype=np.float64)
         time_memref = get_ranked_memref_descriptor(time_array)
-        time_pointer = ctypes.pointer(ctypes.pointer(time_memref))
-        packed_args_with_time = get_packed_arg(pointers + [time_pointer])
+        packed_args_with_time = memrefs_to_packed_args(inputs + [time_memref])
 
         # call benchmark function
         benchmark_func = engine.lookup("benchmark")
