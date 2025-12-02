@@ -14,7 +14,7 @@ from lighthouse.utils.mlir import (
     canonicalize,
     match,
 )
-from lighthouse.utils.execution import (
+from lighthouse.utils.runner import (
     lower_payload,
     execute,
     benchmark,

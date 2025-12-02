@@ -15,7 +15,7 @@ from mlir.dialects import func, linalg, arith, memref
 import ctypes
 from contextlib import contextmanager
 from lighthouse.utils import get_packed_arg
-from lighthouse.utils.execution import (
+from lighthouse.utils.runner import (
     lower_payload,
     execute,
     benchmark,

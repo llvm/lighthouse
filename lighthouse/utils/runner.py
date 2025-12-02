@@ -1,5 +1,5 @@
 """
-Execution engine utility functions.
+Utility functions for running workloads.
 """
 
 import numpy as np
@@ -85,7 +85,7 @@ def lower_payload(
 
 
 def execute(
-    workload,
+    workload: Workload,
     check_correctness: bool = True,
     schedule_parameters: Optional[dict] = None,
     verbose: int = 0,
