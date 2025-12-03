@@ -5,6 +5,7 @@ Defines the expected interface for generic workload execution methods.
 """
 
 from mlir import ir
+from mlir.execution_engine import ExecutionEngine
 from abc import ABC, abstractmethod
 from contextlib import contextmanager
 from typing import Optional
@@ -57,7 +58,8 @@ class Workload(ABC):
         """
         Apply transform schedule to the payload module.
 
-        Optionally dumps the payload IR and/or transform schedule to stdout.
+        Optionally dumps the payload IR at the desired level and/or the
+        transform schedule to stdout.
 
         Returns the lowered payload module.
         """
@@ -77,7 +79,7 @@ class Workload(ABC):
 
     @abstractmethod
     @contextmanager
-    def allocate_inputs(self, execution_engine):
+    def allocate_inputs(self, execution_engine: ExecutionEngine):
         """
         Context manager that allocates and returns payload input buffers.
 
@@ -94,7 +96,9 @@ class Workload(ABC):
             pass
 
     @abstractmethod
-    def check_correctness(self, execution_engine, verbose: int = 0) -> bool:
+    def check_correctness(
+        self, execution_engine: ExecutionEngine, verbose: int = 0
+    ) -> bool:
         """Verify the correctness of the computation."""
         pass
 

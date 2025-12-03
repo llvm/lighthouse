@@ -22,12 +22,13 @@ def canonicalize(op):
 
 
 def get_mlir_library_path():
+    """Return MLIR shared library path."""
     pkg_path = ir.__file__
     if "python_packages" in pkg_path:
         # looks like a local mlir install
-        path = pkg_path.split("python_packages")[0] + os.sep + "lib"
+        path = os.path.join(pkg_path.split("python_packages")[0], "lib")
     else:
         # maybe installed in python path
-        path = os.path.split(pkg_path)[0] + os.sep + "_mlir_libs"
+        path = os.path.join(os.path.split(pkg_path)[0], "_mlir_libs")
     assert os.path.isdir(path)
     return path

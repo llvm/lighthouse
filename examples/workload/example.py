@@ -10,13 +10,15 @@ from mlir.dialects import transform
 from mlir.execution_engine import ExecutionEngine
 from contextlib import contextmanager
 from functools import cached_property
+import ctypes
+from typing import Optional
 from lighthouse import Workload
 from lighthouse.utils.mlir import (
     apply_registered_pass,
     canonicalize,
     match,
 )
-from lighthouse.utils.runner import (
+from lighthouse.utils import (
     execute,
     benchmark,
 )
@@ -33,13 +35,13 @@ class ElementwiseSum(Workload):
     object so that they are only computed once.
     """
 
-    def __init__(self, M, N):
+    def __init__(self, M: int, N: int):
         self.M = M
         self.N = N
         self.dtype = np.float32
 
     @cached_property
-    def _input_arrays(self):
+    def _input_arrays(self) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         print(" * Generating input arrays...")
         np.random.seed(2)
         A = np.random.rand(self.M, self.N).astype(self.dtype)
@@ -48,12 +50,12 @@ class ElementwiseSum(Workload):
         return [A, B, C]
 
     @cached_property
-    def _reference_solution(self):
+    def _reference_solution(self) -> np.ndarray:
         print(" * Computing reference solution...")
         A, B, _ = self._input_arrays
         return A + B
 
-    def _get_input_arrays(self):
+    def _get_input_arrays(self) -> list[ctypes.Structure]:
         return [get_ranked_memref_descriptor(a) for a in self._input_arrays]
 
     @contextmanager
@@ -64,7 +66,9 @@ class ElementwiseSum(Workload):
             # cached numpy arrays are deallocated automatically
             pass
 
-    def check_correctness(self, execution_engine, verbose: int = 0) -> bool:
+    def check_correctness(
+        self, execution_engine: ExecutionEngine, verbose: int = 0
+    ) -> bool:
         C = self._input_arrays[2]
         C_ref = self._reference_solution
         if verbose > 1:
@@ -80,17 +84,17 @@ class ElementwiseSum(Workload):
                 print("FAILED Result mismatch!")
         return success
 
-    def requirements(self):
+    def requirements(self) -> list[str]:
         return []
 
-    def get_complexity(self):
+    def get_complexity(self) -> tuple[int, int, int]:
         nbytes = np.dtype(self.dtype).itemsize
         flop_count = self.M * self.N  # one addition per element
         memory_reads = 2 * self.M * self.N * nbytes  # read A and B
         memory_writes = self.M * self.N * nbytes  # write C
         return (flop_count, memory_reads, memory_writes)
 
-    def payload_module(self):
+    def payload_module(self) -> ir.Module:
         mod = ir.Module.create()
 
         with ir.InsertionPoint(mod.body):
@@ -117,7 +121,9 @@ class ElementwiseSum(Workload):
 
         return mod
 
-    def schedule_module(self, stop_at_stage=None, parameters=None):
+    def schedule_module(
+        self, stop_at_stage: Optional[str] = None, parameters: Optional[dict] = None
+    ) -> ir.Module:
         schedule_module = ir.Module.create()
         schedule_module.operation.attributes["transform.with_named_sequence"] = (
             ir.UnitAttr.get()

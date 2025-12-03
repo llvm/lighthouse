@@ -8,8 +8,11 @@ from .runtime_args import (
     torch_to_packed_args,
     mlir_type_to_torch_dtype,
 )
+from .runner import execute, benchmark
 
 __all__ = [
+    "benchmark",
+    "execute",
     "get_packed_arg",
     "memref_to_ctype",
     "memrefs_to_packed_args",

@@ -12,14 +12,13 @@ from mlir.runtime.np_to_memref import (
     as_ctype,
 )
 from mlir.dialects import func, linalg, arith, memref
+from mlir.execution_engine import ExecutionEngine
 import ctypes
 from contextlib import contextmanager
 from lighthouse.utils import (
     get_packed_arg,
     memrefs_to_packed_args,
     memref_to_ctype,
-)
-from lighthouse.utils.runner import (
     execute,
     benchmark,
 )
@@ -53,7 +52,7 @@ def emit_host_dealloc(suffix: str, element_type: ir.Type, rank: int = 2):
     dealloc_func.func_op.attributes["llvm.emit_c_interface"] = ir.UnitAttr.get()
 
 
-def emit_fill_constant(suffix, value, element_type, rank=2):
+def emit_fill_constant(suffix: str, value: float, element_type: ir.Type, rank: int = 2):
     dyn = ir.ShapedType.get_dynamic_size()
     memref_dyn_t = ir.MemRefType.get(rank * (dyn,), element_type)
 
@@ -65,7 +64,13 @@ def emit_fill_constant(suffix, value, element_type, rank=2):
     init_func.func_op.attributes["llvm.emit_c_interface"] = ir.UnitAttr.get()
 
 
-def emit_fill_random(suffix, element_type, min=0.0, max=1.0, seed=2):
+def emit_fill_random(
+    suffix: str,
+    element_type: ir.Type,
+    min: float = 0.0,
+    max: float = 1.0,
+    seed: int = 2,
+):
     rank = 2
     dyn = ir.ShapedType.get_dynamic_size()
     memref_dyn_t = ir.MemRefType.get(rank * (dyn,), element_type)
@@ -89,12 +94,14 @@ class ElementwiseSumMLIRAlloc(ElementwiseSum):
     Extends ElementwiseSum by allocating input arrays in MLIR.
     """
 
-    def __init__(self, M, N):
+    def __init__(self, M: int, N: int):
         super().__init__(M, N)
         # keep track of allocated memrefs
         self.memrefs = {}
 
-    def _allocate_array(self, name, execution_engine):
+    def _allocate_array(
+        self, name: str, execution_engine: ExecutionEngine
+    ) -> ctypes.Structure:
         if name in self.memrefs:
             return self.memrefs[name]
         alloc_func = execution_engine.lookup("host_alloc_f32")
@@ -107,13 +114,15 @@ class ElementwiseSumMLIRAlloc(ElementwiseSum):
         self.memrefs[name] = mref
         return mref
 
-    def _deallocate_all(self, execution_engine):
+    def _deallocate_all(self, execution_engine: ExecutionEngine):
         for mref in self.memrefs.values():
             dealloc_func = execution_engine.lookup("host_dealloc_f32")
             dealloc_func(memrefs_to_packed_args([mref]))
         self.memrefs = {}
 
-    def get_input_arrays(self, execution_engine):
+    def get_input_arrays(
+        self, execution_engine: ExecutionEngine
+    ) -> list[ctypes.Structure]:
         A = self._allocate_array("A", execution_engine)
         B = self._allocate_array("B", execution_engine)
         C = self._allocate_array("C", execution_engine)
@@ -128,13 +137,15 @@ class ElementwiseSumMLIRAlloc(ElementwiseSum):
         return [A, B, C]
 
     @contextmanager
-    def allocate_inputs(self, execution_engine):
+    def allocate_inputs(self, execution_engine: ExecutionEngine):
         try:
             yield self.get_input_arrays(execution_engine)
         finally:
             self._deallocate_all(execution_engine)
 
-    def check_correctness(self, execution_engine, verbose: int = 0) -> bool:
+    def check_correctness(
+        self, execution_engine: ExecutionEngine, verbose: int = 0
+    ) -> bool:
         # compute reference solution with numpy
         A = ranked_memref_to_numpy([self.memrefs["A"]])
         B = ranked_memref_to_numpy([self.memrefs["B"]])

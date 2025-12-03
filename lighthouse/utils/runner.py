@@ -14,7 +14,9 @@ from lighthouse import Workload
 from typing import Optional
 
 
-def get_engine(payload_module, requirements=None, opt_level=3) -> ExecutionEngine:
+def get_engine(
+    payload_module: ir.Module, requirements: list[str] = None, opt_level: int = 3
+) -> ExecutionEngine:
     requirements = requirements or []
     context = ir.Context()
     location = ir.Location.unknown(context)
