@@ -17,7 +17,6 @@ from lighthouse.utils.mlir import (
     match,
 )
 from lighthouse.utils.runner import (
-    lower_payload,
     execute,
     benchmark,
 )
@@ -118,7 +117,7 @@ class ElementwiseSum(Workload):
 
         return mod
 
-    def schedule_module(self, dump_kernel=None, parameters=None):
+    def schedule_module(self, stop_at_stage=None, parameters=None):
         schedule_module = ir.Module.create()
         schedule_module.operation.attributes["transform.with_named_sequence"] = (
             ir.UnitAttr.get()
@@ -144,7 +143,7 @@ class ElementwiseSum(Workload):
                 transform.apply_cse(mod)
                 canonicalize(mod)
 
-                if dump_kernel == "bufferized":
+                if stop_at_stage == "bufferized":
                     transform.YieldOp()
                     return schedule_module
 
@@ -164,7 +163,7 @@ if __name__ == "__main__":
         wload = ElementwiseSum(400, 400)
 
         print(" Dump kernel ".center(60, "-"))
-        lower_payload(wload, dump_kernel="bufferized", dump_schedule=True)
+        wload.lower_payload(dump_payload="bufferized", dump_schedule=True)
 
         print(" Execute 1 ".center(60, "-"))
         execute(wload, verbose=2)

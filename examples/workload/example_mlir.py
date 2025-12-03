@@ -20,7 +20,6 @@ from lighthouse.utils import (
     memref_to_ctype,
 )
 from lighthouse.utils.runner import (
-    lower_payload,
     execute,
     benchmark,
 )
@@ -187,7 +186,7 @@ if __name__ == "__main__":
         wload = ElementwiseSumMLIRAlloc(400, 400)
 
         print(" Dump kernel ".center(60, "-"))
-        lower_payload(wload, dump_kernel="bufferized", dump_schedule=False)
+        wload.lower_payload(dump_payload="bufferized", dump_schedule=False)
 
         print(" Execute ".center(60, "-"))
         execute(wload, verbose=2)

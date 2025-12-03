@@ -48,27 +48,6 @@ def get_engine(payload_module, requirements=None, opt_level=3) -> ExecutionEngin
     return execution_engine
 
 
-def lower_payload(
-    workload,
-    dump_kernel: Optional[str] = None,
-    dump_schedule: bool = False,
-    schedule_parameters: Optional[dict] = None,
-) -> ir.Module:
-    payload_module = workload.payload_module()
-    schedule_module = workload.schedule_module(
-        dump_kernel=dump_kernel, parameters=schedule_parameters
-    )
-    if not dump_kernel or dump_kernel != "initial":
-        # apply schedule on payload module
-        named_seq = schedule_module.body.operations[0]
-        named_seq.apply(payload_module)
-    if dump_kernel:
-        print(payload_module)
-    if dump_schedule:
-        print(schedule_module)
-    return payload_module
-
-
 def execute(
     workload: Workload,
     check_correctness: bool = True,
@@ -76,7 +55,7 @@ def execute(
     verbose: int = 0,
 ):
     # lower payload with schedule
-    payload_module = lower_payload(workload, schedule_parameters=schedule_parameters)
+    payload_module = workload.lower_payload(schedule_parameters=schedule_parameters)
     # get execution engine
     engine = get_engine(payload_module, requirements=workload.requirements())
 
