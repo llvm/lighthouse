@@ -84,7 +84,7 @@ class ElementwiseSum(Workload):
                 print("FAILED Result mismatch!")
         return success
 
-    def requirements(self) -> list[str]:
+    def shared_libs(self) -> list[str]:
         return []
 
     def get_complexity(self) -> tuple[int, int, int]:

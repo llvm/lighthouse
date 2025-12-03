@@ -26,8 +26,8 @@ class Workload(ABC):
     payload_function_name: str = "payload"
 
     @abstractmethod
-    def requirements(self) -> list[str]:
-        """Return a list of requirements for the execution engine."""
+    def shared_libs(self) -> list[str]:
+        """Return a list of shared libraries required byt the execution engine."""
         pass
 
     @abstractmethod

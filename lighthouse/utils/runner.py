@@ -15,33 +15,15 @@ from typing import Optional
 
 
 def get_engine(
-    payload_module: ir.Module, requirements: list[str] = None, opt_level: int = 3
+    payload_module: ir.Module, shared_libs: list[str] = None, opt_level: int = 3
 ) -> ExecutionEngine:
-    requirements = requirements or []
-    context = ir.Context()
-    location = ir.Location.unknown(context)
-    required_libs = {
-        "levelzero": (
-            ["libmlir_levelzero_runtime.so"],
-            "Did you compile LLVM with -DMLIR_ENABLE_LEVELZERO_RUNNER=1?",
-        ),
-        "mlir_runner": (["libmlir_runner_utils.so"], ""),
-        "mlir_c_runner": (["libmlir_c_runner_utils.so"], ""),
-    }
+    lib_dir = get_mlir_library_path()
     libs = []
-    lib_dir = os.path.join(get_mlir_library_path())
-    for r in requirements:
-        if r not in required_libs:
-            raise ValueError(f"Unknown execution engine requirement: {r}")
-        so_files, hint = required_libs[r]
-        for f in so_files:
-            so_path = os.path.join(lib_dir, f)
-            if not os.path.isfile(so_path):
-                msg = f"Could not find shared library {so_path}"
-                if hint:
-                    msg += "\n" + hint
-                raise ValueError(msg)
-            libs.append(so_path)
+    for so_file in shared_libs or []:
+        so_path = os.path.join(lib_dir, so_file)
+        if not os.path.isfile(so_path):
+            raise ValueError(f"Could not find shared library {so_path}")
+        libs.append(so_path)
     with context, location:
         execution_engine = ExecutionEngine(
             payload_module, opt_level=opt_level, shared_libs=libs
@@ -59,7 +41,7 @@ def execute(
     # lower payload with schedule
     payload_module = workload.lower_payload(schedule_parameters=schedule_parameters)
     # get execution engine
-    engine = get_engine(payload_module, requirements=workload.requirements())
+    engine = get_engine(payload_module, shared_libs=workload.shared_libs())
 
     with workload.allocate_inputs(execution_engine=engine) as inputs:
         # prepare function arguments
@@ -153,10 +135,11 @@ def benchmark(
     schedule_module.body.operations[0].apply(payload_module)
 
     # get execution engine, rtclock requires mlir_c_runner
-    requirements = workload.requirements()
-    if "mlir_c_runner" not in requirements:
-        requirements.append("mlir_c_runner")
-    engine = get_engine(payload_module, requirements=requirements)
+    libs = workload.shared_libs()
+    c_runner_lib = "libmlir_c_runner_utils.so"
+    if c_runner_lib not in libs:
+        libs.append(c_runner_lib)
+    engine = get_engine(payload_module, shared_libs=libs)
 
     with workload.allocate_inputs(execution_engine=engine) as inputs:
         if check_correctness:
