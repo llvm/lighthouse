@@ -24,11 +24,10 @@ def get_engine(
         if not os.path.isfile(so_path):
             raise ValueError(f"Could not find shared library {so_path}")
         libs.append(so_path)
-    with context, location:
-        execution_engine = ExecutionEngine(
-            payload_module, opt_level=opt_level, shared_libs=libs
-        )
-        execution_engine.initialize()
+    execution_engine = ExecutionEngine(
+        payload_module, opt_level=opt_level, shared_libs=libs
+    )
+    execution_engine.initialize()
     return execution_engine
 
 
