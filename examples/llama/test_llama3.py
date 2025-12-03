@@ -313,34 +313,16 @@ def get_linear(a: ir.Value, w: ir.Value, b: ir.Value, out: ir.Value) -> ir.Value
     # out maps to [...batch..., j]
     out_map = affine_map(num_dims, batch_dims + [j])
 
-    iterator_types = [parallel] * (a_rank - 1) + [parallel, reduction]
-
-    @linalg.generic(
-        [a, w],
-        [out_zeroed],
-        [a_map, w_map, out_map],
-        iterator_types,
+    matmul_result = linalg.contract(
+        a,
+        w,
+        outs=[out_zeroed],
+        indexing_maps=[a_map, w_map, out_map],
     )
-    def matmul_op(a_elem, w_elem, out_elem):
-        prod = arith.mulf(a_elem, w_elem)
-        return arith.addf(out_elem, prod)
 
-    out_dims = [ir.AffineDimExpr.get(d) for d in range(out_rank)]
-    b_map = affine_map(out_rank, [out_dims[-1]])
-    out_map2 = affine_map(out_rank, out_dims)
-
-    bias_iterator_types = [parallel] * out_rank
-
-    @linalg.generic(
-        [matmul_op, b],
-        [out_zeroed],
-        [out_map2, b_map, out_map2],
-        bias_iterator_types,
-    )
-    def add_bias_op(matmul_elem, b_elem, _out):
-        return arith.addf(matmul_elem, b_elem)
-
-    return add_bias_op
+    bcast_dims = list(range(out_rank - 1))
+    bias_bcast = linalg.broadcast(b, outs=(out,), dimensions=bcast_dims)
+    return get_add(matmul_result, bias_bcast, out)
 
 
 # x * rsqrt(mean(x^2, dim=-1, keepdim=True) + eps)
