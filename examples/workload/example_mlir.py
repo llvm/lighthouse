@@ -1,3 +1,7 @@
+# RUN: %PYTHON %s  | FileCheck %s
+# CHECK: func.func @payload
+# CHECK: PASSED
+# CHECK: Throughput:
 """
 Workload example: Element-wise sum of two (M, N) float32 arrays on CPU.
 
