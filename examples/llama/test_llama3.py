@@ -8,6 +8,7 @@ import torch
 
 from mlir import ir
 from mlir.dialects import transform, func, linalg, tensor, arith, complex, math
+from mlir.dialects.linalg import ElementwiseKind
 from mlir.dialects.transform import structured, bufferization, interpreter
 from mlir.passmanager import PassManager
 from mlir.runtime.np_to_memref import (
@@ -139,29 +140,30 @@ def apply_schedule(kernel: ir.Module, schedule: ir.Module) -> None:
 
 
 def get_add(a: ir.Value, b: ir.Value, out: ir.Value) -> ir.Value:
-    return linalg.add(a, b, outs=(out,))
+    return linalg.elementwise(a, b, outs=[out], kind=ElementwiseKind.add)
 
 
 def get_rsqrt(a: ir.Value, out: ir.Value) -> ir.Value:
-    return linalg.rsqrt(a, outs=(out,))
+    return linalg.elementwise(a, outs=[out], kind=ElementwiseKind.rsqrt)
 
 
 def get_powf(a: ir.Value, out: ir.Value) -> ir.Value:
-    return linalg.powf(a, outs=(out,))
+    return linalg.elementwise(a, outs=[out], kind=ElementwiseKind.powf)
 
 
 def get_sqr(a: ir.Value, out: ir.Value) -> ir.Value:
-    return linalg.square(a, outs=(out,))
+    return linalg.elementwise(a, outs=[out], kind=ElementwiseKind.square)
 
 
 def get_mul(a: ir.Value, b: ir.Value, out: ir.Value) -> ir.Value:
-    return linalg.mul(a, b, outs=(out,))
+    return linalg.elementwise(a, b, outs=[out], kind=ElementwiseKind.mul)
 
 
 # equvialent to torch.mean(-1, keepdim=True)
 def get_mean(a: ir.Value, out: ir.Value) -> ir.Value:
     # Need to initialize the output with zeros for accumulation
-    zero = arith.ConstantOp(ir.F32Type.get(), 0.0)
+    elty = a.type.element_type
+    zero = arith.constant(elty, 0.0)
     out_filled = linalg.fill(zero, outs=[out])
 
     # Input map: (d0, d1) -> (d0, d1)
@@ -177,7 +179,7 @@ def get_mean(a: ir.Value, out: ir.Value) -> ir.Value:
     )
     iterator_types = [parallel] * (a.type.rank - 1) + [reduction]
 
-    scale = arith.ConstantOp(ir.F32Type.get(), 1.0 / a.type.shape[-1])
+    scale = arith.constant(elty, 1.0 / a.type.shape[-1])
 
     @linalg.generic(
         [a],
@@ -311,34 +313,16 @@ def get_linear(a: ir.Value, w: ir.Value, b: ir.Value, out: ir.Value) -> ir.Value
     # out maps to [...batch..., j]
     out_map = affine_map(num_dims, batch_dims + [j])
 
-    iterator_types = [parallel] * (a_rank - 1) + [parallel, reduction]
-
-    @linalg.generic(
-        [a, w],
-        [out_zeroed],
-        [a_map, w_map, out_map],
-        iterator_types,
+    matmul_result = linalg.contract(
+        a,
+        w,
+        outs=[out_zeroed],
+        indexing_maps=[a_map, w_map, out_map],
     )
-    def matmul_op(a_elem, w_elem, out_elem):
-        prod = arith.mulf(a_elem, w_elem)
-        return arith.addf(out_elem, prod)
 
-    out_dims = [ir.AffineDimExpr.get(d) for d in range(out_rank)]
-    b_map = affine_map(out_rank, [out_dims[-1]])
-    out_map2 = affine_map(out_rank, out_dims)
-
-    bias_iterator_types = [parallel] * out_rank
-
-    @linalg.generic(
-        [matmul_op, b],
-        [out_zeroed],
-        [out_map2, b_map, out_map2],
-        bias_iterator_types,
-    )
-    def add_bias_op(matmul_elem, b_elem, _out):
-        return arith.addf(matmul_elem, b_elem)
-
-    return add_bias_op
+    bcast_dims = list(range(out_rank - 1))
+    bias_bcast = linalg.broadcast(b, outs=(out,), dimensions=bcast_dims)
+    return get_add(matmul_result, bias_bcast, out)
 
 
 # x * rsqrt(mean(x^2, dim=-1, keepdim=True) + eps)
@@ -759,48 +743,18 @@ def get_attention(
     xq_t_shape = [batch, n_heads, seq_len, head_dim]
     xq_t = tensor.empty(xq_t_shape, elty)
 
-    # Permute [0, 2, 1, 3]
-    d0, d1, d2, d3 = [ir.AffineDimExpr.get(i) for i in range(4)]
-    xq_perm_map = affine_map(4, [d0, d2, d1, d3])
-    xq_t_map = affine_map(4, [d0, d1, d2, d3])
-
-    @linalg.generic(
-        [xq_rot],
-        [xq_t],
-        [xq_perm_map, xq_t_map],
-        [parallel] * 4,
-    )
-    def transpose_xq(val, _out):
-        return val
-
-    xq_transposed = transpose_xq
+    # (batch, seq_len, n_heads, head_dim) -> (batch, n_heads, seq_len, head_dim)
+    permutation = [0, 2, 1, 3]
+    xq_transposed = linalg.transpose(xq_rot, outs=[xq_t], permutation=permutation)
 
     # Transpose keys and values similarly
     keys_t = tensor.empty(xq_t_shape, elty)
-
-    @linalg.generic(
-        [keys],
-        [keys_t],
-        [xq_perm_map, xq_t_map],
-        [parallel] * 4,
-    )
-    def transpose_k(val, _out):
-        return val
-
-    keys_transposed = transpose_k
+    keys_transposed = linalg.transpose(keys, outs=[keys_t], permutation=permutation)
 
     values_t = tensor.empty(xq_t_shape, elty)
-
-    @linalg.generic(
-        [values],
-        [values_t],
-        [xq_perm_map, xq_t_map],
-        [parallel] * 4,
+    values_transposed = linalg.transpose(
+        values, outs=[values_t], permutation=permutation
     )
-    def transpose_v(val, _out):
-        return val
-
-    values_transposed = transpose_v
 
     # Compute attention scores: matmul(xq, keys.transpose(-2, -1))
     # xq_transposed: (batch, n_heads, seq_len, head_dim)
@@ -816,41 +770,25 @@ def get_attention(
     keys_scores_map = affine_map(5, [b, h, s2, d])  # Will read from transposed position
     scores_map = affine_map(5, [b, h, s1, s2])
 
-    @linalg.generic(
-        [xq_transposed, keys_transposed],
-        [scores_zeroed],
-        [xq_scores_map, keys_scores_map, scores_map],
-        [parallel, parallel, parallel, parallel, reduction],
+    scores_raw = linalg.contract(
+        xq_transposed,
+        keys_transposed,
+        outs=[scores_zeroed],
+        indexing_maps=[xq_scores_map, keys_scores_map, scores_map],
     )
-    def compute_scores(q_val, k_val, score_val):
-        prod = arith.mulf(q_val, k_val)
-        return arith.addf(score_val, prod)
-
-    scores_raw = compute_scores
 
     # Scale by 1/sqrt(head_dim)
     scale_val = 1.0 / pymath.sqrt(head_dim)
     scale_const = arith.constant(elty, scale_val)
     scores_scaled_uninit = tensor.empty(scores_shape, elty)
-
-    d0, d1, d2, d3 = [ir.AffineDimExpr.get(i) for i in range(4)]
-    identity_map = affine_map(4, [d0, d1, d2, d3])
-
-    @linalg.generic(
-        [scores_raw],
-        [scores_scaled_uninit],
-        [identity_map, identity_map],
-        [parallel] * 4,
+    scale_tensor = linalg.fill(scale_const, outs=[scores_scaled_uninit])
+    scores_scaled = linalg.elementwise(
+        scores_raw, scale_tensor, outs=[scores_scaled_uninit], kind=ElementwiseKind.mul
     )
-    def scale_scores(score, _out):
-        return arith.mulf(score, scale_const)
-
-    scores_scaled = scale_scores
 
     # Apply mask if provided (add mask to scores)
     if mask is not None:
-        scores_masked_uninit = tensor.empty(scores_shape, elty)
-        scores_final = get_add(scores_scaled, mask, scores_masked_uninit)
+        scores_final = get_add(scores_scaled, mask, scores_scaled)
     else:
         scores_final = scores_scaled
 
@@ -871,36 +809,19 @@ def get_attention(
     values_map = affine_map(5, [b, h, s2, d])
     out_map = affine_map(5, [b, h, s1, d])
 
-    @linalg.generic(
-        [attn_weights, values_transposed],
-        [attn_out_zeroed],
-        [attn_map, values_map, out_map],
-        [parallel, parallel, parallel, parallel, reduction],
+    attn_out = linalg.contract(
+        attn_weights,
+        values_transposed,
+        outs=[attn_out_zeroed],
+        indexing_maps=[attn_map, values_map, out_map],
     )
-    def compute_attn_out(attn_val, v_val, out_val):
-        prod = arith.mulf(attn_val, v_val)
-        return arith.addf(out_val, prod)
-
-    attn_out = compute_attn_out
 
     # Transpose back: (batch, n_heads, seq_len, head_dim) -> (batch, seq_len, n_heads, head_dim)
     attn_out_perm_shape = [batch, seq_len, n_heads, head_dim]
     attn_out_perm = tensor.empty(attn_out_perm_shape, elty)
-
-    d0, d1, d2, d3 = [ir.AffineDimExpr.get(i) for i in range(4)]
-    from_map = affine_map(4, [d0, d1, d2, d3])
-    to_map = affine_map(4, [d0, d2, d1, d3])
-
-    @linalg.generic(
-        [attn_out],
-        [attn_out_perm],
-        [from_map, to_map],
-        [parallel] * 4,
+    attn_out_transposed = linalg.transpose(
+        attn_out, outs=[attn_out_perm], permutation=permutation
     )
-    def transpose_out(val, _out):
-        return val
-
-    attn_out_transposed = transpose_out
 
     # Reshape to (batch, seq_len, n_heads * head_dim)
     attn_out_flat_shape = [batch, seq_len, n_heads * head_dim]
@@ -1024,21 +945,7 @@ def get_transformer(
     final_norm_uninit = tensor.empty(h.type.shape, elty)
     final_norm = get_l2_norm(h, final_norm_uninit, eps=args.norm_eps)
 
-    # Copy to output
-    rank = len(h.type.shape)
-    dims = [ir.AffineDimExpr.get(i) for i in range(rank)]
-    id_map = affine_map(rank, dims)
-
-    @linalg.generic(
-        [final_norm],
-        [out],
-        [id_map, id_map],
-        [parallel] * rank,
-    )
-    def copy_op(val, _out):
-        return val
-
-    return copy_op
+    return linalg.copy(final_norm, outs=[out])
 
 
 #### Test cases #####
