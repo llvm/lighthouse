@@ -8,8 +8,8 @@ import torch
 
 from mlir import ir
 from mlir.dialects import transform, func, linalg, tensor, arith, complex, math
-from mlir.dialects.transform import structured, interpreter
 from mlir.dialects.linalg import ElementwiseKind
+from mlir.dialects.transform import structured, bufferization, interpreter
 from mlir.passmanager import PassManager
 from mlir.runtime.np_to_memref import (
     get_ranked_memref_descriptor,
@@ -84,23 +84,40 @@ def create_schedule() -> ir.Module:
     with ir.InsertionPoint(named_seq.body):
         # For simplicity, use generic transform matchers.
         anytype = transform.AnyOpType.get()
+        root = named_seq.bodyTarget
 
-        # Find the kernel's function op.
-        func = structured.MatchOp.match_op_names(named_seq.bodyTarget, ["func.func"])
+        # Match and decompose softmax operations before bufferization
+        softmax = structured.MatchOp(anytype, root, ops=["linalg.softmax"])
+        structured.structured_decompose_interface(anytype, softmax.results[0])
+
+        # Find the kernel's module op.
+        func = structured.MatchOp.match_op_names(root, ["func.func"])
+        mod = transform.get_parent_op(
+            anytype, func, op_name="builtin.module", deduplicate=True
+        )
+
+        # Apply bufferization using OneShotBufferizeOp
+        bufferized_mod = bufferization.OneShotBufferizeOp(
+            anytype, mod, bufferize_function_boundaries=True
+        )
+
+        # Re-match function after bufferization since handles are invalidated
+        func = structured.MatchOp.match_op_names(bufferized_mod, ["func.func"])
 
         # Use C interface wrappers - required to make function executable after jitting.
         func = transform.apply_registered_pass(anytype, func, "llvm-request-c-wrappers")
-
-        # Find the kernel's module op.
         mod = transform.get_parent_op(
             anytype, func, op_name="builtin.module", deduplicate=True
         )
 
         # Naive lowering to loops.
-        mod = transform.apply_registered_pass(anytype, mod, "convert-linalg-to-loops")
+        mod_loops = transform.apply_registered_pass(
+            anytype, mod, "convert-linalg-to-loops"
+        )
+
         # Cleanup.
-        transform.apply_cse(mod)
-        with ir.InsertionPoint(transform.ApplyPatternsOp(mod).patterns):
+        transform.apply_cse(mod_loops)
+        with ir.InsertionPoint(transform.ApplyPatternsOp(mod_loops).patterns):
             transform.ApplyCanonicalizationPatternsOp()
 
         # Terminate the schedule.
@@ -108,14 +125,7 @@ def create_schedule() -> ir.Module:
     return schedule
 
 
-def bufferize_module(kernel: ir.Module) -> None:
-    pm = PassManager("builtin.module")
-    pm.add("one-shot-bufferize{bufferize-function-boundaries}")
-    pm.run(kernel.operation)
-
-
 def apply_schedule(kernel: ir.Module, schedule: ir.Module) -> None:
-    bufferize_module(kernel)
     interpreter.apply_named_sequence(
         payload_root=kernel,
         transform_root=schedule.body.operations[0],
@@ -241,83 +251,9 @@ def get_silu(inputs: ir.Value, out: ir.Value) -> ir.Value:
 
 
 # equivalent to torch.softmax(a, dim=-1)
-# this should be just linalg.softmax, but there's no decomposition
 def get_softmax(a: ir.Value, out: ir.Value) -> ir.Value:
-    elty = a.type.element_type
-
-    reduced_shape = list(a.type.shape)
-    reduced_shape[-1] = 1
-    max_uninit = tensor.empty(reduced_shape, elty)
-
-    neg_inf = arith.constant(elty, float("-inf"))
-    max_init = linalg.fill(neg_inf, outs=[max_uninit])
-
-    reduce_map = affine_map(
-        a.type.rank,
-        [ir.AffineDimExpr.get(i) for i in range(a.type.rank - 1)]
-        + [ir.AffineConstantExpr.get(0)],
-    )
-    identity_map = affine_map(
-        a.type.rank,
-        [ir.AffineDimExpr.get(i) for i in range(a.type.rank)],
-    )
-
-    iterator_types = [parallel] * (a.type.rank - 1) + [reduction]
-
-    @linalg.generic(
-        [a],
-        [max_init],
-        [identity_map, reduce_map],
-        iterator_types,
-    )
-    def compute_max(val, acc):
-        return arith.maximumf(val, acc)
-
-    shifted_uninit = tensor.empty(a.type.shape, elty)
-
-    @linalg.generic(
-        [a, compute_max],
-        [shifted_uninit],
-        [identity_map, reduce_map, identity_map],
-        [parallel] * a.type.rank,
-    )
-    def subtract_max(val, max_val, _out):
-        return arith.subf(val, max_val)
-
-    exp_uninit = tensor.empty(a.type.shape, elty)
-
-    @linalg.generic(
-        [subtract_max],
-        [exp_uninit],
-        [identity_map, identity_map],
-        [parallel] * a.type.rank,
-    )
-    def compute_exp(val, _out):
-        return math.exp(val)
-
-    sum_uninit = tensor.empty(reduced_shape, elty)
-    zero = arith.constant(elty, 0.0)
-    sum_init = linalg.fill(zero, outs=[sum_uninit])
-
-    @linalg.generic(
-        [compute_exp],
-        [sum_init],
-        [identity_map, reduce_map],
-        iterator_types,
-    )
-    def compute_sum(val, acc):
-        return arith.addf(val, acc)
-
-    @linalg.generic(
-        [compute_exp, compute_sum],
-        [out],
-        [identity_map, reduce_map, identity_map],
-        [parallel] * a.type.rank,
-    )
-    def divide_by_sum(exp_val, sum_val, _out):
-        return arith.divf(exp_val, sum_val)
-
-    return divide_by_sum
+    dimension = a.type.rank - 1
+    return linalg.softmax([out.type], a, out, dimension)
 
 
 # torch.triu
