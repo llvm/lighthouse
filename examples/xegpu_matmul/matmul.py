@@ -220,9 +220,6 @@ class XeGPUMatMul:
             params=parameters,
         )
 
-    def shared_libs() -> list[str]:
-        return ["libmlir_levelzero_runtime.so"]
-
 
 def parse_cli():
     parser = argparse.ArgumentParser(
