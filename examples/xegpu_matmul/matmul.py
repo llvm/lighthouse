@@ -1,4 +1,5 @@
-# RUN: %PYTHON %s --dump-kernel=xegpu-wg | FileCheck %s
+# RUN: python %s --dump-kernel=xegpu-wg | FileCheck %s
+# REQUIRES: torch
 # CHECK: module attributes {gpu.container_module} {
 
 """

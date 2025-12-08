@@ -1,4 +1,5 @@
-# RUN: %PYTHON %s
+# RUN: python %s
+# REQUIRES: torch
 
 import torch
 import argparse

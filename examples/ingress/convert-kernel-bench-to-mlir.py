@@ -1,4 +1,6 @@
-# RUN: %PYTHON %s 1,1 1,2 1,3 2,1 2,2 2,3
+# RUN: python %s 1,1 1,2 1,3 2,1 2,2 2,3
+# REQUIRES: torch
+# REQUIRES: kernel_bench
 
 # Basic conversion of KernelBench PyTorch kernels to mlir kernels, relying on
 # torch-mlir for the conversion. As there are a number of kernels for which
