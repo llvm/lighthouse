@@ -1,4 +1,5 @@
-# RUN: %pytest %s
+# RUN: python %s
+# REQUIRES: torch
 
 import functools
 import math as pymath

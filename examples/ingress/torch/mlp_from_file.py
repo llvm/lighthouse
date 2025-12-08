@@ -1,4 +1,5 @@
-# RUN: %PYTHON %s
+# RUN: python %s
+# REQUIRES: torch
 
 """
 Example demonstrating how to load a PyTorch model to MLIR using Lighthouse
