@@ -10,7 +10,7 @@ from mlir.execution_engine import ExecutionEngine
 from mlir.runtime.np_to_memref import get_ranked_memref_descriptor
 from lighthouse.utils.mlir import get_mlir_library_path
 from lighthouse.utils import memrefs_to_packed_args
-from lighthouse import Workload
+from lighthouse.workload import Workload
 from typing import Optional
 
 

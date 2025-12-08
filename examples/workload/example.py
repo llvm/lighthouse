@@ -16,13 +16,13 @@ from contextlib import contextmanager
 from functools import cached_property
 import ctypes
 from typing import Optional
-from lighthouse import Workload
 from lighthouse.utils.mlir import (
     apply_registered_pass,
     canonicalize,
     match,
 )
-from lighthouse.utils import (
+from lighthouse.workload import (
+    Workload,
     execute,
     benchmark,
 )

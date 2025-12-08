@@ -23,10 +23,12 @@ from lighthouse.utils import (
     get_packed_arg,
     memrefs_to_packed_args,
     memref_to_ctype,
+)
+from example import ElementwiseSum
+from lighthouse.workload import (
     execute,
     benchmark,
 )
-from example import ElementwiseSum
 
 
 def emit_host_alloc(suffix: str, element_type: ir.Type, rank: int = 2):
