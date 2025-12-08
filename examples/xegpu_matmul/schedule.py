@@ -5,7 +5,11 @@ from mlir.dialects.transform import xegpu
 from mlir.dialects.bufferization import LayoutMapOption
 from mlir.dialects import transform
 from mlir.dialects.transform import structured
-from mlir_utils import apply_registered_pass, match, canonicalize
+from lighthouse.utils.mlir import (
+    apply_registered_pass,
+    canonicalize,
+    match,
+)
 from typing import Optional
 
 
@@ -18,7 +22,7 @@ nb_workitems = 16  # workitems in subgroup
 def get_schedule_module(
     has_bias: bool = False,
     has_relu: bool = False,
-    dump_kernel: str = "",
+    stop_at_stage: str = "",
     params: Optional[dict] = None,
 ) -> ir.Module:
     """Generate transform schedule module."""
@@ -45,7 +49,7 @@ def get_schedule_module(
                 payload_mod,
                 has_bias=has_bias,
                 has_relu=has_relu,
-                dump_kernel=dump_kernel,
+                stop_at_stage=stop_at_stage,
                 params=params,
             )
 
@@ -56,7 +60,7 @@ def xegpu_matmul_transform_schedule(
     mod: ir.Value,
     has_bias: bool = False,
     has_relu: bool = False,
-    dump_kernel: str = "",
+    stop_at_stage: str = "",
     params: Optional[dict] = None,
 ):
     """Transform schedule for matmul-like payload."""
@@ -64,7 +68,7 @@ def xegpu_matmul_transform_schedule(
         mod,
         has_bias=has_bias,
         has_relu=has_relu,
-        dump_kernel=dump_kernel,
+        stop_at_stage=stop_at_stage,
         params=params,
     )
     if interrupted:
@@ -73,7 +77,7 @@ def xegpu_matmul_transform_schedule(
 
     mod, interrupted = bundle_xegpu_to_binary(
         mod,
-        dump_kernel=dump_kernel,
+        stop_at_stage=stop_at_stage,
     )
     transform.yield_()
 
@@ -82,7 +86,7 @@ def bundle_xepu_matmul_schedule(
     mod,
     has_bias: bool = False,
     has_relu: bool = False,
-    dump_kernel: str = "",
+    stop_at_stage: str = "",
     params: Optional[dict] = None,
 ):
     """Schedule for lowering matmul-like payload to xegpu wg level."""
@@ -118,7 +122,7 @@ def bundle_xepu_matmul_schedule(
     sg_tile_a = [sg_tile[0], k_tile]
     sg_tile_b = [k_tile, sg_tile[1]]
 
-    if dump_kernel == "initial":
+    if stop_at_stage == "initial":
         return mod, True
 
     anytype = transform.AnyOpType.get()
@@ -159,7 +163,7 @@ def bundle_xepu_matmul_schedule(
     transform.apply_cse(func)
     canonicalize(func)
 
-    if dump_kernel == "tiled":
+    if stop_at_stage == "tiled":
         return mod, True
 
     # vectorize
@@ -176,7 +180,7 @@ def bundle_xepu_matmul_schedule(
     transform.apply_cse(func)
     canonicalize(func)
 
-    if dump_kernel == "vectorized":
+    if stop_at_stage == "vectorized":
         return mod, True
 
     # bufferize
@@ -195,7 +199,7 @@ def bundle_xepu_matmul_schedule(
     transform.apply_cse(mod)
     canonicalize(mod)
 
-    if dump_kernel == "bufferized":
+    if stop_at_stage == "bufferized":
         return mod, True
 
     # convert forall to parallel
@@ -234,7 +238,7 @@ def bundle_xepu_matmul_schedule(
     gpu_func = apply_registered_pass(gpu_func, "convert-vector-to-xegpu")
     transform.apply_cse(gpu_func)
 
-    if dump_kernel == "xegpu-initial":
+    if stop_at_stage == "xegpu-initial":
         return mod, True
 
     # add layouts to DPAS op operands
@@ -362,13 +366,13 @@ def bundle_xepu_matmul_schedule(
     canonicalize(gpu_func)
     transform.apply_cse(gpu_func)
 
-    if dump_kernel == "xegpu-wg":
+    if stop_at_stage == "xegpu-wg":
         return mod, True
 
     return mod, False
 
 
-def bundle_xegpu_to_binary(mod, dump_kernel: str = ""):
+def bundle_xegpu_to_binary(mod, stop_at_stage: str = ""):
     """Schedule for lowering xegpu wg level to binary."""
     # This schedule corresponds to upstream MLIR XeVM lowering pipeline
     # and is payload independent.
@@ -384,7 +388,7 @@ def bundle_xegpu_to_binary(mod, dump_kernel: str = ""):
     gpu_func = apply_registered_pass(gpu_func, "xegpu-wg-to-sg-distribute")
     transform.apply_cse(gpu_func)
 
-    if dump_kernel == "xegpu-sg":
+    if stop_at_stage == "xegpu-sg":
         return mod, True
 
     gpu_func = apply_registered_pass(gpu_func, "lower-affine")
@@ -393,7 +397,7 @@ def bundle_xegpu_to_binary(mod, dump_kernel: str = ""):
     canonicalize(gpu_func)
     transform.apply_cse(gpu_func)
 
-    if dump_kernel == "xegpu-inst":
+    if stop_at_stage == "xegpu-inst":
         return mod, True
 
     gpu_func = apply_registered_pass(gpu_func, "xegpu-propagate-layout")
