@@ -13,6 +13,12 @@ from lighthouse.utils.mlir import (
 from typing import Optional
 
 
+class PipelineInterrupt(Exception):
+    """Exception to signal early termination of the transform schedule."""
+
+    pass
+
+
 # hardware constraints
 dpas_tile = [8, 16, 16]
 prefetch_inst_data = [8, 16]
@@ -64,22 +70,23 @@ def xegpu_matmul_transform_schedule(
     params: Optional[dict] = None,
 ):
     """Transform schedule for matmul-like payload."""
-    mod, interrupted = bundle_xepu_matmul_schedule(
-        mod,
-        has_bias=has_bias,
-        has_relu=has_relu,
-        stop_at_stage=stop_at_stage,
-        params=params,
-    )
-    if interrupted:
-        transform.yield_()
-        return
+    try:
+        mod = bundle_xepu_matmul_schedule(
+            mod,
+            has_bias=has_bias,
+            has_relu=has_relu,
+            stop_at_stage=stop_at_stage,
+            params=params,
+        )
 
-    mod, interrupted = bundle_xegpu_to_binary(
-        mod,
-        stop_at_stage=stop_at_stage,
-    )
-    transform.yield_()
+        mod = bundle_xegpu_to_binary(
+            mod,
+            stop_at_stage=stop_at_stage,
+        )
+    except PipelineInterrupt:
+        pass
+    finally:
+        transform.yield_()
 
 
 def bundle_xepu_matmul_schedule(
@@ -88,7 +95,7 @@ def bundle_xepu_matmul_schedule(
     has_relu: bool = False,
     stop_at_stage: str = "",
     params: Optional[dict] = None,
-):
+) -> ir.Module:
     """Schedule for lowering matmul-like payload to xegpu wg level."""
     if params is None:
         raise ValueError("Schedule parameters must be provided.")
@@ -123,7 +130,7 @@ def bundle_xepu_matmul_schedule(
     sg_tile_b = [k_tile, sg_tile[1]]
 
     if stop_at_stage == "initial":
-        return mod, True
+        raise PipelineInterrupt()
 
     anytype = transform.AnyOpType.get()
     anyvalue = transform.AnyValueType.get()
@@ -164,7 +171,7 @@ def bundle_xepu_matmul_schedule(
     canonicalize(func)
 
     if stop_at_stage == "tiled":
-        return mod, True
+        raise PipelineInterrupt()
 
     # vectorize
     # FIXME use structured.structured_vectorize_children_and_apply_patterns
@@ -181,7 +188,7 @@ def bundle_xepu_matmul_schedule(
     canonicalize(func)
 
     if stop_at_stage == "vectorized":
-        return mod, True
+        raise PipelineInterrupt()
 
     # bufferize
 
@@ -200,7 +207,7 @@ def bundle_xepu_matmul_schedule(
     canonicalize(mod)
 
     if stop_at_stage == "bufferized":
-        return mod, True
+        raise PipelineInterrupt()
 
     # convert forall to parallel
     wg_loop = match(mod, ops={"scf.forall"})
@@ -239,7 +246,7 @@ def bundle_xepu_matmul_schedule(
     transform.apply_cse(gpu_func)
 
     if stop_at_stage == "xegpu-initial":
-        return mod, True
+        raise PipelineInterrupt()
 
     # add layouts to DPAS op operands
     k_loop = match(gpu_func, ops={"scf.for"})
@@ -367,12 +374,12 @@ def bundle_xepu_matmul_schedule(
     transform.apply_cse(gpu_func)
 
     if stop_at_stage == "xegpu-wg":
-        return mod, True
+        raise PipelineInterrupt()
 
-    return mod, False
+    return mod
 
 
-def bundle_xegpu_to_binary(mod, stop_at_stage: str = ""):
+def bundle_xegpu_to_binary(mod, stop_at_stage: str = "") -> ir.Module:
     """Schedule for lowering xegpu wg level to binary."""
     # This schedule corresponds to upstream MLIR XeVM lowering pipeline
     # and is payload independent.
@@ -389,7 +396,7 @@ def bundle_xegpu_to_binary(mod, stop_at_stage: str = ""):
     transform.apply_cse(gpu_func)
 
     if stop_at_stage == "xegpu-sg":
-        return mod, True
+        raise PipelineInterrupt()
 
     gpu_func = apply_registered_pass(gpu_func, "lower-affine")
     transform.apply_cse(gpu_func)
@@ -398,7 +405,7 @@ def bundle_xegpu_to_binary(mod, stop_at_stage: str = ""):
     transform.apply_cse(gpu_func)
 
     if stop_at_stage == "xegpu-inst":
-        return mod, True
+        raise PipelineInterrupt()
 
     gpu_func = apply_registered_pass(gpu_func, "xegpu-propagate-layout")
     gpu_mod = apply_registered_pass(gpu_mod, "xegpu-subgroup-distribute")
@@ -434,4 +441,4 @@ def bundle_xegpu_to_binary(mod, stop_at_stage: str = ""):
     transform.apply_cse(mod)
     mod = apply_registered_pass(mod, "gpu-module-to-binary")
 
-    return mod, False
+    return mod
