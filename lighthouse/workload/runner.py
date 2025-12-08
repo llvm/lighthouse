@@ -62,7 +62,7 @@ def execute(
 
 def emit_benchmark_function(
     payload_module: ir.Module,
-    workload: Workload,
+    payload_function_name: str,
     nruns: int,
     nwarmup: int,
 ):
@@ -75,10 +75,7 @@ def emit_benchmark_function(
     # find original payload function
     payload_func = None
     for op in payload_module.operation.regions[0].blocks[0]:
-        if (
-            isinstance(op, func.FuncOp)
-            and op.name.value == workload.payload_function_name
-        ):
+        if isinstance(op, func.FuncOp) and op.name.value == payload_function_name:
             payload_func = op
             break
     assert payload_func is not None, "Could not find payload function"
@@ -127,7 +124,9 @@ def benchmark(
     payload_module = workload.payload_module()
 
     # add benchmark function with timing
-    emit_benchmark_function(payload_module, workload, nruns, nwarmup)
+    emit_benchmark_function(
+        payload_module, workload.payload_function_name, nruns, nwarmup
+    )
 
     # lower
     schedule_module = workload.schedule_module(parameters=schedule_parameters)

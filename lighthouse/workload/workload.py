@@ -88,12 +88,7 @@ class Workload(ABC):
 
         On exit, frees any manually allocated memory (if any).
         """
-        try:
-            # Yield payload function input memrefs here.
-            yield None
-        finally:
-            # Manually deallocate memory here (if needed).
-            pass
+        pass
 
     @abstractmethod
     def check_correctness(

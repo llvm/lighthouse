@@ -109,8 +109,7 @@ class ElementwiseSum(Workload):
             fargs = [memref_t, memref_t, memref_t]
 
             @func.func(*fargs, name=self.payload_function_name)
-            def payload(*args):
-                A, B, C = args
+            def payload(A, B, C):
                 a_tensor = bufferization.to_tensor(tensor_t, A, restrict=True)
                 b_tensor = bufferization.to_tensor(tensor_t, B, restrict=True)
                 c_tensor = bufferization.to_tensor(
