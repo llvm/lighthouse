@@ -1,4 +1,4 @@
-# RUN: %PYTHON %s  | FileCheck %s
+# RUN: python %s | FileCheck %s
 # CHECK: func.func @payload
 # CHECK: PASSED
 # CHECK: Throughput:
@@ -19,7 +19,7 @@ from mlir.dialects import func, linalg, arith, memref
 from mlir.execution_engine import ExecutionEngine
 import ctypes
 from contextlib import contextmanager
-from lighthouse.utils import (
+from lighthouse.utils.runtime.ffi import (
     get_packed_arg,
     memrefs_to_packed_args,
     memref_to_ctype,
