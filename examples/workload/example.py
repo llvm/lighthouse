@@ -1,4 +1,4 @@
-# RUN: %PYTHON %s  | FileCheck %s
+# RUN: python %s | FileCheck %s
 # CHECK: func.func @payload
 # CHECK: PASSED
 # CHECK: Throughput:
