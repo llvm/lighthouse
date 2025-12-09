@@ -8,7 +8,7 @@ from mlir.execution_engine import ExecutionEngine
 from mlir import ir
 from mlir.runtime.np_to_memref import get_ranked_memref_descriptor
 
-from lighthouse.utils import get_packed_arg
+from lighthouse.utils.runtime.ffi import get_packed_arg
 from mlir_utils import get_mlir_library_path
 
 

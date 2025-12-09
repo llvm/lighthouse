@@ -126,7 +126,7 @@ pip install .[ingress_torch_cpu] \
 
 ## Running tests
 
-Running the tests is as simple as `lit .` in the root of the project.
+Running the tests is as simple as `lit .` in the root of the project (in a suitable Python environment, e.g. through `uv run lit .`).
 
 We assume that the [`FileCheck`](https://llvm.org/docs/CommandGuide/FileCheck.html) and [`lit`](https://llvm.org/docs/CommandGuide/lit.html) executables are available on the `PATH`.
 
