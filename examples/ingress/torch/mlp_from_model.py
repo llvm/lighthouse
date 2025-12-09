@@ -1,5 +1,4 @@
 # RUN: python %s
-# REQUIRES: torch
 
 """
 Example demonstrating how to load an already initialized PyTorch model
