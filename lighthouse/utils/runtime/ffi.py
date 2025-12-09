@@ -34,4 +34,3 @@ def memrefs_to_packed_args(memref_descs) -> list[ctypes.c_void_p]:
     """
     ctype_args = [memref_to_ctype(memref) for memref in memref_descs]
     return get_packed_arg(ctype_args)
-
