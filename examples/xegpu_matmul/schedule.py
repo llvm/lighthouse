@@ -384,61 +384,11 @@ def bundle_xegpu_to_binary(mod, stop_at_stage: str = "") -> ir.Module:
     # This schedule corresponds to upstream MLIR XeVM lowering pipeline
     # and is payload independent.
 
-    # TODO applying gpu-lower-to-xevm-pipeline pass affects performance
-    # mod = apply_registered_pass(
-    #     mod, "gpu-lower-to-xevm-pipeline", options={"xegpu-op-level": "workgroup"}
-    # )
-
-    gpu_mod = match(mod, ops={"gpu.module"})
-    # xegpu distribution
-    gpu_func = match(gpu_mod, ops={"gpu.func"})
-    gpu_func = apply_registered_pass(gpu_func, "xegpu-wg-to-sg-distribute")
-    transform.apply_cse(gpu_func)
-
-    if stop_at_stage == "xegpu-sg":
-        raise PipelineInterrupt()
-
-    gpu_func = apply_registered_pass(gpu_func, "lower-affine")
-    transform.apply_cse(gpu_func)
-    gpu_func = apply_registered_pass(gpu_func, "xegpu-blocking")
-    canonicalize(gpu_func)
-    transform.apply_cse(gpu_func)
-
-    if stop_at_stage == "xegpu-inst":
-        raise PipelineInterrupt()
-
-    gpu_func = apply_registered_pass(gpu_func, "xegpu-propagate-layout")
-    gpu_mod = apply_registered_pass(gpu_mod, "xegpu-subgroup-distribute")
-    canonicalize(gpu_mod)
-    transform.apply_cse(gpu_mod)
-    gpu_mod = apply_registered_pass(gpu_mod, "loop-invariant-code-motion")
-    transform.apply_cse(gpu_mod)
-    gpu_mod = apply_registered_pass(gpu_mod, "xegpu-vector-linearize")
-    gpu_mod = apply_registered_pass(gpu_mod, "convert-xegpu-to-xevm")
-    gpu_mod = apply_registered_pass(
-        gpu_mod, "convert-gpu-to-llvm-spv", options={"use-64bit-index": "true"}
+    # This pipeline causes performance regression with the existing
+    # xegpu transform ops.
+    # FIXME Use anchor layouts in transform ops.
+    mod = apply_registered_pass(
+        mod, "gpu-lower-to-xevm-pipeline", options={"xegpu-op-level": "workgroup"}
     )
-    gpu_mod = apply_registered_pass(gpu_mod, "convert-xevm-to-llvm")
-    transform.apply_cse(gpu_mod)
-
-    func = match(mod, ops={"func.func"})
-    func = apply_registered_pass(func, "gpu-async-region")
-
-    mod = apply_registered_pass(mod, "reconcile-unrealized-casts")
-    mod = apply_registered_pass(mod, "convert-vector-to-scf")
-    mod = apply_registered_pass(mod, "convert-scf-to-cf")
-    mod = apply_registered_pass(mod, "expand-strided-metadata")
-    mod = apply_registered_pass(mod, "finalize-memref-to-llvm")
-    mod = apply_registered_pass(mod, "convert-cf-to-llvm")
-    mod = apply_registered_pass(mod, "convert-vector-to-llvm")
-    mod = apply_registered_pass(mod, "convert-arith-to-llvm")
-    mod = apply_registered_pass(mod, "convert-index-to-llvm")
-    mod = apply_registered_pass(mod, "convert-func-to-llvm")
-    mod = apply_registered_pass(mod, "convert-math-to-llvm")
-    mod = apply_registered_pass(mod, "gpu-to-llvm")
-    mod = apply_registered_pass(mod, "lower-affine")
-    mod = apply_registered_pass(mod, "reconcile-unrealized-casts")
-    transform.apply_cse(mod)
-    mod = apply_registered_pass(mod, "gpu-module-to-binary")
 
     return mod
