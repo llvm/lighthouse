@@ -15,8 +15,8 @@ config.test_source_root = project_root
 config.test_exec_root = project_root + "/lit.out"
 
 config.substitutions.append(("%CACHE", project_root + "/cache"))
-if python_path := os.environ.get("PYTHON"):
-    config.substitutions.append(("python", python_path))
+python = os.environ.get("PYTHON", "python")
+config.substitutions.append(("%PYTHON", python))
 if filecheck_path := os.environ.get("FILECHECK"):
     config.substitutions.append(("FileCheck", filecheck_path))
 

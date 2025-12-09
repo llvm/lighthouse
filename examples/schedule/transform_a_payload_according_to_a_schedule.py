@@ -1,4 +1,4 @@
-# RUN: python %s | FileCheck %s
+# RUN: %PYTHON %s | FileCheck %s
 
 # Simply demonstrates applying a schedule to a payload.
 # To do so generates a basic payload and a basic schedule, purely as an example.

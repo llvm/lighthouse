@@ -1,4 +1,4 @@
-# RUN: python %s
+# RUN: %PYTHON %s
 
 """
 Example demonstrating how to load a PyTorch model to MLIR using Lighthouse
