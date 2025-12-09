@@ -1,4 +1,4 @@
-# RUN: python %s 1,1 1,2 2,1
+# RUN: %PYTHON %s 1,1 1,2 2,1
 # REQUIRES: torch
 # REQUIRES: kernel_bench
 

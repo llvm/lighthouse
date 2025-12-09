@@ -1,4 +1,4 @@
-# RUN: python %s --dump-kernel=xegpu-wg | FileCheck %s
+# RUN: %PYTHON %s --dump-kernel=xegpu-wg | FileCheck %s
 # CHECK: module attributes {gpu.container_module} {
 
 """

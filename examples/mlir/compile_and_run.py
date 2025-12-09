@@ -1,4 +1,4 @@
-# RUN: python %s
+# RUN: %PYTHON %s
 # REQUIRES: torch
 
 import torch
