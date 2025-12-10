@@ -6,11 +6,11 @@ import ctypes
 from mlir import ir
 from mlir.dialects import func, memref
 from mlir.runtime import np_to_memref
-from mlir.execution_engine import ExecutionEngine
 from mlir.passmanager import PassManager
 
 from lighthouse import runtime as lh_runtime
 from lighthouse import utils as lh_utils
+from lighthouse.workload import get_engine
 
 
 def create_mlir_module(shape: list[int]) -> ir.Module:
@@ -76,8 +76,7 @@ def main():
     # Create and compile test module.
     kernel = create_mlir_module(shape)
     lower_to_llvm(kernel.operation)
-    eng = ExecutionEngine(kernel, opt_level=3)
-    eng.initialize()
+    eng = get_engine(kernel)
 
     # Validate passing memrefs between Python and jitted module.
     print("...copy test...")
