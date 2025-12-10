@@ -9,7 +9,8 @@ from mlir.runtime import np_to_memref
 from mlir.execution_engine import ExecutionEngine
 from mlir.passmanager import PassManager
 
-import lighthouse.utils as lh_utils
+from lighthouse import runtime as lh_runtime
+from lighthouse import utils as lh_utils
 
 
 def create_mlir_module(shape: list[int]) -> ir.Module:
@@ -45,7 +46,7 @@ def lower_to_llvm(operation: ir.Operation) -> None:
 def main():
     # Validate basic functionality.
     print("Testing memref allocator...")
-    mem = lh_utils.MemRefManager()
+    mem = lh_runtime.MemRefManager()
     # Check allocation.
     buf = mem.alloc(32, 8, 16, ctype=ctypes.c_float)
     assert buf.allocated != 0, "Invalid allocation"
