@@ -18,10 +18,11 @@ import ctypes
 from contextlib import contextmanager
 from functools import cached_property
 from lighthouse.utils import get_packed_arg, memref_to_ctype
+
+from lighthouse.workload import Workload, benchmark
 from schedule import get_schedule_module
 from payload import generate_matmul_payload
 
-from runner import lower_payload, benchmark
 import argparse
 
 
@@ -30,7 +31,7 @@ def numpy_to_ctype(arr: np.ndarray) -> ctypes._Pointer:
     return memref_to_ctype(get_ranked_memref_descriptor(arr))
 
 
-class XeGPUMatMul:
+class XeGPUMatMul(Workload):
     """
     Matrix multiplication workload on XeGPU.
 
@@ -107,8 +108,7 @@ class XeGPUMatMul:
     @contextmanager
     def allocate_inputs(self, execution_engine: ExecutionEngine):
         try:
-            inputs = self._get_input_arrays(execution_engine)
-            yield inputs
+            yield self._get_input_arrays(execution_engine)
         finally:
             self._deallocate_all(execution_engine)
 
@@ -211,14 +211,17 @@ class XeGPUMatMul:
         return mod
 
     def schedule_module(
-        self, dump_kernel: str = None, parameters: Optional[dict] = None
+        self, stop_at_stage: Optional[str] = None, parameters: Optional[dict] = None
     ) -> ir.Module:
         return get_schedule_module(
             has_bias=self.has_bias,
             has_relu=self.has_relu,
-            dump_kernel=dump_kernel,
+            stop_at_stage=stop_at_stage,
             params=parameters,
         )
+
+    def shared_libs(self) -> list[str]:
+        return ["libmlir_levelzero_runtime.so"]
 
 
 def parse_cli():
@@ -371,9 +374,8 @@ if __name__ == "__main__":
         )
 
         if args.dump_kernel or args.dump_schedule:
-            lower_payload(
-                wload,
-                dump_kernel=args.dump_kernel,
+            wload.lower_payload(
+                dump_payload=args.dump_kernel,
                 dump_schedule=args.dump_schedule,
                 schedule_parameters=params,
             )
@@ -382,8 +384,8 @@ if __name__ == "__main__":
                 wload,
                 nruns=args.nruns,
                 nwarmup=args.nwarmup,
-                check_correctness=args.check_result,
                 schedule_parameters=params,
+                check_correctness=args.check_result,
                 verbose=1,
             )
             times *= 1e6  # convert to microseconds

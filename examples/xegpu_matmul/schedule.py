@@ -5,8 +5,18 @@ from mlir.dialects.transform import xegpu
 from mlir.dialects.bufferization import LayoutMapOption
 from mlir.dialects import transform
 from mlir.dialects.transform import structured
-from mlir_utils import apply_registered_pass, match, canonicalize
+from lighthouse.utils.mlir import (
+    apply_registered_pass,
+    canonicalize,
+    match,
+)
 from typing import Optional
+
+
+class PipelineInterrupt(Exception):
+    """Exception to signal early termination of the transform schedule."""
+
+    pass
 
 
 # hardware constraints
@@ -18,7 +28,7 @@ nb_workitems = 16  # workitems in subgroup
 def get_schedule_module(
     has_bias: bool = False,
     has_relu: bool = False,
-    dump_kernel: str = "",
+    stop_at_stage: str = "",
     params: Optional[dict] = None,
 ) -> ir.Module:
     """Generate transform schedule module."""
@@ -45,7 +55,7 @@ def get_schedule_module(
                 payload_mod,
                 has_bias=has_bias,
                 has_relu=has_relu,
-                dump_kernel=dump_kernel,
+                stop_at_stage=stop_at_stage,
                 params=params,
             )
 
@@ -56,35 +66,36 @@ def xegpu_matmul_transform_schedule(
     mod: ir.Value,
     has_bias: bool = False,
     has_relu: bool = False,
-    dump_kernel: str = "",
+    stop_at_stage: str = "",
     params: Optional[dict] = None,
 ):
     """Transform schedule for matmul-like payload."""
-    mod, interrupted = bundle_xepu_matmul_schedule(
-        mod,
-        has_bias=has_bias,
-        has_relu=has_relu,
-        dump_kernel=dump_kernel,
-        params=params,
-    )
-    if interrupted:
-        transform.yield_()
-        return
+    try:
+        mod = bundle_xepu_matmul_schedule(
+            mod,
+            has_bias=has_bias,
+            has_relu=has_relu,
+            stop_at_stage=stop_at_stage,
+            params=params,
+        )
 
-    mod, interrupted = bundle_xegpu_to_binary(
-        mod,
-        dump_kernel=dump_kernel,
-    )
-    transform.yield_()
+        mod = bundle_xegpu_to_binary(
+            mod,
+            stop_at_stage=stop_at_stage,
+        )
+    except PipelineInterrupt:
+        pass
+    finally:
+        transform.yield_()
 
 
 def bundle_xepu_matmul_schedule(
     mod,
     has_bias: bool = False,
     has_relu: bool = False,
-    dump_kernel: str = "",
+    stop_at_stage: str = "",
     params: Optional[dict] = None,
-):
+) -> ir.Module:
     """Schedule for lowering matmul-like payload to xegpu wg level."""
     if params is None:
         raise ValueError("Schedule parameters must be provided.")
@@ -118,8 +129,8 @@ def bundle_xepu_matmul_schedule(
     sg_tile_a = [sg_tile[0], k_tile]
     sg_tile_b = [k_tile, sg_tile[1]]
 
-    if dump_kernel == "initial":
-        return mod, True
+    if stop_at_stage == "initial":
+        raise PipelineInterrupt()
 
     anytype = transform.AnyOpType.get()
     anyvalue = transform.AnyValueType.get()
@@ -159,8 +170,8 @@ def bundle_xepu_matmul_schedule(
     transform.apply_cse(func)
     canonicalize(func)
 
-    if dump_kernel == "tiled":
-        return mod, True
+    if stop_at_stage == "tiled":
+        raise PipelineInterrupt()
 
     # vectorize
     # FIXME use structured.structured_vectorize_children_and_apply_patterns
@@ -176,8 +187,8 @@ def bundle_xepu_matmul_schedule(
     transform.apply_cse(func)
     canonicalize(func)
 
-    if dump_kernel == "vectorized":
-        return mod, True
+    if stop_at_stage == "vectorized":
+        raise PipelineInterrupt()
 
     # bufferize
 
@@ -195,8 +206,8 @@ def bundle_xepu_matmul_schedule(
     transform.apply_cse(mod)
     canonicalize(mod)
 
-    if dump_kernel == "bufferized":
-        return mod, True
+    if stop_at_stage == "bufferized":
+        raise PipelineInterrupt()
 
     # convert forall to parallel
     wg_loop = match(mod, ops={"scf.forall"})
@@ -234,8 +245,8 @@ def bundle_xepu_matmul_schedule(
     gpu_func = apply_registered_pass(gpu_func, "convert-vector-to-xegpu")
     transform.apply_cse(gpu_func)
 
-    if dump_kernel == "xegpu-initial":
-        return mod, True
+    if stop_at_stage == "xegpu-initial":
+        raise PipelineInterrupt()
 
     # add layouts to DPAS op operands
     k_loop = match(gpu_func, ops={"scf.for"})
@@ -362,72 +373,22 @@ def bundle_xepu_matmul_schedule(
     canonicalize(gpu_func)
     transform.apply_cse(gpu_func)
 
-    if dump_kernel == "xegpu-wg":
-        return mod, True
+    if stop_at_stage == "xegpu-wg":
+        raise PipelineInterrupt()
 
-    return mod, False
+    return mod
 
 
-def bundle_xegpu_to_binary(mod, dump_kernel: str = ""):
+def bundle_xegpu_to_binary(mod, stop_at_stage: str = "") -> ir.Module:
     """Schedule for lowering xegpu wg level to binary."""
     # This schedule corresponds to upstream MLIR XeVM lowering pipeline
     # and is payload independent.
 
-    # TODO applying gpu-lower-to-xevm-pipeline pass affects performance
-    # mod = apply_registered_pass(
-    #     mod, "gpu-lower-to-xevm-pipeline", options={"xegpu-op-level": "workgroup"}
-    # )
-
-    gpu_mod = match(mod, ops={"gpu.module"})
-    # xegpu distribution
-    gpu_func = match(gpu_mod, ops={"gpu.func"})
-    gpu_func = apply_registered_pass(gpu_func, "xegpu-wg-to-sg-distribute")
-    transform.apply_cse(gpu_func)
-
-    if dump_kernel == "xegpu-sg":
-        return mod, True
-
-    gpu_func = apply_registered_pass(gpu_func, "lower-affine")
-    transform.apply_cse(gpu_func)
-    gpu_func = apply_registered_pass(gpu_func, "xegpu-blocking")
-    canonicalize(gpu_func)
-    transform.apply_cse(gpu_func)
-
-    if dump_kernel == "xegpu-inst":
-        return mod, True
-
-    gpu_func = apply_registered_pass(gpu_func, "xegpu-propagate-layout")
-    gpu_mod = apply_registered_pass(gpu_mod, "xegpu-subgroup-distribute")
-    canonicalize(gpu_mod)
-    transform.apply_cse(gpu_mod)
-    gpu_mod = apply_registered_pass(gpu_mod, "loop-invariant-code-motion")
-    transform.apply_cse(gpu_mod)
-    gpu_mod = apply_registered_pass(gpu_mod, "xegpu-vector-linearize")
-    gpu_mod = apply_registered_pass(gpu_mod, "convert-xegpu-to-xevm")
-    gpu_mod = apply_registered_pass(
-        gpu_mod, "convert-gpu-to-llvm-spv", options={"use-64bit-index": "true"}
+    # This pipeline causes performance regression with the existing
+    # xegpu transform ops.
+    # FIXME Use anchor layouts in transform ops.
+    mod = apply_registered_pass(
+        mod, "gpu-lower-to-xevm-pipeline", options={"xegpu-op-level": "workgroup"}
     )
-    gpu_mod = apply_registered_pass(gpu_mod, "convert-xevm-to-llvm")
-    transform.apply_cse(gpu_mod)
 
-    func = match(mod, ops={"func.func"})
-    func = apply_registered_pass(func, "gpu-async-region")
-
-    mod = apply_registered_pass(mod, "reconcile-unrealized-casts")
-    mod = apply_registered_pass(mod, "convert-vector-to-scf")
-    mod = apply_registered_pass(mod, "convert-scf-to-cf")
-    mod = apply_registered_pass(mod, "expand-strided-metadata")
-    mod = apply_registered_pass(mod, "finalize-memref-to-llvm")
-    mod = apply_registered_pass(mod, "convert-cf-to-llvm")
-    mod = apply_registered_pass(mod, "convert-vector-to-llvm")
-    mod = apply_registered_pass(mod, "convert-arith-to-llvm")
-    mod = apply_registered_pass(mod, "convert-index-to-llvm")
-    mod = apply_registered_pass(mod, "convert-func-to-llvm")
-    mod = apply_registered_pass(mod, "convert-math-to-llvm")
-    mod = apply_registered_pass(mod, "gpu-to-llvm")
-    mod = apply_registered_pass(mod, "lower-affine")
-    mod = apply_registered_pass(mod, "reconcile-unrealized-casts")
-    transform.apply_cse(mod)
-    mod = apply_registered_pass(mod, "gpu-module-to-binary")
-
-    return mod, False
+    return mod
