@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Iterable
 
 from mlir import ir, passmanager
-from lighthouse.ingress import torch as torch_ingress
+import lighthouse.ingress as lh_ingress
 
 project_root = Path(__file__).parent.parent.parent
 torch_kernels_dir = project_root / "third_party" / "KernelBench" / "KernelBench"
@@ -173,7 +173,7 @@ def process_task(task: KernelConversionTask):
     print("Processing:", kernel_relative_name)
 
     try:
-        mlir_kernel = torch_ingress.import_from_file(task.torch_path, ir_context=ctx)
+        mlir_kernel = lh_ingress.torch.import_from_file(task.torch_path, ir_context=ctx)
         assert isinstance(mlir_kernel, ir.Module)
     except Exception as e:
         print(

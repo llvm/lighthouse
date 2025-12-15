@@ -8,6 +8,9 @@ Workload example: Element-wise sum of two (M, N) float32 arrays on CPU.
 In this example, allocation and deallocation of input arrays is done in MLIR.
 """
 
+import ctypes
+from contextlib import contextmanager
+
 import numpy as np
 from mlir import ir
 from mlir.runtime.np_to_memref import (
@@ -17,18 +20,11 @@ from mlir.runtime.np_to_memref import (
 )
 from mlir.dialects import func, linalg, arith, memref
 from mlir.execution_engine import ExecutionEngine
-import ctypes
-from contextlib import contextmanager
-from lighthouse.utils.runtime.ffi import (
-    get_packed_arg,
-    memrefs_to_packed_args,
-    memref_to_ctype,
-)
+
+from lighthouse.workload import execute, benchmark
+import lighthouse.utils as lh_utils
+
 from example import ElementwiseSum
-from lighthouse.workload import (
-    execute,
-    benchmark,
-)
 
 
 def emit_host_alloc(suffix: str, element_type: ir.Type, rank: int = 2):
@@ -114,16 +110,16 @@ class ElementwiseSumMLIRAlloc(ElementwiseSum):
         # construct a memref descriptor for the result memref
         shape = (self.M, self.N)
         mref = make_nd_memref_descriptor(len(shape), as_ctype(self.dtype))()
-        ptr_mref = memref_to_ctype(mref)
+        ptr_mref = lh_utils.memref.to_ctype(mref)
         ptr_dims = [ctypes.pointer(ctypes.c_int32(d)) for d in shape]
-        alloc_func(get_packed_arg([ptr_mref, *ptr_dims]))
+        alloc_func(lh_utils.memref.get_packed_arg([ptr_mref, *ptr_dims]))
         self.memrefs[name] = mref
         return mref
 
     def _deallocate_all(self, execution_engine: ExecutionEngine):
         for mref in self.memrefs.values():
             dealloc_func = execution_engine.lookup("host_dealloc_f32")
-            dealloc_func(memrefs_to_packed_args([mref]))
+            dealloc_func(lh_utils.memref.to_packed_args([mref]))
         self.memrefs = {}
 
     def get_input_arrays(
@@ -136,10 +132,9 @@ class ElementwiseSumMLIRAlloc(ElementwiseSum):
         # initialize with MLIR
         fill_zero_func = execution_engine.lookup("host_fill_constant_zero_f32")
         fill_random_func = execution_engine.lookup("host_fill_random_f32")
-        fill_zero_func(memrefs_to_packed_args([C]))
-        fill_random_func(memrefs_to_packed_args([A]))
-        fill_random_func(memrefs_to_packed_args([B]))
-
+        fill_zero_func(lh_utils.memref.to_packed_args([C]))
+        fill_random_func(lh_utils.memref.to_packed_args([A]))
+        fill_random_func(lh_utils.memref.to_packed_args([B]))
         return [A, B, C]
 
     @contextmanager

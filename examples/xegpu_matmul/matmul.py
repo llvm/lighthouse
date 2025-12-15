@@ -19,9 +19,9 @@ from mlir.runtime.np_to_memref import (
     as_ctype,
 )
 from mlir.execution_engine import ExecutionEngine
-from lighthouse.utils.memref import get_packed_arg, memref_to_ctype
 
 from lighthouse.workload import Workload, benchmark
+from lighthouse.utils.memref import get_packed_arg, to_ctype as memref_to_ctype
 
 # Import from sibling files:
 from schedule import get_schedule_module
