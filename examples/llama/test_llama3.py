@@ -1,20 +1,20 @@
-# RUN: %pytest %s
+# RUN: %PYTHON %s
+# REQUIRES: torch
 
 import functools
 import math as pymath
 import pytest
 import torch
 
-
 from mlir import ir
 from mlir.dialects import transform, func, linalg, tensor, arith, complex, math
 from mlir.dialects.linalg import ElementwiseKind
 from mlir.dialects.transform import structured, bufferization, interpreter
 from mlir.passmanager import PassManager
-from mlir.runtime.np_to_memref import (
-    get_ranked_memref_descriptor,
-)
+from mlir.runtime.np_to_memref import get_ranked_memref_descriptor
 from mlir.execution_engine import ExecutionEngine
+
+from lighthouse import utils as lh_utils
 
 from ref_model import (
     Attention,
@@ -25,7 +25,6 @@ from ref_model import (
     TransformerBlock,
     Transformer,
 )
-from lighthouse import utils as lh_utils
 
 
 def with_mlir_ctx_and_location(func):
@@ -1020,7 +1019,7 @@ def test_bin_op(op, shape, elem_type):
     eng = ExecutionEngine(module, opt_level=2)
     func_ptr = eng.lookup("bin_op")
 
-    torch_dtype = lh_utils.mlir_type_to_torch_dtype(ir_type)
+    torch_dtype = lh_utils.torch.dtype_from_mlir_type(ir_type)
     a = torch.randn(*shape, dtype=torch_dtype)
     b = torch.randn(*shape, dtype=torch_dtype)
     out_ref = references[op](a, b)
@@ -1030,7 +1029,7 @@ def test_bin_op(op, shape, elem_type):
     a_mem = get_ranked_memref_descriptor(a.numpy())
     b_mem = get_ranked_memref_descriptor(b.numpy())
     out_mem = get_ranked_memref_descriptor(out.numpy())
-    args = lh_utils.memrefs_to_packed_args([a_mem, b_mem, out_mem])
+    args = lh_utils.memref.to_packed_args([a_mem, b_mem, out_mem])
     func_ptr(args)
 
     assert torch.allclose(out, out_ref, rtol=0.01, atol=0.01, equal_nan=True)
@@ -1076,14 +1075,14 @@ def test_unary_op(op, shape, elem_type):
     eng = ExecutionEngine(module, opt_level=2)
     func_ptr = eng.lookup("unary_op")
 
-    torch_dtype = lh_utils.mlir_type_to_torch_dtype(ir_type)
+    torch_dtype = lh_utils.torch.dtype_from_mlir_type(ir_type)
     a = torch.randn(*shape, dtype=torch_dtype)
     out_ref = references[op](a)
     out = torch.empty_like(out_ref)
 
     a_mem = get_ranked_memref_descriptor(a.numpy())
     out_mem = get_ranked_memref_descriptor(out.numpy())
-    args = lh_utils.memrefs_to_packed_args([a_mem, out_mem])
+    args = lh_utils.memref.to_packed_args([a_mem, out_mem])
     func_ptr(args)
 
     assert torch.allclose(out, out_ref, rtol=0.01, atol=0.01, equal_nan=True)
@@ -1112,13 +1111,13 @@ def test_rms_norm(shape, elem_type):
 
     eng = ExecutionEngine(module, opt_level=2)
     func_ptr = eng.lookup("rms_norm")
-    torch_dtype = lh_utils.mlir_type_to_torch_dtype(ir_type)
+    torch_dtype = lh_utils.torch.dtype_from_mlir_type(ir_type)
     a = torch.randn(*shape, dtype=torch_dtype)
     out_ref = references[get_l2_norm](a, eps)
     out = torch.empty_like(out_ref)
     a_mem = get_ranked_memref_descriptor(a.numpy())
     out_mem = get_ranked_memref_descriptor(out.numpy())
-    args = lh_utils.memrefs_to_packed_args([a_mem, out_mem])
+    args = lh_utils.memref.to_packed_args([a_mem, out_mem])
     func_ptr(args)
 
     assert torch.allclose(out, out_ref, rtol=0.01, atol=0.01, equal_nan=True)
@@ -1160,7 +1159,7 @@ def test_linear(shape, in_features, out_features):
 
     eng = ExecutionEngine(module, opt_level=2)
     func_ptr = eng.lookup("linear_op")
-    torch_dtype = lh_utils.mlir_type_to_torch_dtype(ir_type)
+    torch_dtype = lh_utils.torch.dtype_from_mlir_type(ir_type)
     x = torch.randn(*shape, in_features, dtype=torch_dtype)
     w = torch.randn(out_features, in_features, dtype=torch_dtype)
     b = torch.randn(out_features, dtype=torch_dtype)
@@ -1171,7 +1170,7 @@ def test_linear(shape, in_features, out_features):
     w_mem = get_ranked_memref_descriptor(w.numpy())
     b_mem = get_ranked_memref_descriptor(b.numpy())
     out_mem = get_ranked_memref_descriptor(out.numpy())
-    args = lh_utils.memrefs_to_packed_args([x_mem, w_mem, b_mem, out_mem])
+    args = lh_utils.memref.to_packed_args([x_mem, w_mem, b_mem, out_mem])
     func_ptr(args)
     assert torch.allclose(out, out_ref, rtol=0.01, atol=0.01, equal_nan=True)
 
@@ -1201,7 +1200,7 @@ def test_polar():
 
     eng = ExecutionEngine(module, opt_level=2)
     func_ptr = eng.lookup("polar_op")
-    torch_dtype = lh_utils.mlir_type_to_torch_dtype(ir_type)
+    torch_dtype = lh_utils.torch.dtype_from_mlir_type(ir_type)
     magnitude = torch.randn(4, 16, dtype=torch_dtype)
     angle = torch.randn(4, 16, dtype=torch_dtype)
     out_ref = references[get_polar](magnitude, angle)
@@ -1209,7 +1208,7 @@ def test_polar():
     magnitude_mem = get_ranked_memref_descriptor(magnitude.numpy())
     angle_mem = get_ranked_memref_descriptor(angle.numpy())
     out_mem = get_ranked_memref_descriptor(out.numpy())
-    args = lh_utils.memrefs_to_packed_args([magnitude_mem, angle_mem, out_mem])
+    args = lh_utils.memref.to_packed_args([magnitude_mem, angle_mem, out_mem])
     func_ptr(args)
     assert torch.allclose(out, out_ref, rtol=0.01, atol=0.01, equal_nan=True)
 
@@ -1237,14 +1236,14 @@ def test_repeat_kv():
     eng = ExecutionEngine(module, opt_level=2)
     func_ptr = eng.lookup("repeat_kv_op")
 
-    torch_dtype = lh_utils.mlir_type_to_torch_dtype(ir_type)
+    torch_dtype = lh_utils.torch.dtype_from_mlir_type(ir_type)
     x = torch.randn(2, 512, 8, 64, dtype=torch_dtype)
     out_ref = references[get_repeat_kv](x, n_rep)
     out = torch.empty_like(out_ref)
 
     x_mem = get_ranked_memref_descriptor(x.numpy())
     out_mem = get_ranked_memref_descriptor(out.numpy())
-    args = lh_utils.memrefs_to_packed_args([x_mem, out_mem])
+    args = lh_utils.memref.to_packed_args([x_mem, out_mem])
     func_ptr(args)
 
     assert torch.allclose(out, out_ref, rtol=0.01, atol=0.01, equal_nan=True)
@@ -1275,7 +1274,7 @@ def test_reshape_for_broadcast():
     eng = ExecutionEngine(module, opt_level=2)
     func_ptr = eng.lookup("reshape_for_broadcast")
 
-    torch_dtype = lh_utils.mlir_type_to_torch_dtype(ir_type)
+    torch_dtype = lh_utils.torch.dtype_from_mlir_type(ir_type)
     freqs_cis = torch.randn(512, 64, dtype=torch_dtype)
     x = torch.randn(2, 512, 32, 128, dtype=torch_dtype)
     # Convert x to complex view as expected by reshape_for_broadcast
@@ -1286,7 +1285,7 @@ def test_reshape_for_broadcast():
     freqs_cis_mem = get_ranked_memref_descriptor(freqs_cis.numpy())
     x_mem = get_ranked_memref_descriptor(x.numpy())
     out_mem = get_ranked_memref_descriptor(out.numpy())
-    args = lh_utils.memrefs_to_packed_args([freqs_cis_mem, x_mem, out_mem])
+    args = lh_utils.memref.to_packed_args([freqs_cis_mem, x_mem, out_mem])
     func_ptr(args)
 
     assert torch.allclose(out, out_ref, rtol=0.01, atol=0.01, equal_nan=True)
@@ -1317,7 +1316,7 @@ def test_view_as_complex():
     eng = ExecutionEngine(module, opt_level=2)
     func_ptr = eng.lookup("view_as_complex_op")
 
-    torch_dtype = lh_utils.mlir_type_to_torch_dtype(ir_type)
+    torch_dtype = lh_utils.torch.dtype_from_mlir_type(ir_type)
     x = torch.randn(2, 512, 32, 128, dtype=torch_dtype)
     x_reshaped = x.reshape(2, 512, 32, 64, 2)
     out_ref = torch.view_as_complex(x_reshaped)
@@ -1325,7 +1324,7 @@ def test_view_as_complex():
 
     x_mem = get_ranked_memref_descriptor(x_reshaped.numpy())
     out_mem = get_ranked_memref_descriptor(out.numpy())
-    args = lh_utils.memrefs_to_packed_args([x_mem, out_mem])
+    args = lh_utils.memref.to_packed_args([x_mem, out_mem])
     func_ptr(args)
 
     assert torch.allclose(out, out_ref, rtol=0.01, atol=0.01, equal_nan=True)
@@ -1353,7 +1352,7 @@ def test_view_as_real():
     eng = ExecutionEngine(module, opt_level=2)
     func_ptr = eng.lookup("as_real_op")
 
-    torch_dtype = lh_utils.mlir_type_to_torch_dtype(ir_type)
+    torch_dtype = lh_utils.torch.dtype_from_mlir_type(ir_type)
     x = torch.randn(2, 512, 32, 64, 2, dtype=torch_dtype)
     x_complex = torch.view_as_complex(x)
     out_ref = torch.view_as_real(x_complex)
@@ -1361,7 +1360,7 @@ def test_view_as_real():
 
     x_mem = get_ranked_memref_descriptor(x_complex.numpy())
     out_mem = get_ranked_memref_descriptor(out.numpy())
-    args = lh_utils.memrefs_to_packed_args([x_mem, out_mem])
+    args = lh_utils.memref.to_packed_args([x_mem, out_mem])
     func_ptr(args)
 
     assert torch.allclose(out, out_ref, rtol=0.01, atol=0.01, equal_nan=True)
@@ -1394,7 +1393,7 @@ def test_rotary_emb(batch_size, seq_len, n_heads, head_dim, n_kv_heads, elem_typ
         return module
 
     ir_type = to_ir_type(elem_type)
-    torch_dtype = lh_utils.mlir_type_to_torch_dtype(ir_type)
+    torch_dtype = lh_utils.torch.dtype_from_mlir_type(ir_type)
     xq_shape = (batch_size, seq_len, n_heads, head_dim)
     xk_shape = (batch_size, seq_len, n_kv_heads, head_dim)
     freqs_cis_shape = (seq_len, head_dim // 2)
@@ -1423,7 +1422,7 @@ def test_rotary_emb(batch_size, seq_len, n_heads, head_dim, n_kv_heads, elem_typ
     freqs_cis_mem = get_ranked_memref_descriptor(freqs_cis.numpy())
     out1_mem = get_ranked_memref_descriptor(out1.numpy())
     out2_mem = get_ranked_memref_descriptor(out2.numpy())
-    args = lh_utils.memrefs_to_packed_args(
+    args = lh_utils.memref.to_packed_args(
         [a_mem, b_mem, freqs_cis_mem, out1_mem, out2_mem]
     )
     func_ptr(args)
@@ -1488,7 +1487,7 @@ def test_feed_forward():
     eng = ExecutionEngine(module, opt_level=2)
     func_ptr = eng.lookup("feed_forward")
 
-    torch_dtype = lh_utils.mlir_type_to_torch_dtype(ir_type)
+    torch_dtype = lh_utils.torch.dtype_from_mlir_type(ir_type)
     x = torch.randn(4, 16, dtype=torch_dtype)
     w1 = torch.randn(64, 16, dtype=torch_dtype)
     b1 = torch.randn(64, dtype=torch_dtype)
@@ -1511,7 +1510,7 @@ def test_feed_forward():
     w3_mem = get_ranked_memref_descriptor(w3.numpy())
     b3_mem = get_ranked_memref_descriptor(b3.numpy())
     out_mem = get_ranked_memref_descriptor(out.numpy())
-    args = lh_utils.memrefs_to_packed_args(
+    args = lh_utils.memref.to_packed_args(
         [x_mem, w1_mem, b1_mem, w2_mem, b2_mem, w3_mem, b3_mem, out_mem]
     )
     func_ptr(args)
@@ -1644,7 +1643,7 @@ def test_attention_fwd():
     freqs_cis_mem = get_ranked_memref_descriptor(freqs_cis_real.numpy())
     mask_mem = get_ranked_memref_descriptor(mask.numpy())
     out_mem = get_ranked_memref_descriptor(out.numpy())
-    args = lh_utils.memrefs_to_packed_args(
+    args = lh_utils.memref.to_packed_args(
         [x_mem, wq_mem, wk_mem, wv_mem, wo_mem, freqs_cis_mem, mask_mem, out_mem]
     )
     func_ptr(args)
@@ -1791,7 +1790,7 @@ def test_transformer_block_fwd():
     b3_mem = get_ranked_memref_descriptor(b3.numpy())
     out_mem = get_ranked_memref_descriptor(out.numpy())
 
-    args = lh_utils.memrefs_to_packed_args(
+    args = lh_utils.memref.to_packed_args(
         [
             x_mem,
             wq_mem,
@@ -1980,7 +1979,7 @@ def test_transformer_fwd():
     out_mem = get_ranked_memref_descriptor(out.numpy())
     memrefs.append(out_mem)
 
-    args = lh_utils.memrefs_to_packed_args(memrefs)
+    args = lh_utils.memref.to_packed_args(memrefs)
     func_ptr(args)
 
     assert torch.allclose(out, out_ref, rtol=0.01, atol=0.01, equal_nan=True)

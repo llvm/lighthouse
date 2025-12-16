@@ -1,19 +1,21 @@
-"""A collection of utility tools"""
+__all__ = ["memref", "mlir", "torch"]
 
-from .runtime_args import (
-    get_packed_arg,
-    memref_to_ctype,
-    memrefs_to_packed_args,
-    torch_to_memref,
-    torch_to_packed_args,
-    mlir_type_to_torch_dtype,
-)
+import sys
+import importlib
 
-__all__ = [
-    "get_packed_arg",
-    "memref_to_ctype",
-    "memrefs_to_packed_args",
-    "mlir_type_to_torch_dtype",
-    "torch_to_memref",
-    "torch_to_packed_args",
-]
+
+def __getattr__(name):
+    """Enable lazy loading of submodules.
+
+    Enables `import lighthouse.utils as lh_utils; lh_utils.<submodule>` with
+    loading of (the submodule's heavy) depenendencies only upon being needed.
+    """
+
+    if name in __all__:
+        # Import the submodule and cache it on the current module. That is,
+        # upon the next access __getattr__ will not be called.
+        submodule = importlib.import_module("lighthouse.utils." + name)
+        lighthouse_utils_mod = sys.modules[__name__]
+        setattr(lighthouse_utils_mod, name, submodule)
+        return submodule
+    raise AttributeError(f"module '{__name__}' has no attribute '{name}'")

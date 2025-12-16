@@ -1,4 +1,4 @@
-# RUN: %PYTHON %s  | FileCheck %s
+# RUN: %PYTHON %s | FileCheck %s
 # CHECK: func.func @payload
 # CHECK: PASSED
 # CHECK: Throughput:
@@ -6,26 +6,20 @@
 Workload example: Element-wise sum of two (M, N) float32 arrays on CPU.
 """
 
+import ctypes
+from contextlib import contextmanager
+from functools import cached_property
+from typing import Optional
+
 import numpy as np
 from mlir import ir
 from mlir.runtime.np_to_memref import get_ranked_memref_descriptor
 from mlir.dialects import func, linalg, bufferization
 from mlir.dialects import transform
 from mlir.execution_engine import ExecutionEngine
-from contextlib import contextmanager
-from functools import cached_property
-import ctypes
-from typing import Optional
-from lighthouse.utils.mlir import (
-    apply_registered_pass,
-    canonicalize,
-    match,
-)
-from lighthouse.workload import (
-    Workload,
-    execute,
-    benchmark,
-)
+
+from lighthouse.utils.mlir import apply_registered_pass, canonicalize, match
+from lighthouse.workload import Workload, execute, benchmark
 
 
 class ElementwiseSum(Workload):

@@ -1,4 +1,5 @@
 # RUN: %PYTHON %s
+# REQUIRES: torch
 
 import torch
 import argparse
@@ -9,7 +10,7 @@ from mlir.dialects.transform import structured
 from mlir.execution_engine import ExecutionEngine
 from mlir.passmanager import PassManager
 
-from lighthouse import utils as lh_utils
+import lighthouse.utils as lh_utils
 
 
 def create_kernel(ctx: ir.Context) -> ir.Module:
@@ -167,7 +168,7 @@ def main(args):
     out = torch.empty_like(out_ref)
 
     # Execute the kernel.
-    args = lh_utils.torch_to_packed_args([a, b, out])
+    args = lh_utils.torch.to_packed_args([a, b, out])
     add_func(args)
 
     ### Verification ###

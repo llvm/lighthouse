@@ -5,6 +5,12 @@
 XeGPU matrix multiplication benchmark.
 """
 
+import argparse
+import ctypes
+from typing import Optional
+from contextlib import contextmanager
+from functools import cached_property
+
 import numpy as np
 from mlir import ir
 from mlir.runtime.np_to_memref import (
@@ -13,17 +19,13 @@ from mlir.runtime.np_to_memref import (
     as_ctype,
 )
 from mlir.execution_engine import ExecutionEngine
-from typing import Optional
-import ctypes
-from contextlib import contextmanager
-from functools import cached_property
-from lighthouse.utils import get_packed_arg, memref_to_ctype
 
 from lighthouse.workload import Workload, benchmark
+from lighthouse.utils.memref import get_packed_arg, to_ctype as memref_to_ctype
+
+# Import from sibling files:
 from schedule import get_schedule_module
 from payload import generate_matmul_payload
-
-import argparse
 
 
 def numpy_to_ctype(arr: np.ndarray) -> ctypes._Pointer:

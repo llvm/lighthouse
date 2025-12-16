@@ -9,7 +9,7 @@ from mlir.dialects import func, arith, scf, memref
 from mlir.execution_engine import ExecutionEngine
 from mlir.runtime.np_to_memref import get_ranked_memref_descriptor
 from lighthouse.utils.mlir import get_mlir_library_path
-from lighthouse.utils import memrefs_to_packed_args
+from lighthouse.utils.memref import to_packed_args
 from lighthouse.workload import Workload
 from typing import Optional
 
@@ -44,7 +44,7 @@ def execute(
 
     with workload.allocate_inputs(execution_engine=engine) as inputs:
         # prepare function arguments
-        packed_args = memrefs_to_packed_args(inputs)
+        packed_args = to_packed_args(inputs)
 
         # handle to payload function
         payload_func = engine.lookup(workload.payload_function_name)
@@ -143,7 +143,7 @@ def benchmark(
         if check_correctness:
             # call payload once to verify correctness
             # prepare function arguments
-            packed_args = memrefs_to_packed_args(inputs)
+            packed_args = to_packed_args(inputs)
 
             payload_func = engine.lookup(workload.payload_function_name)
             payload_func(packed_args)
@@ -156,7 +156,7 @@ def benchmark(
         # allocate buffer for timings and prepare arguments
         time_array = np.zeros((nruns,), dtype=np.float64)
         time_memref = get_ranked_memref_descriptor(time_array)
-        packed_args_with_time = memrefs_to_packed_args(inputs + [time_memref])
+        packed_args_with_time = to_packed_args(inputs + [time_memref])
 
         # call benchmark function
         benchmark_func = engine.lookup("benchmark")
