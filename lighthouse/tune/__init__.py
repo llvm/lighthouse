@@ -1,4 +1,4 @@
-__all__ = ["smt", "rewrite"]
+__all__ = ["rewrite", "smt"]
 
 import sys
 import importlib

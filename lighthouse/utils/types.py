@@ -6,6 +6,7 @@ K = TypeVar("K")
 V = TypeVar("V")
 W = TypeVar("V")
 
+
 class LazyChainMap(Mapping, Generic[K, V, W]):
     def __init__(self, data: dict[K, V], func: Callable[V, W]):
         self._data = data

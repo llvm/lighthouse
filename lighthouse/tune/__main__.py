@@ -19,13 +19,17 @@ if __name__ == "__main__":
         "-n", type=int, help="Number of determinized schedules to find", default=1
     )
     parser.add_argument(
-        "--print-smtlib", action="store_true", help="Print the constraints in SMT-LIB format"
+        "--print-smtlib",
+        action="store_true",
+        help="Print the constraints in SMT-LIB format",
     )
     parser.add_argument(
         "--print-model", action="store_true", help="Print the model from the SMT solver"
     )
     parser.add_argument(
-        "--print-knobs-set", action="store_true", help="Print the schedule with knobs set"
+        "--print-knobs-set",
+        action="store_true",
+        help="Print the schedule with knobs set",
     )
     args = parser.parse_args()
 
@@ -50,7 +54,7 @@ if __name__ == "__main__":
         for i in range(args.n):
             model = next(all_models)
             if args.print_model:
-                print(HEADER.format(f"SMT Model #{i+1}"))
+                print(HEADER.format(f"SMT Model #{i + 1}"))
                 pprint(model)
 
             env: Mapping[ir.Value | ir.Operation, ir.Attribute] = LazyChainMap(
@@ -62,10 +66,10 @@ if __name__ == "__main__":
             mod_op, undo = lh_tune.rewrite.constraint_results_to_constants(mod_op, env)
 
             if args.print_knobs_set:
-                print(HEADER.format(f"Schedule #{i+1} with knobs set"))
+                print(HEADER.format(f"Schedule #{i + 1} with knobs set"))
                 print(mod_op)
 
-            print(HEADER.format(f"Determinized schedule #{i+1}"))
+            print(HEADER.format(f"Determinized schedule #{i + 1}"))
             print(lh_tune.rewrite.nondet_to_det(mod_op.clone()))
 
-            undo() # Undo the introduction of constants for the results of constraints.
+            undo()  # Undo the introduction of constants for the results of constraints.
