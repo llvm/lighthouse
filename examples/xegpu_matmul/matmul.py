@@ -1,4 +1,4 @@
-# RUN: %PYTHON %s --dump-kernel=xegpu-wg | FileCheck %s
+# RUN: %PYTHON %s --dump-payload=xegpu-wg | FileCheck %s
 # CHECK: module attributes {gpu.container_module} {
 
 """
@@ -315,7 +315,7 @@ def parse_cli():
         help="Check the result of the matrix multiplication.",
     )
     parser.add_argument(
-        "--dump-kernel",
+        "--dump-payload",
         type=str,
         choices=[
             "initial",
@@ -328,12 +328,17 @@ def parse_cli():
             "xegpu-inst",
             "final",
         ],
-        help="Dump kernel IR at different stages of lowering.",
+        help="Dump payload IR at different stages of lowering.",
     )
     parser.add_argument(
         "--dump-schedule",
         action="store_true",
         help="Dump transform schedule.",
+    )
+    parser.add_argument(
+        "--non-det",
+        action="store_true",
+        help="Generate schedule with knob values left non-determined.",
     )
     args = parser.parse_args()
 
@@ -344,21 +349,23 @@ if __name__ == "__main__":
     args = parse_cli()
 
     params = {
-        "auto_wg_d0": args.wg_tile[0],
-        "auto_wg_d1": args.wg_tile[1],
-        "auto_sg_d0": args.sg_tile[0],
-        "auto_sg_d1": args.sg_tile[1],
-        "auto_k": args.k_tile,
-        "auto_load_a_d0": args.load_tile_a[0],
-        "auto_load_a_d1": args.load_tile_a[1],
-        "auto_load_b_d0": args.load_tile_b[0],
-        "auto_load_b_d1": args.load_tile_b[1],
-        "auto_prefetch_a_d0": args.prefetch_tile_a[0],
-        "auto_prefetch_a_d1": args.prefetch_tile_a[1],
-        "auto_prefetch_b_d0": args.prefetch_tile_b[0],
-        "auto_prefetch_b_d1": args.prefetch_tile_b[1],
-        "auto_nb_prefetch": args.nb_prefetch,
+        "wg_d0": args.wg_tile[0],
+        "wg_d1": args.wg_tile[1],
+        "sg_d0": args.sg_tile[0],
+        "sg_d1": args.sg_tile[1],
+        "k_tile": args.k_tile,
+        "load_a_d0": args.load_tile_a[0],
+        "load_a_d1": args.load_tile_a[1],
+        "load_b_d0": args.load_tile_b[0],
+        "load_b_d1": args.load_tile_b[1],
+        "prefetch_a_d0": args.prefetch_tile_a[0],
+        "prefetch_a_d1": args.prefetch_tile_a[1],
+        "prefetch_b_d0": args.prefetch_tile_b[0],
+        "prefetch_b_d1": args.prefetch_tile_b[1],
+        "nb_prefetch": args.nb_prefetch,
     }
+    if args.non_det:
+        params = {}
 
     M, N, K = args.sizes
     ab_type = "f16"
@@ -375,9 +382,14 @@ if __name__ == "__main__":
             has_relu=args.relu,
         )
 
-        if args.dump_kernel or args.dump_schedule:
+        if args.dump_schedule:
+            schedule_module = wload.schedule_module(
+                stop_at_stage=args.dump_payload, parameters=params
+            )
+            print(schedule_module)
+        elif args.dump_kernel:
             wload.lower_payload(
-                dump_payload=args.dump_kernel,
+                dump_payload=args.dump_payload,
                 dump_schedule=args.dump_schedule,
                 schedule_parameters=params,
             )

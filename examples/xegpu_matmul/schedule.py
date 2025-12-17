@@ -1,16 +1,23 @@
+import inspect
+from typing import Optional, Annotated
+
 from mlir import ir
 from mlir.dialects.transform import loop
 from mlir.dialects.transform import bufferization
 from mlir.dialects.transform import xegpu
 from mlir.dialects.bufferization import LayoutMapOption
-from mlir.dialects import transform
-from mlir.dialects.transform import structured
-from lighthouse.utils.mlir import (
-    apply_registered_pass,
-    canonicalize,
-    match,
+from mlir.dialects import transform, smt
+from mlir.dialects.transform import (
+    structured,
+    tune as transform_tune,
+    smt as transform_smt,
 )
-from typing import Optional
+from lighthouse.utils.mlir import apply_registered_pass, canonicalize, match
+from lighthouse.tune.annotate import (
+    check_annotated_constraints,
+    NonDet,
+    ConstraintCollector,
+)
 
 
 class PipelineInterrupt(Exception):
@@ -76,7 +83,7 @@ def xegpu_matmul_transform_schedule(
             has_bias=has_bias,
             has_relu=has_relu,
             stop_at_stage=stop_at_stage,
-            params=params,
+            **params,
         )
 
         mod = bundle_xegpu_to_binary(
@@ -89,45 +96,166 @@ def xegpu_matmul_transform_schedule(
         transform.yield_()
 
 
+@check_annotated_constraints
 def bundle_xepu_matmul_schedule(
     mod,
     has_bias: bool = False,
     has_relu: bool = False,
     stop_at_stage: str = "",
-    params: Optional[dict] = None,
+    *,
+    wg_d0: Annotated[int, lambda _: 128 <= _ <= 256 and _ % 32 == 0] = NonDet,
+    wg_d1: Annotated[int, lambda _: 128 <= _ <= 256 and _ % 32 == 0] = NonDet,
+    sg_d0: Annotated[int, lambda _: 16 <= _ <= 32 and _ % 8 == 0] = NonDet,
+    sg_d1: Annotated[int, lambda _: 16 <= _ <= 32 and _ % 8 == 0] = NonDet,
+    k_tile: Annotated[int, lambda _: 8 <= _ <= 32 and _ % 8 == 0] = NonDet,
+    load_a_d0: Annotated[int, lambda _: 8 <= _ <= 32 and _ % 8 == 0] = NonDet,
+    load_a_d1: Annotated[int, lambda _: 8 <= _ <= 32 and _ % 8 == 0] = NonDet,
+    load_b_d0: Annotated[int, lambda _: 8 <= _ <= 32 and _ % 8 == 0] = NonDet,
+    load_b_d1: Annotated[int, lambda _: 8 <= _ <= 32 and _ % 8 == 0] = NonDet,
+    prefetch_a_d0: Annotated[int, lambda _: 4 <= _ <= 8] = NonDet,
+    prefetch_a_d1: Annotated[int, lambda _: 16 <= _ <= 32] = NonDet,
+    prefetch_b_d0: Annotated[int, lambda _: 4 <= _ <= 8] = NonDet,
+    prefetch_b_d1: Annotated[int, lambda _: 8 <= _ <= 16] = NonDet,
+    nb_prefetch: Annotated[int, lambda _: 1 <= _ <= 32] = NonDet,
+    **_kwargs: Optional[dict],
 ) -> ir.Module:
     """Schedule for lowering matmul-like payload to xegpu wg level."""
-    if params is None:
-        raise ValueError("Schedule parameters must be provided.")
 
-    # tunable parameters
-    wg_tile = [params["auto_wg_d0"], params["auto_wg_d1"]]
-    sg_tile = [params["auto_sg_d0"], params["auto_sg_d1"]]
-    k_tile = params["auto_k"]
+    sig = inspect.signature(bundle_xepu_matmul_schedule)
 
-    load_tile_a = [params["auto_load_a_d0"], params["auto_load_a_d1"]]
-    load_tile_b = [params["auto_load_b_d0"], params["auto_load_b_d1"]]
+    any_param = transform.AnyParamType.get()
 
-    prefetch_tile_a = [params["auto_prefetch_a_d0"], params["auto_prefetch_a_d1"]]
-    prefetch_tile_b = [params["auto_prefetch_b_d0"], params["auto_prefetch_b_d1"]]
-    nb_prefetch = params["auto_nb_prefetch"]
-
-    # derived parameters
-    sg_layout = [wg_tile[0] // sg_tile[0], wg_tile[1] // sg_tile[1]]
-    # number of threads collapsed to 1d layout
-    nb_threads = sg_layout[0] * sg_layout[1] * nb_workitems
-    prefetch_layout_a = [
-        wg_tile[0] // prefetch_tile_a[0],
-        k_tile // prefetch_tile_a[1],
+    use_knobs = NonDet in [
+        wg_d0,
+        wg_d1,
+        prefetch_a_d0,
+        prefetch_a_d1,
+        prefetch_b_d0,
+        prefetch_b_d1,
+        k_tile,
+        load_a_d0,
+        load_a_d1,
+        load_b_d0,
+        load_b_d1,
+        prefetch_a_d0,
+        prefetch_a_d1,
+        prefetch_b_d0,
+        prefetch_b_d1,
+        nb_prefetch,
     ]
-    prefetch_layout_b = [
-        k_tile // prefetch_tile_b[0],
-        wg_tile[1] // prefetch_tile_b[1],
-    ]
+
+    def as_const_or_as_knob(value, knob_name):
+        collector = ConstraintCollector()
+        sig.parameters[knob_name].annotation.__metadata__[0](collector)
+        if use_knobs:
+            return transform_tune.knob(
+                any_param,
+                name=knob_name,
+                options=collector.to_mlir(),
+                selected=value if value is not NonDet else None,
+            )
+        return value
+
+    wg_d0 = as_const_or_as_knob(wg_d0, "wg_d0")
+    wg_d1 = as_const_or_as_knob(wg_d1, "wg_d1")
+    wg_tile = [wg_d0, wg_d1]
+    sg_d0 = as_const_or_as_knob(sg_d0, "sg_d0")
+    sg_d1 = as_const_or_as_knob(sg_d1, "sg_d1")
+    sg_tile = [sg_d0, sg_d1]
+
+    smt_int = smt.IntType.get()
+    c0 = ir.IntegerAttr.get(ir.IntegerType.get_signless(64), 0)
+    c_nb_workitems = ir.IntegerAttr.get(ir.IntegerType.get_signless(64), nb_workitems)
+
+    if use_knobs:
+        constraint1 = transform_smt.constrain_params(
+            (any_param, any_param, any_param),
+            (
+                wg_d0,
+                wg_d1,
+                sg_d0,
+                sg_d1,
+            ),
+            [smt_int] * 4,
+        )
+        with ir.InsertionPoint(constraint1.body):
+            WGd0, WGd1, SGd0, SGd1 = constraint1.body.arguments
+            C0 = smt.int_constant(c0)
+            smt.assert_(smt.eq((smt.int_mod(WGd0, SGd0), C0)))
+            smt.assert_(smt.eq((smt.int_mod(WGd1, SGd1), C0)))
+            d0_step_smt = smt.int_div(WGd0, SGd0)
+            d1_step_smt = smt.int_div(WGd1, SGd1)
+            nb_threads_smt = smt.int_mul(
+                (d0_step_smt, d1_step_smt, smt.int_constant(c_nb_workitems))
+            )
+            smt.yield_((d0_step_smt, d1_step_smt, nb_threads_smt))
+        d0_step, d1_step, nb_threads = constraint1.results
+        sg_layout = [d0_step, d1_step]
+    else:
+        # derived parameters
+        sg_layout = [wg_d0 // sg_d0, wg_d1 // sg_d1]
+        # number of threads collapsed to 1d layout
+        nb_threads = sg_layout[0] * sg_layout[1] * nb_workitems
+
+    prefetch_a_d0 = as_const_or_as_knob(prefetch_a_d0, "prefetch_a_d0")
+    prefetch_a_d1 = as_const_or_as_knob(prefetch_a_d1, "prefetch_a_d1")
+    prefetch_tile_a = [prefetch_a_d0, prefetch_a_d1]
+    prefetch_b_d0 = as_const_or_as_knob(prefetch_b_d0, "prefetch_b_d0")
+    prefetch_b_d1 = as_const_or_as_knob(prefetch_b_d1, "prefetch_b_d1")
+    prefetch_tile_b = [prefetch_b_d0, prefetch_b_d1]
+    k_tile = as_const_or_as_knob(k_tile, "k_tile")
+
+    if use_knobs:
+        constraint2 = transform_smt.constrain_params(
+            (any_param, any_param, any_param, any_param),
+            (
+                wg_d0,
+                wg_d1,
+                k_tile,
+                prefetch_a_d0,
+                prefetch_a_d1,
+                prefetch_b_d0,
+                prefetch_b_d1,
+            ),
+            [smt_int] * 7,
+        )
+        with ir.InsertionPoint(constraint2.body):
+            WGd0, WGd1, K, PFAd0, PFAd1, PFBd0, PFBd1 = constraint2.body.arguments
+            C0 = smt.int_constant(c0)
+            smt.assert_(smt.eq((smt.int_mod(WGd0, PFAd0), C0)))
+            smt.assert_(smt.eq((smt.int_mod(K, PFAd1), C0)))
+            PFAd0_step = smt.int_div(WGd0, PFAd0)
+            PFAd1_step = smt.int_div(K, PFAd1)
+
+            smt.assert_(smt.eq((smt.int_mod(K, PFBd0), C0)))
+            smt.assert_(smt.eq((smt.int_mod(WGd1, PFBd1), C0)))
+            PFBd0_step = smt.int_div(K, PFBd0)
+            PFBd1_step = smt.int_div(WGd1, PFBd1)
+
+            smt.yield_((PFAd0_step, PFAd1_step, PFBd0_step, PFBd1_step))
+        prefetch_layout_a = constraint2.results[0:2]
+        prefetch_layout_b = constraint2.results[2:4]
+    else:
+        prefetch_layout_a = [
+            wg_d0 // prefetch_a_d0,
+            k_tile // prefetch_a_d1,
+        ]
+        prefetch_layout_b = [
+            k_tile // prefetch_b_d0,
+            wg_d1 // prefetch_b_d1,
+        ]
 
     # matmul matrix shapes
-    sg_tile_a = [sg_tile[0], k_tile]
-    sg_tile_b = [k_tile, sg_tile[1]]
+    sg_tile_a = [sg_d0, k_tile]
+    sg_tile_b = [k_tile, sg_d1]
+
+    load_a_d0 = as_const_or_as_knob(load_a_d0, "load_a_d0")
+    load_a_d1 = as_const_or_as_knob(load_a_d1, "load_a_d1")
+    load_b_d0 = as_const_or_as_knob(load_b_d0, "load_b_d0")
+    load_b_d1 = as_const_or_as_knob(load_b_d1, "load_b_d1")
+
+    load_tile_a = [load_a_d0, load_a_d1]
+    load_tile_b = [load_b_d0, load_b_d1]
 
     if stop_at_stage == "initial":
         raise PipelineInterrupt()
