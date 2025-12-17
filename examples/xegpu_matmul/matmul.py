@@ -387,7 +387,7 @@ if __name__ == "__main__":
                 stop_at_stage=args.dump_payload, parameters=params
             )
             print(schedule_module)
-        elif args.dump_kernel:
+        elif args.dump_payload:
             wload.lower_payload(
                 dump_payload=args.dump_payload,
                 dump_schedule=args.dump_schedule,
