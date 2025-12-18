@@ -1,4 +1,5 @@
 # RUN: %PYTHON %s
+# REQUIRES: torch
 
 import os
 from pathlib import Path

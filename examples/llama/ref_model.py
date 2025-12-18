@@ -153,13 +153,10 @@ class Attention(torch.nn.Module):
 
         # TODO: the original implementation doesn't work with export.
         # Local tensors instead of in-place buffer updates to please it.
-        cache_k = self.cache_k.clone()
-        cache_v = self.cache_v.clone()
-
-        cache_k_updated = cache_k.index_copy(
+        cache_k_updated = self.cache_k.index_copy(
             1, torch.arange(start_pos, start_pos + seqlen, device=xk.device), xk
         )
-        cache_v_updated = cache_v.index_copy(
+        cache_v_updated = self.cache_v.index_copy(
             1, torch.arange(start_pos, start_pos + seqlen, device=xv.device), xv
         )
 
