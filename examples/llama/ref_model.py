@@ -116,7 +116,7 @@ class Attention(torch.nn.Module):
             bias=False,
         )
 
-        self.cache_k = torch.zeros(
+        cache_k = torch.zeros(
             (
                 args.max_batch_size,
                 args.max_seq_len,
@@ -124,7 +124,7 @@ class Attention(torch.nn.Module):
                 self.head_dim,
             )
         )
-        self.cache_v = torch.zeros(
+        cache_v = torch.zeros(
             (
                 args.max_batch_size,
                 args.max_seq_len,
@@ -132,6 +132,8 @@ class Attention(torch.nn.Module):
                 self.head_dim,
             )
         )
+        self.register_buffer("cache_k", cache_k, persistent=False)
+        self.register_buffer("cache_v", cache_v, persistent=False)
 
     def forward(
         self,
@@ -149,14 +151,17 @@ class Attention(torch.nn.Module):
 
         xq, xk = apply_rotary_emb(xq, xk, freqs_cis=freqs_cis)
 
-        self.cache_k = self.cache_k.to(xq)
-        self.cache_v = self.cache_v.to(xq)
+        # TODO: the original implementation doesn't work with export.
+        # Local tensors instead of in-place buffer updates to please it.
+        cache_k_updated = self.cache_k.index_copy(
+            1, torch.arange(start_pos, start_pos + seqlen, device=xk.device), xk
+        )
+        cache_v_updated = self.cache_v.index_copy(
+            1, torch.arange(start_pos, start_pos + seqlen, device=xv.device), xv
+        )
 
-        self.cache_k[:bsz, start_pos : start_pos + seqlen] = xk
-        self.cache_v[:bsz, start_pos : start_pos + seqlen] = xv
-
-        keys = self.cache_k[:bsz, : start_pos + seqlen]
-        values = self.cache_v[:bsz, : start_pos + seqlen]
+        keys = cache_k_updated[:bsz, : start_pos + seqlen]
+        values = cache_v_updated[:bsz, : start_pos + seqlen]
 
         # repeat k/v heads if n_kv_heads < n_heads
         keys = repeat_kv(
@@ -246,17 +251,17 @@ class Transformer(nn.Module):
         self.norm = RMSNorm(params.dim, eps=params.norm_eps)
         self.output = nn.Linear(params.dim, params.vocab_size, bias=False)
 
-        self.freqs_cis = precompute_freqs_cis(
+        freqs_cis = precompute_freqs_cis(
             params.dim // params.n_heads,
             params.max_seq_len * 2,
             params.rope_theta,
         )
+        self.register_buffer("freqs_cis", freqs_cis, persistent=False)
 
     @torch.inference_mode()
     def forward(self, tokens: torch.Tensor, start_pos: int):
         _bsz, seqlen = tokens.shape
         h = self.tok_embeddings(tokens)
-        self.freqs_cis = self.freqs_cis.to(h.device)
         freqs_cis = self.freqs_cis[start_pos : start_pos + seqlen]
 
         mask = None
