@@ -271,22 +271,27 @@ def bundle_xepu_matmul_schedule(
         tile_a,
         nb_prefetch=nb_prefetch,
     )
-    xegpu.set_desc_layout(
-        desc_prefetch_a,
-        sg_layout=prefetch_layout_a,
-        sg_data=prefetch_tile_a,
-        inst_data=prefetch_inst_data,
-    )
+    layout_prefetch_a = {
+        "sg_layout": prefetch_layout_a,
+        "sg_data": prefetch_tile_a,
+        "inst_data": prefetch_inst_data,
+    }
+    pf_ops = transform.get_consumers_of_result(anytype, desc_prefetch_a, 0)
+    for pf in transform.split_handle((anytype,) * (nb_prefetch + 1), pf_ops):
+        xegpu.set_op_layout_attr(pf, **layout_prefetch_a)
+
     desc_prefetch_b = xegpu.insert_prefetch(
         tile_b,
         nb_prefetch=nb_prefetch,
     )
-    xegpu.set_desc_layout(
-        desc_prefetch_b,
-        sg_layout=prefetch_layout_b,
-        sg_data=prefetch_tile_b,
-        inst_data=prefetch_inst_data,
-    )
+    layout_prefetch_b = {
+        "sg_layout": prefetch_layout_b,
+        "sg_data": prefetch_tile_b,
+        "inst_data": prefetch_inst_data,
+    }
+    pf_ops = transform.get_consumers_of_result(anytype, desc_prefetch_b, 0)
+    for pf in transform.split_handle((anytype,) * (nb_prefetch + 1), pf_ops):
+        xegpu.set_op_layout_attr(pf, **layout_prefetch_b)
 
     # A tile load layout
     layout_load_a = {
@@ -295,10 +300,9 @@ def bundle_xepu_matmul_schedule(
         "inst_data": load_tile_a,
     }
     desc_op_a = xegpu.get_desc_op(tile_a)
-    desc_op_a = xegpu.set_desc_layout(
-        target=desc_op_a,
-        **layout_load_a,
-    )
+    # A tile load op anchor layout
+    load_op_a = transform.get_consumers_of_result(anytype, desc_op_a, 0)
+    xegpu.set_op_layout_attr(load_op_a, **layout_load_a)
     # A tile dpas layout
     layout_dpas_a = layout_load_a.copy()
     layout_dpas_a["inst_data"] = dpas_shape_a
@@ -311,10 +315,9 @@ def bundle_xepu_matmul_schedule(
         "inst_data": load_tile_b,
     }
     desc_op_b = xegpu.get_desc_op(tile_b)
-    desc_op_b = xegpu.set_desc_layout(
-        target=desc_op_b,
-        **layout_load_b,
-    )
+    # B tile load op anchor layout
+    load_op_b = transform.get_consumers_of_result(anytype, desc_op_b, 0)
+    xegpu.set_op_layout_attr(load_op_b, **layout_load_b)
     # B tile dpas layout
     layout_dpas_b = layout_load_b.copy()
     layout_dpas_b["inst_data"] = dpas_shape_b
@@ -327,17 +330,15 @@ def bundle_xepu_matmul_schedule(
         "inst_data": dpas_shape_c,
     }
     desc_op_c = xegpu.get_desc_op(tile_c)
-    desc_op_c = xegpu.set_desc_layout(desc_op_c, **output_layout)
-    # C tile dpas layout
-    xegpu.set_op_layout_attr(dpas_op, result=True, index=0, **output_layout)
+    # C tile load/store op anchor layout
+    desc_c_users = transform.get_consumers_of_result(anytype, desc_op_c, 0)
+    load_op_c, store_op_c = transform.split_handle((anytype, anytype), desc_c_users)
+    xegpu.set_op_layout_attr(load_op_c, **output_layout)
+    # C tile dpas anchor layout
+    xegpu.set_op_layout_attr(dpas_op, index=0, **layout_dpas_a)
+    xegpu.set_op_layout_attr(dpas_op, index=1, **layout_dpas_b)
+    xegpu.set_op_layout_attr(dpas_op, index=2, **output_layout)
 
-    if has_relu:
-        # for post ops we need to add C layout manually
-        max_op = match(gpu_func, ops={"arith.maximumf"})
-        xegpu.set_op_layout_attr(max_op, result=True, index=0, **output_layout)
-        # find zero constant buffer and annotate it
-        const_buffer = transform.get_producer_of_operand(anytype, max_op, 1)
-        xegpu.set_op_layout_attr(const_buffer, result=True, index=0, **output_layout)
     if has_bias:
         # for post ops we need to add C layout manually
         add_op = match(gpu_func, ops={"arith.addf"})
@@ -364,6 +365,7 @@ def bundle_xepu_matmul_schedule(
         mask = transform.get_producer_of_operand(anytype, bcast_load, 2)
         xegpu.set_op_layout_attr(mask, result=True, index=0, **output_layout_dim1)
         raise NotImplementedError("Bias layout propagation is not supported.")
+
     transform.apply_cse(gpu_func)
     canonicalize(gpu_func)
 
