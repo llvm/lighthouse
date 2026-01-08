@@ -12,6 +12,7 @@ dev = [
   "ruff==0.14.5", # Python linter and formatter
   "pre-commit", # Tool to manage and apply pre-commit hooks
   "pytest>=8.0.0",
+  "psutil",
 ]
 
 [project.optional-dependencies]
