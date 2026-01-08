@@ -8,6 +8,7 @@
 # there's an ingore list. Runs the conversion in parallel.
 
 import sys
+import psutil
 
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass
@@ -20,6 +21,10 @@ import lighthouse.ingress as lh_ingress
 project_root = Path(__file__).parent.parent.parent
 torch_kernels_dir = project_root / "third_party" / "KernelBench" / "KernelBench"
 mlir_kernels_dir = project_root / "cache" / "ingress" / "KernelBench"
+free_mem_gb = psutil.virtual_memory().available // (1024**3)
+print(f"Available memory: {free_mem_gb} GB")
+max_workers = min(free_mem_gb // 12, psutil.cpu_count())  # some workers need 12~16GB
+print(f"Using max_workers={max_workers} based on available memory")
 
 if not torch_kernels_dir.is_dir():
     print(
@@ -196,12 +201,12 @@ def process_task(task: KernelConversionTask):
         print(mlir_kernel, file=f)
 
 
-tasks = sorted(all_tasks(), key=lambda t: (t.level, t.id))
+sorted_tasks = sorted(all_tasks(), key=lambda t: (t.level, t.id))
 
 if len(sys.argv) == 1:
 
     def tasks_():
-        for task in tasks:
+        for task in sorted_tasks:
             if task.ignore_by_default:
                 print(
                     f"Skipping: {task.torch_path.parent}/{task.torch_path.name}",
@@ -217,9 +222,9 @@ else:
         lhs, rhs = arg.split(",")
         level_id, kernel_id = int(lhs), int(rhs)
         overall_idx = 100 * (level_id - 1) + (kernel_id - 1)
-        tasks_.append(tasks[overall_idx])
+        tasks_.append(sorted_tasks[overall_idx])
     tasks = tasks_
 
 print("Output directory:", mlir_kernels_dir)
-for _ in ProcessPoolExecutor().map(process_task, tasks):
+for _ in ProcessPoolExecutor(max_workers=max_workers).map(process_task, tasks):
     pass  # NB: obtain each result so that exceptions are propagated to the main process
