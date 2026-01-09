@@ -24,6 +24,7 @@ mlir_kernels_dir = project_root / "cache" / "ingress" / "KernelBench"
 free_mem_gb = psutil.virtual_memory().available // (1024**3)
 print(f"Available memory: {free_mem_gb} GB")
 max_workers = min(free_mem_gb // 12, psutil.cpu_count())  # some workers need 12~16GB
+max_workers = max(1, max_workers)
 print(f"Using max_workers={max_workers} based on available memory")
 
 if not torch_kernels_dir.is_dir():
