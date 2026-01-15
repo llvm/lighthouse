@@ -1,7 +1,7 @@
 from .jit import jit
-from .jit import JITModule
+from .jit import JITModel
 
 __all__ = [
-    "JITModule",
+    "JITModel",
     "jit",
 ]
