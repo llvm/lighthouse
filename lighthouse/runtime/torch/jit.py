@@ -68,6 +68,11 @@ class JITModel:
         if model_args is None:
             model_args = args
 
+        # Disable model's compilation hook.
+        # For importing, the model's original call implementation must be executed.
+        compiled_call_fn = self.model._compiled_call_impl
+        self.model._compiled_call_impl = None
+
         # TODO: Add caching.
         mlir_mod = import_from_model(
             self.model,
@@ -76,8 +81,11 @@ class JITModel:
             dialect=self.dialect,
             ir_context=self.ctx,
         )
-        mlir_mod = self.fn_compile(mlir_mod)
 
+        # Restore model's compilation hook.
+        self.model._compiled_call_impl = compiled_call_fn
+
+        mlir_mod = self.fn_compile(mlir_mod)
         eng = ExecutionEngine(mlir_mod, opt_level=3, shared_libs=self.shared_libs)
         eng.initialize()
         fn = eng.lookup("main")
@@ -97,7 +105,7 @@ def jit(
     ir_context: ir.Context | None = None,
     shared_libs: Sequence[str] = [],
     **kwargs,
-) -> JITModel | Callable:
+) -> nn.Module | Callable:
     """
     Decorator for JIT-compiling a PyTorch model using MLIR.
 
@@ -124,7 +132,7 @@ def jit(
         kwargs: The keyword arguments for the PyTorch model constructor.
 
     Returns:
-        object: A JITModel object or a partially bound decorator.
+        object: A PyTorch model or a partially bound decorator.
     """
 
     def class_decorator(
@@ -134,15 +142,16 @@ def jit(
         ir_context: ir.Context | None = None,
         shared_libs: Sequence[str] = [],
         **kwargs,
-    ) -> JITModel:
+    ) -> nn.Module:
         model = cls_model(*args, **kwargs)
-        return JITModel(
+        model._compiled_call_impl = JITModel(
             fn_compile,
             model,
             dialect=dialect,
             ir_context=ir_context,
             shared_libs=shared_libs,
         )
+        return model
 
     if model is None:
         # Return a partial decorator with bound compilation function.
@@ -154,10 +163,15 @@ def jit(
             shared_libs=shared_libs,
             **kwargs,
         )
+
+    # Disable model's default compilation logic.
+    # The model will be configured to invoke MLIR compilation by default.
+    model.compile = lambda *args, **kwargs: None
+
     if inspect.isclass(model):
         # Return a class decorator which accepts further arguments to
-        # first construct a PyTorch model object before creating
-        # a JITModel object.
+        # first construct a PyTorch model object before injecting
+        # a JITModel compilation hook.
         return functools.partial(
             class_decorator,
             model,
@@ -166,11 +180,13 @@ def jit(
             shared_libs=shared_libs,
             **kwargs,
         )
-    # Directly create a JITModel object from an instantiated PyTorch model.
-    return JITModel(
+
+    # Directly inject a JITModel compilation hook to the PyTorch model object.
+    model._compiled_call_impl = JITModel(
         fn_compile,
         model,
         dialect=dialect,
         ir_context=ir_context,
         shared_libs=shared_libs,
     )
+    return model
