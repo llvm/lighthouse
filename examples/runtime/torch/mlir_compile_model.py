@@ -10,7 +10,6 @@ from mlir.passmanager import PassManager
 
 import lighthouse.runtime as lh_runtime
 import lighthouse.utils as lh_utils
-from lighthouse.runtime.torch.jit import JITModel
 
 
 def lower_to_llvm(module: ir.Module) -> ir.Module:
@@ -71,7 +70,10 @@ def jit_decorator_model_class():
     # function and target entry MLIR dialect option bound to it.
     #
     # The PyTorch model first must be initialized through its constructor.
-    # Model object invocation will trigger JIT-compilation and execution
+    # A standard model object is returned. The decorator injects compilation
+    # hooks to redirect execution through MLIR backend.
+    #
+    # A model object invocation triggers JIT-compilation and execution
     # through MLIR instead of direct PyTorch path.
     @lh_runtime.torch.jit(lower_to_llvm, dialect=OutputType.LINALG_ON_TENSORS)
     class Model(nn.Module):
@@ -82,23 +84,32 @@ def jit_decorator_model_class():
         def forward(self, x):
             return self.net(x)
 
-    # Construct a model object.
-    # Instead of PyTorch model object, a JITModel object is returned.
+    # Construct a model object as usual.
+    # The PyTorch model is configured to invoke MLIR compilation by default.
     #
     # The positional and keyword arguments are passes to the model's
     # constructor.
     input_size = 16
     output_size = 8
-    jit_model: JITModel = Model(input_size, out_features=output_size)
+    jit_model: nn.Module = Model(input_size, out_features=output_size)
 
-    # The underlying PyTorch model can still be accessed.
-    torch_model = jit_model.model
+    # Calling the model's compile method is unnecessary. The JIT decorator
+    # configures the model trigger MLIR compilation by default.
+    # However, the compile method can be called safely.
+    jit_model.compile()
 
-    # Compute reference result through the original model.
+    # The original PyTorch implementation can still be invoked for verification.
+    torch_model = jit_model._call_impl
+
+    # Compute reference result through the original model implementation.
     # This call executes directly through PyTorch.
-    input = torch.randn(2, input_size)
+    batch_size = 2
+    input = torch.randn(batch_size, input_size)
     out_ref = torch_model(input)
 
+    # The model has been initialized correctly with the provided sizes.
+    # Thus, the result has the size of: [batch_size, output_size]
+    #
     # CHECK: Reference out shape: torch.Size([2, 8])
     print(f"Reference out shape: {out_ref.size()}")
 
@@ -114,12 +125,13 @@ def jit_decorator_model_class():
     #
     # The PyTorch model is converted to an MLIR module with static shapes.
     # To achieve that, a sample PyTorch input must be provided to allow
-    # for shape inference. The imported requires PyTorch-compatible inputs
+    # for shape inference. The importer requires PyTorch-compatible inputs
     # that match original model's invocation singnature.
     # However, the applied MLIR compilation function modifies the resulting
     # jitted function signature.
     # Thus, reference PyTorch inputs are provided through the extra
     # `model_args` argument.
+    # See 'lighthouse.runtime.torch.JITModel' for further details.
     out = torch.empty_like(out_ref)
     jit_model(input, out, model_args=(input,))
     is_match = torch.allclose(out_ref, out, rtol=0.01, atol=0.01)
@@ -167,7 +179,7 @@ def jit_func_model_object():
 
     # JIT-compile the created PyTorch model object using
     # MLIR function-style JIT API.
-    jit_model: JITModel = lh_runtime.torch.jit(lower_to_llvm, torch_model)
+    jit_model: nn.Module = lh_runtime.torch.jit(lower_to_llvm, torch_model)
 
     # Call directly with PyTorch tensors.
     out = torch.empty_like(out_ref)
