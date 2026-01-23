@@ -60,12 +60,13 @@ def emit_mlp_layer(
     c_type,
     bias_tensor=None,
     has_relu=False,
+    accumulate_c=True,
     convert_c_type=False,
 ) -> ir.Value:
     M, N = c_tensor.type.shape
     id_map = ir.AffineMap.get_identity(2)
     par_iter = linalg.IteratorType.parallel
-    if convert_c_type:
+    if convert_c_type and accumulate_c:
         empty = tensor.empty((M, N), c_type)
 
         @linalg.generic(
@@ -79,7 +80,13 @@ def emit_mlp_layer(
 
         input_c_tensor = f
     else:
-        input_c_tensor = c_tensor
+        if accumulate_c:
+            input_c_tensor = c_tensor
+        else:
+            zero = arith.constant(c_type, 0.0)
+            empty = tensor.empty((M, N), c_type)
+            zero_tensor = linalg.fill(zero, outs=[empty])
+            input_c_tensor = zero_tensor
     mmul = linalg.matmul(a_tensor, b_tensor, outs=[input_c_tensor])
     terminal = mmul
     res_type = c_type
@@ -119,6 +126,7 @@ def generate_matmul_payload(
     c_type_str: str,
     has_bias: bool,
     has_relu: bool,
+    accumulate_c: bool,
 ) -> ir.Module:
     """Generate payload function module."""
     get_ir_dtype = {
@@ -167,6 +175,7 @@ def generate_matmul_payload(
                 c_type,
                 bias_tensor,
                 has_relu,
+                accumulate_c=accumulate_c,
                 convert_c_type=False,
             )
             bufferization.materialize_in_destination(
@@ -200,6 +209,7 @@ def generate_mlp_payload(
     c_type_str: str,
     has_bias: bool,
     has_relu: bool,
+    accumulate_c: bool,
 ) -> ir.Module:
     """Generate payload function module."""
     get_ir_dtype = {
@@ -275,15 +285,17 @@ def generate_mlp_payload(
                     c_type,
                     bias_tensor,
                     has_relu,
+                    accumulate_c=accumulate_c,
                     convert_c_type=True,
                 )
-                if to_dealloc is not None:
-                    gpu.dealloc(None, [], to_dealloc)
-                    to_dealloc = None
                 if i != nlayers - 1:
                     bufferization.materialize_in_destination(
                         None, layer_output, c_memref, restrict=True, writable=True
                     )
+                if to_dealloc is not None:
+                    gpu.dealloc(None, [], to_dealloc)
+                    to_dealloc = None
+                if i != nlayers - 1:
                     # deallocate after next layer
                     to_dealloc = c_memref
 

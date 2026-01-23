@@ -53,6 +53,7 @@ class XeGPUMLP(Workload):
         c_type: str = "f32",
         has_bias: bool = False,
         has_relu: bool = False,
+        accumulate_c: bool = False,
     ):
         self.batch_size = batch_size
         self.input_size = input_size
@@ -76,6 +77,7 @@ class XeGPUMLP(Workload):
         self.c_dtype = type_str_to_numpy[c_type]
         self.has_bias = has_bias
         self.has_relu = has_relu
+        self.accumulate_c = accumulate_c
         if has_bias:
             raise NotImplementedError("Bias is not implemented yet")
         # cache allocated memrefs
@@ -262,6 +264,7 @@ class XeGPUMLP(Workload):
             c_type_str=self.c_type,
             has_bias=self.has_bias,
             has_relu=self.has_relu,
+            accumulate_c=self.accumulate_c,
         )
         return mod
 
@@ -271,6 +274,7 @@ class XeGPUMLP(Workload):
         return get_schedule_module_mlp(
             has_bias=self.has_bias,
             has_relu=self.has_relu,
+            accumulate_c=self.accumulate_c,
             stop_at_stage=stop_at_stage,
             nlayers=len(self.matmul_layers),
             params=parameters,
@@ -499,6 +503,11 @@ def parse_cli():
         help="Check the result of the matrix multiplication.",
     )
     parser.add_argument(
+        "--accumulate-c",
+        action="store_true",
+        help="Use matrix-multiply-accumulate layers instead of initializing the accumulator tile with zeros.",
+    )
+    parser.add_argument(
         "--dump-kernel",
         type=str,
         choices=[
@@ -540,6 +549,7 @@ if __name__ == "__main__":
             c_type=c_type,
             has_bias=False,
             has_relu=args.relu,
+            accumulate_c=args.accumulate_c,
         )
         matmuls = wload.matmul_layers
         print(f"MLP with {len(matmuls)} layers")

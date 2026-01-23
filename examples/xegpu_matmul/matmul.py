@@ -54,6 +54,7 @@ class XeGPUMatMul(Workload):
         c_type: str = "f32",
         has_bias: bool = False,
         has_relu: bool = False,
+        accumulate_c: bool = True,
     ):
         self.M = M
         self.N = N
@@ -73,6 +74,7 @@ class XeGPUMatMul(Workload):
         self.c_dtype = type_str_to_numpy[c_type]
         self.has_bias = has_bias
         self.has_relu = has_relu
+        self.accumulate_c = accumulate_c
         if has_bias:
             raise NotImplementedError("Bias is not implemented yet")
         # cache allocated memrefs
@@ -136,7 +138,9 @@ class XeGPUMatMul(Workload):
         A, B, C = self._initial_host_arrays
         # use float32 data type for efficiency
         f32 = np.float32
-        C_ref = A.astype(f32) @ B.astype(f32) + C.astype(f32)
+        C_ref = A.astype(f32) @ B.astype(f32)
+        if self.accumulate_c:
+            C_ref += C.astype(f32)
         if self.has_relu:
             C_ref = np.maximum(C_ref, 0)
         if self.has_bias:
@@ -196,6 +200,10 @@ class XeGPUMatMul(Workload):
         nbytes_ab = np.dtype(self.ab_dtype).itemsize
         nbytes_c = np.dtype(self.c_dtype).itemsize
         memory_reads = (M * K + K * N) * nbytes_ab  # read A and B
+        if self.accumulate_c:
+            memory_reads += M * N * nbytes_c  # read C for accumulation
+        if self.has_bias:
+            memory_reads += N * nbytes_c  # read bias
         memory_writes = M * N * nbytes_c  # write C
         return (flop_count, memory_reads, memory_writes)
 
@@ -209,6 +217,7 @@ class XeGPUMatMul(Workload):
             c_type_str=self.c_type,
             has_bias=self.has_bias,
             has_relu=self.has_relu,
+            accumulate_c=self.accumulate_c,
         )
         return mod
 
@@ -218,6 +227,7 @@ class XeGPUMatMul(Workload):
         return get_schedule_module(
             has_bias=self.has_bias,
             has_relu=self.has_relu,
+            accumulate_c=self.accumulate_c,
             stop_at_stage=stop_at_stage,
             params=parameters,
         )
@@ -310,6 +320,11 @@ def parse_cli():
         help="Add relu op after the matrix multiplication (and bias if any).",
     )
     parser.add_argument(
+        "--no-accumulate-c",
+        action="store_true",
+        help="Compute plain matrix-multiply C=A*B instead of matrix-multiply-accumulate C+=A*B.",
+    )
+    parser.add_argument(
         "--check-result",
         action="store_true",
         help="Check the result of the matrix multiplication.",
@@ -371,6 +386,7 @@ if __name__ == "__main__":
             c_type=c_type,
             has_bias=False,
             has_relu=args.relu,
+            accumulate_c=not args.no_accumulate_c,
         )
 
         if args.dump_kernel or args.dump_schedule:

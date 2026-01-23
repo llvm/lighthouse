@@ -38,6 +38,7 @@ nb_workitems = 16  # workitems in subgroup
 def get_schedule_module_mlp(
     has_bias: bool = False,
     has_relu: bool = False,
+    accumulate_c: bool = False,
     stop_at_stage: str = "",
     nlayers: int = 1,
     params: Optional[dict] = None,
@@ -66,6 +67,7 @@ def get_schedule_module_mlp(
                 payload_mod,
                 has_bias=has_bias,
                 has_relu=has_relu,
+                accumulate_c=accumulate_c,
                 stop_at_stage=stop_at_stage,
                 nlayers=nlayers,
                 params=params,
@@ -78,6 +80,7 @@ def xegpu_mlp_transform_schedule(
     mod: ir.Value,
     has_bias: bool = False,
     has_relu: bool = False,
+    accumulate_c: bool = False,
     has_convert_c: bool = True,
     stop_at_stage: str = "",
     nlayers: int = 1,
@@ -89,6 +92,7 @@ def xegpu_mlp_transform_schedule(
             mod,
             has_bias=has_bias,
             has_relu=has_relu,
+            accumulate_c=accumulate_c,
             has_convert_c=has_convert_c,
             stop_at_stage=stop_at_stage,
             nlayers=nlayers,
@@ -109,6 +113,7 @@ def bundle_xepu_mlp_schedule(
     mod: ir.Value,
     has_bias: bool = False,
     has_relu: bool = False,
+    accumulate_c: bool = False,
     has_convert_c: bool = True,
     stop_at_stage: str = "",
     nlayers: int = 1,
@@ -377,10 +382,24 @@ def bundle_xepu_mlp_schedule(
             "sg_data": sg_tile,
             "inst_data": dpas_shape_c,
         }
-        desc_op_c = xegpu.get_desc_op(tile_c)
-        desc_op_c = xegpu.set_desc_layout(desc_op_c, **output_layout)
         # C tile dpas layout
         xegpu.set_op_layout_attr(dpas_op, result=True, index=0, **output_layout)
+        if accumulate_c:
+            desc_op_c = xegpu.get_desc_op(tile_c)
+            desc_op_c = xegpu.set_desc_layout(desc_op_c, **output_layout)
+        else:
+            # match the const zero tile
+            acc_type = ir.F32Type.get()
+            vtype = ir.VectorType.get([wg_tile[0], wg_tile[1]], acc_type)
+            zero_tile = match(
+                gpu_func, ops={"arith.constant"}, filter_result_type=vtype
+            )
+            xegpu.set_op_layout_attr(zero_tile, result=True, index=0, **output_layout)
+            # annotate store op
+            store_op = match(gpu_func, ops={"xegpu.store_nd"})
+            tile_c = transform.get_operand(anyvalue, store_op, [1])
+            desc_op_c = xegpu.get_desc_op(tile_c)
+            desc_op_c = xegpu.set_desc_layout(desc_op_c, **output_layout)
 
         if has_relu:
             # for post ops we need to add C layout manually
@@ -418,8 +437,9 @@ def bundle_xepu_mlp_schedule(
             xegpu.set_op_layout_attr(mask, result=True, index=0, **output_layout_dim1)
             raise NotImplementedError("Bias layout propagation is not supported.")
         if has_convert_c:
-            ext_op = match(gpu_func, ops={"arith.extf"})
-            xegpu.set_op_layout_attr(ext_op, result=True, index=0, **output_layout)
+            if accumulate_c:
+                ext_op = match(gpu_func, ops={"arith.extf"})
+                xegpu.set_op_layout_attr(ext_op, result=True, index=0, **output_layout)
             trunc_op = match(gpu_func, ops={"arith.truncf"})
             xegpu.set_op_layout_attr(trunc_op, result=True, index=0, **output_layout)
 
@@ -441,6 +461,7 @@ def bundle_xepu_mlp_schedule(
 def get_schedule_module(
     has_bias: bool = False,
     has_relu: bool = False,
+    accumulate_c: bool = False,
     stop_at_stage: str = "",
     params: Optional[dict] = None,
 ) -> ir.Module:
@@ -468,6 +489,7 @@ def get_schedule_module(
                 payload_mod,
                 has_bias=has_bias,
                 has_relu=has_relu,
+                accumulate_c=accumulate_c,
                 stop_at_stage=stop_at_stage,
                 params=params,
             )
@@ -479,6 +501,7 @@ def xegpu_matmul_transform_schedule(
     mod: ir.Value,
     has_bias: bool = False,
     has_relu: bool = False,
+    accumulate_c: bool = False,
     stop_at_stage: str = "",
     params: Optional[dict] = None,
 ):
@@ -488,6 +511,7 @@ def xegpu_matmul_transform_schedule(
             mod,
             has_bias=has_bias,
             has_relu=has_relu,
+            accumulate_c=accumulate_c,
             stop_at_stage=stop_at_stage,
             params=params,
         )
@@ -506,6 +530,7 @@ def bundle_xepu_matmul_schedule(
     mod,
     has_bias: bool = False,
     has_relu: bool = False,
+    accumulate_c: bool = False,
     stop_at_stage: str = "",
     params: Optional[dict] = None,
 ) -> ir.Module:
@@ -741,15 +766,16 @@ def bundle_xepu_matmul_schedule(
         "sg_data": sg_tile,
         "inst_data": dpas_shape_c,
     }
-    desc_op_c = xegpu.get_desc_op(tile_c)
-    # C tile load/store op anchor layout
-    desc_c_users = transform.get_consumers_of_result(anytype, desc_op_c, 0)
-    load_op_c, store_op_c = transform.split_handle((anytype, anytype), desc_c_users)
-    xegpu.set_op_layout_attr(load_op_c, **output_layout)
     # C tile dpas anchor layout
     xegpu.set_op_layout_attr(dpas_op, index=0, **layout_dpas_a)
     xegpu.set_op_layout_attr(dpas_op, index=1, **layout_dpas_b)
     xegpu.set_op_layout_attr(dpas_op, index=2, **output_layout)
+    if accumulate_c:
+        desc_op_c = xegpu.get_desc_op(tile_c)
+        # C tile load/store op anchor layout
+        desc_c_users = transform.get_consumers_of_result(anytype, desc_op_c, 0)
+        load_op_c, store_op_c = transform.split_handle((anytype, anytype), desc_c_users)
+        xegpu.set_op_layout_attr(load_op_c, **output_layout)
 
     if has_bias:
         # annotate the 1d load of the broadcast op with a slice layout
