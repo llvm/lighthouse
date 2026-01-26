@@ -118,6 +118,7 @@ def jit(
 
     The jitted function signature depends on the provided MLIR compilation function
     `fn_compile` and may differ from the original PyTorch model call signature.
+    See 'JITModel' for further calling convention details.
 
     Args:
         fn_compile: Function to compile imported MLIR to LLVM IR dialect.

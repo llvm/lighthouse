@@ -94,7 +94,7 @@ def jit_decorator_model_class():
     jit_model: nn.Module = Model(input_size, out_features=output_size)
 
     # Calling the model's compile method is unnecessary. The JIT decorator
-    # configures the model trigger MLIR compilation by default.
+    # configures the model to trigger MLIR compilation by default.
     # However, the compile method can be called safely.
     jit_model.compile()
 
