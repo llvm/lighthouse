@@ -17,7 +17,8 @@ dev = [
 
 [project.optional-dependencies]
 ingress_torch_mlir = [
-    "torch-mlir==20260125.703"
+    "torch-mlir==20260125.703",
+    "ml_dtypes",
 ]
 # Additional "targets" which pull in optional dependencies -- use `uv sync --extra TARGET`
 ingress_torch_cpu = [

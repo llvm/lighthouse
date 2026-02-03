@@ -1,4 +1,5 @@
 import ctypes
+import ml_dtypes
 
 import torch
 from mlir import ir
@@ -14,7 +15,15 @@ def to_memref(input: torch.Tensor) -> ctypes.Structure:
     Args:
         input: PyTorch tensor.
     """
-    return get_ranked_memref_descriptor(input.numpy())
+    if input.dtype == torch.bfloat16:
+        # Numpy doesn't support bf16 natively which disables
+        # direct conversion from PyTorch.
+        # Solved through non-destructive type casting.
+        nparray = input.view(dtype=torch.uint16).numpy()
+        nparray = nparray.view(ml_dtypes.bfloat16)
+    else:
+        nparray = input.numpy()
+    return get_ranked_memref_descriptor(nparray)
 
 
 def to_packed_args(inputs: list[torch.Tensor]) -> ctypes.Array[ctypes.c_void_p]:
