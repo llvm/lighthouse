@@ -20,7 +20,8 @@ def get_engine(
     lib_dir = get_mlir_library_path()
     libs = []
     for so_file in shared_libs or []:
-        so_path = os.path.join(lib_dir, so_file)
+        # check if so_file is an absolute path
+        so_path = so_file if os.path.isabs(so_file) else os.path.join(lib_dir, so_file)
         if not os.path.isfile(so_path):
             raise ValueError(f"Could not find shared library {so_path}")
         libs.append(so_path)
