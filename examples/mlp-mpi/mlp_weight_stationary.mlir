@@ -84,11 +84,6 @@ module attributes {{mpi.dlti = #dlti.map<"MPI:Implementation" = "MPICH", "MPI:co
     return %ret_a : tensor<{M}x{K}xf32>
   }}
 
-  // func.func @gather(%t:tensor<5x3xi32>) -> tensor<5x12xi32> attributes {{llvm.emit_c_interface}} {{
-  //   %r = shard.all_gather %t on @grid0 grid_axes = [0] gather_axis = 1 : tensor<5x3xi32> -> tensor<5x12xi32>
-  //   return %r : tensor<5x12xi32>
-  // }}
-
   func.func @gather_act(%arg0: tensor<{M}x{K}xf32>) -> tensor<{M}x{K}xf32> attributes {{llvm.emit_c_interface}} {{
     %sharding = shard.sharding @grid0 split_axes = {split_act} : !shard.sharding
     %sharding_g = shard.sharding @grid0 split_axes = [[]] : !shard.sharding

@@ -1,4 +1,5 @@
-# RUN: %PYTHON %s | FileCheck %s
+# REQUIRES: mpi4py
+# RUN: mpirun -n 4 %PYTHON %s | FileCheck %s
 # CHECK: PASSED
 """
 A single MLP that can run on multiple MPI ranks,
@@ -30,6 +31,17 @@ from lighthouse.workload import Workload, execute
 from mpi4py import MPI
 
 
+if not MPI.Is_initialized():
+    MPI.Init()
+P = MPI.COMM_WORLD.Get_size()
+R = MPI.COMM_WORLD.Get_rank()
+
+
+def rprint(*args, **kwargs):
+    if R == 0:
+        print(*args, **kwargs)
+
+
 def parse_cla():
     parser = argparse.ArgumentParser(
         description="MLP on MPI using MLIR",
@@ -40,7 +52,7 @@ def parse_cla():
         "-s",
         type=int,
         nargs=3,
-        default=[4096, 4096, 4096],
+        default=[64, 128, 32],
         help="M,N,K matrix sizes (Activations=MxK, WeightsIn=KxN, WeightsOut=MxN, Result=MxK).",
     )
     parser.add_argument(
@@ -97,7 +109,7 @@ class DistMLP(Workload):
         self.verbose = args.verbose
 
     def _alloc_inout(self, execution_engine: ExecutionEngine) -> list[ctypes.Structure]:
-        print(" * Allocating input/output arrays...")
+        rprint(" * Allocating input/output arrays...")
         memrefs = [
             make_nd_memref_descriptor(2, as_ctype(self.dtype))() for _ in range(4)
         ]
@@ -106,7 +118,7 @@ class DistMLP(Workload):
         return memrefs
 
     def _init_inout(self, r: np.ndarray, a: np.ndarray, b: np.ndarray, c: np.ndarray):
-        print(" * Initializing input arrays...")
+        rprint(" * Initializing input arrays...")
         np.random.seed(self.R)
         # R = ranked_memref_to_numpy([r])
         A = ranked_memref_to_numpy([a])
@@ -128,7 +140,7 @@ class DistMLP(Workload):
             pass
 
     def _reference_solution(self, execution_engine: ExecutionEngine) -> np.ndarray:
-        print(" * Gathering input data...")
+        rprint(" * Gathering input data...")
         gathered = []
         for i, v in enumerate(["act", "win", "wout"]):
             memref = make_nd_memref_descriptor(2, as_ctype(self.dtype))()
@@ -139,7 +151,7 @@ class DistMLP(Workload):
             )
             gathered.append(ranked_memref_to_numpy([memref]))
 
-        print(" * Computing reference solution...")
+        rprint(" * Computing reference solution...")
 
         def sigmoid(z):
             return 1 / (1 + np.exp(-z))
@@ -153,15 +165,16 @@ class DistMLP(Workload):
         R = ranked_memref_to_numpy([self._input_arrays[0]])
         R_ref = self._reference_solution(execution_engine)
         if verbose > 1:
-            print("Reference solution:")
-            print(R_ref)
-            print("Computed solution:")
-            print(R)
+            rprint("Reference solution:")
+            rprint(R_ref)
+            rprint("Computed solution:")
+            rprint(R)
         success = np.allclose(R, R_ref)
+        success = MPI.COMM_WORLD.allreduce(success, op=MPI.LAND)
         if success:
-            print("PASSED")
+            rprint("PASSED")
         else:
-            print("FAILED Result mismatch!")
+            rprint("FAILED Result mismatch!")
         return success
 
     def shared_libs(self) -> list[str]:
@@ -182,7 +195,7 @@ class DistMLP(Workload):
 
     def payload_module(self) -> ir.Module:
         if self.griddims == 1:
-            print(f"Using 1D grid of size {self.P}")
+            rprint(f"Using 1D grid of size {self.P}")
             grid = self.P
         elif self.griddims == 2:
             # find two factors of P that are as close as possible
@@ -193,14 +206,14 @@ class DistMLP(Workload):
                 return (1, n)
 
             p1, p2 = find_factors(self.P)
-            print(f"Using 2D grid of size {p1}x{p2}")
+            rprint(f"Using 2D grid of size {p1}x{p2}")
             grid = f"{p1}x{p2}"
         else:
             raise ValueError(
                 f"Only 1D and 2D grids are supported (not {self.griddims}d).\n"
             )
 
-        fname = "mlp_weight_stationary.mlir"
+        fname = Path(__file__).parent / "mlp_weight_stationary.mlir"
         with open(fname, "r") as f:
             txt = f.read()
 
@@ -247,10 +260,10 @@ class DistMLP(Workload):
         txt = txt.format_map(format_values)
 
         if self.verbose > 1:
-            print("Payload MLIR:")
+            rprint("Payload MLIR:")
             count = 1
             for line in txt.splitlines():
-                print(str(count) + "\t" + line)
+                rprint(str(count) + "\t" + line)
                 count += 1
 
         return ir.Module.parse(txt)
@@ -340,13 +353,13 @@ if __name__ == "__main__":
     with ir.Context(), ir.Location.unknown():
         wload = DistMLP(args, P, R)
 
-        print(" Execute".center(60, "-"))
+        rprint(" Execute".center(60, "-"))
         execute(wload, verbose=args.verbose)
 
-        # print(" Execute 2 ".center(60, "-"))
+        # rprint(" Execute 2 ".center(60, "-"))
         # execute(wload, verbose=1)
 
-        # print(" Benchmark ".center(60, "-"))
+        # rprint(" Benchmark ".center(60, "-"))
         # times = benchmark(wload)
         # times *= 1e6  # convert to microseconds
         # compute statistics
@@ -354,8 +367,8 @@ if __name__ == "__main__":
         # min = np.min(times)
         # max = np.max(times)
         # std = np.std(times)
-        # print(f"Timings (us): mean={mean:.2f}+/-{std:.2f} min={min:.2f} max={max:.2f}")
+        # rprint(f"Timings (us): mean={mean:.2f}+/-{std:.2f} min={min:.2f} max={max:.2f}")
         # flop_count = wload.get_complexity()[0]
         # gflops = flop_count / (mean * 1e-6) / 1e9
-        # print(f"Throughput: {gflops:.2f} GFLOPS")
+        # rprint(f"Throughput: {gflops:.2f} GFLOPS")
     MPI.Finalize()
