@@ -1,34 +1,34 @@
 # RUN: %PYTHON %s | FileCheck %s
-# CHECK: func.func @payload
 # CHECK: PASSED
 """
-A single MLP that can run on multiple MPI ranks.
+A single MLP that can run on multiple MPI ranks,
+following partition strategies a) and b) from figure 2 of
+https://arxiv.org/pdf/2211.05102
 """
 
 import argparse
 import ctypes
 from pathlib import Path
 from contextlib import contextmanager
-from functools import cached_property
 from typing import Optional
 
 import numpy as np
 from mlir import ir
-from mlir.dialects import func, linalg, bufferization, transform
+from mlir.dialects import transform
 from mlir.dialects.transform.bufferization import OneShotBufferizeOp
 from mlir.dialects.bufferization import LayoutMapOption
 from mlir.execution_engine import ExecutionEngine
 from mlir.runtime.np_to_memref import (
     ranked_memref_to_numpy,
     make_nd_memref_descriptor,
-    get_ranked_memref_descriptor,
     as_ctype,
 )
-from lighthouse.utils.memref import to_packed_args, to_ctype as memref_to_ctype
-from lighthouse.utils.mlir import apply_registered_pass, canonicalize, match
-from lighthouse.workload import Workload, execute, benchmark
+from lighthouse.utils.memref import to_ctype as memref_to_ctype
+from lighthouse.utils.mlir import apply_registered_pass, match
+from lighthouse.workload import Workload, execute
 
 from mpi4py import MPI
+
 
 def parse_cla():
     parser = argparse.ArgumentParser(
@@ -72,17 +72,18 @@ def parse_cla():
     args = parser.parse_args()
     return args
 
+
 class DistMLP(Workload):
     """
     A single MLP that can run on multiple MPI ranks.
-    
+
     A[:] = sigmoid(A@B)@C
-    
+
     where A, B, C are (M,K), (K,N), (N,K) matrices respectively.
     """
-    
+
     payload_function_name = "payload"
-    
+
     def __init__(self, args, P: int, R: int):
         self.M = args.sizes[0]
         self.N = args.sizes[1]
@@ -97,28 +98,23 @@ class DistMLP(Workload):
 
     def _alloc_inout(self, execution_engine: ExecutionEngine) -> list[ctypes.Structure]:
         print(" * Allocating input/output arrays...")
-        memrefs = [make_nd_memref_descriptor(2, as_ctype(self.dtype))() for _ in range(4)]
-        for i, v in enumerate([ 'act', 'win', 'wout']):
-            execution_engine.invoke(f"alloc_{v}", memref_to_ctype(memrefs[i+1]))
+        memrefs = [
+            make_nd_memref_descriptor(2, as_ctype(self.dtype))() for _ in range(4)
+        ]
+        for i, v in enumerate(["act", "win", "wout"]):
+            execution_engine.invoke(f"alloc_{v}", memref_to_ctype(memrefs[i + 1]))
         return memrefs
-        
-    def _init_inout(self, r: np.ndarray, a : np.ndarray, b: np.ndarray, c: np.ndarray):
+
+    def _init_inout(self, r: np.ndarray, a: np.ndarray, b: np.ndarray, c: np.ndarray):
         print(" * Initializing input arrays...")
         np.random.seed(self.R)
         # R = ranked_memref_to_numpy([r])
         A = ranked_memref_to_numpy([a])
         B = ranked_memref_to_numpy([b])
         C = ranked_memref_to_numpy([c])
-        # R.fill(0)
-        # print(R.shape)
-        A.fill(2)  # A[:] = np.random.rand(*A.shape).astype(self.dtype)
-        B.fill(3)  # B[:] = np.random.rand(*B.shape).astype(self.dtype)
-        C.fill(4)  # C[:] = np.random.rand(*C.shape).astype(self.dtype)
-        if self.R == 0:
-            C[0,0] = 55
-        if self.R == self.P - 1:
-            C[-1, -1] = 66
-        print("\t- Input arrays initialized.")
+        A[:] = np.random.rand(*A.shape).astype(self.dtype)
+        B[:] = np.random.rand(*B.shape).astype(self.dtype)
+        C[:] = np.random.rand(*C.shape).astype(self.dtype)
 
     @contextmanager
     def allocate_inputs(self, execution_engine: ExecutionEngine):
@@ -131,47 +127,57 @@ class DistMLP(Workload):
             # cached numpy arrays are deallocated automatically
             pass
 
-    @cached_property
-    def _reference_solution(self) -> np.ndarray:
+    def _reference_solution(self, execution_engine: ExecutionEngine) -> np.ndarray:
+        print(" * Gathering input data...")
+        gathered = []
+        for i, v in enumerate(["act", "win", "wout"]):
+            memref = make_nd_memref_descriptor(2, as_ctype(self.dtype))()
+            execution_engine.invoke(
+                f"gather_{v}",
+                memref_to_ctype(memref),
+                memref_to_ctype(self._input_arrays[i + 1]),
+            )
+            gathered.append(ranked_memref_to_numpy([memref]))
+
         print(" * Computing reference solution...")
-        assert len(self._input_arrays) == 4
+
         def sigmoid(z):
-            return 1/(1 + np.exp(-z))
-        A = np.full((self.M, self.K), 2, dtype=self.dtype)
-        B = np.full((self.K, self.N), 3, dtype=self.dtype)
-        C = np.full((self.N, self.K), 4, dtype=self.dtype)
-        C[0,0] = 55
-        C[-1, -1] = 66
+            return 1 / (1 + np.exp(-z))
+
+        A, B, C = gathered
         return sigmoid(A @ B) @ C
 
     def check_correctness(
         self, execution_engine: ExecutionEngine, verbose: int = 0
     ) -> bool:
         R = ranked_memref_to_numpy([self._input_arrays[0]])
-        R_ref = self._reference_solution
+        R_ref = self._reference_solution(execution_engine)
         if verbose > 1:
             print("Reference solution:")
             print(R_ref)
             print("Computed solution:")
             print(R)
         success = np.allclose(R, R_ref)
-        if verbose:
-            if success:
-                print("PASSED")
-            else:
-                print("FAILED Result mismatch!")
+        if success:
+            print("PASSED")
+        else:
+            print("FAILED Result mismatch!")
         return success
 
     def shared_libs(self) -> list[str]:
         utils_path = Path(self.utils_dir)
-        return self.mpilibs + [str(utils_path / "libmlir_c_runner_utils.so"),
-                               str(utils_path / "libmlir_runner_utils.so")]
+        return self.mpilibs + [
+            str(utils_path / "libmlir_c_runner_utils.so"),
+            str(utils_path / "libmlir_runner_utils.so"),
+        ]
 
     def get_complexity(self) -> tuple[int, int, int]:
         nbytes = np.dtype(self.dtype).itemsize
-        flop_count = self.M * self.N * self.K * 2 + self.M * self.K * 4  # matmuls + sigmoid
+        flop_count = (
+            self.M * self.N * self.K * 2 + self.M * self.K * 4
+        )  # matmuls + sigmoid
         memory_reads = 5 * self.M * self.N * nbytes
-        memory_writes = (self.M * self.N + self.M * self.K) * nbytes 
+        memory_writes = (self.M * self.N + self.M * self.K) * nbytes
         return (flop_count, memory_reads, memory_writes)
 
     def payload_module(self) -> ir.Module:
@@ -185,16 +191,19 @@ class DistMLP(Workload):
                     if n % i == 0:
                         return (i, n // i)
                 return (1, n)
+
             p1, p2 = find_factors(self.P)
             print(f"Using 2D grid of size {p1}x{p2}")
             grid = f"{p1}x{p2}"
         else:
-            raise ValueError(f"Only 1D and 2D grids are supported (not {self.griddims}d).\n")
-            
+            raise ValueError(
+                f"Only 1D and 2D grids are supported (not {self.griddims}d).\n"
+            )
+
         fname = "mlp_weight_stationary.mlir"
         with open(fname, "r") as f:
             txt = f.read()
-        
+
         format_values = {
             "func_name": self.payload_function_name,
             "M": self.M,
@@ -206,42 +215,45 @@ class DistMLP(Workload):
             "split_r": "[[]]",
         }
         if self.griddims == 1:
-            format_values.update({
-                "split_act": "[[], [0]]",
-                "split_win": "[[], [0]]",
-                "split_wout": "[[0], []]",
-                "split_mm0_a": "[[]]",
-                "split_mm0_b": "[[], [0]]",
-                "split_mm0_c": "[[], [0]]",
-                "split_sigmoid": "[[], [0]]",
-                "split_mm1_a": "[[], [0]]",
-                "split_mm1_b": "[[0], []]",
-                "split_mm1_c": "[[]]",
-            })
+            format_values.update(
+                {
+                    "split_act": "[[], [0]]",
+                    "split_win": "[[], [0]]",
+                    "split_wout": "[[0], []]",
+                    "split_mm0_a": "[[]]",
+                    "split_mm0_b": "[[], [0]]",
+                    "split_mm0_c": "[[], [0]]",
+                    "split_sigmoid": "[[], [0]]",
+                    "split_mm1_a": "[[], [0]]",
+                    "split_mm1_b": "[[0], []]",
+                    "split_mm1_c": "[[]]",
+                }
+            )
         elif self.griddims == 2:
-            format_values.update({
-                "split_act": "[[], [0, 1]]",
-                "split_win": "[[0], [1]]",
-                "split_wout": "[[1], [0]]",
-                "split_mm0_a": "[[], [0]]",
-                "split_mm0_b": "[[0], [1]]",
-                "split_mm0_c": "[[], [1]]",
-                "split_sigmoid": "[[], [1, 0]]",
-                "split_mm1_a": "[[], [1]]",
-                "split_mm1_b": "[[1], [0]]",
-                "split_mm1_c": "[[], [0]]",
-        })
+            format_values.update(
+                {
+                    "split_act": "[[], [0, 1]]",
+                    "split_win": "[[0], [1]]",
+                    "split_wout": "[[1], [0]]",
+                    "split_mm0_a": "[[], [0]]",
+                    "split_mm0_b": "[[0], [1]]",
+                    "split_mm0_c": "[[], [1]]",
+                    "split_sigmoid": "[[], [1, 0]]",
+                    "split_mm1_a": "[[], [1]]",
+                    "split_mm1_b": "[[1], [0]]",
+                    "split_mm1_c": "[[], [0]]",
+                }
+            )
         txt = txt.format_map(format_values)
 
         if self.verbose > 1:
             print("Payload MLIR:")
             count = 1
             for line in txt.splitlines():
-                print(line)
-                # print(str(count) + '\t' + line)
+                print(str(count) + "\t" + line)
                 count += 1
 
-        return  ir.Module.parse(txt)
+        return ir.Module.parse(txt)
 
     def schedule_module(
         self, stop_at_stage: Optional[str] = None, parameters: Optional[dict] = None
@@ -265,8 +277,9 @@ class DistMLP(Workload):
                 func = apply_registered_pass(func, "convert-shard-to-mpi")
                 func = apply_registered_pass(func, "canonicalize")
                 func = apply_registered_pass(func, "tosa-to-linalg")
-                mod = transform.get_parent_op(anytype, func, op_name="builtin.module", deduplicate=True)
-                # transform.PrintOp(target=mod)
+                mod = transform.get_parent_op(
+                    anytype, func, op_name="builtin.module", deduplicate=True
+                )
                 mod = apply_registered_pass(mod, "tosa-to-tensor")
                 mod = apply_registered_pass(mod, "linalg-generalize-named-ops")
                 mod = apply_registered_pass(mod, "canonicalize")
@@ -281,13 +294,15 @@ class DistMLP(Workload):
                     allow_return_allocs_from_loops=True,
                     bufferize_function_boundaries=True,
                     function_boundary_type_conversion=identity_layout,
+                    # test_analysis_only=True,
+                    # print_conflicts=True,
                 ).result
+
                 mod = apply_registered_pass(mod, "expand-realloc")
                 mod = apply_registered_pass(mod, "canonicalize")
                 mod = apply_registered_pass(mod, "buffer-deallocation-simplification")
                 mod = apply_registered_pass(mod, "bufferization-lower-deallocations")
                 mod = apply_registered_pass(mod, "cse")
-                # transform.PrintOp(target=mod)
                 mod = apply_registered_pass(mod, "canonicalize")
                 mod = apply_registered_pass(mod, "convert-bufferization-to-memref")
                 mod = apply_registered_pass(mod, "convert-linalg-to-parallel-loops")
@@ -299,16 +314,16 @@ class DistMLP(Workload):
                 mod = apply_registered_pass(mod, "lower-affine")
                 mod = apply_registered_pass(mod, "convert-scf-to-cf")
                 mod = apply_registered_pass(mod, "symbol-dce")
-                # transform.PrintOp(target=mod)
                 mod = apply_registered_pass(mod, "finalize-memref-to-llvm")
                 mod = apply_registered_pass(mod, "convert-math-to-llvm")
                 mod = apply_registered_pass(mod, "convert-math-to-libm")
                 mod = apply_registered_pass(mod, "convert-func-to-llvm")
+                mod = apply_registered_pass(mod, "canonicalize")
                 mod = apply_registered_pass(mod, "convert-to-llvm")
                 mod = apply_registered_pass(mod, "reconcile-unrealized-casts")
                 mod = apply_registered_pass(mod, "cse")
-                mod = apply_registered_pass(mod, "canonicalize")
-                # transform.PrintOp(target=mod)
+                if self.verbose > 1:
+                    transform.PrintOp(target=mod)
                 transform.YieldOp()
 
         return schedule_module
@@ -316,19 +331,16 @@ class DistMLP(Workload):
 
 if __name__ == "__main__":
     args = parse_cla()
-    
+
     if not MPI.Is_initialized():
-        MPI.Init() 
+        MPI.Init()
     P = MPI.COMM_WORLD.Get_size()
     R = MPI.COMM_WORLD.Get_rank()
 
     with ir.Context(), ir.Location.unknown():
         wload = DistMLP(args, P, R)
 
-        # print(" Dump kernel ".center(60, "-"))
-        # wload.lower_payload(dump_payload=None, dump_schedule=False)
-
-        print(" Execute 1 ".center(60, "-"))
+        print(" Execute".center(60, "-"))
         execute(wload, verbose=args.verbose)
 
         # print(" Execute 2 ".center(60, "-"))

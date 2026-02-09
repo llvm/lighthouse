@@ -76,26 +76,38 @@ module attributes {{mpi.dlti = #dlti.map<"MPI:Implementation" = "MPICH", "MPI:co
     %ret_wout = shard.shard %sharded_wout to %sharding_wout annotate_for_users : tensor<{N}x{K}xf32>
     return %ret_wout : tensor<{N}x{K}xf32>
   }}
-}}
+  func.func @alloc_r() -> (tensor<{M}x{K}xf32>) attributes {{llvm.emit_c_interface}} {{
+    %a = tensor.empty() : tensor<{M}x{K}xf32>
+    %sharding_r = shard.sharding @grid0 split_axes = {split_r} : !shard.sharding
+    %sharded_r = shard.shard %a to %sharding_r : tensor<{M}x{K}xf32>
+    %ret_a = shard.shard %sharded_r to %sharding_r annotate_for_users : tensor<{M}x{K}xf32>
+    return %ret_a : tensor<{M}x{K}xf32>
+  }}
 
-//   func.func @gather_a(%arg0: tensor<{M}x{K}xf32>) -> tensor<{M}x{K}xf32> attributes {{llvm.emit_c_interface}} {{
-//     %sharding = shard.sharding @grid0 split_axes = {split_act} : !shard.sharding
-//     %sharding_g = shard.sharding @grid0 split_axes = [[]] : !shard.sharding
-//     %sharded = shard.shard %arg0 to %sharding : tensor<{M}x{K}xf32>
-//     %sharded_g = shard.shard %sharded to %sharding_g annotate_for_users : tensor<{M}x{K}xf32>
-//     return %sharded_g : tensor<{M}x{K}xf32>
-//   }}
-//   func.func @gather_b(%arg0: tensor<{K}x{N}xf32>) -> tensor<{K}x{N}xf32> attributes {{llvm.emit_c_interface}} {{
-//     %sharding = shard.sharding @grid0 split_axes = {split_win} : !shard.sharding
-//     %sharding_g = shard.sharding @grid0 split_axes = [[]] : !shard.sharding
-//     %sharded = shard.shard %arg0 to %sharding : tensor<{K}x{N}xf32>
-//     %sharded_g = shard.shard %sharded to %sharding_g annotate_for_users : tensor<{K}x{N}xf32>
-//     return %sharded_g : tensor<{K}x{N}xf32>
-//   }}
-//   func.func @gather_c(%arg0: tensor<{N}x{K}xf32>) -> tensor<{N}x{K}xf32> attributes {{llvm.emit_c_interface}} {{
-//     %sharding = shard.sharding @grid0 split_axes = {split_wout} : !shard.sharding
-//     %sharding_g = shard.sharding @grid0 split_axes = [[]] : !shard.sharding
-//     %sharded = shard.shard %arg0 to %sharding : tensor<{N}x{K}xf32>
-//     %sharded_g = shard.shard %sharded to %sharding_g annotate_for_users : tensor<{N}x{K}xf32>
-//     return %sharded_g : tensor<{N}x{K}xf32>
-//   }}
+  // func.func @gather(%t:tensor<5x3xi32>) -> tensor<5x12xi32> attributes {{llvm.emit_c_interface}} {{
+  //   %r = shard.all_gather %t on @grid0 grid_axes = [0] gather_axis = 1 : tensor<5x3xi32> -> tensor<5x12xi32>
+  //   return %r : tensor<5x12xi32>
+  // }}
+
+  func.func @gather_act(%arg0: tensor<{M}x{K}xf32>) -> tensor<{M}x{K}xf32> attributes {{llvm.emit_c_interface}} {{
+    %sharding = shard.sharding @grid0 split_axes = {split_act} : !shard.sharding
+    %sharding_g = shard.sharding @grid0 split_axes = [[]] : !shard.sharding
+    %sharded = shard.shard %arg0 to %sharding : tensor<{M}x{K}xf32>
+    %sharded_g = shard.shard %sharded to %sharding_g annotate_for_users : tensor<{M}x{K}xf32>
+    return %sharded_g : tensor<{M}x{K}xf32>
+  }}
+  func.func @gather_win(%arg0: tensor<{K}x{N}xf32>) -> tensor<{K}x{N}xf32> attributes {{llvm.emit_c_interface}} {{
+    %sharding = shard.sharding @grid0 split_axes = {split_win} : !shard.sharding
+    %sharding_g = shard.sharding @grid0 split_axes = [[]] : !shard.sharding
+    %sharded = shard.shard %arg0 to %sharding : tensor<{K}x{N}xf32>
+    %sharded_g = shard.shard %sharded to %sharding_g annotate_for_users : tensor<{K}x{N}xf32>
+    return %sharded_g : tensor<{K}x{N}xf32>
+  }}
+  func.func @gather_wout(%arg0: tensor<{N}x{K}xf32>) -> tensor<{N}x{K}xf32> attributes {{llvm.emit_c_interface}} {{
+    %sharding = shard.sharding @grid0 split_axes = {split_wout} : !shard.sharding
+    %sharding_g = shard.sharding @grid0 split_axes = [[]] : !shard.sharding
+    %sharded = shard.shard %arg0 to %sharding : tensor<{N}x{K}xf32>
+    %sharded_g = shard.shard %sharded to %sharding_g annotate_for_users : tensor<{N}x{K}xf32>
+    return %sharded_g : tensor<{N}x{K}xf32>
+  }}
+}}
