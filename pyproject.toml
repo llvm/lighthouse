@@ -42,7 +42,7 @@ ingress_torch_xpu = [
 ]
 runtime_mpi = [
     "mpi4py",
-    "impi-rt"
+    "mpich"
 ]
 
 [tool.uv]

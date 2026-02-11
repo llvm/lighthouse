@@ -1,5 +1,5 @@
 # REQUIRES: mpi4py
-# RUN: mpirun -n 4 %PYTHON %s --mpilib=%VIRTUAL_ENV/lib/libmpi.so -gd 1 | FileCheck %s
+# RUN: mpirun -n 4 %PYTHON %s --mpilib=%VIRTUAL_ENV/lib/libmpi.so.12 -gd 1 | FileCheck %s
 # CHECK: PASSED
 """
 A single MLP that can run on multiple MPI ranks,
