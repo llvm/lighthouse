@@ -3,12 +3,11 @@
 
 import torch
 import torch.nn as nn
-from torch_mlir.fx import OutputType
 
 from mlir import ir
 from mlir.passmanager import PassManager
 
-from lighthouse.ingress.torch import cpu_backend
+from lighthouse.ingress.torch import cpu_backend, TargetDialect
 
 
 def lower_to_llvm(module: ir.Module) -> ir.Module:
@@ -17,8 +16,8 @@ def lower_to_llvm(module: ir.Module) -> ir.Module:
 
     A PyTorch model is expected to be imported as Linalg ops using
     tensor abstraction.
-    This compilation function applies simple rewrites (notably bufferization
-    and scalar lowering of the compute) in preparation for further jitting.
+    This compilation function applies simple rewrites (notably, bufferization
+    and scalar lowering of the compute ops) in preparation for further jitting.
 
     Args:
         module: MLIR module coming from PyTorch importer.
@@ -65,7 +64,7 @@ def jit_compile_model_decorator():
     # function, and finally jits the model into an executable function.
     @torch.compile(
         dynamic=False,
-        backend=cpu_backend(lower_to_llvm, dialect=OutputType.LINALG_ON_TENSORS),
+        backend=cpu_backend(lower_to_llvm, dialect=TargetDialect.LINALG_ON_TENSORS),
     )
     class Model(nn.Module):
         def __init__(self):

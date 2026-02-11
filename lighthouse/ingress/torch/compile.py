@@ -2,6 +2,7 @@ from collections.abc import Callable
 from collections.abc import Sequence
 import contextlib
 from dataclasses import dataclass
+from enum import StrEnum
 
 from lighthouse import utils as lh_utils
 from lighthouse.ingress.torch import import_from_model
@@ -10,7 +11,19 @@ from mlir.dialects import bufferization
 from mlir.dialects import func
 from mlir.execution_engine import ExecutionEngine
 import torch
-from torch_mlir.fx import OutputType
+
+
+class TargetDialect(StrEnum):
+    """Target MLIR dialect for importing PyTorch models."""
+
+    # `Linalg` dialect ops using tensor semantics.
+    LINALG_ON_TENSORS = "linalg-on-tensors"
+
+    # `TOSA` dialect ops.
+    TOSA = "tosa"
+
+    # `StableHLO` dialect ops.
+    STABLEHLO = "stablehlo"
 
 
 @dataclass
@@ -107,21 +120,14 @@ class MLIRBackend:
         self,
         device: torch.device,
         fn_compile: Callable[[ir.Module], ir.Module],
-        dialect: OutputType | str = OutputType.LINALG_ON_TENSORS,
+        dialect: TargetDialect = TargetDialect.LINALG_ON_TENSORS,
         ir_context: ir.Context | None = None,
         shared_libs: Sequence[str] = [],
         entry_func: str = "main",
     ):
-        if dialect not in [
-            OutputType.LINALG_ON_TENSORS,
-            OutputType.TOSA,
-            OutputType.STABLEHLO,
-        ]:
-            raise ValueError(f"Unsupported backend dialect: {dialect}")
-
         self.device = device
         self.fn_compile = fn_compile
-        self.dialect = OutputType.get(dialect)
+        self.dialect = dialect
         self.ctx = ir_context if ir_context is not None else ir.Context()
         self.shared_libs = list(shared_libs)
         self.entry_func = entry_func
@@ -310,7 +316,7 @@ class MLIRBackend:
 
 def cpu_backend(
     fn_compile: Callable[[ir.Module], ir.Module],
-    dialect: OutputType | str = OutputType.LINALG_ON_TENSORS,
+    dialect: TargetDialect = TargetDialect.LINALG_ON_TENSORS,
     ir_context: ir.Context | None = None,
     shared_libs: Sequence[str] = [],
     entry_func: str = "main",
