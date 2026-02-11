@@ -2,7 +2,7 @@ from collections.abc import Callable
 from collections.abc import Sequence
 import contextlib
 from dataclasses import dataclass
-from enum import StrEnum
+from enum import Enum
 
 from lighthouse import utils as lh_utils
 from lighthouse.ingress.torch import import_from_model
@@ -13,7 +13,7 @@ from mlir.execution_engine import ExecutionEngine
 import torch
 
 
-class TargetDialect(StrEnum):
+class TargetDialect(Enum):
     """Target MLIR dialect for importing PyTorch models."""
 
     # `Linalg` dialect ops using tensor semantics.
@@ -196,7 +196,7 @@ class MLIRBackend:
             mlir_mod = import_from_model(
                 model,
                 sample_args=example_inputs,
-                dialect=self.dialect,
+                dialect=self.dialect.value,
                 ir_context=self.ctx,
             )
         return mlir_mod
