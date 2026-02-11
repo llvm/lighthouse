@@ -324,8 +324,6 @@ def parse_cli():
             "bufferized",
             "xegpu-initial",
             "xegpu-wg",
-            "xegpu-sg",
-            "xegpu-inst",
             "final",
         ],
         help="Dump kernel IR at different stages of lowering.",
