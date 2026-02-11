@@ -33,3 +33,9 @@ jobs:
         run: |
           export FILECHECK=FileCheck-18 # Ubuntu's llvm-dev appends a version number.
           uv run lit examples --verbose  # Makes sure to substitute FileCheck for $FILECHECK
+
+      - name: Run lit-enabled examples which use mpi as tests
+        run: |
+          export FILECHECK=FileCheck-18 # Ubuntu's llvm-dev appends a version number.
+          uv sync --extra runtime_mpi
+          uv run lit examples/mlp-mpi --verbose  # Makes sure to substitute FileCheck for $FILECHECK

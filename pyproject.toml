@@ -3,7 +3,8 @@ name = "lighthouse"
 dynamic = ["version"]
 requires-python = ">=3.10,<3.13"  # Bounds are due to torch-mlir's packaging
 dependencies = [
-    "mlir-python-bindings==20260112+dcf8ae802"
+    "mlir-python-bindings==20260211+f932646bf"
+
 ]
 
 [dependency-groups]
@@ -17,7 +18,7 @@ dev = [
 
 [project.optional-dependencies]
 ingress_torch_mlir = [
-    "torch-mlir==20260125.703",
+    "torch-mlir==20260209.718",
     "ml_dtypes",
 ]
 # Additional "targets" which pull in optional dependencies -- use `uv sync --extra TARGET`
@@ -38,6 +39,10 @@ ingress_torch_xpu = [
     "torch==2.9.1+xpu",  # Intel-enabled version of torch
     "pytorch_triton_xpu",  # Transitive dependency listed explicitly so that we can state which package repository it is supposed to come from
     "lighthouse[ingress_torch_mlir]"
+]
+runtime_mpi = [
+    "mpi4py",
+    "mpich"
 ]
 
 [tool.uv]
