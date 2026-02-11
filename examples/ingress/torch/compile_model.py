@@ -15,9 +15,10 @@ def lower_to_llvm(module: ir.Module) -> ir.Module:
     """
     Lower MLIR ops within the module to MLIR LLVM IR dialect.
 
-    A PyTorch models are expected to be imported as Linalg ops using tensors.
-    This compilation function preprocesses function signature and applies
-    simple lowering to prepare for further jitting.
+    A PyTorch model is expected to be imported as Linalg ops using
+    tensor abstraction.
+    This compilation function applies simple rewrites (notably bufferization
+    and scalar lowering of the compute) in preparation for further jitting.
 
     Args:
         module: MLIR module coming from PyTorch importer.
@@ -56,7 +57,7 @@ def lower_to_llvm(module: ir.Module) -> ir.Module:
     return module
 
 
-def compile_model_decorator():
+def jit_compile_model_decorator():
     # The MLIR backend is provided as a callback to the PyTorch compile function.
     #
     # When the model is invoked, a traced graph is given into the custom backend
@@ -78,14 +79,26 @@ def compile_model_decorator():
     b = torch.randn(16, 4)
     out_ref = torch.matmul(a, b)
 
+    # Create a model instance as usual.
+    model = Model()
+
     # Call jitted function directly with PyTorch tensors.
     #
-    # The PyTorch model is specialized into an MLIR module with static shapes.
+    # At the time of invocation, the PyTorch model is traced and always specialized
+    # into a graph with static shapes, based on the inputs, as the dynamic shape tracing
+    # is disabled (dynamic=False).
+    #
+    # Then the MLIR backend is triggered and the provided PyTorch graph is converted
+    # into an MLIR module. The imported IR is then jitted into an executable function.
+    #
+    # Note that due to this JIT process, the first call for any given set of inputs
+    # incurs compilation overhead cost. Already jitted functions are cached and managed
+    # by torch.compile infrastructure which can speed up subsequent calls.
+    #
     # Inputs are implicitly converted to packed C-type argument before invoking
     # jitted MLIR function.
     # The backend also manages model's outputs and returns standard PyTorch tensors
     # as per torch.compile contract.
-    model = Model()
     out = model(a, b)
     is_match = torch.allclose(out_ref, out, rtol=0.001, atol=0.001)
 
@@ -105,7 +118,7 @@ def compile_model_decorator():
     print(f"Input 2 - result match: {is_match}")
 
 
-def compile_model_function():
+def jit_compile_model_function():
     class Model(nn.Module):
         def __init__(self, in_feat, out_feat):
             super().__init__()
@@ -124,9 +137,11 @@ def compile_model_function():
     # Reference output - invokes PyTorch implementation.
     out_ref = model(x)
 
-    # Compile the model using custom backend.
-    # Next invocation will go through MLIR.
+    # Reconfigure the model to be compiled using torch.compile.
     model.compile(dynamic=False, backend=cpu_backend(lower_to_llvm))
+
+    # JIT the model using the custom backend.
+    # Next invocation goes through MLIR.
     out = model(x)
     is_match = torch.allclose(out_ref, out, rtol=0.01, atol=0.01)
 
@@ -136,6 +151,6 @@ def compile_model_function():
 
 if __name__ == "__main__":
     # Validate decorator-style API on PyTorch model class.
-    compile_model_decorator()
+    jit_compile_model_decorator()
     # Validate function-style API on PyTorch model object.
-    compile_model_function()
+    jit_compile_model_function()
