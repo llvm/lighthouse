@@ -340,32 +340,14 @@ def bundle_xepu_matmul_schedule(
     xegpu.set_op_layout_attr(dpas_op, index=2, **output_layout)
 
     if has_bias:
-        # for post ops we need to add C layout manually
+        # annotate the 1d load of the broadcast op with a slice layout
         add_op = match(gpu_func, ops={"arith.addf"})
-        xegpu.set_op_layout_attr(add_op, result=True, index=0, **output_layout)
-
-        # annotate broadcast op operands
         bcast_op = transform.get_producer_of_operand(anytype, add_op, 0)
-        xegpu.set_op_layout_attr(bcast_op, result=True, index=0, **output_layout)
         bcast_load = transform.get_producer_of_operand(anytype, bcast_op, 0)
         xegpu.set_op_layout_attr(
             bcast_load, result=True, index=0, **output_layout, slice_dims=[0]
         )
-        output_layout_dim1 = {
-            "sg_layout": [sg_layout[1]],
-            "sg_data": [sg_tile[1]],
-            "inst_data": [dpas_shape_c[1]],
-        }
-        offset = transform.get_producer_of_operand(anytype, bcast_load, 1)
-        xegpu.set_op_layout_attr(offset, result=True, index=0, **output_layout_dim1)
-        aux1 = transform.get_producer_of_operand(anytype, offset, 0)
-        xegpu.set_op_layout_attr(aux1, result=True, index=0, **output_layout_dim1)
-        aux2 = transform.get_producer_of_operand(anytype, offset, 1)
-        xegpu.set_op_layout_attr(aux2, result=True, index=0, **output_layout_dim1)
-        mask = transform.get_producer_of_operand(anytype, bcast_load, 2)
-        xegpu.set_op_layout_attr(mask, result=True, index=0, **output_layout_dim1)
         raise NotImplementedError("Bias layout propagation is not supported.")
-
     transform.apply_cse(gpu_func)
     canonicalize(gpu_func)
 
