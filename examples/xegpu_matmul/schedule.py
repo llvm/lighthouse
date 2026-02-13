@@ -381,12 +381,7 @@ def bundle_xepu_matmul_schedule(
 
 def bundle_xegpu_to_binary(mod, stop_at_stage: str = "") -> ir.Module:
     """Schedule for lowering xegpu wg level to binary."""
-    # This schedule corresponds to upstream MLIR XeVM lowering pipeline
-    # and is payload independent.
-
-    # This pipeline causes performance regression with the existing
-    # xegpu transform ops.
-    # FIXME Use anchor layouts in transform ops.
+    # upstream xegpu/xevm pipeline is payload independent.
     mod = apply_registered_pass(
         mod, "gpu-lower-to-xevm-pipeline", options={"xegpu-op-level": "workgroup"}
     )
