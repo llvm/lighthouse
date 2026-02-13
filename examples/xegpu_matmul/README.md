@@ -20,7 +20,7 @@ Set `LLVM_INSTALL_DIR` and use the below script to checkout and compile LLVM loc
 
 ```bash
 export LLVM_INSTALL_DIR=<...>
-export LLVM_VERSION=83765f435d1c
+export LLVM_VERSION=48566b21a485
 
 git clone https://github.com/llvm/llvm-project.git
 cd llvm-project
@@ -34,7 +34,6 @@ cmake ../llvm -G Ninja \
   -DLLVM_BUILD_EXAMPLES=OFF \
   -DLLVM_TARGETS_TO_BUILD="host" \
   -DLLVM_ENABLE_ASSERTIONS=ON \
-  -DLLVM_ENABLE_RTTI=ON \
   -DLLVM_EXPERIMENTAL_TARGETS_TO_BUILD="SPIRV" \
   -DLLVM_INSTALL_GTEST=ON \
   -DMLIR_ENABLE_LEVELZERO_RUNNER=1 \
