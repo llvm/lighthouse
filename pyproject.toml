@@ -39,6 +39,9 @@ ingress_torch_xpu = [
     "pytorch_triton_xpu",  # Transitive dependency listed explicitly so that we can state which package repository it is supposed to come from
     "lighthouse[ingress_torch_mlir]"
 ]
+tune_smt_z3 = [
+    "z3-solver"
+]
 
 [tool.uv]
 # Declare that the following "targets" are mutually exclusive of one another
