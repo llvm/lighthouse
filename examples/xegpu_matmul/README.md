@@ -20,7 +20,7 @@ Set `LLVM_INSTALL_DIR` and use the below script to checkout and compile LLVM loc
 
 ```bash
 export LLVM_INSTALL_DIR=<...>
-export LLVM_VERSION=48566b21a485
+export LLVM_VERSION=45bee6efe9d6
 
 git clone https://github.com/llvm/llvm-project.git
 cd llvm-project
