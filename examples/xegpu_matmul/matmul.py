@@ -24,7 +24,7 @@ from lighthouse.workload import Workload, benchmark
 from lighthouse.utils.memref import get_packed_arg, to_ctype as memref_to_ctype
 
 # Import from sibling files:
-from schedule import get_schedule_module
+from schedule import get_schedule_module_mlp
 from payload import generate_matmul_payload
 
 
@@ -224,12 +224,14 @@ class XeGPUMatMul(Workload):
     def schedule_module(
         self, stop_at_stage: Optional[str] = None, parameters: Optional[dict] = None
     ) -> ir.Module:
-        return get_schedule_module(
+        return get_schedule_module_mlp(
             has_bias=self.has_bias,
             has_relu=self.has_relu,
+            has_convert_c=False,
             accumulate_c=self.accumulate_c,
             stop_at_stage=stop_at_stage,
-            params=parameters,
+            nlayers=1,
+            params={"layer_0": parameters},
         )
 
     def shared_libs(self) -> list[str]:
