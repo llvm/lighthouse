@@ -1,10 +1,10 @@
 # REQUIRES: mpi4py
-# RUN: mpirun -n 4 %PYTHON %s --mpilib=%VIRTUAL_ENV/lib/libmpi.so.12 -gd 1 | FileCheck %s
+# RUN: mpirun -n 4 %PYTHON %s --mpilib=%VIRTUAL_ENV/lib/libmpi.so.12 --grid-dims 1 | FileCheck %s
 # CHECK: PASSED
 """
 A single MLP that can run on multiple MPI ranks,
-following partition strategies a) and b) from figure 2 of
-https://arxiv.org/pdf/2211.05102
+following a 1d/2d weight-stationary partition strategy
+(see a and b from figure 2 of https://arxiv.org/pdf/2211.05102)
 """
 
 import argparse
@@ -33,12 +33,12 @@ from mpi4py import MPI
 
 if not MPI.Is_initialized():
     MPI.Init()
-P = MPI.COMM_WORLD.Get_size()
-R = MPI.COMM_WORLD.Get_rank()
+WORLD_SIZE = MPI.COMM_WORLD.Get_size()
+WORLD_RANK = MPI.COMM_WORLD.Get_rank()
 
 
 def rprint(*args, **kwargs):
-    if R == 0:
+    if WORLD_RANK == 0:
         print(*args, **kwargs)
 
 
@@ -53,13 +53,13 @@ def parse_cla():
         type=int,
         nargs=3,
         default=[64, 128, 32],
-        help="M,N,K matrix sizes (Activations=MxK, WeightsIn=KxN, WeightsOut=MxN, Result=MxK).",
+        help="M,N,K matrix sizes (Activations=MxK, WeightsIn=KxN, WeightsOut=NxK, Result=MxK).",
     )
     parser.add_argument(
-        "-grid-dims",
-        "-gd",
+        "--grid-dims",
         type=int,
         default=1,
+        choices=[1, 2],
         help="Number of dimensions in device grid.",
     )
     parser.add_argument(
@@ -100,8 +100,8 @@ class DistMLP(Workload):
         self.M = args.sizes[0]
         self.N = args.sizes[1]
         self.K = args.sizes[2]
-        self.P = P  # number of MPI ranks
-        self.R = R  # rank of this MPI process
+        self.comm_size = WORLD_SIZE  # number of MPI ranks
+        self.comm_rank = WORLD_RANK  # rank of this MPI process
         self.dtype = np.float32
         self.griddims = args.grid_dims
         self.mpilibs = [args.mpilib]
@@ -113,14 +113,15 @@ class DistMLP(Workload):
         memrefs = [
             make_nd_memref_descriptor(2, as_ctype(self.dtype))() for _ in range(4)
         ]
+        # allocation functions use the same sharding annotations as the payload,
+        # so that each rank allocates only the part of the data it owns.
         for i, v in enumerate(["act", "win", "wout"]):
             execution_engine.invoke(f"alloc_{v}", memref_to_ctype(memrefs[i + 1]))
         return memrefs
 
     def _init_inout(self, r: np.ndarray, a: np.ndarray, b: np.ndarray, c: np.ndarray):
         rprint(" * Initializing input arrays...")
-        np.random.seed(self.R)
-        # R = ranked_memref_to_numpy([r])
+        np.random.seed(self.comm_rank)  # different seed for each rank
         A = ranked_memref_to_numpy([a])
         B = ranked_memref_to_numpy([b])
         C = ranked_memref_to_numpy([c])
@@ -180,23 +181,27 @@ class DistMLP(Workload):
     def shared_libs(self) -> list[str]:
         utils_path = Path(self.utils_dir)
         return self.mpilibs + [
-            str(utils_path / "libmlir_c_runner_utils.so"),
-            str(utils_path / "libmlir_runner_utils.so"),
+            str(utils_path / "libmlir_c_runner_utils.so")
+            if utils_path
+            else "libmlir_c_runner_utils.so",
+            str(utils_path / "libmlir_runner_utils.so")
+            if utils_path
+            else "libmlir_runner_utils.so",
         ]
 
     def get_complexity(self) -> tuple[int, int, int]:
         nbytes = np.dtype(self.dtype).itemsize
         flop_count = (
-            self.M * self.N * self.K * 2 + self.M * self.K * 4
-        )  # matmuls + sigmoid
+            4 * self.M * self.N * self.K + 4 * self.M * self.N
+        )  # 2 matmuls (4MNK) + sigmoid (≈4MN)
         memory_reads = 5 * self.M * self.N * nbytes
         memory_writes = (self.M * self.N + self.M * self.K) * nbytes
         return (flop_count, memory_reads, memory_writes)
 
     def payload_module(self) -> ir.Module:
         if self.griddims == 1:
-            rprint(f"Using 1D grid of size {self.P}")
-            grid = self.P
+            rprint(f"Using 1D grid of size {self.comm_size}")
+            grid = self.comm_size
         elif self.griddims == 2:
             # find two factors of P that are as close as possible
             def find_factors(n):
@@ -222,8 +227,8 @@ class DistMLP(Workload):
             "M": self.M,
             "N": self.N,
             "K": self.K,
-            "P": self.P,
-            "R": self.R,
+            "P": self.comm_size,
+            "R": self.comm_rank,
             "grid": grid,
             "split_r": "[[]]",
         }
@@ -307,10 +312,7 @@ class DistMLP(Workload):
                     allow_return_allocs_from_loops=True,
                     bufferize_function_boundaries=True,
                     function_boundary_type_conversion=identity_layout,
-                    # test_analysis_only=True,
-                    # print_conflicts=True,
-                ).result
-
+                )
                 mod = apply_registered_pass(mod, "expand-realloc")
                 mod = apply_registered_pass(mod, "canonicalize")
                 mod = apply_registered_pass(mod, "buffer-deallocation-simplification")
@@ -356,19 +358,4 @@ if __name__ == "__main__":
         rprint(" Execute".center(60, "-"))
         execute(wload, verbose=args.verbose)
 
-        # rprint(" Execute 2 ".center(60, "-"))
-        # execute(wload, verbose=1)
-
-        # rprint(" Benchmark ".center(60, "-"))
-        # times = benchmark(wload)
-        # times *= 1e6  # convert to microseconds
-        # compute statistics
-        # mean = np.mean(times)
-        # min = np.min(times)
-        # max = np.max(times)
-        # std = np.std(times)
-        # rprint(f"Timings (us): mean={mean:.2f}+/-{std:.2f} min={min:.2f} max={max:.2f}")
-        # flop_count = wload.get_complexity()[0]
-        # gflops = flop_count / (mean * 1e-6) / 1e9
-        # rprint(f"Throughput: {gflops:.2f} GFLOPS")
     MPI.Finalize()
