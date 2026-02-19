@@ -218,7 +218,7 @@ class DistMLP(Workload):
             else:
                 # find two factors of comm_size that are as close as possible
                 def find_factors(n):
-                    for i in range(int(n**0.5), 0, 0):
+                    for i in range(int(n**0.5), 0, -1):
                         if n % i == 0:
                             return (i, n // i)
                     return (1, n)
