@@ -1,5 +1,5 @@
 # REQUIRES: mpi4py
-# RUN: mpirun -n 4 %PYTHON %s --mpilib=%VIRTUAL_ENV/lib/libmpi.so.12 --grid-dims 1 | FileCheck %s
+# RUN: mpirun -n 4 %PYTHON %s --mpilib=%VIRTUAL_ENV/lib/libmpi.so.12 | FileCheck %s
 # CHECK: PASSED
 """
 A single MLP that can run on multiple MPI ranks,
@@ -56,11 +56,11 @@ def parse_cla():
         help="M,N,K matrix sizes (Activations=MxK, WeightsIn=KxN, WeightsOut=NxK, Result=MxK).",
     )
     parser.add_argument(
-        "--grid-dims",
+        "--grid",
         type=int,
-        default=1,
-        choices=[1, 2],
-        help="Number of dimensions in device grid.",
+        default=[WORLD_SIZE],
+        nargs="+",
+        help="The shape of the device grid (1 or 2 dimensions). The product of the grid dimensions must match the number of MPI ranks. Use '0' if 2d grid dimensions should be inferred automatically.",
     )
     parser.add_argument(
         "--verbose",
@@ -82,6 +82,15 @@ def parse_cla():
         help="Directory containing the MLIR C runner utils shared libraries.",
     )
     args = parser.parse_args()
+    assert len(args.grid) in (1, 2), "Only 1D and 2D grids are supported."
+    assert all(x == 0 for x in args.grid) or np.prod(args.grid) == WORLD_SIZE, (
+        "Grid size must be only '0's or match the number of MPI ranks."
+    )
+    if len(args.grid) == 1 and args.grid[0] == 0:
+        args.grid = [WORLD_SIZE]
+    assert len(args.grid) == 2 or args.grid[0] == WORLD_SIZE, (
+        "1D grid size must match the number of MPI ranks."
+    )
     return args
 
 
@@ -103,7 +112,7 @@ class DistMLP(Workload):
         self.comm_size = WORLD_SIZE  # number of MPI ranks
         self.comm_rank = WORLD_RANK  # rank of this MPI process
         self.dtype = np.float32
-        self.griddims = args.grid_dims
+        self.grid = args.grid
         self.mpilibs = [args.mpilib]
         self.utils_dir = args.utils_dir
         self.verbose = args.verbose
@@ -199,24 +208,24 @@ class DistMLP(Workload):
         return (flop_count, memory_reads, memory_writes)
 
     def payload_module(self) -> ir.Module:
-        if self.griddims == 1:
+        if len(self.grid) == 1:
             rprint(f"Using 1D grid of size {self.comm_size}")
             grid = self.comm_size
-        elif self.griddims == 2:
-            # find two factors of P that are as close as possible
-            def find_factors(n):
-                for i in range(int(n**0.5), 0, -1):
-                    if n % i == 0:
-                        return (i, n // i)
-                return (1, n)
+        else:
+            assert len(self.grid) == 2
+            if all(x != 0 for x in self.grid):
+                p1, p2 = self.grid
+            else:
+                # find two factors of comm_size that are as close as possible
+                def find_factors(n):
+                    for i in range(int(n**0.5), 0, 0):
+                        if n % i == 0:
+                            return (i, n // i)
+                    return (1, n)
 
-            p1, p2 = find_factors(self.P)
+                p1, p2 = find_factors(self.comm_size)
             rprint(f"Using 2D grid of size {p1}x{p2}")
             grid = f"{p1}x{p2}"
-        else:
-            raise ValueError(
-                f"Only 1D and 2D grids are supported (not {self.griddims}d).\n"
-            )
 
         fname = Path(__file__).parent / "mlp_weight_stationary.mlir"
         with open(fname, "r") as f:
@@ -232,7 +241,7 @@ class DistMLP(Workload):
             "grid": grid,
             "split_r": "[[]]",
         }
-        if self.griddims == 1:
+        if len(self.grid) == 1:
             format_values.update(
                 {
                     "split_act": "[[], [0]]",
@@ -247,7 +256,7 @@ class DistMLP(Workload):
                     "split_mm1_c": "[[]]",
                 }
             )
-        elif self.griddims == 2:
+        else:
             format_values.update(
                 {
                     "split_act": "[[], [0, 1]]",
