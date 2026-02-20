@@ -75,12 +75,6 @@ def parse_cla():
         default="libmpi.so",
         help="MPI shared library to load.",
     )
-    parser.add_argument(
-        "--utils_dir",
-        type=str,
-        default="",
-        help="Directory containing the MLIR C runner utils shared libraries.",
-    )
     args = parser.parse_args()
     assert len(args.grid) in (1, 2), "Only 1D and 2D grids are supported."
     assert all(x == 0 for x in args.grid) or np.prod(args.grid) == WORLD_SIZE, (
@@ -114,7 +108,6 @@ class DistMLP(Workload):
         self.dtype = np.float32
         self.grid = args.grid
         self.mpilibs = [args.mpilib]
-        self.utils_dir = args.utils_dir
         self.verbose = args.verbose
 
     def _alloc_inout(self, execution_engine: ExecutionEngine) -> list[ctypes.Structure]:
@@ -188,15 +181,7 @@ class DistMLP(Workload):
         return success
 
     def shared_libs(self) -> list[str]:
-        utils_path = Path(self.utils_dir)
-        return self.mpilibs + [
-            str(utils_path / "libmlir_c_runner_utils.so")
-            if utils_path
-            else "libmlir_c_runner_utils.so",
-            str(utils_path / "libmlir_runner_utils.so")
-            if utils_path
-            else "libmlir_runner_utils.so",
-        ]
+        return self.mpilibs + ["libmlir_c_runner_utils.so", "libmlir_runner_utils.so"]
 
     def get_complexity(self) -> tuple[int, int, int]:
         nbytes = np.dtype(self.dtype).itemsize
