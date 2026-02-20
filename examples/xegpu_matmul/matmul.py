@@ -342,20 +342,20 @@ if __name__ == "__main__":
     args = parse_cli()
 
     params = {
-        "auto_wg_d0": args.wg_tile[0],
-        "auto_wg_d1": args.wg_tile[1],
-        "auto_sg_d0": args.sg_tile[0],
-        "auto_sg_d1": args.sg_tile[1],
-        "auto_k": args.k_tile,
-        "auto_load_a_d0": args.load_tile_a[0],
-        "auto_load_a_d1": args.load_tile_a[1],
-        "auto_load_b_d0": args.load_tile_b[0],
-        "auto_load_b_d1": args.load_tile_b[1],
-        "auto_prefetch_a_d0": args.prefetch_tile_a[0],
-        "auto_prefetch_a_d1": args.prefetch_tile_a[1],
-        "auto_prefetch_b_d0": args.prefetch_tile_b[0],
-        "auto_prefetch_b_d1": args.prefetch_tile_b[1],
-        "auto_nb_prefetch": args.nb_prefetch,
+        "wg_m": args.wg_tile[0],
+        "wg_n": args.wg_tile[1],
+        "sg_m": args.sg_tile[0],
+        "sg_n": args.sg_tile[1],
+        "k": args.k_tile,
+        "load_a_m": args.load_tile_a[0],
+        "load_a_k": args.load_tile_a[1],
+        "load_b_k": args.load_tile_b[0],
+        "load_b_n": args.load_tile_b[1],
+        "pf_a_m": args.prefetch_tile_a[0],
+        "pf_a_k": args.prefetch_tile_a[1],
+        "pf_b_k": args.prefetch_tile_b[0],
+        "pf_b_n": args.prefetch_tile_b[1],
+        "pf_nb": args.nb_prefetch,
     }
 
     M, N, K = args.sizes

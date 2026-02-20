@@ -101,16 +101,15 @@ def bundle_xepu_matmul_schedule(
         raise ValueError("Schedule parameters must be provided.")
 
     # tunable parameters
-    wg_tile = [params["auto_wg_d0"], params["auto_wg_d1"]]
-    sg_tile = [params["auto_sg_d0"], params["auto_sg_d1"]]
-    k_tile = params["auto_k"]
+    wg_tile = [params["wg_m"], params["wg_n"]]
+    sg_tile = [params["sg_m"], params["sg_n"]]
+    k_tile = params["k"]
 
-    load_tile_a = [params["auto_load_a_d0"], params["auto_load_a_d1"]]
-    load_tile_b = [params["auto_load_b_d0"], params["auto_load_b_d1"]]
-
-    prefetch_tile_a = [params["auto_prefetch_a_d0"], params["auto_prefetch_a_d1"]]
-    prefetch_tile_b = [params["auto_prefetch_b_d0"], params["auto_prefetch_b_d1"]]
-    nb_prefetch = params["auto_nb_prefetch"]
+    load_tile_a = [params["load_a_m"], params["load_a_k"]]
+    load_tile_b = [params["load_b_k"], params["load_b_n"]]
+    prefetch_tile_a = [params["pf_a_m"], params["pf_a_k"]]
+    prefetch_tile_b = [params["pf_b_k"], params["pf_b_n"]]
+    nb_prefetch = params["pf_nb"]
 
     # derived parameters
     sg_layout = [wg_tile[0] // sg_tile[0], wg_tile[1] // sg_tile[1]]
