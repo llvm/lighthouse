@@ -84,6 +84,11 @@ module attributes {{mpi.dlti = #dlti.map<"MPI:Implementation" = "MPICH", "MPI:co
     return %ret_a : tensor<{M}x{K}xf32>
   }}
 
+  func.func @dealloc_2d(%arg0: memref<?x?xf32>) attributes {{llvm.emit_c_interface}} {{
+    memref.dealloc %arg0 : memref<?x?xf32>
+    return
+  }}
+
   func.func @gather_act(%arg0: tensor<{M}x{K}xf32>) -> tensor<{M}x{K}xf32> attributes {{llvm.emit_c_interface}} {{
     %sharding = shard.sharding @grid0 split_axes = {split_act} : !shard.sharding
     %sharding_g = shard.sharding @grid0 split_axes = [[]] : !shard.sharding

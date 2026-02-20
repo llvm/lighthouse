@@ -24,7 +24,7 @@ from mlir.runtime.np_to_memref import (
     make_nd_memref_descriptor,
     as_ctype,
 )
-from lighthouse.utils.memref import to_ctype as memref_to_ctype
+from lighthouse.utils.memref import to_ctype as memref_to_ctype, mlir_numpy_arrays
 from lighthouse.utils.mlir import apply_registered_pass, match
 from lighthouse.workload import Workload, execute
 
@@ -133,14 +133,14 @@ class DistMLP(Workload):
 
     @contextmanager
     def allocate_inputs(self, execution_engine: ExecutionEngine):
-        try:
-            memrefs = self._alloc_inout(execution_engine)
-            self._init_inout(*memrefs)
-            self._input_arrays = memrefs
-            yield memrefs
-        finally:
-            # cached numpy arrays are deallocated automatically
-            pass
+        self.input_memrefs = self._alloc_inout(execution_engine)
+        self._init_inout(*self.input_memrefs)
+        # Dealloc all memrefs on exit; skip numpy conversion since memrefs[0]
+        # (the result buffer) is not yet populated at this point.
+        with mlir_numpy_arrays(
+            self.input_memrefs, execution_engine, "dealloc_2d", convert=False
+        ):
+            yield self.input_memrefs
 
     def _reference_solution(self, execution_engine: ExecutionEngine) -> np.ndarray:
         rprint(" * Gathering input data...")
@@ -150,22 +150,24 @@ class DistMLP(Workload):
             execution_engine.invoke(
                 f"gather_{v}",
                 memref_to_ctype(memref),
-                memref_to_ctype(self._input_arrays[i + 1]),
+                memref_to_ctype(self.input_memrefs[i + 1]),
             )
-            gathered.append(ranked_memref_to_numpy([memref]))
+            gathered.append(memref)
 
         rprint(" * Computing reference solution...")
 
         def sigmoid(z):
             return 1 / (1 + np.exp(-z))
 
-        A, B, C = gathered
-        return sigmoid(A @ B) @ C
+        with mlir_numpy_arrays(gathered, execution_engine, "dealloc_2d") as arrays:
+            A, B, C = arrays
+            result = sigmoid(A @ B) @ C
+        return result
 
     def check_correctness(
         self, execution_engine: ExecutionEngine, verbose: int = 0
     ) -> bool:
-        R = ranked_memref_to_numpy([self._input_arrays[0]])
+        R = ranked_memref_to_numpy([self.input_memrefs[0]])
         R_ref = self._reference_solution(execution_engine)
         if verbose > 1:
             rprint("Reference solution:")
