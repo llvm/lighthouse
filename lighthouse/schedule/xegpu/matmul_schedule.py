@@ -35,7 +35,7 @@ prefetch_inst_data = [8, 16]
 nb_workitems = 16  # workitems in subgroup
 
 
-def get_schedule_module_mlp(
+def get_schedule_module(
     has_bias: bool = False,
     has_relu: bool = False,
     has_convert_c: bool = True,

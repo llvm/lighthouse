@@ -2,7 +2,7 @@
 # CHECK: module attributes {gpu.container_module} {
 
 """
-XeGPU matrix multiplication benchmark.
+XeGPU MLP benchmark.
 """
 
 import argparse
@@ -14,7 +14,6 @@ from functools import cached_property
 import numpy as np
 from mlir import ir
 from mlir.runtime.np_to_memref import (
-    get_ranked_memref_descriptor,
     make_nd_memref_descriptor,
     as_ctype,
 )
@@ -22,15 +21,9 @@ from mlir.execution_engine import ExecutionEngine
 
 from lighthouse.workload import Workload, benchmark
 from lighthouse.utils.memref import get_packed_arg, to_ctype as memref_to_ctype
-
-# Import from sibling files:
-from schedule import get_schedule_module_mlp
-from payload import generate_mlp_payload
-
-
-def numpy_to_ctype(arr: np.ndarray) -> ctypes._Pointer:
-    """Convert numpy array to memref and ctypes **void pointer."""
-    return memref_to_ctype(get_ranked_memref_descriptor(arr))
+from lighthouse.utils.numpy import numpy_to_ctype
+from lighthouse.schedule.xegpu.matmul_schedule import get_schedule_module
+from lighthouse.ingress.gpu import generate_mlp_payload
 
 
 class XeGPUMLP(Workload):
@@ -284,7 +277,7 @@ class XeGPUMLP(Workload):
     def schedule_module(
         self, stop_at_stage: Optional[str] = None, parameters: Optional[dict] = None
     ) -> ir.Module:
-        return get_schedule_module_mlp(
+        return get_schedule_module(
             has_bias=self.has_bias,
             has_relu=self.has_relu,
             accumulate_c=self.accumulate_c,
