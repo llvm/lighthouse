@@ -26,7 +26,10 @@ from mlir.runtime.np_to_memref import (
     make_nd_memref_descriptor,
     as_ctype,
 )
-from lighthouse.utils.memref import to_ctype as memref_to_ctype, mlir_numpy_arrays
+from lighthouse.utils.memref import (
+    to_ctype as memref_to_ctype,
+    deallocate_memrefs_on_exit,
+)
 from lighthouse.utils.mlir import apply_registered_pass, match
 from lighthouse.workload import Workload, execute
 
@@ -137,10 +140,9 @@ class DistMLP(Workload):
     def allocate_inputs(self, execution_engine: ExecutionEngine):
         self.input_memrefs = self._alloc_inout(execution_engine)
         self._init_inout(*self.input_memrefs)
-        # Dealloc all memrefs on exit; skip numpy conversion since memrefs[0]
-        # (the result buffer) is not yet populated at this point.
-        with mlir_numpy_arrays(
-            self.input_memrefs, execution_engine, "dealloc_2d", convert=False
+        # Dealloc all memrefs on exit
+        with deallocate_memrefs_on_exit(
+            self.input_memrefs, execution_engine, "dealloc_2d"
         ):
             yield self.input_memrefs
 
@@ -161,8 +163,8 @@ class DistMLP(Workload):
         def sigmoid(z):
             return 1 / (1 + np.exp(-z))
 
-        with mlir_numpy_arrays(gathered, execution_engine, "dealloc_2d") as arrays:
-            A, B, C = arrays
+        with deallocate_memrefs_on_exit(gathered, execution_engine, "dealloc_2d"):
+            A, B, C = [ranked_memref_to_numpy([m]) for m in gathered]
             result = sigmoid(A @ B) @ C
         return result
 
@@ -191,7 +193,7 @@ class DistMLP(Workload):
         nbytes = np.dtype(self.dtype).itemsize
         flop_count = (
             4 * self.M * self.N * self.K + 4 * self.M * self.N
-        )  # 2 matmuls (4MNK) + sigmoid (≈4MN)
+        )  # 2 matmuls (4MNK) + sigmoid (~4MN)
         memory_reads = 5 * self.M * self.N * nbytes
         memory_writes = (self.M * self.N + self.M * self.K) * nbytes
         return (flop_count, memory_reads, memory_writes)

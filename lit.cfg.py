@@ -21,7 +21,7 @@ config.substitutions.append(("%PYTHON", python))
 if filecheck_path := os.environ.get("FILECHECK"):
     config.substitutions.append(("FileCheck", filecheck_path))
 
-for pkg in ["torch", "mpi4py", "mpich", "openmpi", "impi-rt"]:
+for pkg in ["torch", "mpi4py", "mpich", "impi-rt"]:
     if importlib.util.find_spec(pkg):
         config.available_features.add(pkg)
 
