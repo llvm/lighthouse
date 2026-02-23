@@ -54,6 +54,7 @@ class XeGPUMLP(Workload):
         has_bias: bool = False,
         has_relu: bool = False,
         accumulate_c: bool = False,
+        identity_weights: bool = False,
     ):
         self.batch_size = batch_size
         self.input_size = input_size
@@ -64,6 +65,7 @@ class XeGPUMLP(Workload):
         layer_sizes = [self.input_size] + self.hidden_layer_sizes + [self.output_size]
         self.weight_shapes = list(zip(layer_sizes[:-1], layer_sizes[1:]))
         self.matmul_layers = [(self.batch_size, o, i) for i, o in self.weight_shapes]
+        self.identity_weights = identity_weights
 
         assert ab_type == "f16", "Only f16 type is supported for A and B"
         assert c_type == "f32", "Only f32 type is supported for C"
@@ -125,17 +127,28 @@ class XeGPUMLP(Workload):
 
         # use integer values to avoid f16/f32 floating point discrepancies
         def gen_random(shape, dtype):
-            # generate random {-1, 1} values
-            a = np.round(np.random.random_sample(shape))
-            a[a == 0] = -1
+            # generate values in range [-3, 3]
+            a = np.round(6 * np.random.random_sample(shape)) - 3
             return a.astype(dtype)
+
+        def gen_identity(shape, dtype):
+            # identity matrix, if cols > rows wrap to fill all columns
+            a = np.zeros(shape, dtype=dtype)
+            np.fill_diagonal(a, 1)
+            if shape[1] > shape[0]:
+                second_block = a[:, shape[0] :]
+                np.fill_diagonal(second_block, 1)
+            return a
 
         np.random.seed(2)
         input_array = gen_random(self.input_shape, self.ab_dtype)
         output_array = np.zeros(self.output_shape, self.ab_dtype)
         weights = []
         for i, o in self.weight_shapes:
-            W = gen_random((i, o), self.ab_dtype)
+            if self.identity_weights:
+                W = gen_identity((i, o), self.ab_dtype)
+            else:
+                W = gen_random((i, o), self.ab_dtype)
             weights.append(W)
 
         if self.has_bias:
@@ -498,14 +511,22 @@ def parse_cli():
         help="Add relu op after the matrix multiplication (and bias if any).",
     )
     parser.add_argument(
-        "--check-result",
-        action="store_true",
-        help="Check the result of the matrix multiplication.",
-    )
-    parser.add_argument(
         "--accumulate-c",
         action="store_true",
-        help="Use matrix-multiply-accumulate layers instead of initializing the accumulator tile with zeros.",
+        help="Use matrix-multiply-accumulate layers instead of initializing the "
+        "accumulator tile with zeros.",
+    )
+    parser.add_argument(
+        "--check-result",
+        action="store_true",
+        help="Check the result of the MLP model. If the result overflows to "
+        "inf/nan values, use --identity-weights option.",
+    )
+    parser.add_argument(
+        "--identity-weights",
+        action="store_true",
+        help="Initialize weights as (extended) identity matrix, useful for "
+        "correctness test. Can skew performance measurement.",
     )
     parser.add_argument(
         "--dump-kernel",
@@ -550,6 +571,7 @@ if __name__ == "__main__":
             has_bias=False,
             has_relu=args.relu,
             accumulate_c=args.accumulate_c,
+            identity_weights=args.identity_weights,
         )
         matmuls = wload.matmul_layers
         print(f"MLP with {len(matmuls)} layers")
