@@ -21,10 +21,7 @@ def deallocate_memrefs_on_exit(memref_descs, execution_engine, dealloc_name: str
         yield
     finally:
         for desc in memref_descs:
-            try:
-                execution_engine.invoke(dealloc_name, to_ctype(desc))
-            except Exception:
-                pass
+            execution_engine.invoke(dealloc_name, to_ctype(desc))
 
 
 def to_ctype(memref_desc) -> ctypes._Pointer:
