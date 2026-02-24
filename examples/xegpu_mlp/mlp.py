@@ -10,6 +10,7 @@ import ctypes
 from typing import Optional
 from contextlib import contextmanager
 from functools import cached_property
+import warnings
 
 import numpy as np
 from mlir import ir
@@ -75,6 +76,10 @@ class XeGPUMLP(Workload):
         self.accumulate_c = accumulate_c
         if has_bias:
             raise NotImplementedError("Bias is not implemented yet")
+
+        if len(self.matmul_layers) == 1 and self.has_relu:
+            warnings.warn("Using ReLU on a single layer model has no effect.")
+
         # cache allocated memrefs
         self.gpu_memrefs = {}
 
@@ -161,9 +166,9 @@ class XeGPUMLP(Workload):
         weights = host_arrays[2:]
 
         a_array = input_array
-        for W in weights:
+        for i, W in enumerate(weights):
             C_ref = a_array @ W
-            if self.has_relu:
+            if self.has_relu and i < len(weights) - 1:
                 C_ref = np.maximum(C_ref, 0)
             if self.has_bias:
                 raise NotImplementedError("Bias verification not implemented")
@@ -252,8 +257,9 @@ class XeGPUMLP(Workload):
         flop_count = 0
         memory_reads = 0
         memory_writes = 0
-        for M, N, K in self.matmul_layers:
-            f, r, w = matmul_complexity(M, N, K, self.has_bias, self.has_relu)
+        for i, (M, N, K) in enumerate(self.matmul_layers):
+            relu = self.has_relu if i < len(self.matmul_layers) - 1 else False
+            f, r, w = matmul_complexity(M, N, K, self.has_bias, relu)
             flop_count += f
             memory_reads += r
             memory_writes += w
@@ -501,7 +507,7 @@ def parse_cli():
     parser.add_argument(
         "--relu",
         action="store_true",
-        help="Add relu op after the matrix multiplication (and bias if any).",
+        help="Add ReLU activation function to each layer except the output layer.",
     )
     parser.add_argument(
         "--accumulate-c",

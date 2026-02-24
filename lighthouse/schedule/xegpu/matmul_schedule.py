@@ -139,10 +139,7 @@ def bundle_xepu_mlp_schedule(
     dpas_shape_c = [dpas_tile[0], dpas_tile[1]]
 
     # wg tiling
-
-    if has_relu:
-        terminal_ops = match_and_split(mod, ops={"linalg.max"}, nhandles=nlayers)
-    elif has_convert_c:
+    if has_convert_c:
         trunc_op = match(mod, ops={"arith.truncf"})
         terminal = transform.get_parent_op(anytype, trunc_op)
         # split handle for each layer
@@ -153,6 +150,11 @@ def bundle_xepu_mlp_schedule(
         terminal_ops = match_and_split(mod, ops={"linalg.add"}, nhandles=nlayers)
     else:
         terminal_ops = match_and_split(mod, ops={"linalg.matmul"}, nhandles=nlayers)
+    if has_relu and nlayers > 1:
+        # intermediate layers have relu activation function
+        relu_ops = match_and_split(mod, ops={"linalg.max"}, nhandles=nlayers - 1)
+        # the final layer does not have relu
+        terminal_ops = list(relu_ops) + [terminal_ops[-1]]
 
     # tile each layer separately
     for i_layer in range(nlayers):

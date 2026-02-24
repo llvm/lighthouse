@@ -277,6 +277,8 @@ def generate_mlp_payload(
                         c_memref, restrict=True, writable=True
                     )
                 bias_tensor = bias
+                # skip relu for final layer
+                emit_relu = has_relu if i < nlayers - 1 else False
                 layer_output = emit_mlp_layer(
                     a_tensor,
                     b_tensor,
@@ -284,7 +286,7 @@ def generate_mlp_payload(
                     ab_type,
                     c_type,
                     bias_tensor,
-                    has_relu,
+                    emit_relu,
                     accumulate_c=accumulate_c,
                     convert_c_type=True,
                 )
