@@ -151,7 +151,7 @@ class DistMLP(Workload):
         memref: ctypes.Structure,
         execution_engine: ExecutionEngine,
         gather_func: str,
-    ) -> np.ndarray:
+    ) -> ctypes.Structure:
         gathered_memref = make_nd_memref_descriptor(2, as_ctype(self.dtype))()
         execution_engine.invoke(
             gather_func,
@@ -180,16 +180,16 @@ class DistMLP(Workload):
     def check_correctness(
         self, execution_engine: ExecutionEngine, verbose: int = 0
     ) -> bool:
-        R = ranked_memref_to_numpy(
-            [self._gather(self.input_memrefs[0], execution_engine, "gather_act")]
-        )
-        R_ref = self._reference_solution(execution_engine)
-        if verbose > 1:
-            rprint("Reference solution:")
-            rprint(R_ref)
-            rprint("Computed solution:")
-            rprint(R)
-        success = np.allclose(R, R_ref)
+        gathered = self._gather(self.input_memrefs[0], execution_engine, "gather_act")
+        with deallocate_memrefs_on_exit([gathered], execution_engine, "dealloc_2d"):
+            R = ranked_memref_to_numpy([gathered])
+            R_ref = self._reference_solution(execution_engine)
+            if verbose > 1:
+                rprint("Reference solution:")
+                rprint(R_ref)
+                rprint("Computed solution:")
+                rprint(R)
+            success = np.allclose(R, R_ref)
         success = MPI.COMM_WORLD.allreduce(success, op=MPI.LAND)
         if success:
             rprint("PASSED")
