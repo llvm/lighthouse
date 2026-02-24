@@ -12,8 +12,6 @@ module attributes {{mpi.dlti = #dlti.map<"MPI:Implementation" = "MPICH", "MPI:co
 
     %sharding_sigmoid = shard.sharding @grid0 split_axes = {split_sigmoid} : !shard.sharding
 
-    %sharding_r = shard.sharding @grid0 split_axes = {split_r} : !shard.sharding
-
     %sharded = shard.shard %arg0 to %sharding_arg0 : tensor<{M}x{K}xf32>
     %sharded_6 = shard.shard %arg1 to %sharding_arg1 : tensor<{K}x{N}xf32>
     %sharded_7 = shard.shard %arg2 to %sharding_arg2 : tensor<{N}x{K}xf32>
