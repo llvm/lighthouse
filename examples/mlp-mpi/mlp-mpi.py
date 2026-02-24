@@ -146,17 +146,26 @@ class DistMLP(Workload):
         ):
             yield self.input_memrefs
 
+    def _gather(
+        self,
+        memref: ctypes.Structure,
+        execution_engine: ExecutionEngine,
+        gather_func: str,
+    ) -> np.ndarray:
+        gathered_memref = make_nd_memref_descriptor(2, as_ctype(self.dtype))()
+        execution_engine.invoke(
+            gather_func,
+            memref_to_ctype(gathered_memref),
+            memref_to_ctype(memref),
+        )
+        return gathered_memref
+
     def _reference_solution(self, execution_engine: ExecutionEngine) -> np.ndarray:
         rprint(" * Gathering input data...")
-        gathered = []
-        for i, v in enumerate(["act", "win", "wout"]):
-            memref = make_nd_memref_descriptor(2, as_ctype(self.dtype))()
-            execution_engine.invoke(
-                f"gather_{v}",
-                memref_to_ctype(memref),
-                memref_to_ctype(self.input_memrefs[i + 1]),
-            )
-            gathered.append(memref)
+        gathered = [
+            self._gather(self.input_memrefs[i + 1], execution_engine, f"gather_{v}")
+            for i, v in enumerate(["act", "win", "wout"])
+        ]
 
         rprint(" * Computing reference solution...")
 
@@ -171,7 +180,9 @@ class DistMLP(Workload):
     def check_correctness(
         self, execution_engine: ExecutionEngine, verbose: int = 0
     ) -> bool:
-        R = ranked_memref_to_numpy([self.input_memrefs[0]])
+        R = ranked_memref_to_numpy(
+            [self._gather(self.input_memrefs[0], execution_engine, "gather_act")]
+        )
         R_ref = self._reference_solution(execution_engine)
         if verbose > 1:
             rprint("Reference solution:")
@@ -238,13 +249,9 @@ class DistMLP(Workload):
                     "split_act": "[[], [0]]",
                     "split_win": "[[], [0]]",
                     "split_wout": "[[0], []]",
-                    "split_mm0_a": "[[]]",
-                    "split_mm0_b": "[[], [0]]",
+                    "split_mm0a_mm1c": "[[]]",
                     "split_mm0_c": "[[], [0]]",
                     "split_sigmoid": "[[], [0]]",
-                    "split_mm1_a": "[[], [0]]",
-                    "split_mm1_b": "[[0], []]",
-                    "split_mm1_c": "[[]]",
                 }
             )
         else:
@@ -253,13 +260,9 @@ class DistMLP(Workload):
                     "split_act": "[[], [0, 1]]",
                     "split_win": "[[0], [1]]",
                     "split_wout": "[[1], [0]]",
-                    "split_mm0_a": "[[], [0]]",
-                    "split_mm0_b": "[[0], [1]]",
+                    "split_mm0a_mm1c": "[[], [0]]",
                     "split_mm0_c": "[[], [1]]",
                     "split_sigmoid": "[[], [1, 0]]",
-                    "split_mm1_a": "[[], [1]]",
-                    "split_mm1_b": "[[1], [0]]",
-                    "split_mm1_c": "[[], [0]]",
                 }
             )
         txt = txt.format_map(format_values)
@@ -290,10 +293,21 @@ class DistMLP(Workload):
             with ir.InsertionPoint(named_sequence.body):
                 anytype = transform.AnyOpType.get()
                 func = match(named_sequence.bodyTarget, ops={"func.func"})
+                func = apply_registered_pass(
+                    func,
+                    "sharding-propagation",
+                    options={"traversal": "forward-backward"},
+                )
+                if self.verbose > 0:
+                    transform.PrintOp(target=func)
                 func = apply_registered_pass(func, "shard-partition")
                 func = apply_registered_pass(func, "canonicalize")
+                if self.verbose > 0:
+                    transform.PrintOp(target=func)
                 func = apply_registered_pass(func, "convert-shard-to-mpi")
                 func = apply_registered_pass(func, "canonicalize")
+                if self.verbose > 0:
+                    transform.PrintOp(target=func)
                 func = apply_registered_pass(func, "tosa-to-linalg")
                 mod = transform.get_parent_op(
                     anytype, func, op_name="builtin.module", deduplicate=True
