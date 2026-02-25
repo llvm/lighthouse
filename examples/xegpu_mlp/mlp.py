@@ -23,7 +23,7 @@ from mlir.execution_engine import ExecutionEngine
 from lighthouse.workload import Workload, benchmark
 from lighthouse.utils.memref import get_packed_arg, to_ctype as memref_to_ctype
 from lighthouse.utils.numpy import numpy_to_ctype
-from lighthouse.schedule.xegpu.matmul_schedule import get_schedule_module
+from lighthouse.schedule.xegpu.mlp_schedule import get_schedule_module
 from lighthouse.ingress.gpu import generate_mlp_payload
 
 

@@ -88,7 +88,7 @@ def xegpu_mlp_transform_schedule(
     nlayers: int = 1,
     params: Optional[list[dict]] = None,
 ):
-    """Transform schedule for matmul-like payload."""
+    """Transform schedule for MLP-like payload."""
     try:
         mod = bundle_xepu_mlp_schedule(
             mod,
@@ -121,7 +121,7 @@ def bundle_xepu_mlp_schedule(
     nlayers: int = 1,
     params: Optional[list[dict]] = None,
 ) -> ir.Module:
-    """Schedule for lowering matmul-like payload to xegpu wg level."""
+    """Schedule for lowering MLP-like payload to xegpu wg level."""
     if params is None:
         raise ValueError("Schedule parameters must be provided.")
 
