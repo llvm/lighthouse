@@ -320,43 +320,44 @@ def bundle_xepu_mlp_schedule(
         tile_a = transform.get_operand(anyvalue, dpas_op, [0])
         tile_b = transform.get_operand(anyvalue, dpas_op, [1])
 
-        def convert_layout(value, input, target):
-            xegpu.convert_layout(
-                value,
-                input_sg_layout=input["sg_layout"],
-                input_sg_data=input["sg_data"],
-                input_inst_data=input["inst_data"],
-                target_sg_layout=target["sg_layout"],
-                target_sg_data=target["sg_data"],
-                target_inst_data=target["inst_data"],
-            )
-
         # insert prefetch ops for DPAS A and B tiles
-        desc_prefetch_a = xegpu.insert_prefetch(
-            tile_a,
-            nb_prefetch=nb_prefetch,
-        )
-        layout_prefetch_a = {
-            "sg_layout": prefetch_layout_a,
-            "sg_data": prefetch_tile_a,
-            "inst_data": prefetch_inst_data,
-        }
-        pf_ops = transform.get_consumers_of_result(anytype, desc_prefetch_a, 0)
-        for pf in transform.split_handle((anytype,) * (nb_prefetch + 1), pf_ops):
-            xegpu.set_op_layout_attr(pf, **layout_prefetch_a)
+        def add_prefetch(tile, nb_prefetch, **layout):
+            desc_op = xegpu.insert_prefetch(
+                tile,
+                nb_prefetch=nb_prefetch,
+            )
+            pf_ops = transform.get_consumers_of_result(anytype, desc_op, 0)
+            for pf in transform.split_handle((anytype,) * (nb_prefetch + 1), pf_ops):
+                xegpu.set_op_layout_attr(pf, **layout)
 
-        desc_prefetch_b = xegpu.insert_prefetch(
-            tile_b,
-            nb_prefetch=nb_prefetch,
+        add_prefetch(
+            tile_a,
+            nb_prefetch,
+            sg_layout=prefetch_layout_a,
+            sg_data=prefetch_tile_a,
+            inst_data=prefetch_inst_data,
         )
-        layout_prefetch_b = {
-            "sg_layout": prefetch_layout_b,
-            "sg_data": prefetch_tile_b,
-            "inst_data": prefetch_inst_data,
-        }
-        pf_ops = transform.get_consumers_of_result(anytype, desc_prefetch_b, 0)
-        for pf in transform.split_handle((anytype,) * (nb_prefetch + 1), pf_ops):
-            xegpu.set_op_layout_attr(pf, **layout_prefetch_b)
+        add_prefetch(
+            tile_b,
+            nb_prefetch,
+            sg_layout=prefetch_layout_b,
+            sg_data=prefetch_tile_b,
+            inst_data=prefetch_inst_data,
+        )
+
+        def annotate_ab_load(tile, layout_load, layout_dpas):
+            desc_op = xegpu.get_desc_op(tile)
+            load_op = transform.get_consumers_of_result(anytype, desc_op, 0)
+            xegpu.set_op_layout_attr(load_op, **layout_load)
+            xegpu.convert_layout(
+                tile,
+                input_sg_layout=layout_load["sg_layout"],
+                input_sg_data=layout_load["sg_data"],
+                input_inst_data=layout_load["inst_data"],
+                target_sg_layout=layout_dpas["sg_layout"],
+                target_sg_data=layout_dpas["sg_data"],
+                target_inst_data=layout_dpas["inst_data"],
+            )
 
         # A tile load layout
         layout_load_a = {
@@ -364,14 +365,10 @@ def bundle_xepu_mlp_schedule(
             "sg_data": sg_tile_a,
             "inst_data": load_tile_a,
         }
-        desc_op_a = xegpu.get_desc_op(tile_a)
-        # A tile load op anchor layout
-        load_op_a = transform.get_consumers_of_result(anytype, desc_op_a, 0)
-        xegpu.set_op_layout_attr(load_op_a, **layout_load_a)
         # A tile dpas layout
         layout_dpas_a = layout_load_a.copy()
         layout_dpas_a["inst_data"] = dpas_shape_a
-        convert_layout(tile_a, layout_load_a, layout_dpas_a)
+        annotate_ab_load(tile_a, layout_load_a, layout_dpas_a)
 
         # B tile load layout
         layout_load_b = {
@@ -379,14 +376,10 @@ def bundle_xepu_mlp_schedule(
             "sg_data": sg_tile_b,
             "inst_data": load_tile_b,
         }
-        desc_op_b = xegpu.get_desc_op(tile_b)
-        # B tile load op anchor layout
-        load_op_b = transform.get_consumers_of_result(anytype, desc_op_b, 0)
-        xegpu.set_op_layout_attr(load_op_b, **layout_load_b)
         # B tile dpas layout
         layout_dpas_b = layout_load_b.copy()
         layout_dpas_b["inst_data"] = dpas_shape_b
-        convert_layout(tile_b, layout_load_b, layout_dpas_b)
+        annotate_ab_load(tile_b, layout_load_b, layout_dpas_b)
 
         # C tile layout
         output_layout = {
