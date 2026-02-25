@@ -62,7 +62,6 @@ def generate_mlp_payload(
     split_mm0a_mm1c: list[list[int]],
     split_mm0_c: list[list[int]],
     split_sigmoid: list[list[int]],
-    split_r: list[list[int]] = [[]],
 ) -> ir.Module:
     """Generate the full MLIR module for the weight-stationary distributed MLP.
     Also adds helper functions for allocation, deallocation and gather."""
