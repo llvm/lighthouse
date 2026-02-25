@@ -15,7 +15,7 @@ def _axes(axes: list[list[int]]) -> ir.Attribute:
 
 
 def _emit_alloc(name: str, ty: ir.RankedTensorType, split: list[list[int]]):
-    """Emit an ``alloc_<name>`` return newly allocated tensor of type *ty*
+    """Emit an ``alloc_<name>`` returning a newly allocated tensor of type *ty*,
     sharded according to *split*."""
 
     @c_func(results=[ty], name=f"alloc_{name}")
