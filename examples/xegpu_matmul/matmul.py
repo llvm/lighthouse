@@ -221,7 +221,6 @@ class XeGPUMatMul(Workload):
             has_bias=self.has_bias,
             has_relu=self.has_relu,
             has_convert_c=False,
-            accumulate_c=self.accumulate_c,
             stop_at_stage=stop_at_stage,
             nlayers=1,
             params={"layer_0": parameters},

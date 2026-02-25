@@ -286,7 +286,7 @@ class XeGPUMLP(Workload):
         return get_schedule_module(
             has_bias=self.has_bias,
             has_relu=self.has_relu,
-            accumulate_c=self.accumulate_c,
+            skip_final_layer_relu=True,
             stop_at_stage=stop_at_stage,
             nlayers=len(self.matmul_layers),
             params=parameters,

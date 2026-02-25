@@ -39,7 +39,7 @@ def get_schedule_module(
     has_bias: bool = False,
     has_relu: bool = False,
     has_convert_c: bool = True,
-    accumulate_c: bool = False,
+    skip_final_layer_relu: bool = False,
     stop_at_stage: str = "",
     nlayers: int = 1,
     params: Optional[dict] = None,
@@ -69,7 +69,7 @@ def get_schedule_module(
                 has_bias=has_bias,
                 has_relu=has_relu,
                 has_convert_c=has_convert_c,
-                accumulate_c=accumulate_c,
+                skip_final_layer_relu=skip_final_layer_relu,
                 stop_at_stage=stop_at_stage,
                 nlayers=nlayers,
                 params=params,
@@ -82,8 +82,8 @@ def xegpu_mlp_transform_schedule(
     mod: ir.Value,
     has_bias: bool = False,
     has_relu: bool = False,
-    accumulate_c: bool = False,
     has_convert_c: bool = True,
+    skip_final_layer_relu: bool = False,
     stop_at_stage: str = "",
     nlayers: int = 1,
     params: Optional[list[dict]] = None,
@@ -94,8 +94,8 @@ def xegpu_mlp_transform_schedule(
             mod,
             has_bias=has_bias,
             has_relu=has_relu,
-            accumulate_c=accumulate_c,
             has_convert_c=has_convert_c,
+            skip_final_layer_relu=skip_final_layer_relu,
             stop_at_stage=stop_at_stage,
             nlayers=nlayers,
             params=params,
@@ -115,7 +115,7 @@ def bundle_xepu_mlp_schedule(
     mod: ir.Value,
     has_bias: bool = False,
     has_relu: bool = False,
-    accumulate_c: bool = False,
+    skip_final_layer_relu: bool = False,
     has_convert_c: bool = True,
     stop_at_stage: str = "",
     nlayers: int = 1,
@@ -150,11 +150,15 @@ def bundle_xepu_mlp_schedule(
         terminal_ops = match_and_split(mod, ops={"linalg.add"}, nhandles=nlayers)
     else:
         terminal_ops = match_and_split(mod, ops={"linalg.matmul"}, nhandles=nlayers)
-    if has_relu and nlayers > 1:
-        # intermediate layers have relu activation function
-        relu_ops = match_and_split(mod, ops={"linalg.max"}, nhandles=nlayers - 1)
-        # the final layer does not have relu
-        terminal_ops = list(relu_ops) + [terminal_ops[-1]]
+    if has_relu:
+        if skip_final_layer_relu and nlayers > 1:
+            # intermediate layers have relu activation function
+            relu_ops = match_and_split(mod, ops={"linalg.max"}, nhandles=nlayers - 1)
+            # the final layer does not have relu
+            terminal_ops = list(relu_ops) + [terminal_ops[-1]]
+        else:
+            # relu on all layers
+            terminal_ops = match_and_split(mod, ops={"linalg.max"}, nhandles=nlayers)
 
     # tile each layer separately
     for i_layer in range(nlayers):
