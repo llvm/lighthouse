@@ -11,7 +11,6 @@ following a 1d/2d weight-stationary partition strategy
 
 import argparse
 import ctypes
-from pathlib import Path
 from contextlib import contextmanager
 from typing import Optional
 
@@ -32,6 +31,8 @@ from lighthouse.utils.memref import (
 )
 from lighthouse.utils.mlir import apply_registered_pass, match
 from lighthouse.workload import Workload, execute
+
+from mlp_weight_stationary import generate_mlp_payload
 
 from mpi4py import MPI
 
@@ -212,7 +213,7 @@ class DistMLP(Workload):
     def payload_module(self) -> ir.Module:
         if len(self.grid) == 1:
             rprint(f"Using 1D grid of size {self.comm_size}")
-            grid = self.comm_size
+            grid = [self.comm_size]
         else:
             assert len(self.grid) == 2
             if all(x != 0 for x in self.grid):
@@ -227,54 +228,46 @@ class DistMLP(Workload):
 
                 p1, p2 = find_factors(self.comm_size)
             rprint(f"Using 2D grid of size {p1}x{p2}")
-            grid = f"{p1}x{p2}"
+            grid = [p1, p2]
 
-        fname = Path(__file__).parent / "mlp_weight_stationary.mlir"
-        with open(fname, "r") as f:
-            txt = f.read()
-
-        format_values = {
-            "func_name": self.payload_function_name,
-            "M": self.M,
-            "N": self.N,
-            "K": self.K,
-            "P": self.comm_size,
-            "R": self.comm_rank,
-            "grid": grid,
-            "split_r": "[[]]",
-        }
+        common = dict(
+            func_name=self.payload_function_name,
+            M=self.M,
+            N=self.N,
+            K=self.K,
+            comm_size=self.comm_size,
+            comm_rank=self.comm_rank,
+            grid=grid,
+        )
         if len(self.grid) == 1:
-            format_values.update(
-                {
-                    "split_act": "[[], [0]]",
-                    "split_win": "[[], [0]]",
-                    "split_wout": "[[0], []]",
-                    "split_mm0a_mm1c": "[[]]",
-                    "split_mm0_c": "[[], [0]]",
-                    "split_sigmoid": "[[], [0]]",
-                }
+            mod = generate_mlp_payload(
+                **common,
+                split_act=[[], [0]],
+                split_win=[[], [0]],
+                split_wout=[[0], []],
+                split_mm0a_mm1c=[[]],
+                split_mm0_c=[[], [0]],
+                split_sigmoid=[[], [0]],
             )
         else:
-            format_values.update(
-                {
-                    "split_act": "[[], [0, 1]]",
-                    "split_win": "[[0], [1]]",
-                    "split_wout": "[[1], [0]]",
-                    "split_mm0a_mm1c": "[[], [0]]",
-                    "split_mm0_c": "[[], [1]]",
-                    "split_sigmoid": "[[], [1, 0]]",
-                }
+            mod = generate_mlp_payload(
+                **common,
+                split_act=[[], [0, 1]],
+                split_win=[[0], [1]],
+                split_wout=[[1], [0]],
+                split_mm0a_mm1c=[[], [0]],
+                split_mm0_c=[[], [1]],
+                split_sigmoid=[[], [1, 0]],
             )
-        txt = txt.format_map(format_values)
 
         if self.verbose > 1:
             rprint("Payload MLIR:")
             count = 1
-            for line in txt.splitlines():
+            for line in str(mod).splitlines():
                 rprint(str(count) + "\t" + line)
                 count += 1
 
-        return ir.Module.parse(txt)
+        return mod
 
     def schedule_module(
         self, stop_at_stage: Optional[str] = None, parameters: Optional[dict] = None
