@@ -21,7 +21,7 @@ from mlir.runtime.np_to_memref import (
 from mlir.execution_engine import ExecutionEngine
 
 from lighthouse.workload import Workload, benchmark
-from lighthouse.utils.memref import get_packed_arg, to_ctype as memref_to_ctype
+from lighthouse.utils.memref import to_ctype as memref_to_ctype
 from lighthouse.utils.numpy import numpy_to_ctype
 from lighthouse.schedule.xegpu.mlp_schedule import get_schedule_module
 from lighthouse.ingress.gpu import generate_mlp_payload
@@ -99,19 +99,17 @@ class XeGPUMLP(Workload):
             "f16": np.float16,
             "f32": np.float32,
         }[dtype_str]
-        alloc_func = execution_engine.lookup("gpu_alloc_" + dtype_str)
         mref = make_nd_memref_descriptor(len(shape), as_ctype(dtype))()
-        ptr_mref = ctypes.pointer(ctypes.pointer(mref))
+        ptr_mref = memref_to_ctype(mref)
         ptr_dims = [ctypes.pointer(ctypes.c_int32(d)) for d in shape]
-        alloc_func(get_packed_arg([ptr_mref] + ptr_dims))
+        execution_engine.invoke("gpu_alloc_" + dtype_str, ptr_mref, *ptr_dims)
         self.gpu_memrefs[key] = mref
         return mref
 
     def _deallocate_all(self, execution_engine: ExecutionEngine):
         for (_, dtype_str), mref in self.gpu_memrefs.items():
-            dealloc_func = execution_engine.lookup("gpu_dealloc_" + dtype_str)
             ptr_mref = ctypes.pointer(ctypes.pointer(mref))
-            dealloc_func(get_packed_arg([ptr_mref]))
+            execution_engine.invoke("gpu_dealloc_" + dtype_str, ptr_mref)
         self.gpu_memrefs = {}
 
     @contextmanager
@@ -128,7 +126,7 @@ class XeGPUMLP(Workload):
         # use integer values to avoid f16/f32 floating point discrepancies
         def gen_random(shape, dtype):
             # generate values in range [-3, 3]
-            a = np.round(6 * np.random.random_sample(shape)) - 3
+            a = np.random.randint(-3, 4, shape)
             return a.astype(dtype)
 
         def gen_identity(shape, dtype):
@@ -202,10 +200,11 @@ class XeGPUMLP(Workload):
         # get initial host arrays
         host_arrays = self._initial_host_arrays
         # copy initial values to device
-        copy_func_ab = execution_engine.lookup("gpu_copy_" + self.ab_type)
         for host_arr, gpu_arr in zip(host_arrays, gpu_arrays):
-            copy_func_ab(
-                get_packed_arg([numpy_to_ctype(host_arr), memref_to_ctype(gpu_arr)])
+            execution_engine.invoke(
+                "gpu_copy_" + self.ab_type,
+                numpy_to_ctype(host_arr),
+                memref_to_ctype(gpu_arr),
             )
 
         # return memrefs for the payload function
@@ -217,9 +216,10 @@ class XeGPUMLP(Workload):
         # copy result from device to host
         res_gpu = self.gpu_memrefs[("output", self.ab_type)]
         res_host_copy = np.zeros(self.output_shape, dtype=self.ab_dtype)
-        copy_func = execution_engine.lookup("gpu_copy_" + self.ab_type)
-        copy_func(
-            get_packed_arg([memref_to_ctype(res_gpu), numpy_to_ctype(res_host_copy)])
+        execution_engine.invoke(
+            "gpu_copy_" + self.ab_type,
+            memref_to_ctype(res_gpu),
+            numpy_to_ctype(res_host_copy),
         )
 
         res_host_ref = self._reference_solution
@@ -379,7 +379,8 @@ def parse_cli():
             "xegpu-inst",
             "final",
         ],
-        help="Dump kernel IR at different stages of lowering.",
+        help="Dump kernel IR at different stages of lowering and exit without "
+        "executing the kernel.",
     )
     parser.add_argument(
         "--dump-schedule",
@@ -441,13 +442,12 @@ if __name__ == "__main__":
                 return ",".join(map(str, a))
 
             hidden_sizes = args.hidden_sizes if args.hidden_sizes else []
-            parts = [
-                f"b={args.batch_size}",
-                f"i={args.input_size}",
-                f"o={args.output_size}",
-                f"hs={list2str(hidden_sizes)}",
-                f"dt={ab_type},{c_type}",
-                f"time(us): {elapsed:.2f}",
-                f"GFLOPS: {gflops:.2f}",
-            ]
-            print(" ".join(parts))
+            print(
+                f"b={args.batch_size} "
+                f"i={args.input_size} "
+                f"o={args.output_size} "
+                f"hs={list2str(hidden_sizes)} "
+                f"dt={ab_type},{c_type} "
+                f"time(us): {elapsed:.2f} "
+                f"GFLOPS: {gflops:.2f}"
+            )
