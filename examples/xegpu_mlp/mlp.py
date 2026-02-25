@@ -26,6 +26,8 @@ from lighthouse.utils.numpy import numpy_to_ctype
 from lighthouse.schedule.xegpu.mlp_schedule import get_schedule_module
 from lighthouse.ingress.gpu import generate_mlp_payload
 
+import parameter_selector
+
 
 class XeGPUMLP(Workload):
     """
@@ -296,170 +298,6 @@ class XeGPUMLP(Workload):
         return ["libmlir_levelzero_runtime.so"]
 
 
-matmul_param_db = {
-    (4096, 4096, 4096): {
-        "wg_m": 256,
-        "wg_n": 256,
-        "sg_m": 32,
-        "sg_n": 32,
-        "k": 64,
-        "load_a_m": 8,
-        "load_a_k": 16,
-        "load_b_k": 16,
-        "load_b_n": 16,
-        "pf_a_m": 8,
-        "pf_a_k": 32,
-        "pf_b_k": 8,
-        "pf_b_n": 32,
-        "pf_nb": 1,
-    },
-    (128, 16384, 16384): {
-        "wg_m": 128,
-        "wg_n": 256,
-        "sg_m": 32,
-        "sg_n": 32,
-        "k": 256,
-        "load_a_m": 8,
-        "load_a_k": 16,
-        "load_b_k": 32,
-        "load_b_n": 16,
-        "pf_a_m": 8,
-        "pf_a_k": 16,
-        "pf_b_k": 8,
-        "pf_b_n": 16,
-        "pf_nb": 1,
-    },
-    (128, 8192, 16384): {
-        "wg_m": 64,
-        "wg_n": 128,
-        "sg_m": 32,
-        "sg_n": 32,
-        "k": 128,
-        "load_a_m": 16,
-        "load_a_k": 16,
-        "load_b_k": 16,
-        "load_b_n": 16,
-        "pf_a_m": 32,
-        "pf_a_k": 16,
-        "pf_b_k": 16,
-        "pf_b_n": 32,
-        "pf_nb": 1,
-    },
-    (128, 32768, 16384): {
-        "wg_m": 128,
-        "wg_n": 128,
-        "sg_m": 32,
-        "sg_n": 32,
-        "k": 256,
-        "load_a_m": 8,
-        "load_a_k": 16,
-        "load_b_k": 16,
-        "load_b_n": 16,
-        "pf_a_m": 16,
-        "pf_a_k": 32,
-        "pf_b_k": 8,
-        "pf_b_n": 32,
-        "pf_nb": 1,
-    },
-    (128, 16384, 32768): {
-        "wg_m": 128,
-        "wg_n": 128,
-        "sg_m": 32,
-        "sg_n": 32,
-        "k": 256,
-        "load_a_m": 8,
-        "load_a_k": 16,
-        "load_b_k": 16,
-        "load_b_n": 16,
-        "pf_a_m": 32,
-        "pf_a_k": 32,
-        "pf_b_k": 8,
-        "pf_b_n": 16,
-        "pf_nb": 1,
-    },
-    (128, 32768, 32768): {
-        "wg_m": 128,
-        "wg_n": 256,
-        "sg_m": 32,
-        "sg_n": 32,
-        "k": 256,
-        "load_a_m": 8,
-        "load_a_k": 16,
-        "load_b_k": 16,
-        "load_b_n": 16,
-        "pf_a_m": 16,
-        "pf_a_k": 32,
-        "pf_b_k": 32,
-        "pf_b_n": 32,
-        "pf_nb": 1,
-    },
-    (1024, 1024, 8192): {
-        "wg_m": 256,
-        "wg_n": 128,
-        "sg_m": 32,
-        "sg_n": 32,
-        "k": 32,
-        "load_a_m": 8,
-        "load_a_k": 16,
-        "load_b_k": 32,
-        "load_b_n": 16,
-        "pf_a_m": 8,
-        "pf_a_k": 16,
-        "pf_b_k": 8,
-        "pf_b_n": 16,
-        "pf_nb": 1,
-    },
-    (1024, 8192, 1024): {
-        "wg_m": 256,
-        "wg_n": 128,
-        "sg_m": 32,
-        "sg_n": 32,
-        "k": 32,
-        "load_a_m": 16,
-        "load_a_k": 16,
-        "load_b_k": 32,
-        "load_b_n": 16,
-        "pf_a_m": 8,
-        "pf_a_k": 16,
-        "pf_b_k": 16,
-        "pf_b_n": 16,
-        "pf_nb": 1,
-    },
-    (1024, 1024, 1024): {
-        "wg_m": 128,
-        "wg_n": 64,
-        "sg_m": 32,
-        "sg_n": 32,
-        "k": 32,
-        "load_a_m": 16,
-        "load_a_k": 16,
-        "load_b_k": 32,
-        "load_b_n": 16,
-        "pf_a_m": 8,
-        "pf_a_k": 32,
-        "pf_b_k": 8,
-        "pf_b_n": 16,
-        "pf_nb": 1,
-    },
-}
-
-
-class ParameterOracleMLP:
-    def __init__(self, workload: XeGPUMLP):
-        self.param_db = matmul_param_db
-        self.workload = workload
-
-    def get_parameters(self) -> dict[str, dict]:
-        parameters = {}
-        for i, shape in enumerate(self.workload.matmul_layers):
-            if shape in self.param_db:
-                params = self.param_db[shape]
-            else:
-                raise ValueError(f"No parameters found for matmul shape {shape}")
-            parameters[f"layer_{i}"] = params
-        return parameters
-
-
 def parse_cli():
     parser = argparse.ArgumentParser(
         description="Matrix Multiplication using MLIR",
@@ -577,8 +415,7 @@ if __name__ == "__main__":
         for i, (M, N, K) in enumerate(matmuls):
             print(f"  Layer {i}: M={M}, N={N}, K={K}")
 
-        param_oracle = ParameterOracleMLP(wload)
-        params = param_oracle.get_parameters()
+        params = parameter_selector.get_matmul_parameters(wload)
 
         if args.dump_kernel or args.dump_schedule:
             wload.lower_payload(
