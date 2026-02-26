@@ -151,14 +151,14 @@ def bundle_xepu_mlp_schedule(
     else:
         terminal_ops = match_and_split(mod, ops={"linalg.matmul"}, nhandles=nlayers)
     if has_relu:
-        if skip_final_layer_relu and nlayers > 1:
+        if not skip_final_layer_relu:
+            # relu on all layers
+            terminal_ops = match_and_split(mod, ops={"linalg.max"}, nhandles=nlayers)
+        elif nlayers > 1:
             # intermediate layers have relu activation function
             relu_ops = match_and_split(mod, ops={"linalg.max"}, nhandles=nlayers - 1)
             # the final layer does not have relu
             terminal_ops = list(relu_ops) + [terminal_ops[-1]]
-        else:
-            # relu on all layers
-            terminal_ops = match_and_split(mod, ops={"linalg.max"}, nhandles=nlayers)
 
     # tile each layer separately
     for i_layer in range(nlayers):
