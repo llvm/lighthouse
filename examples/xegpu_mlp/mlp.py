@@ -8,19 +8,15 @@ XeGPU MLP benchmark.
 import argparse
 import ctypes
 from typing import Optional
-from contextlib import contextmanager
 from functools import cached_property
 import warnings
 
 import numpy as np
 from mlir import ir
-from mlir.runtime.np_to_memref import (
-    make_nd_memref_descriptor,
-    as_ctype,
-)
 from mlir.execution_engine import ExecutionEngine
 
-from lighthouse.workload import Workload, benchmark
+from lighthouse.workload import benchmark
+from lighthouse.workload.xegpu import XeGPUWorkload
 from lighthouse.utils.memref import to_ctype as memref_to_ctype
 from lighthouse.utils.numpy import numpy_to_ctype
 from lighthouse.schedule.xegpu.mlp_schedule import get_schedule_module
@@ -29,15 +25,13 @@ from lighthouse.ingress.gpu import generate_mlp_payload
 import parameter_selector
 
 
-class XeGPUMLP(Workload):
+class XeGPUMLP(XeGPUWorkload):
     """
     Multi-layer perceptron (MLP) workload on XeGPU.
 
     Optionally adds a ReLU operation after each layer.
     Optionally adds a bias term in each layer (not implemented yet).
     """
-
-    payload_function_name = "payload"
 
     def __init__(
         self,
@@ -82,42 +76,7 @@ class XeGPUMLP(Workload):
         if len(self.matmul_layers) == 1 and self.has_relu:
             warnings.warn("Using ReLU on a single layer model has no effect.")
 
-        # cache allocated memrefs
-        self.gpu_memrefs = {}
-
-    def _allocate_array(
-        self,
-        name: str,
-        shape: tuple[int, ...],
-        dtype_str: str,
-        execution_engine: ExecutionEngine,
-    ) -> ctypes.Structure:
-        key = (name, dtype_str)
-        if key in self.gpu_memrefs:
-            return self.gpu_memrefs[key]
-        dtype = {
-            "f16": np.float16,
-            "f32": np.float32,
-        }[dtype_str]
-        mref = make_nd_memref_descriptor(len(shape), as_ctype(dtype))()
-        ptr_mref = memref_to_ctype(mref)
-        ptr_dims = [ctypes.pointer(ctypes.c_int32(d)) for d in shape]
-        execution_engine.invoke("gpu_alloc_" + dtype_str, ptr_mref, *ptr_dims)
-        self.gpu_memrefs[key] = mref
-        return mref
-
-    def _deallocate_all(self, execution_engine: ExecutionEngine):
-        for (_, dtype_str), mref in self.gpu_memrefs.items():
-            ptr_mref = ctypes.pointer(ctypes.pointer(mref))
-            execution_engine.invoke("gpu_dealloc_" + dtype_str, ptr_mref)
-        self.gpu_memrefs = {}
-
-    @contextmanager
-    def allocate_inputs(self, execution_engine: ExecutionEngine):
-        try:
-            yield self._get_input_arrays(execution_engine)
-        finally:
-            self._deallocate_all(execution_engine)
+        super().__init__()
 
     @cached_property
     def _initial_host_arrays(self) -> list[np.ndarray]:
@@ -300,7 +259,7 @@ class XeGPUMLP(Workload):
 
 def parse_cli():
     parser = argparse.ArgumentParser(
-        description="Matrix Multiplication using MLIR",
+        description="MLP workload using MLIR",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument(
