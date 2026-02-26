@@ -84,9 +84,8 @@ class XeGPUMLP(XeGPUWorkload):
 
         # use integer values to avoid f16/f32 floating point discrepancies
         def gen_random(shape, dtype):
-            # generate values in range [-3, 3]
-            a = np.random.randint(-3, 4, shape)
-            return a.astype(dtype)
+            # generate values in range [0, 1)
+            return np.random.rand(*shape).astype(dtype)
 
         def gen_identity(shape, dtype):
             # identity matrix, if cols > rows wrap to fill all columns
@@ -319,12 +318,6 @@ def parse_cli():
         "inf/nan values, use --identity-weights option.",
     )
     parser.add_argument(
-        "--identity-weights",
-        action="store_true",
-        help="Initialize weights as (extended) identity matrix, useful for "
-        "correctness test. Can skew performance measurement.",
-    )
-    parser.add_argument(
         "--dump-kernel",
         type=str,
         choices=[
@@ -357,6 +350,10 @@ if __name__ == "__main__":
     ab_type = "f16"
     c_type = "f32"
 
+    # use identity weights in correctness check
+    # this may affect performance metrics
+    identity_weights = args.check_result
+
     with ir.Context(), ir.Location.unknown():
         wload = XeGPUMLP(
             batch_size=args.batch_size,
@@ -368,7 +365,7 @@ if __name__ == "__main__":
             has_bias=False,
             has_relu=args.relu,
             accumulate_c=args.accumulate_c,
-            identity_weights=args.identity_weights,
+            identity_weights=identity_weights,
         )
         matmuls = wload.matmul_layers
         print(f"MLP with {len(matmuls)} layers")
