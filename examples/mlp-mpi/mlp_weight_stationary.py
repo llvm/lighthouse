@@ -2,7 +2,7 @@
 
 from mlir import ir
 from mlir.dialects import arith, linalg, memref, shard, tensor, tosa
-from lighthouse.utils.mlir import c_func
+from lighthouse.utils.mlir import func_cif
 
 _GRID = "grid0"
 
@@ -18,7 +18,7 @@ def _emit_alloc(name: str, ty: ir.RankedTensorType, split: list[list[int]]):
     """Emit an ``alloc_<name>`` returning a newly allocated tensor of type *ty*,
     sharded according to *split*."""
 
-    @c_func(name=f"alloc_{name}")
+    @func_cif(name=f"alloc_{name}")
     def _():
         e = tensor.empty(ty.shape, ty.element_type)
         sh = shard.sharding(_GRID, _axes(split), [], [])
@@ -29,7 +29,7 @@ def _emit_alloc(name: str, ty: ir.RankedTensorType, split: list[list[int]]):
 def _emit_gather(name: str, ty: ir.RankedTensorType, split: list[list[int]]):
     """Emit a ``gather_<name>`` function that replicates from *split*."""
 
-    @c_func(ty, name=f"gather_{name}")
+    @func_cif(ty, name=f"gather_{name}")
     def _(arg):
         sh_from = shard.sharding(_GRID, _axes(split), [], [])
         sh_to = shard.sharding(_GRID, _axes([[]]), [], [])
@@ -42,7 +42,7 @@ def _emit_dealloc_2d():
     dyn = ir.ShapedType.get_dynamic_size()
     mr_t = ir.MemRefType.get((dyn, dyn), ir.F32Type.get())
 
-    @c_func(mr_t)
+    @func_cif(mr_t)
     def dealloc_2d(arg):
         memref.dealloc(arg)
 
@@ -88,7 +88,7 @@ def generate_mlp_payload(
         g.operation.attributes["sym_visibility"] = ir.StringAttr.get("private")
 
         # --- payload function ---
-        @c_func(t_mk, t_kn, t_nk, name=func_name)
+        @func_cif(t_mk, t_kn, t_nk, name=func_name)
         def _(a, b, c):
             cst = arith.constant(f32, 0.0)
 

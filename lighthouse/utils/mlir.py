@@ -34,7 +34,7 @@ def get_mlir_library_path():
     return path
 
 
-def c_func(*args, **kwargs):
+def func_cif(*args, **kwargs):
     """Like ``@func.func`` and automatically sets ``llvm.emit_c_interface``."""
 
     def wrap(fn):
