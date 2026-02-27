@@ -18,11 +18,12 @@ from mlir import ir
 from mlir.execution_engine import ExecutionEngine
 
 from lighthouse.workload import benchmark
-from lighthouse.workload.xegpu import XeGPUWorkload
 from lighthouse.utils.memref import to_ctype as memref_to_ctype
 from lighthouse.utils.numpy import numpy_to_ctype
 from lighthouse.schedule.xegpu.mlp_schedule import get_schedule_module
 from lighthouse.ingress.gpu import generate_matmul_payload
+
+from xegpu_workload import XeGPUWorkload
 
 
 class XeGPUMatMul(XeGPUWorkload):
