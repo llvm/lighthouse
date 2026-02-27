@@ -13,6 +13,32 @@ from mlir.execution_engine import ExecutionEngine
 from lighthouse.utils.memref import to_ctype as memref_to_ctype
 
 
+def matmul_complexity(
+    M: int,
+    N: int,
+    K: int,
+    bias: bool,
+    relu: bool,
+    accumulate_c: bool,
+    nbytes_ab: int,
+    nbytes_c: int,
+):
+    """Complexity of matmul operation with optional post-ops"""
+    flop_count = 2 * M * N * K
+    memory_reads = (M * K + K * N) * nbytes_ab  # read A and B
+    memory_writes = M * N * nbytes_c  # write C
+    # Below we assume the post-ops are tiled-and-fused and do not cause
+    # reads/writes to global memory.
+    if bias:
+        flop_count += M * N
+        memory_reads += N * nbytes_c  # read bias vector
+    if relu:
+        flop_count += M * N
+    if accumulate_c:
+        memory_reads += M * N * nbytes_c  # read C for accumulation
+    return flop_count, memory_reads, memory_writes
+
+
 class XeGPUWorkload(Workload, ABC):
     """
     Base class for XeGPU workloads.

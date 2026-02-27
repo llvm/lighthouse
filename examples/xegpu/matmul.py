@@ -23,7 +23,7 @@ from lighthouse.utils.numpy import numpy_to_ctype
 from lighthouse.schedule.xegpu.mlp_schedule import get_schedule_module
 from lighthouse.ingress.gpu import generate_matmul_payload
 
-from xegpu_workload import XeGPUWorkload
+from xegpu_workload import XeGPUWorkload, matmul_complexity
 
 
 class XeGPUMatMul(XeGPUWorkload):
@@ -147,21 +147,18 @@ class XeGPUMatMul(XeGPUWorkload):
         return success
 
     def get_complexity(self) -> tuple[int, int, int]:
-        M, N, K = self.M, self.N, self.K
-        flop_count = 2 * M * N * K
-        if self.has_bias:
-            flop_count += M * N
-        if self.has_relu:
-            flop_count += M * N
         nbytes_ab = np.dtype(self.ab_dtype).itemsize
         nbytes_c = np.dtype(self.c_dtype).itemsize
-        memory_reads = (M * K + K * N) * nbytes_ab  # read A and B
-        if self.accumulate_c:
-            memory_reads += M * N * nbytes_c  # read C for accumulation
-        if self.has_bias:
-            memory_reads += N * nbytes_c  # read bias
-        memory_writes = M * N * nbytes_c  # write C
-        return flop_count, memory_reads, memory_writes
+        return matmul_complexity(
+            self.M,
+            self.N,
+            self.K,
+            self.has_bias,
+            self.has_relu,
+            self.accumulate_c,
+            nbytes_ab,
+            nbytes_c,
+        )
 
     def payload_module(self) -> ir.Module:
         mod = generate_matmul_payload(

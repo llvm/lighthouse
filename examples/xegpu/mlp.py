@@ -23,7 +23,7 @@ from lighthouse.utils.numpy import numpy_to_ctype
 from lighthouse.schedule.xegpu.mlp_schedule import get_schedule_module
 from lighthouse.ingress.gpu import generate_mlp_payload
 
-from xegpu_workload import XeGPUWorkload
+from xegpu_workload import XeGPUWorkload, matmul_complexity
 import parameter_selector
 
 
@@ -204,25 +204,14 @@ class XeGPUMLP(XeGPUWorkload):
         nbytes_ab = np.dtype(self.ab_dtype).itemsize
         nbytes_c = np.dtype(self.c_dtype).itemsize
 
-        def matmul_complexity(M, N, K, has_bias, has_relu):
-            flop_count = 2 * M * N * K
-            memory_reads = (M * K + K * N) * nbytes_ab  # read A and B
-            memory_writes = M * N * nbytes_c  # write C
-            # Below we assume the post-ops are tiled-and-fused and do not cause
-            # reads/writes to global memory.
-            if has_bias:
-                flop_count += M * N
-                memory_reads += N * nbytes_c  # read bias vector
-            if has_relu:
-                flop_count += M * N
-            return flop_count, memory_reads, memory_writes
-
         flop_count = 0
         memory_reads = 0
         memory_writes = 0
         for i, (M, N, K) in enumerate(self.matmul_layers):
             relu = self.has_relu if i < len(self.matmul_layers) - 1 else False
-            f, r, w = matmul_complexity(M, N, K, self.has_bias, relu)
+            f, r, w = matmul_complexity(
+                M, N, K, self.has_bias, relu, self.accumulate_c, nbytes_ab, nbytes_c
+            )
             flop_count += f
             memory_reads += r
             memory_writes += w
