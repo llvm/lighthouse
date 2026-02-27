@@ -129,14 +129,9 @@ def bundle_xegpu_mlp_schedule(
         raise PipelineInterrupt()
 
     anytype = transform.AnyOpType.get()
-    anyvalue = transform.AnyValueType.get()
 
     for i in range(nlayers):
         assert f"layer_{i}" in params, f"Missing parameters for 'layer_{i}'"
-
-    dpas_shape_a = [DPAS_TILE[0], DPAS_TILE[2]]
-    dpas_shape_b = [DPAS_TILE[2], DPAS_TILE[1]]
-    dpas_shape_c = [DPAS_TILE[0], DPAS_TILE[1]]
 
     # wg tiling
     if has_convert_c:
@@ -285,139 +280,154 @@ def bundle_xegpu_mlp_schedule(
 
     for i_layer, gpu_mod in enumerate(gpu_mod_ops):
         gpu_func = match(gpu_mod, ops={"gpu.func"})
-
-        # tunable parameters: xegpu layout
-        layer_params = params[f"layer_{i_layer}"]
-
-        wg_tile = [layer_params["wg_m"], layer_params["wg_n"]]
-        sg_tile = [layer_params["sg_m"], layer_params["sg_n"]]
-        k_tile = layer_params["k"]
-
-        sg_layout = [wg_tile[0] // sg_tile[0], wg_tile[1] // sg_tile[1]]
-
-        load_tile_a = [layer_params["load_a_m"], layer_params["load_a_k"]]
-        load_tile_b = [layer_params["load_b_k"], layer_params["load_b_n"]]
-        prefetch_tile_a = [layer_params["pf_a_m"], layer_params["pf_a_k"]]
-        prefetch_tile_b = [layer_params["pf_b_k"], layer_params["pf_b_n"]]
-        nb_prefetch = layer_params["pf_nb"]
-
-        prefetch_layout_a = [
-            wg_tile[0] // prefetch_tile_a[0],
-            k_tile // prefetch_tile_a[1],
-        ]
-        prefetch_layout_b = [
-            k_tile // prefetch_tile_b[0],
-            wg_tile[1] // prefetch_tile_b[1],
-        ]
-
-        # matmul matrix shapes
-        sg_tile_a = [sg_tile[0], k_tile]
-        sg_tile_b = [k_tile, sg_tile[1]]
-
-        # add layouts to DPAS op operands
-        k_loop = match(gpu_func, ops={"scf.for"})
-        dpas_op = match(k_loop, ops={"xegpu.dpas"})
-        tile_a = transform.get_operand(anyvalue, dpas_op, [0])
-        tile_b = transform.get_operand(anyvalue, dpas_op, [1])
-
-        # insert prefetch ops for DPAS A and B tiles
-        def add_prefetch(tile, nb_prefetch, **layout):
-            desc_op = xegpu.insert_prefetch(
-                tile,
-                nb_prefetch=nb_prefetch,
-            )
-            pf_ops = transform.get_consumers_of_result(anytype, desc_op, 0)
-            for pf in transform.split_handle((anytype,) * (nb_prefetch + 1), pf_ops):
-                xegpu.set_op_layout_attr(pf, **layout)
-
-        add_prefetch(
-            tile_a,
-            nb_prefetch,
-            sg_layout=prefetch_layout_a,
-            sg_data=prefetch_tile_a,
-            inst_data=PREFETCH_INST_DATA,
+        xegpu_wg_annotation_for_mlp_layer(
+            gpu_func, params[f"layer_{i_layer}"], has_bias=has_bias
         )
-        add_prefetch(
-            tile_b,
-            nb_prefetch,
-            sg_layout=prefetch_layout_b,
-            sg_data=prefetch_tile_b,
-            inst_data=PREFETCH_INST_DATA,
-        )
-
-        def annotate_ab_load(tile, layout_load, layout_dpas):
-            desc_op = xegpu.get_desc_op(tile)
-            load_op = transform.get_consumers_of_result(anytype, desc_op, 0)
-            xegpu.set_op_layout_attr(load_op, **layout_load)
-            xegpu.convert_layout(
-                tile,
-                input_sg_layout=layout_load["sg_layout"],
-                input_sg_data=layout_load["sg_data"],
-                input_inst_data=layout_load["inst_data"],
-                target_sg_layout=layout_dpas["sg_layout"],
-                target_sg_data=layout_dpas["sg_data"],
-                target_inst_data=layout_dpas["inst_data"],
-            )
-
-        # A tile load layout
-        layout_load_a = {
-            "sg_layout": sg_layout,
-            "sg_data": sg_tile_a,
-            "inst_data": load_tile_a,
-        }
-        # A tile dpas layout
-        layout_dpas_a = layout_load_a.copy()
-        layout_dpas_a["inst_data"] = dpas_shape_a
-        annotate_ab_load(tile_a, layout_load_a, layout_dpas_a)
-
-        # B tile load layout
-        layout_load_b = {
-            "sg_layout": sg_layout,
-            "sg_data": sg_tile_b,
-            "inst_data": load_tile_b,
-        }
-        # B tile dpas layout
-        layout_dpas_b = layout_load_b.copy()
-        layout_dpas_b["inst_data"] = dpas_shape_b
-        annotate_ab_load(tile_b, layout_load_b, layout_dpas_b)
-
-        # C tile layout
-        output_layout = {
-            "sg_layout": sg_layout,
-            "sg_data": sg_tile,
-            "inst_data": dpas_shape_c,
-        }
-        # C tile dpas anchor layout
-        xegpu.set_op_layout_attr(dpas_op, index=0, **layout_dpas_a)
-        xegpu.set_op_layout_attr(dpas_op, index=1, **layout_dpas_b)
-        xegpu.set_op_layout_attr(dpas_op, index=2, **output_layout)
-        # annotate store op
-        store_op_c = match(gpu_func, ops={"xegpu.store_nd"})
-        xegpu.set_op_layout_attr(store_op_c, **output_layout)
-
-        if has_bias:
-            # annotate the 1d load of the broadcast op with a slice layout
-            add_op = match(gpu_func, ops={"arith.addf"})
-            bcast_op = transform.get_producer_of_operand(anytype, add_op, 0)
-            bcast_load = transform.get_producer_of_operand(anytype, bcast_op, 0)
-            xegpu.set_op_layout_attr(
-                bcast_load, result=True, index=0, **output_layout, slice_dims=[0]
-            )
-            raise NotImplementedError("Bias layout propagation is not supported.")
-
-        transform.apply_cse(gpu_func)
-        canonicalize(gpu_func)
-
-        # hoist desc ops out of reduction loop
-        transform.apply_licm(k_loop)
-
-        canonicalize(gpu_func)
-        transform.apply_cse(gpu_func)
 
     if stop_at_stage == "xegpu-wg":
         raise PipelineInterrupt()
 
     return mod
+
+
+def xegpu_wg_annotation_for_mlp_layer(gpu_func: ir.Value, params: dict, has_bias: bool):
+    """
+    Adds prefetching and XeGPU anchor layout annotations for an MLP layer.
+
+    Should be applied after the payload has been converted to XeGPU using
+    the convert-vector-to-xegpu pass.
+    """
+    anytype = transform.AnyOpType.get()
+    anyvalue = transform.AnyValueType.get()
+
+    dpas_shape_a = [DPAS_TILE[0], DPAS_TILE[2]]
+    dpas_shape_b = [DPAS_TILE[2], DPAS_TILE[1]]
+    dpas_shape_c = [DPAS_TILE[0], DPAS_TILE[1]]
+
+    wg_tile = [params["wg_m"], params["wg_n"]]
+    sg_tile = [params["sg_m"], params["sg_n"]]
+    k_tile = params["k"]
+
+    sg_layout = [wg_tile[0] // sg_tile[0], wg_tile[1] // sg_tile[1]]
+
+    load_tile_a = [params["load_a_m"], params["load_a_k"]]
+    load_tile_b = [params["load_b_k"], params["load_b_n"]]
+    prefetch_tile_a = [params["pf_a_m"], params["pf_a_k"]]
+    prefetch_tile_b = [params["pf_b_k"], params["pf_b_n"]]
+    nb_prefetch = params["pf_nb"]
+
+    prefetch_layout_a = [
+        wg_tile[0] // prefetch_tile_a[0],
+        k_tile // prefetch_tile_a[1],
+    ]
+    prefetch_layout_b = [
+        k_tile // prefetch_tile_b[0],
+        wg_tile[1] // prefetch_tile_b[1],
+    ]
+
+    # matmul matrix shapes
+    sg_tile_a = [sg_tile[0], k_tile]
+    sg_tile_b = [k_tile, sg_tile[1]]
+
+    # add layouts to DPAS op operands
+    k_loop = match(gpu_func, ops={"scf.for"})
+    dpas_op = match(k_loop, ops={"xegpu.dpas"})
+    tile_a = transform.get_operand(anyvalue, dpas_op, [0])
+    tile_b = transform.get_operand(anyvalue, dpas_op, [1])
+
+    # insert prefetch ops for DPAS A and B tiles
+    def add_prefetch(tile, nb_prefetch, **layout):
+        desc_op = xegpu.insert_prefetch(
+            tile,
+            nb_prefetch=nb_prefetch,
+        )
+        pf_ops = transform.get_consumers_of_result(anytype, desc_op, 0)
+        for pf in transform.split_handle((anytype,) * (nb_prefetch + 1), pf_ops):
+            xegpu.set_op_layout_attr(pf, **layout)
+
+    add_prefetch(
+        tile_a,
+        nb_prefetch,
+        sg_layout=prefetch_layout_a,
+        sg_data=prefetch_tile_a,
+        inst_data=PREFETCH_INST_DATA,
+    )
+    add_prefetch(
+        tile_b,
+        nb_prefetch,
+        sg_layout=prefetch_layout_b,
+        sg_data=prefetch_tile_b,
+        inst_data=PREFETCH_INST_DATA,
+    )
+
+    def annotate_ab_load(tile, layout_load, layout_dpas):
+        desc_op = xegpu.get_desc_op(tile)
+        load_op = transform.get_consumers_of_result(anytype, desc_op, 0)
+        xegpu.set_op_layout_attr(load_op, **layout_load)
+        xegpu.convert_layout(
+            tile,
+            input_sg_layout=layout_load["sg_layout"],
+            input_sg_data=layout_load["sg_data"],
+            input_inst_data=layout_load["inst_data"],
+            target_sg_layout=layout_dpas["sg_layout"],
+            target_sg_data=layout_dpas["sg_data"],
+            target_inst_data=layout_dpas["inst_data"],
+        )
+
+    # A tile load layout
+    layout_load_a = {
+        "sg_layout": sg_layout,
+        "sg_data": sg_tile_a,
+        "inst_data": load_tile_a,
+    }
+    # A tile dpas layout
+    layout_dpas_a = layout_load_a.copy()
+    layout_dpas_a["inst_data"] = dpas_shape_a
+    annotate_ab_load(tile_a, layout_load_a, layout_dpas_a)
+
+    # B tile load layout
+    layout_load_b = {
+        "sg_layout": sg_layout,
+        "sg_data": sg_tile_b,
+        "inst_data": load_tile_b,
+    }
+    # B tile dpas layout
+    layout_dpas_b = layout_load_b.copy()
+    layout_dpas_b["inst_data"] = dpas_shape_b
+    annotate_ab_load(tile_b, layout_load_b, layout_dpas_b)
+
+    # C tile layout
+    output_layout = {
+        "sg_layout": sg_layout,
+        "sg_data": sg_tile,
+        "inst_data": dpas_shape_c,
+    }
+    # C tile dpas anchor layout
+    xegpu.set_op_layout_attr(dpas_op, index=0, **layout_dpas_a)
+    xegpu.set_op_layout_attr(dpas_op, index=1, **layout_dpas_b)
+    xegpu.set_op_layout_attr(dpas_op, index=2, **output_layout)
+    # annotate store op
+    store_op_c = match(gpu_func, ops={"xegpu.store_nd"})
+    xegpu.set_op_layout_attr(store_op_c, **output_layout)
+
+    if has_bias:
+        # annotate the 1d load of the broadcast op with a slice layout
+        add_op = match(gpu_func, ops={"arith.addf"})
+        bcast_op = transform.get_producer_of_operand(anytype, add_op, 0)
+        bcast_load = transform.get_producer_of_operand(anytype, bcast_op, 0)
+        xegpu.set_op_layout_attr(
+            bcast_load, result=True, index=0, **output_layout, slice_dims=[0]
+        )
+        raise NotImplementedError("Bias layout propagation is not supported.")
+
+    transform.apply_cse(gpu_func)
+    canonicalize(gpu_func)
+
+    # hoist desc ops out of reduction loop
+    transform.apply_licm(k_loop)
+
+    canonicalize(gpu_func)
+    transform.apply_cse(gpu_func)
 
 
 def bundle_xegpu_to_binary(mod, stop_at_stage: str = "") -> ir.Module:
