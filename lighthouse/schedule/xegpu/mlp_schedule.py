@@ -20,7 +20,7 @@ class PipelineInterrupt(Exception):
 
 
 def match_and_split(*args, nhandles=1, **kwargs):
-    """Henper function that splits matched handles."""
+    """Helper function that splits matched handles."""
     matched = match(*args, **kwargs)
     anytype = transform.AnyOpType.get()
     matched_ops = transform.split_handle((anytype,) * nhandles, matched)
@@ -30,9 +30,9 @@ def match_and_split(*args, nhandles=1, **kwargs):
 
 
 # hardware constraints
-dpas_tile = [8, 16, 16]
-prefetch_inst_data = [8, 16]
-nb_workitems = 16  # workitems in subgroup
+DPAS_TILE = [8, 16, 16]
+PREFETCH_INST_DATA = [8, 16]
+NB_WORKITEMS = 16  # workitems in subgroup
 
 
 def get_schedule_module(
@@ -90,7 +90,7 @@ def xegpu_mlp_transform_schedule(
 ):
     """Transform schedule for MLP-like payload."""
     try:
-        mod = bundle_xepu_mlp_schedule(
+        mod = bundle_xegpu_mlp_schedule(
             mod,
             has_bias=has_bias,
             has_relu=has_relu,
@@ -111,7 +111,7 @@ def xegpu_mlp_transform_schedule(
         transform.yield_()
 
 
-def bundle_xepu_mlp_schedule(
+def bundle_xegpu_mlp_schedule(
     mod: ir.Value,
     has_bias: bool = False,
     has_relu: bool = False,
@@ -134,9 +134,9 @@ def bundle_xepu_mlp_schedule(
     for i in range(nlayers):
         assert f"layer_{i}" in params, f"Missing parameters for 'layer_{i}'"
 
-    dpas_shape_a = [dpas_tile[0], dpas_tile[2]]
-    dpas_shape_b = [dpas_tile[2], dpas_tile[1]]
-    dpas_shape_c = [dpas_tile[0], dpas_tile[1]]
+    dpas_shape_a = [DPAS_TILE[0], DPAS_TILE[2]]
+    dpas_shape_b = [DPAS_TILE[2], DPAS_TILE[1]]
+    dpas_shape_c = [DPAS_TILE[0], DPAS_TILE[1]]
 
     # wg tiling
     if has_convert_c:
@@ -255,7 +255,7 @@ def bundle_xepu_mlp_schedule(
         # derived parameters
         sg_layout = [wg_tile[0] // sg_tile[0], wg_tile[1] // sg_tile[1]]
         # number of threads collapsed to 1d layout
-        nb_threads = sg_layout[0] * sg_layout[1] * nb_workitems
+        nb_threads = sg_layout[0] * sg_layout[1] * NB_WORKITEMS
 
         xegpu.set_gpu_launch_threads(launch_op, threads=[nb_threads, 1, 1])
 
@@ -335,14 +335,14 @@ def bundle_xepu_mlp_schedule(
             nb_prefetch,
             sg_layout=prefetch_layout_a,
             sg_data=prefetch_tile_a,
-            inst_data=prefetch_inst_data,
+            inst_data=PREFETCH_INST_DATA,
         )
         add_prefetch(
             tile_b,
             nb_prefetch,
             sg_layout=prefetch_layout_b,
             sg_data=prefetch_tile_b,
-            inst_data=prefetch_inst_data,
+            inst_data=PREFETCH_INST_DATA,
         )
 
         def annotate_ab_load(tile, layout_load, layout_dpas):

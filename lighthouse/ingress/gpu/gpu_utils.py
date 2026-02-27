@@ -52,9 +52,9 @@ def emit_gpu_copy(suffix: str, element_type: ir.Type, rank: int = 2):
 def emit_gpu_util_funcs(element_type: ir.Type):
     """Emit GPU utility functions for allocation, deallocation and copy."""
     suffix = {
-        ir.F16Type.get(): "f16",
-        ir.F32Type.get(): "f32",
-    }[element_type]
+        ir.F16Type: "f16",
+        ir.F32Type: "f32",
+    }[type(element_type)]
     emit_gpu_alloc(suffix, element_type)
     emit_gpu_dealloc(suffix, element_type)
     emit_gpu_copy(suffix, element_type)

@@ -48,6 +48,7 @@ class XeGPUMLP(XeGPUWorkload):
         accumulate_c: bool = False,
         identity_weights: bool = False,
     ):
+        super().__init__()
         self.batch_size = batch_size
         self.input_size = input_size
         self.output_size = output_size
@@ -77,8 +78,6 @@ class XeGPUMLP(XeGPUWorkload):
 
         if len(self.matmul_layers) == 1 and self.has_relu:
             warnings.warn("Using ReLU on a single layer model has no effect.")
-
-        super().__init__()
 
     @cached_property
     def _initial_host_arrays(self) -> list[np.ndarray]:
@@ -209,9 +208,11 @@ class XeGPUMLP(XeGPUWorkload):
             flop_count = 2 * M * N * K
             memory_reads = (M * K + K * N) * nbytes_ab  # read A and B
             memory_writes = M * N * nbytes_c  # write C
+            # Below we assume the post-ops are tiled-and-fused and do not cause
+            # reads/writes to global memory.
             if has_bias:
                 flop_count += M * N
-                memory_reads += N * nbytes_c  # read bias
+                memory_reads += N * nbytes_c  # read bias vector
             if has_relu:
                 flop_count += M * N
             return flop_count, memory_reads, memory_writes
@@ -225,7 +226,7 @@ class XeGPUMLP(XeGPUWorkload):
             flop_count += f
             memory_reads += r
             memory_writes += w
-        return (flop_count, memory_reads, memory_writes)
+        return flop_count, memory_reads, memory_writes
 
     def payload_module(self) -> ir.Module:
         mod = generate_mlp_payload(

@@ -46,6 +46,7 @@ class XeGPUMatMul(XeGPUWorkload):
         has_relu: bool = False,
         accumulate_c: bool = True,
     ):
+        super().__init__()
         self.M = M
         self.N = N
         self.K = K
@@ -67,8 +68,6 @@ class XeGPUMatMul(XeGPUWorkload):
         self.accumulate_c = accumulate_c
         if has_bias:
             raise NotImplementedError("Bias is not implemented yet")
-
-        super().__init__()
 
     @cached_property
     def _initial_host_arrays(self) -> list[np.ndarray]:
@@ -161,7 +160,7 @@ class XeGPUMatMul(XeGPUWorkload):
         if self.has_bias:
             memory_reads += N * nbytes_c  # read bias
         memory_writes = M * N * nbytes_c  # write C
-        return (flop_count, memory_reads, memory_writes)
+        return flop_count, memory_reads, memory_writes
 
     def payload_module(self) -> ir.Module:
         mod = generate_matmul_payload(
