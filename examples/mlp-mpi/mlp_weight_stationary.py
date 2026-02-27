@@ -1,7 +1,7 @@
 """Generate an MLIR module for a weight-stationary distributed MLP."""
 
 from mlir import ir
-from mlir.dialects import arith, func, linalg, memref, shard, tensor, tosa
+from mlir.dialects import arith, linalg, memref, shard, tensor, tosa
 from lighthouse.utils.mlir import c_func
 
 _GRID = "grid0"
@@ -18,23 +18,23 @@ def _emit_alloc(name: str, ty: ir.RankedTensorType, split: list[list[int]]):
     """Emit an ``alloc_<name>`` returning a newly allocated tensor of type *ty*,
     sharded according to *split*."""
 
-    @c_func(results=[ty], name=f"alloc_{name}")
+    @c_func(name=f"alloc_{name}")
     def _():
         e = tensor.empty(ty.shape, ty.element_type)
         sh = shard.sharding(_GRID, _axes(split), [], [])
         s = shard.shard(e, sh)
-        func.ReturnOp([shard.shard(s, sh, annotate_for_users=True)])
+        return shard.shard(s, sh, annotate_for_users=True)
 
 
 def _emit_gather(name: str, ty: ir.RankedTensorType, split: list[list[int]]):
     """Emit a ``gather_<name>`` function that replicates from *split*."""
 
-    @c_func(ty, results=[ty], name=f"gather_{name}")
+    @c_func(ty, name=f"gather_{name}")
     def _(arg):
         sh_from = shard.sharding(_GRID, _axes(split), [], [])
         sh_to = shard.sharding(_GRID, _axes([[]]), [], [])
         s = shard.shard(arg, sh_from)
-        func.ReturnOp([shard.shard(s, sh_to, annotate_for_users=True)])
+        return shard.shard(s, sh_to, annotate_for_users=True)
 
 
 def _emit_dealloc_2d():
@@ -88,7 +88,7 @@ def generate_mlp_payload(
         g.operation.attributes["sym_visibility"] = ir.StringAttr.get("private")
 
         # --- payload function ---
-        @c_func(t_mk, t_kn, t_nk, results=[t_mk], name=func_name)
+        @c_func(t_mk, t_kn, t_nk, name=func_name)
         def _(a, b, c):
             cst = arith.constant(f32, 0.0)
 
@@ -119,7 +119,7 @@ def generate_mlp_payload(
             sd_fill1 = shard.shard(fill1, sh_ac, annotate_for_users=True)
             mm1 = linalg.matmul(sig, sd_ci, outs=[sd_fill1])
 
-            func.ReturnOp([shard.shard(mm1, sh_act, annotate_for_users=True)])
+            return shard.shard(mm1, sh_act, annotate_for_users=True)
 
         # --- allocation helpers ---
         _emit_alloc("act", t_mk, split_act)
