@@ -297,6 +297,9 @@ class DistMLP(Workload):
                 func = apply_registered_pass(func, "canonicalize")
                 if self.verbose > 0:
                     transform.PrintOp(target=func)
+                func = apply_registered_pass(func, "shard-simplify")
+                if self.verbose > 0:
+                    transform.PrintOp(target=func)
                 func = apply_registered_pass(func, "convert-shard-to-mpi")
                 func = apply_registered_pass(func, "canonicalize")
                 if self.verbose > 0:
