@@ -1,4 +1,7 @@
 # RUN: %PYTHON %s --dump-kernel=xegpu-wg | FileCheck %s
+# RUN: %PYTHON %s --dump-kernel=xegpu-wg --relu | FileCheck %s
+# RUN: %PYTHON %s --dump-kernel=xegpu-wg --no-accumulate-c | FileCheck %s
+# RUN: %PYTHON %s --dump-kernel=xegpu-wg --relu --no-accumulate-c | FileCheck %s
 # CHECK: module attributes {gpu.container_module} {
 
 """
@@ -8,32 +11,22 @@ XeGPU matrix multiplication benchmark.
 import argparse
 import ctypes
 from typing import Optional
-from contextlib import contextmanager
 from functools import cached_property
 
 import numpy as np
 from mlir import ir
-from mlir.runtime.np_to_memref import (
-    get_ranked_memref_descriptor,
-    make_nd_memref_descriptor,
-    as_ctype,
-)
 from mlir.execution_engine import ExecutionEngine
 
-from lighthouse.workload import Workload, benchmark
-from lighthouse.utils.memref import get_packed_arg, to_ctype as memref_to_ctype
+from lighthouse.workload import benchmark
+from lighthouse.utils.memref import to_ctype as memref_to_ctype
+from lighthouse.utils.numpy import numpy_to_ctype
+from lighthouse.schedule.xegpu.mlp_schedule import get_schedule_module
+from lighthouse.ingress.gpu import generate_matmul_payload
 
-# Import from sibling files:
-from schedule import get_schedule_module
-from payload import generate_matmul_payload
-
-
-def numpy_to_ctype(arr: np.ndarray) -> ctypes._Pointer:
-    """Convert numpy array to memref and ctypes **void pointer."""
-    return memref_to_ctype(get_ranked_memref_descriptor(arr))
+from xegpu_workload import XeGPUWorkload, matmul_complexity
 
 
-class XeGPUMatMul(Workload):
+class XeGPUMatMul(XeGPUWorkload):
     """
     Matrix multiplication workload on XeGPU.
 
@@ -42,8 +35,6 @@ class XeGPUMatMul(Workload):
     Optionally adds a ReLU operation on the result C.
     Optionally adds a bias term to C (not implemented yet).
     """
-
-    payload_function_name = "payload"
 
     def __init__(
         self,
@@ -54,7 +45,9 @@ class XeGPUMatMul(Workload):
         c_type: str = "f32",
         has_bias: bool = False,
         has_relu: bool = False,
+        accumulate_c: bool = True,
     ):
+        super().__init__()
         self.M = M
         self.N = N
         self.K = K
@@ -73,46 +66,9 @@ class XeGPUMatMul(Workload):
         self.c_dtype = type_str_to_numpy[c_type]
         self.has_bias = has_bias
         self.has_relu = has_relu
+        self.accumulate_c = accumulate_c
         if has_bias:
             raise NotImplementedError("Bias is not implemented yet")
-        # cache allocated memrefs
-        self.gpu_memrefs = {}
-
-    def _allocate_array(
-        self,
-        name: str,
-        shape: tuple[int, ...],
-        dtype_str: str,
-        execution_engine: ExecutionEngine,
-    ) -> ctypes.Structure:
-        key = (name, dtype_str)
-        if key in self.gpu_memrefs:
-            return self.gpu_memrefs[key]
-        dtype = {
-            "f16": np.float16,
-            "f32": np.float32,
-        }[dtype_str]
-        alloc_func = execution_engine.lookup("gpu_alloc_" + dtype_str)
-        mref = make_nd_memref_descriptor(len(shape), as_ctype(dtype))()
-        ptr_mref = ctypes.pointer(ctypes.pointer(mref))
-        ptr_dims = [ctypes.pointer(ctypes.c_int32(d)) for d in shape]
-        alloc_func(get_packed_arg([ptr_mref] + ptr_dims))
-        self.gpu_memrefs[key] = mref
-        return mref
-
-    def _deallocate_all(self, execution_engine: ExecutionEngine):
-        for (_, dtype_str), mref in self.gpu_memrefs.items():
-            dealloc_func = execution_engine.lookup("gpu_dealloc_" + dtype_str)
-            ptr_mref = ctypes.pointer(ctypes.pointer(mref))
-            dealloc_func(get_packed_arg([ptr_mref]))
-        self.gpu_memrefs = {}
-
-    @contextmanager
-    def allocate_inputs(self, execution_engine: ExecutionEngine):
-        try:
-            yield self._get_input_arrays(execution_engine)
-        finally:
-            self._deallocate_all(execution_engine)
 
     @cached_property
     def _initial_host_arrays(self) -> list[np.ndarray]:
@@ -121,7 +77,7 @@ class XeGPUMatMul(Workload):
         # use integer values to avoid f16/f32 floating point discrepancies
         def gen_random(shape, dtype):
             # generate values in range [-3, 3]
-            a = np.round(6 * np.random.random_sample(shape)) - 3
+            a = np.random.randint(-3, 4, shape)
             return a.astype(dtype)
 
         np.random.seed(2)
@@ -136,7 +92,9 @@ class XeGPUMatMul(Workload):
         A, B, C = self._initial_host_arrays
         # use float32 data type for efficiency
         f32 = np.float32
-        C_ref = A.astype(f32) @ B.astype(f32) + C.astype(f32)
+        C_ref = A.astype(f32) @ B.astype(f32)
+        if self.accumulate_c:
+            C_ref += C.astype(f32)
         if self.has_relu:
             C_ref = np.maximum(C_ref, 0)
         if self.has_bias:
@@ -152,11 +110,10 @@ class XeGPUMatMul(Workload):
 
         A_host, B_host, C_host = self._initial_host_arrays
         # copy initial values to device
-        copy_func_ab = execution_engine.lookup("gpu_copy_" + self.ab_type)
-        copy_func_c = execution_engine.lookup("gpu_copy_" + self.c_type)
-        copy_func_ab(get_packed_arg([numpy_to_ctype(A_host), memref_to_ctype(A_gpu)]))
-        copy_func_ab(get_packed_arg([numpy_to_ctype(B_host), memref_to_ctype(B_gpu)]))
-        copy_func_c(get_packed_arg([numpy_to_ctype(C_host), memref_to_ctype(C_gpu)]))
+        copy_ab, copy_c = ("gpu_copy_" + s for s in (self.ab_type, self.c_type))
+        execution_engine.invoke(copy_ab, numpy_to_ctype(A_host), memref_to_ctype(A_gpu))
+        execution_engine.invoke(copy_ab, numpy_to_ctype(B_host), memref_to_ctype(B_gpu))
+        execution_engine.invoke(copy_c, numpy_to_ctype(C_host), memref_to_ctype(C_gpu))
 
         # return memrefs for the payload function
         return [A_gpu, B_gpu, C_gpu]
@@ -167,8 +124,11 @@ class XeGPUMatMul(Workload):
         # copy result from device to host
         C_gpu = self.gpu_memrefs[("C", self.c_type)]
         C_host_copy = np.zeros((self.M, self.N), dtype=self.c_dtype)
-        copy_func = execution_engine.lookup("gpu_copy_" + self.c_type)
-        copy_func(get_packed_arg([memref_to_ctype(C_gpu), numpy_to_ctype(C_host_copy)]))
+        execution_engine.invoke(
+            "gpu_copy_" + self.c_type,
+            memref_to_ctype(C_gpu),
+            numpy_to_ctype(C_host_copy),
+        )
 
         C_host_ref = self._reference_solution
         C_host = C_host_copy.astype(np.float32)
@@ -187,17 +147,18 @@ class XeGPUMatMul(Workload):
         return success
 
     def get_complexity(self) -> tuple[int, int, int]:
-        M, N, K = self.M, self.N, self.K
-        flop_count = 2 * M * N * K
-        if self.has_bias:
-            flop_count += M * N
-        if self.has_relu:
-            flop_count += M * N
         nbytes_ab = np.dtype(self.ab_dtype).itemsize
         nbytes_c = np.dtype(self.c_dtype).itemsize
-        memory_reads = (M * K + K * N) * nbytes_ab  # read A and B
-        memory_writes = M * N * nbytes_c  # write C
-        return (flop_count, memory_reads, memory_writes)
+        return matmul_complexity(
+            self.M,
+            self.N,
+            self.K,
+            self.has_bias,
+            self.has_relu,
+            self.accumulate_c,
+            nbytes_ab,
+            nbytes_c,
+        )
 
     def payload_module(self) -> ir.Module:
         mod = generate_matmul_payload(
@@ -209,6 +170,7 @@ class XeGPUMatMul(Workload):
             c_type_str=self.c_type,
             has_bias=self.has_bias,
             has_relu=self.has_relu,
+            accumulate_c=self.accumulate_c,
         )
         return mod
 
@@ -218,8 +180,10 @@ class XeGPUMatMul(Workload):
         return get_schedule_module(
             has_bias=self.has_bias,
             has_relu=self.has_relu,
+            has_convert_c=False,
             stop_at_stage=stop_at_stage,
-            params=parameters,
+            nlayers=1,
+            params={"layer_0": parameters},
         )
 
     def shared_libs(self) -> list[str]:
@@ -310,6 +274,11 @@ def parse_cli():
         help="Add relu op after the matrix multiplication (and bias if any).",
     )
     parser.add_argument(
+        "--no-accumulate-c",
+        action="store_true",
+        help="Compute plain matrix-multiply C=A*B instead of matrix-multiply-accumulate C+=A*B.",
+    )
+    parser.add_argument(
         "--check-result",
         action="store_true",
         help="Check the result of the matrix multiplication.",
@@ -326,7 +295,8 @@ def parse_cli():
             "xegpu-wg",
             "final",
         ],
-        help="Dump kernel IR at different stages of lowering.",
+        help="Dump kernel IR at different stages of lowering and exit without "
+        "executing the kernel.",
     )
     parser.add_argument(
         "--dump-schedule",
@@ -342,20 +312,20 @@ if __name__ == "__main__":
     args = parse_cli()
 
     params = {
-        "auto_wg_d0": args.wg_tile[0],
-        "auto_wg_d1": args.wg_tile[1],
-        "auto_sg_d0": args.sg_tile[0],
-        "auto_sg_d1": args.sg_tile[1],
-        "auto_k": args.k_tile,
-        "auto_load_a_d0": args.load_tile_a[0],
-        "auto_load_a_d1": args.load_tile_a[1],
-        "auto_load_b_d0": args.load_tile_b[0],
-        "auto_load_b_d1": args.load_tile_b[1],
-        "auto_prefetch_a_d0": args.prefetch_tile_a[0],
-        "auto_prefetch_a_d1": args.prefetch_tile_a[1],
-        "auto_prefetch_b_d0": args.prefetch_tile_b[0],
-        "auto_prefetch_b_d1": args.prefetch_tile_b[1],
-        "auto_nb_prefetch": args.nb_prefetch,
+        "wg_m": args.wg_tile[0],
+        "wg_n": args.wg_tile[1],
+        "sg_m": args.sg_tile[0],
+        "sg_n": args.sg_tile[1],
+        "k": args.k_tile,
+        "load_a_m": args.load_tile_a[0],
+        "load_a_k": args.load_tile_a[1],
+        "load_b_k": args.load_tile_b[0],
+        "load_b_n": args.load_tile_b[1],
+        "pf_a_m": args.prefetch_tile_a[0],
+        "pf_a_k": args.prefetch_tile_a[1],
+        "pf_b_k": args.prefetch_tile_b[0],
+        "pf_b_n": args.prefetch_tile_b[1],
+        "pf_nb": args.nb_prefetch,
     }
 
     M, N, K = args.sizes
@@ -371,6 +341,7 @@ if __name__ == "__main__":
             c_type=c_type,
             has_bias=False,
             has_relu=args.relu,
+            accumulate_c=not args.no_accumulate_c,
         )
 
         if args.dump_kernel or args.dump_schedule:
