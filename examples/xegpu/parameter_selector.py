@@ -7,7 +7,9 @@ def get_matmul_parameters(workload):
     parameters = {}
     for i, shape in enumerate(workload.matmul_layers):
         if shape not in matmul_param_db:
-            raise ValueError(f"No parameters found for matmul shape {shape}")
+            raise ValueError(
+                f"Parameter selector: No parameters found for matmul shape {shape}"
+            )
         parameters[f"layer_{i}"] = matmul_param_db[shape]
     return parameters
 

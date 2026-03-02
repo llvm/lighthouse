@@ -5,6 +5,10 @@
 
 """
 XeGPU MLP benchmark.
+
+The tiling strategy for each MLP layer is chosen by the parameter selector.
+Consequently, only layers whose sizes the parameter selector supports can be
+lowered and executed.
 """
 
 import argparse
