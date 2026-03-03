@@ -18,6 +18,8 @@ config.substitutions.append(("%CACHE", project_root + "/cache"))
 config.substitutions.append(("%VIRTUAL_ENV", os.environ.get("VIRTUAL_ENV", "")))
 python = os.environ.get("PYTHON", "python")
 config.substitutions.append(("%PYTHON", python))
+if pythonpath := os.environ.get("PYTHONPATH"):
+    config.substitutions[-1] = ("%PYTHON", f"env PYTHONPATH={pythonpath} {python}")
 if filecheck_path := os.environ.get("FILECHECK"):
     config.substitutions.append(("FileCheck", filecheck_path))
 
