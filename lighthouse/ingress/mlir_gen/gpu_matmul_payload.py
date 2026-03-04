@@ -3,6 +3,7 @@ from mlir.dialects import func, bufferization
 
 from .gpu_utils import emit_gpu_util_funcs, emit_buf_to_tensor
 from .gpu_mlp_payload import emit_mlp_layer
+from .utils import get_mlir_elem_type
 
 
 def generate_gpu_matmul_payload(
@@ -17,12 +18,8 @@ def generate_gpu_matmul_payload(
     accumulate_c: bool,
 ) -> ir.Module:
     """Generate payload function module for a matmul kernel."""
-    get_ir_dtype = {
-        "f16": ir.F16Type.get(),
-        "f32": ir.F32Type.get(),
-    }
-    ab_type = get_ir_dtype[ab_type_str]
-    c_type = get_ir_dtype[c_type_str]
+    ab_type = get_mlir_elem_type(ab_type_str)
+    c_type = get_mlir_elem_type(c_type_str)
     memref_a_t = ir.MemRefType.get((M, K), ab_type)
     memref_b_t = ir.MemRefType.get((K, N), ab_type)
     memref_c_t = ir.MemRefType.get((M, N), c_type)
@@ -42,7 +39,10 @@ def generate_gpu_matmul_payload(
             bias = args[2] if has_bias else None
             a_tensor = emit_buf_to_tensor(A, restrict=True)
             b_tensor = emit_buf_to_tensor(B, restrict=True)
-            c_tensor = emit_buf_to_tensor(C, restrict=True, writable=True)
+            if accumulate_c:
+                acc_tensor = emit_buf_to_tensor(C, restrict=True, writable=True)
+            else:
+                acc_tensor = None
             if has_bias:
                 bias_tensor = emit_buf_to_tensor(bias, restrict=True)
             else:
@@ -51,13 +51,11 @@ def generate_gpu_matmul_payload(
             output = emit_mlp_layer(
                 a_tensor,
                 b_tensor,
-                c_tensor,
-                ab_type,
-                c_type,
-                bias_tensor,
-                has_relu,
-                accumulate_c=accumulate_c,
-                convert_c_type=False,
+                acc_type=c_type,
+                result_type=c_type,
+                acc_tensor=acc_tensor,
+                bias_tensor=bias_tensor,
+                has_relu=has_relu,
             )
             bufferization.materialize_in_destination(
                 None, output, C, restrict=True, writable=True

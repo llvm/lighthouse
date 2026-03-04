@@ -3,7 +3,8 @@ from mlir.dialects import func, linalg, gpu, bufferization, arith, tensor
 
 from .gpu_utils import emit_gpu_util_funcs, emit_buf_to_tensor
 from .named import add_bias, relu, times_weights
-from .generic import elementwise
+from .generic import convert_datatype
+from .utils import get_mlir_elem_type
 
 
 def generate_gpu_mlp_payload(
@@ -19,12 +20,8 @@ def generate_gpu_mlp_payload(
     accumulate_c: bool,
 ) -> ir.Module:
     """Generate payload function module for an MLP kernel."""
-    get_ir_dtype = {
-        "f16": ir.F16Type.get(),
-        "f32": ir.F32Type.get(),
-    }
-    ab_type = get_ir_dtype[ab_type_str]
-    c_type = get_ir_dtype[c_type_str]
+    ab_type = get_mlir_elem_type(ab_type_str)
+    c_type = get_mlir_elem_type(c_type_str)
     mod = ir.Module.create()
     memref_in_t = ir.MemRefType.get((batch_size, input_size), ab_type)
     memref_out_t = ir.MemRefType.get((batch_size, output_size), ab_type)
@@ -66,52 +63,46 @@ def generate_gpu_mlp_payload(
                     bias_tensor = None
                 bias_tensors.append(bias_tensor)
 
-            layer_output = input_tensor
+            layer_input_tensor = input_tensor
             to_dealloc = None
-            for i, (weight, bias) in enumerate(zip(weight_tensors, bias_tensors)):
-                a_tensor = layer_output
-                b_tensor = weight
-                M, K = a_tensor.type.shape
-                _, N = b_tensor.type.shape
+            for i, (weight_tensor, bias_tensor) in enumerate(
+                zip(weight_tensors, bias_tensors)
+            ):
+                M, K = layer_input_tensor.type.shape
+                K, N = weight_tensor.type.shape
                 if i == nlayers - 1:
                     c_tensor = output_tensor
+                    c_memref = output
                 else:
                     # allocate intermediate buffer
                     memref_type = ir.MemRefType.get((M, N), ab_type)
                     c_memref = gpu.alloc(memref_type, None, [], [], [])
                     gpu.memset(None, [], c_memref, arith.constant(ab_type, 0.0))
-                    c_tensor = emit_buf_to_tensor(
-                        c_memref, restrict=True, writable=True
-                    )
-                bias_tensor = bias
+                    if accumulate_c:
+                        c_tensor = emit_buf_to_tensor(
+                            c_memref, restrict=True, writable=True
+                        )
                 # skip relu for final layer
                 emit_relu = has_relu if i < nlayers - 1 else False
                 layer_output = emit_mlp_layer(
-                    a_tensor,
-                    b_tensor,
-                    c_tensor,
-                    ab_type,
-                    c_type,
-                    bias_tensor,
-                    emit_relu,
-                    accumulate_c=accumulate_c,
-                    convert_c_type=True,
+                    layer_input_tensor,
+                    weight_tensor,
+                    acc_type=c_type,
+                    result_type=ab_type,
+                    acc_tensor=c_tensor if accumulate_c else None,
+                    bias_tensor=bias_tensor,
+                    has_relu=emit_relu,
                 )
-                if i != nlayers - 1:
-                    bufferization.materialize_in_destination(
-                        None, layer_output, c_memref, restrict=True, writable=True
-                    )
+                bufferization.materialize_in_destination(
+                    None, layer_output, c_memref, restrict=True, writable=True
+                )
                 if to_dealloc is not None:
                     gpu.dealloc(None, [], to_dealloc)
                     to_dealloc = None
                 if i != nlayers - 1:
                     # deallocate after next layer
                     to_dealloc = c_memref
-
-            # finalize
-            bufferization.materialize_in_destination(
-                None, layer_output, output, restrict=True, writable=True
-            )
+                layer_input_tensor = layer_output
 
         payload.func_op.attributes["llvm.emit_c_interface"] = ir.UnitAttr.get()
 
@@ -125,33 +116,29 @@ def generate_gpu_mlp_payload(
 def emit_mlp_layer(
     a_tensor,
     b_tensor,
-    c_tensor,
-    ab_type,
-    c_type,
+    acc_type,
+    result_type,
+    acc_tensor=None,
     bias_tensor=None,
     has_relu=False,
-    accumulate_c=True,
-    convert_c_type=False,
 ) -> ir.Value:
-    M, N = c_tensor.type.shape
-    if accumulate_c:
-        if convert_c_type:
-            assert c_tensor.type.element_type != c_type
-            # extend c_tensor type to c_type for accumulation
-            empty = tensor.empty((M, N), c_type)
-            accumulate_tensor = elementwise(c_tensor, empty, arith.extf)
-        else:
-            accumulate_tensor = c_tensor
+    M, K = a_tensor.type.shape
+    K, N = b_tensor.type.shape
+    convert_result = acc_type != result_type
+    if acc_tensor is not None:
+        if acc_tensor.type.element_type != acc_type:
+            empty = tensor.empty((M, N), acc_type)
+            acc_tensor = convert_datatype(acc_tensor, empty)
     else:
         # use zero tensor as the accumulator
-        zero = arith.constant(c_type, 0.0)
-        empty = tensor.empty((M, N), c_type)
+        zero = arith.constant(acc_type, 0.0)
+        empty = tensor.empty((M, N), acc_type)
         zero_tensor = linalg.fill(zero, outs=[empty])
-        accumulate_tensor = zero_tensor
-    terminal = times_weights(a_tensor, b_tensor, accumulate_tensor)
-    if convert_c_type:
-        empty = tensor.empty((M, N), ab_type)
-        terminal = elementwise(terminal, empty, arith.truncf)
+        acc_tensor = zero_tensor
+    terminal = times_weights(a_tensor, b_tensor, acc_tensor)
+    if convert_result:
+        empty = tensor.empty((M, N), result_type)
+        terminal = convert_datatype(terminal, empty)
     if bias_tensor is not None:
         terminal = add_bias(terminal, bias_tensor)
     if has_relu:

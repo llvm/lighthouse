@@ -1,5 +1,6 @@
 from mlir import ir
 from mlir.dialects import func, gpu, bufferization, arith
+from .utils import get_elem_type_str
 
 
 def emit_buf_to_tensor(memref_value: ir.Value, **kwargs) -> ir.Value:
@@ -51,10 +52,7 @@ def emit_gpu_copy(suffix: str, element_type: ir.Type, rank: int = 2):
 
 def emit_gpu_util_funcs(element_type: ir.Type):
     """Emit GPU utility functions for allocation, deallocation and copy."""
-    suffix = {
-        ir.F16Type: "f16",
-        ir.F32Type: "f32",
-    }[type(element_type)]
+    suffix = get_elem_type_str(type(element_type))
     emit_gpu_alloc(suffix, element_type)
     emit_gpu_dealloc(suffix, element_type)
     emit_gpu_copy(suffix, element_type)

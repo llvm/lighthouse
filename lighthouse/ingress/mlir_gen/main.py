@@ -11,7 +11,7 @@ from mlir import ir
 from mlir.dialects import func
 
 from . import named, generic, einsum, utils as gen_utils
-from .utils import get_outputs, get_weights, get_bias
+from .utils import get_outputs, get_weights, get_bias, get_mlir_elem_type
 
 BlockFactors = namedtuple("BlockFactors", "m n k vnni")
 
@@ -283,11 +283,7 @@ def main(args: Sequence[str]) -> ir.Module:
     blocking_factors = BlockFactors(*config["tiles"] + [config["vnni"]])
 
     with ir.Context(), ir.Location.name(" ".join(sys.argv)):
-        elem_type = {
-            "bf16": ir.BF16Type.get(),
-            "f16": ir.F16Type.get(),
-            "f32": ir.F32Type.get(),
-        }[config["float_type"]]
+        elem_type = get_mlir_elem_type(config["float_type"])
         tensor_type = TensorType(blocking_factors, elem_type)
 
         overall_args_types = (tensor_type.input((batch_size, num_inputs)),)

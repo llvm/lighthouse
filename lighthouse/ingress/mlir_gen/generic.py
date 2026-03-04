@@ -172,3 +172,10 @@ def elementwise(input, output, elemwise_func):
         return elemwise_func(result_elem_type, a)
 
     return f
+
+
+def convert_datatype(input, output):
+    in_width = input.type.element_type.width
+    out_width = output.type.element_type.width
+    op = arith.truncf if in_width > out_width else arith.extf
+    return elementwise(input, output, op)
