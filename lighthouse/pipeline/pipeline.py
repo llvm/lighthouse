@@ -36,7 +36,9 @@ class Pipeline:
             self.pm.add(p)
 
     def run(self, module: ir.Module) -> ir.Module:
-        assert module.context is self.context, "Module context does not match pipeline context."
+        assert module.context is self.context, (
+            "Module context does not match pipeline context."
+        )
         # IR is transformed in-place.
         self.pm.run(module.operation)
         return module
