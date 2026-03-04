@@ -11,7 +11,7 @@ from mlir import ir
 from mlir.dialects import func
 
 from . import named, generic, einsum, utils as gen_utils
-
+from .utils import get_outputs, get_weights, get_bias
 
 BlockFactors = namedtuple("BlockFactors", "m n k vnni")
 
@@ -217,13 +217,14 @@ def neural_net_as_func(
                 bias_or_bias_type = next(args_or_arg_types)
             outputs_or_outputs_type = next(args_or_arg_types)
 
-            result = times_weights(
-                layer_inputs, weights_or_weights_type, outputs_or_outputs_type
-            )
+            weights = get_weights(weights_or_weights_type)
+            outputs = get_outputs(outputs_or_outputs_type)
+            result = times_weights(layer_inputs, weights, outputs)
             last_matmul = result
 
             if config["bias"]:
-                result = add_bias(result, bias_or_bias_type)
+                bias = get_bias(bias_or_bias_type)
+                result = add_bias(result, bias)
             if config["relu"]:
                 result = relu(result)
 
