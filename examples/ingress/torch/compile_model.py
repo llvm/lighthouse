@@ -11,13 +11,13 @@ from lighthouse.pipeline.pipeline import Pipeline
 
 
 def lower_to_llvm(module: ir.Module) -> ir.Module:
-    pipeline = Pipeline(module)
+    pipeline = Pipeline(module.context)
     pipeline.add_passes(["func.func(llvm-request-c-wrappers)"])
     pipeline.add_bufferization()
     pipeline.add_cleanup()
     pipeline.add_llvm_lowering()
     pipeline.add_cleanup()
-    return pipeline.run()
+    return pipeline.run(module)
 
 
 def jit_compile_model_decorator():

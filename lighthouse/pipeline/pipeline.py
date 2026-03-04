@@ -10,9 +10,9 @@ class Pipeline:
     It can also be invoked in between transform schedules to canonicalize the IR and enable more optimization opportunities.
     """
 
-    def __init__(self, module: ir.Module):
-        self.module = module
-        self.pm = PassManager("builtin.module", self.module.context)
+    def __init__(self, context: ir.Context):
+        self.context = context
+        self.pm = PassManager("builtin.module", self.context)
 
     def add_bufferization(self) -> None:
         self.pm.add(
@@ -35,7 +35,8 @@ class Pipeline:
         for p in passes:
             self.pm.add(p)
 
-    def run(self) -> ir.Module:
+    def run(self, module: ir.Module) -> ir.Module:
+        assert module.context is self.context, "Module context does not match pipeline context."
         # IR is transformed in-place.
-        self.pm.run(self.module.operation)
-        return self.module
+        self.pm.run(module.operation)
+        return module
