@@ -2,11 +2,14 @@ from mlir import ir
 from mlir.passmanager import PassManager
 
 
-# Defines a compilation pipeline that can be reused across workloads and ingresses.
-# For example, this pipeline can be used as the default pipeline for all CPU workloads that do not specify a custom pipeline.
-# The pipeline can be extended with additional passes as needed, and can be customized for different target architectures or workload characteristics.
-# It can also be invoked in between transform schedules to canonicalize the IR and enable more optimization opportunities.
 class Pipeline:
+    """Defines a compilation pipeline that can be reused across workloads and ingresses.
+
+    For example, this pipeline can be used as the default pipeline for all CPU workloads that do not specify a custom pipeline.
+    The pipeline can be extended with additional passes as needed, and can be customized for different target architectures or workload characteristics.
+    It can also be invoked in between transform schedules to canonicalize the IR and enable more optimization opportunities.
+    """
+
     def __init__(self, module: ir.Module):
         self.module = module
         self.pm = PassManager("builtin.module", self.module.context)
