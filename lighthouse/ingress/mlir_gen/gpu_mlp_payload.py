@@ -41,20 +41,20 @@ def generate_gpu_mlp_payload(
             bias_memref_types.append(memref_t)
     with ir.InsertionPoint(mod.body):
         # function argument order:
-        #   input, output, weights_0, weights_1, ..., [bias_0, bias_1, ...]
-        fargs = [memref_in_t, memref_out_t] + weight_memref_types
+        #   output, input, weights_0, weights_1, ..., [bias_0, bias_1, ...]
+        fargs = [memref_out_t, memref_in_t] + weight_memref_types
         if has_bias:
             fargs += bias_memref_types
 
         @func_cif(*fargs, name=func_name)
         def payload(*args):
-            input = args[0]
-            output = args[1]
+            output = args[0]
+            input = args[1]
             nlayers = len(hidden_layer_sizes) + 1
             weights = args[2 : 2 + nlayers]
             biases = args[2 + nlayers :] if has_bias else [None] * nlayers
-            input_tensor = emit_buf_to_tensor(input, restrict=True)
             output_tensor = emit_buf_to_tensor(output, restrict=True, writable=True)
+            input_tensor = emit_buf_to_tensor(input, restrict=True)
             weight_tensors = []
             for weight_memref in weights:
                 weight_tensor = emit_buf_to_tensor(weight_memref, restrict=True)

@@ -115,7 +115,7 @@ class XeGPUMLP(XeGPUWorkload):
         if self.has_bias:
             raise NotImplementedError("Bias initialization not implemented")
 
-        return input_array, output_array, *weights
+        return output_array, input_array, *weights
 
     @cached_property
     def _reference_solution(self) -> np.ndarray:
@@ -124,8 +124,8 @@ class XeGPUMLP(XeGPUWorkload):
         host_arrays = self._initial_host_arrays
         # use float32 data type for efficiency
         host_arrays = [arr.astype(np.float32) for arr in host_arrays]
-        input_array = host_arrays[0]
-        output_array = host_arrays[1]
+        output_array = host_arrays[0]
+        input_array = host_arrays[1]
         weights = host_arrays[2:]
 
         a_array = input_array
@@ -153,7 +153,7 @@ class XeGPUMLP(XeGPUWorkload):
         output_gpu = self._allocate_array(
             "output", self.output_shape, self.ab_type, execution_engine
         )
-        gpu_arrays = [input_gpu, output_gpu]
+        gpu_arrays = [output_gpu, input_gpu]
         for i, (in_size, out_size) in enumerate(self.weight_shapes):
             W_gpu = self._allocate_array(
                 f"weight_{i}", (in_size, out_size), self.ab_type, execution_engine

@@ -81,15 +81,15 @@ class XeGPUMatMul(XeGPUWorkload):
             return a.astype(dtype)
 
         np.random.seed(2)
-        A = gen_random((self.M, self.K), self.ab_dtype)
-        B = gen_random((self.K, self.N), self.ab_dtype)
-        C = gen_random((self.M, self.N), self.c_dtype)
-        return A, B, C
+        A = gen_random(self.a_shape, self.ab_dtype)
+        B = gen_random(self.b_shape, self.ab_dtype)
+        C = gen_random(self.c_shape, self.c_dtype)
+        return C, A, B
 
     @cached_property
     def _reference_solution(self) -> np.ndarray:
         """Compute reference solution on host with numpy."""
-        A, B, C = self._initial_host_arrays
+        C, A, B = self._initial_host_arrays
         # use float32 data type for efficiency
         f32 = np.float32
         C_ref = A.astype(f32) @ B.astype(f32)
@@ -108,15 +108,15 @@ class XeGPUMatMul(XeGPUWorkload):
         B_gpu = self._allocate_array("B", self.b_shape, self.ab_type, execution_engine)
         C_gpu = self._allocate_array("C", self.c_shape, self.c_type, execution_engine)
 
-        A_host, B_host, C_host = self._initial_host_arrays
-        # copy initial values to device
+        # Copy initial values to device.
+        C_host, A_host, B_host = self._initial_host_arrays
         copy_ab, copy_c = ("gpu_copy_" + s for s in (self.ab_type, self.c_type))
         execution_engine.invoke(copy_ab, numpy_to_ctype(A_host), memref_to_ctype(A_gpu))
         execution_engine.invoke(copy_ab, numpy_to_ctype(B_host), memref_to_ctype(B_gpu))
         execution_engine.invoke(copy_c, numpy_to_ctype(C_host), memref_to_ctype(C_gpu))
 
-        # return memrefs for the payload function
-        return [A_gpu, C_gpu, B_gpu]
+        # Return memrefs for the payload function.
+        return [C_gpu, A_gpu, B_gpu]
 
     def check_correctness(
         self, execution_engine: ExecutionEngine, verbose: int = 0
