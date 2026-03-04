@@ -116,7 +116,7 @@ class XeGPUMatMul(XeGPUWorkload):
         execution_engine.invoke(copy_c, numpy_to_ctype(C_host), memref_to_ctype(C_gpu))
 
         # return memrefs for the payload function
-        return [A_gpu, B_gpu, C_gpu]
+        return [A_gpu, C_gpu, B_gpu]
 
     def check_correctness(
         self, execution_engine: ExecutionEngine, verbose: int = 0

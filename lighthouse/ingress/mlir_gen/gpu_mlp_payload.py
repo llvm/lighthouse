@@ -15,16 +15,19 @@ def generate_gpu_mlp_payload(
     hidden_layer_sizes: list[int],
     ab_type_str: str,
     c_type_str: str,
+    result_type_str: str,
     has_bias: bool,
     has_relu: bool,
     accumulate_c: bool,
+    relu_on_final_layer: bool = False,
 ) -> ir.Module:
     """Generate payload function module for an MLP kernel."""
     ab_type = get_mlir_elem_type(ab_type_str)
     c_type = get_mlir_elem_type(c_type_str)
+    result_type = get_mlir_elem_type(result_type_str)
     mod = ir.Module.create()
     memref_in_t = ir.MemRefType.get((batch_size, input_size), ab_type)
-    memref_out_t = ir.MemRefType.get((batch_size, output_size), ab_type)
+    memref_out_t = ir.MemRefType.get((batch_size, output_size), result_type)
     layer_sizes = [input_size] + hidden_layer_sizes + [output_size]
     feature_sizes = list(zip(layer_sizes[:-1], layer_sizes[1:]))
     weight_memref_types = []
@@ -50,7 +53,7 @@ def generate_gpu_mlp_payload(
             weights = args[2 : 2 + nlayers]
             biases = args[2 + nlayers :] if has_bias else [None] * nlayers
             input_tensor = emit_buf_to_tensor(input, restrict=True)
-            output_tensor = emit_buf_to_tensor(output, restrict=True)
+            output_tensor = emit_buf_to_tensor(output, restrict=True, writable=True)
             weight_tensors = []
             for weight_memref in weights:
                 weight_tensor = emit_buf_to_tensor(weight_memref, restrict=True)
@@ -83,12 +86,13 @@ def generate_gpu_mlp_payload(
                             c_memref, restrict=True, writable=True
                         )
                 # skip relu for final layer
-                emit_relu = has_relu if i < nlayers - 1 else False
+                hidden_layer = i < nlayers - 1
+                emit_relu = has_relu if hidden_layer or relu_on_final_layer else False
                 layer_output = emit_mlp_layer(
                     layer_input_tensor,
                     weight_tensor,
                     acc_type=c_type,
-                    result_type=ab_type,
+                    result_type=ab_type if hidden_layer else result_type,
                     acc_tensor=c_tensor if accumulate_c else None,
                     bias_tensor=bias_tensor,
                     has_relu=emit_relu,

@@ -230,6 +230,7 @@ class XeGPUMLP(XeGPUWorkload):
             hidden_layer_sizes=self.hidden_layer_sizes,
             ab_type_str=self.ab_type,
             c_type_str=self.c_type,
+            result_type_str=self.ab_type,
             has_bias=self.has_bias,
             has_relu=self.has_relu,
             accumulate_c=self.accumulate_c,
