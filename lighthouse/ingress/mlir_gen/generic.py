@@ -153,3 +153,22 @@ def softmax(inputs: ir.Value, softmax_buf: ir.Value) -> ir.Value:
         return arith.DivFOp(exped_input, normalizing_term)
 
     return dived_bcasted_summed_exped
+
+
+def elementwise(input, output, elemwise_func):
+    assert input.type.shape == output.type.shape
+    result_elem_type = output.type.element_type
+    rank = len(output.type.shape)
+    id_map = id_map = ir.AffineMap.get_identity(rank)
+    par_iter = linalg.IteratorType.parallel
+
+    @linalg.generic(
+        [input],
+        [output],
+        [id_map, id_map],
+        [par_iter, par_iter],
+    )
+    def f(a, b):
+        return elemwise_func(result_elem_type, a)
+
+    return f

@@ -3,8 +3,6 @@ from mlir.dialects import linalg, tensor, arith
 
 
 def times_weights(inputs: ir.Value, weights: ir.Value, outputs: ir.Value) -> ir.Value:
-    assert inputs.type.element_type == outputs.type.element_type
-
     if inputs.type.rank == 2:
         return linalg.matmul(inputs, weights, outs=(outputs,))
     elif inputs.type.rank == 4:

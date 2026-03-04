@@ -2,6 +2,8 @@ from mlir import ir
 from mlir.dialects import func, linalg, gpu, bufferization, arith, tensor
 
 from .gpu_utils import emit_gpu_util_funcs, emit_buf_to_tensor
+from .named import add_bias, relu, times_weights
+from .generic import elementwise
 
 
 def generate_gpu_mlp_payload(
@@ -132,54 +134,27 @@ def emit_mlp_layer(
     convert_c_type=False,
 ) -> ir.Value:
     M, N = c_tensor.type.shape
-    id_map = ir.AffineMap.get_identity(2)
-    par_iter = linalg.IteratorType.parallel
-    if convert_c_type and accumulate_c:
-        empty = tensor.empty((M, N), c_type)
-
-        @linalg.generic(
-            [c_tensor],
-            [empty],
-            [id_map, id_map],
-            [par_iter, par_iter],
-        )
-        def f(a, b):
-            return arith.extf(c_type, a)
-
-        input_c_tensor = f
-    else:
-        if accumulate_c:
-            input_c_tensor = c_tensor
-        else:
-            zero = arith.constant(c_type, 0.0)
+    if accumulate_c:
+        if convert_c_type:
+            assert c_tensor.type.element_type != c_type
+            # extend c_tensor type to c_type for accumulation
             empty = tensor.empty((M, N), c_type)
-            zero_tensor = linalg.fill(zero, outs=[empty])
-            input_c_tensor = zero_tensor
-    mmul = linalg.matmul(a_tensor, b_tensor, outs=[input_c_tensor])
-    terminal = mmul
-    res_type = c_type
-    if convert_c_type:
-        res_type = ab_type
-        empty = tensor.empty((M, N), ab_type)
-
-        @linalg.generic(
-            [terminal],
-            [empty],
-            [id_map, id_map],
-            [par_iter, par_iter],
-        )
-        def f(a, b):
-            return arith.truncf(ab_type, a)
-
-        terminal = f
-    if bias_tensor is not None:
-        empty = tensor.empty((M, N), res_type)
-        bcast = linalg.broadcast(bias_tensor, outs=[empty], dimensions=[0])
-        terminal = linalg.add(bcast, terminal, outs=[empty])
-    if has_relu:
-        zero = arith.constant(ab_type if convert_c_type else c_type, 0.0)
-        empty = tensor.empty((M, N), res_type)
+            accumulate_tensor = elementwise(c_tensor, empty, arith.extf)
+        else:
+            accumulate_tensor = c_tensor
+    else:
+        # use zero tensor as the accumulator
+        zero = arith.constant(c_type, 0.0)
+        empty = tensor.empty((M, N), c_type)
         zero_tensor = linalg.fill(zero, outs=[empty])
-        terminal = linalg.max(terminal, zero_tensor, outs=[empty])
+        accumulate_tensor = zero_tensor
+    terminal = times_weights(a_tensor, b_tensor, accumulate_tensor)
+    if convert_c_type:
+        empty = tensor.empty((M, N), ab_type)
+        terminal = elementwise(terminal, empty, arith.truncf)
+    if bias_tensor is not None:
+        terminal = add_bias(terminal, bias_tensor)
+    if has_relu:
+        terminal = relu(terminal)
 
     return terminal
