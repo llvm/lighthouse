@@ -11,7 +11,6 @@ class Pipeline:
         self.pm = PassManager("builtin.module", self.module.context)
 
     def add_bufferization(self) -> None:
-        self.pm.add("func.func(llvm-request-c-wrappers)")
         self.pm.add(
             "one-shot-bufferize{function-boundary-type-conversion=identity-layout-map bufferize-function-boundaries}"
         )

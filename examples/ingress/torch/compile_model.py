@@ -12,9 +12,9 @@ from lighthouse.pipeline.pipeline import Pipeline
 
 def lower_to_llvm(module: ir.Module) -> ir.Module:
     pipeline = Pipeline(module)
+    pipeline.add_passes(["func.func(llvm-request-c-wrappers)"])
     pipeline.add_bufferization()
-    # Testing cleanup as a list of passes to be added in the middle of the pipeline.
-    pipeline.add_passes(["cse", "canonicalize"])
+    pipeline.add_cleanup()
     pipeline.add_llvm_lowering()
     pipeline.add_cleanup()
     return pipeline.run()
