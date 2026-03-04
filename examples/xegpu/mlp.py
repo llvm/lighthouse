@@ -25,7 +25,7 @@ from lighthouse.workload import benchmark
 from lighthouse.utils.memref import to_ctype as memref_to_ctype
 from lighthouse.utils.numpy import numpy_to_ctype
 from lighthouse.schedule.xegpu.mlp_schedule import get_schedule_module
-from lighthouse.ingress.gpu import generate_mlp_payload
+from lighthouse.ingress.mlir_gen import generate_gpu_mlp_payload
 
 from xegpu_workload import XeGPUWorkload, matmul_complexity
 import parameter_selector
@@ -222,7 +222,7 @@ class XeGPUMLP(XeGPUWorkload):
         return flop_count, memory_reads, memory_writes
 
     def payload_module(self) -> ir.Module:
-        mod = generate_mlp_payload(
+        mod = generate_gpu_mlp_payload(
             func_name=self.payload_function_name,
             batch_size=self.batch_size,
             input_size=self.input_size,

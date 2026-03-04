@@ -21,7 +21,7 @@ from lighthouse.workload import benchmark
 from lighthouse.utils.memref import to_ctype as memref_to_ctype
 from lighthouse.utils.numpy import numpy_to_ctype
 from lighthouse.schedule.xegpu.mlp_schedule import get_schedule_module
-from lighthouse.ingress.gpu import generate_matmul_payload
+from lighthouse.ingress.mlir_gen import generate_gpu_matmul_payload
 
 from xegpu_workload import XeGPUWorkload, matmul_complexity
 
@@ -161,7 +161,7 @@ class XeGPUMatMul(XeGPUWorkload):
         )
 
     def payload_module(self) -> ir.Module:
-        mod = generate_matmul_payload(
+        mod = generate_gpu_matmul_payload(
             func_name=self.payload_function_name,
             M=self.M,
             N=self.N,

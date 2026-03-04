@@ -4,7 +4,7 @@ from mlir.dialects import func, linalg, gpu, bufferization, arith, tensor
 from .gpu_utils import emit_gpu_util_funcs, emit_buf_to_tensor
 
 
-def generate_mlp_payload(
+def generate_gpu_mlp_payload(
     func_name: str,
     batch_size: int,
     input_size: int,

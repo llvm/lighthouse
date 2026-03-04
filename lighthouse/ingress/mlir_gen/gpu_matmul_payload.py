@@ -2,10 +2,10 @@ from mlir import ir
 from mlir.dialects import func, bufferization
 
 from .gpu_utils import emit_gpu_util_funcs, emit_buf_to_tensor
-from .mlp_payload import emit_mlp_layer
+from .gpu_mlp_payload import emit_mlp_layer
 
 
-def generate_matmul_payload(
+def generate_gpu_matmul_payload(
     func_name: str,
     M: int,
     N: int,
