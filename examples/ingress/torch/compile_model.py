@@ -5,10 +5,10 @@ import torch
 import torch.nn as nn
 
 from mlir import ir
-from mlir.passmanager import PassManager
 
 from lighthouse.ingress.torch import cpu_backend, TargetDialect
 from lighthouse.pipeline.pipeline import Pipeline
+
 
 def lower_to_llvm(module: ir.Module) -> ir.Module:
     pipeline = Pipeline(module)

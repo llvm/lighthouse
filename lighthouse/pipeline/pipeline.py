@@ -1,6 +1,7 @@
 from mlir import ir
 from mlir.passmanager import PassManager
 
+
 # Defines a compilation pipeline that can be reused across workloads and ingresses.
 # For example, this pipeline can be used as the default pipeline for all CPU workloads that do not specify a custom pipeline.
 # The pipeline can be extended with additional passes as needed, and can be customized for different target architectures or workload characteristics.
