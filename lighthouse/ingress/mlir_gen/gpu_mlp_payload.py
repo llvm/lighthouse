@@ -1,10 +1,11 @@
 from mlir import ir
-from mlir.dialects import func, linalg, gpu, bufferization, arith, tensor
+from mlir.dialects import linalg, gpu, bufferization, arith, tensor
 
 from .gpu_utils import emit_gpu_util_funcs, emit_buf_to_tensor
 from .named import add_bias, relu, times_weights
 from .generic import convert_datatype
 from .utils import get_mlir_elem_type
+from lighthouse.utils.mlir import func_cif
 
 
 def generate_gpu_mlp_payload(
@@ -45,7 +46,7 @@ def generate_gpu_mlp_payload(
         if has_bias:
             fargs += bias_memref_types
 
-        @func.func(*fargs, name=func_name)
+        @func_cif(*fargs, name=func_name)
         def payload(*args):
             input = args[0]
             output = args[1]
