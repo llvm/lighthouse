@@ -98,9 +98,11 @@ def generate_gpu_mlp_payload(
                     to_dealloc = c_memref
                 layer_input_tensor = layer_output
 
-        emit_gpu_util_funcs(ab_type)
+        emit_gpu_util_funcs(ab_type, rank=2)
         if c_type != ab_type:
-            emit_gpu_util_funcs(c_type)
+            emit_gpu_util_funcs(c_type, rank=2)
+        if has_bias:
+            emit_gpu_util_funcs(c_type, rank=1)
 
     return mod
 

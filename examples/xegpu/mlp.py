@@ -168,7 +168,7 @@ class XeGPUMLP(XeGPUWorkload):
         # copy initial values to device
         for host_arr, gpu_arr in zip(host_arrays, gpu_arrays):
             execution_engine.invoke(
-                "gpu_copy_" + self.ab_type,
+                "gpu_copy_2d_" + self.ab_type,
                 numpy_to_ctype(host_arr),
                 memref_to_ctype(gpu_arr),
             )
@@ -183,7 +183,7 @@ class XeGPUMLP(XeGPUWorkload):
         res_gpu = self.gpu_memrefs[("output", self.ab_type)]
         res_host_copy = np.zeros(self.output_shape, dtype=self.ab_dtype)
         execution_engine.invoke(
-            "gpu_copy_" + self.ab_type,
+            "gpu_copy_2d_" + self.ab_type,
             memref_to_ctype(res_gpu),
             numpy_to_ctype(res_host_copy),
         )
