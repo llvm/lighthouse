@@ -38,6 +38,4 @@ class Pipeline:
     def run(self) -> ir.Module:
         # IR is transformed in-place.
         self.pm.run(self.module.operation)
-
-        # Return the same module which now holds LLVM IR dialect ops.
         return self.module
