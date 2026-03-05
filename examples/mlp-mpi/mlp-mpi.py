@@ -29,7 +29,7 @@ from lighthouse.utils.memref import (
     to_ctype as memref_to_ctype,
     deallocate_memrefs_on_exit,
 )
-from lighthouse.utils.mlir import apply_registered_pass, match
+from lighthouse.pipeline.helper import apply_registered_pass, match
 from lighthouse.workload import Workload, execute
 
 from mlp_weight_stationary import generate_mlp_payload
