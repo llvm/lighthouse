@@ -7,6 +7,5 @@
 
 set -ex
 
-uv sync
 uv run pre-commit run --all-files
 uv run lit -v .
