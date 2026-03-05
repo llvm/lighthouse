@@ -124,9 +124,38 @@ pip install .[ingress_torch_cpu] \
   --only-binary :all:
 ```
 
-## Running tests
+## Running pre-commit checks
 
-Running the tests is as simple as `lit .` in the root of the project (in a suitable Python environment, e.g. through `uv run lit .`).
+To make sure you create a clean PR, you should run the code formatter and tests before submitting it.
+
+There's a script that helps you with this, assuming you have already set up your environment as described above.
+
+At the root of the repository, run:
+```
+bash precommit.sh
+```
+
+This script runs all of the checks below, so you can just run it every time before a commit.
+
+### Python formatting
+
+We have a formatting pre-commit check for every PR. To make sure you don't get PR check failures, you can run `ruff`:
+
+At the root of the repository, run:
+```
+uv run pre-commit run --all-files
+```
+
+This will check for issues and fix them automatically, so if you commit after running this check, you'll always have correctly formatted Python code.
+
+### LIT tests
+
+Running the tests is as simple as `lit .` in the root of the project (in a suitable Python environment):
+
+At the root of the repository, run:
+```
+uv run lit .
+```
 
 We assume that the [`FileCheck`](https://llvm.org/docs/CommandGuide/FileCheck.html) and [`lit`](https://llvm.org/docs/CommandGuide/lit.html) executables are available on the `PATH`.
 
