@@ -17,6 +17,7 @@ import numpy as np
 from mlir import ir
 from mlir.execution_engine import ExecutionEngine
 
+from lighthouse import dialects as lh_dialects
 from lighthouse.workload import benchmark
 from lighthouse.utils.memref import to_ctype as memref_to_ctype
 from lighthouse.utils.numpy import numpy_to_ctype
@@ -177,13 +178,13 @@ class XeGPUMatMul(XeGPUWorkload):
     def schedule_module(
         self, stop_at_stage: Optional[str] = None, parameters: Optional[dict] = None
     ) -> ir.Module:
+        assert parameters is not None, "Schedule parameters must be provided"
         return get_schedule_module(
             has_bias=self.has_bias,
             has_relu=self.has_relu,
             has_convert_c=False,
             stop_at_stage=stop_at_stage,
-            nlayers=1,
-            params={"layer_0": parameters},
+            params=[parameters],
         )
 
     def shared_libs(self) -> list[str]:
@@ -194,6 +195,9 @@ def parse_cli():
     parser = argparse.ArgumentParser(
         description="Matrix Multiplication using MLIR",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    parser.add_argument(
+        "--all-knobs", action="store_true", help="Use knobs for all schedule parameters"
     )
     parser.add_argument(
         "--sizes",
@@ -226,28 +230,28 @@ def parse_cli():
         "--load-tile-a",
         type=int,
         nargs=2,
-        default=[32, 16],
+        default=[16, 32],
         help="Tile size for loading A matrix for DPAS op.",
     )
     parser.add_argument(
         "--load-tile-b",
         type=int,
         nargs=2,
-        default=[32, 16],
+        default=[16, 16],
         help="Tile size for loading B matrix for DPAS op.",
     )
     parser.add_argument(
         "--prefetch-tile-a",
         type=int,
         nargs=2,
-        default=[8, 32],
+        default=[16, 32],
         help="Tile size for cooperative prefetching of subgroup A matrix",
     )
     parser.add_argument(
         "--prefetch-tile-b",
         type=int,
         nargs=2,
-        default=[8, 16],
+        default=[16, 16],
         help="Tile size for cooperative prefetching of subgroup B matrix",
     )
     parser.add_argument(
@@ -311,28 +315,34 @@ def parse_cli():
 if __name__ == "__main__":
     args = parse_cli()
 
+    M, N, K = args.sizes
+
     params = {
-        "wg_m": args.wg_tile[0],
-        "wg_n": args.wg_tile[1],
-        "sg_m": args.sg_tile[0],
-        "sg_n": args.sg_tile[1],
-        "k": args.k_tile,
-        "load_a_m": args.load_tile_a[0],
-        "load_a_k": args.load_tile_a[1],
-        "load_b_k": args.load_tile_b[0],
-        "load_b_n": args.load_tile_b[1],
-        "pf_a_m": args.prefetch_tile_a[0],
-        "pf_a_k": args.prefetch_tile_a[1],
-        "pf_b_k": args.prefetch_tile_b[0],
-        "pf_b_n": args.prefetch_tile_b[1],
-        "pf_nb": args.nb_prefetch,
+        "m": M,
+        "n": N,
+        "k": K,
+        "wg_m": None if args.all_knobs else args.wg_tile[0],
+        "wg_n": None if args.all_knobs else args.wg_tile[1],
+        "sg_m": None if args.all_knobs else args.sg_tile[0],
+        "sg_n": None if args.all_knobs else args.sg_tile[1],
+        "k_tile": None if args.all_knobs else args.k_tile,
+        "load_a_m": None if args.all_knobs else args.load_tile_a[0],
+        "load_a_k": None if args.all_knobs else args.load_tile_a[1],
+        "load_b_k": None if args.all_knobs else args.load_tile_b[0],
+        "load_b_n": None if args.all_knobs else args.load_tile_b[1],
+        "prefetch_a_m": None if args.all_knobs else args.prefetch_tile_a[0],
+        "prefetch_a_k": None if args.all_knobs else args.prefetch_tile_a[1],
+        "prefetch_b_k": None if args.all_knobs else args.prefetch_tile_b[0],
+        "prefetch_b_n": None if args.all_knobs else args.prefetch_tile_b[1],
+        "nb_prefetch": args.nb_prefetch,
     }
 
-    M, N, K = args.sizes
     ab_type = "f16"
     c_type = "f32"
 
     with ir.Context(), ir.Location.unknown():
+        lh_dialects.register_and_load()
+
         wload = XeGPUMatMul(
             M=M,
             N=N,
