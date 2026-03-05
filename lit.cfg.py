@@ -14,18 +14,16 @@ def find_filecheck() -> str:
     # If FileCheck is available in path, use it.
     path = shutil.which("FileCheck")
     if path:
-        return path
+        return "FileCheck"
     # If environment variable is set, use it.
     if filecheck_path := os.environ.get("FILECHECK"):
         if os.path.isfile(filecheck_path) and os.access(filecheck_path, os.X_OK):
             return filecheck_path
     # Otherwise, search for FileCheck in the system and return the newest one.
-    version = 21  # Latest version
-    while version > 0:
+    for version in range(21, 0, -1):
         path = shutil.which("FileCheck-{}".format(version))
         if path:
             return path
-        version -= 1
     # If not found, raise an error.
     raise FileNotFoundError(
         "FileCheck not found in the system. Please install LLVM to get FileCheck or \
