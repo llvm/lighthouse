@@ -9,6 +9,7 @@ class PassBundles:
     Predefined pass bundles for common transformations. These are not exhaustive and can be extended as needed.
     The idea is to group together passes that are commonly used together in a pipeline, so that they can be easily added to a PassManager or Transform Schedule with a single function call.
     """
+
     # All in one bufferization bundle. This is self consistent and should be used together.
     BufferizationBundle = [
         "one-shot-bufferize{function-boundary-type-conversion=identity-layout-map bufferize-function-boundaries}",
@@ -25,7 +26,7 @@ class PassBundles:
     ]
 
     # Canonicalization bundle. This is a set of passes that can be used to clean up the IR after transformations.
-    CanonicalizeBundle = [
+    CleanupBundle = [
         "cse",
         "canonicalize",
     ]

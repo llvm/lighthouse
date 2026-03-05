@@ -33,11 +33,11 @@ def lower_to_llvm(module: ir.Module) -> ir.Module:
 
     # Bufferize.
     add_bundle(pm, PassBundles.BufferizationBundle)
-    add_bundle(pm, PassBundles.CanonicalizeBundle)
+    add_bundle(pm, PassBundles.CleanupBundle)
 
     # Lower to LLVM.
     add_bundle(pm, PassBundles.LLVMLoweringBundle)
-    add_bundle(pm, PassBundles.CanonicalizeBundle)
+    add_bundle(pm, PassBundles.CleanupBundle)
 
     # IR is transformed in-place.
     pm.run(module.operation)
