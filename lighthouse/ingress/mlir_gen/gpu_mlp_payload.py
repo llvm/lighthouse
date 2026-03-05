@@ -3,7 +3,7 @@ from mlir.dialects import linalg, gpu, bufferization, arith, tensor
 
 from .gpu_utils import emit_gpu_util_funcs, emit_buf_to_tensor
 from .named import add_bias, relu, times_weights
-from .generic import convert_datatype
+from .generic import convert_float_type
 from .utils import get_mlir_elem_type
 from lighthouse.utils.mlir import func_cif
 
@@ -109,8 +109,6 @@ def generate_gpu_mlp_payload(
                     to_dealloc = c_memref
                 layer_input_tensor = layer_output
 
-        payload.func_op.attributes["llvm.emit_c_interface"] = ir.UnitAttr.get()
-
         emit_gpu_util_funcs(ab_type)
         if c_type != ab_type:
             emit_gpu_util_funcs(c_type)
@@ -133,7 +131,7 @@ def emit_mlp_layer(
     if acc_tensor is not None:
         if acc_tensor.type.element_type != acc_type:
             empty = tensor.empty((M, N), acc_type)
-            acc_tensor = convert_datatype(acc_tensor, empty)
+            acc_tensor = convert_float_type(acc_tensor, empty)
     else:
         # use zero tensor as the accumulator
         zero = arith.constant(acc_type, 0.0)
@@ -143,7 +141,7 @@ def emit_mlp_layer(
     terminal = times_weights(a_tensor, b_tensor, acc_tensor)
     if convert_result:
         empty = tensor.empty((M, N), result_type)
-        terminal = convert_datatype(terminal, empty)
+        terminal = convert_float_type(terminal, empty)
     if bias_tensor is not None:
         terminal = add_bias(terminal, bias_tensor)
     if has_relu:

@@ -174,7 +174,12 @@ def elementwise(input, output, elemwise_func):
     return f
 
 
-def convert_datatype(input, output):
+def convert_float_type(input, output):
+    in_elem_type = input.type.element_type
+    out_elem_type = output.type.element_type
+    assert in_elem_type != out_elem_type, "Cannot cast to same type."
+    assert isinstance(in_elem_type, ir.FloatType), "Source must be float type"
+    assert isinstance(out_elem_type, ir.FloatType), "Target must be float type"
     in_width = input.type.element_type.width
     out_width = output.type.element_type.width
     op = arith.truncf if in_width > out_width else arith.extf

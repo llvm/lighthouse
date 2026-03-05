@@ -16,6 +16,7 @@ def get_mlir_elem_type(type_str: str):
         return ir.BF16Type.get()
     if type_str == "f32":
         return ir.F32Type.get()
+    raise ValueError(f"Unsupported element type string '{type_str}'")
 
 
 def get_elem_type_str(elem_type: type):
@@ -25,6 +26,7 @@ def get_elem_type_str(elem_type: type):
         return "bf16"
     if elem_type == ir.F32Type:
         return "f32"
+    raise ValueError(f"Unsupported element type '{elem_type}'")
 
 
 class ConstantInitKind(Enum):
