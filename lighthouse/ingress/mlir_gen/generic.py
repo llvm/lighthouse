@@ -168,7 +168,7 @@ def elementwise(input: ir.Value, output: ir.Value, elemwise_func: FunctionType):
         [input],
         [output],
         [id_map, id_map],
-        [par_iter, par_iter],
+        rank * [par_iter],
     )
     def f(a, b):
         return elemwise_func(result_elem_type, a)

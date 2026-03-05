@@ -130,11 +130,11 @@ def emit_mlp_layer(
         zero_tensor = linalg.fill(zero, outs=[empty])
         acc_tensor = zero_tensor
     terminal = times_weights(a_tensor, b_tensor, acc_tensor)
+    if bias_tensor is not None:
+        terminal = add_bias(terminal, bias_tensor)
     if convert_result:
         empty = tensor.empty((M, N), result_type)
         terminal = convert_float_type(terminal, empty)
-    if bias_tensor is not None:
-        terminal = add_bias(terminal, bias_tensor)
     if has_relu:
         terminal = relu(terminal)
 
