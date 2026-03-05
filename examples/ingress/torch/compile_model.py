@@ -5,19 +5,45 @@ import torch
 import torch.nn as nn
 
 from mlir import ir
+from mlir.passmanager import PassManager
 
 from lighthouse.ingress.torch import cpu_backend, TargetDialect
-from lighthouse.pipeline.pipeline import Pipeline
+from lighthouse.pipeline.helper import PassBundles, add_bundle
 
 
 def lower_to_llvm(module: ir.Module) -> ir.Module:
-    pipeline = Pipeline(module.context)
-    pipeline.add_passes(["func.func(llvm-request-c-wrappers)"])
-    pipeline.add_bufferization()
-    pipeline.add_cleanup()
-    pipeline.add_llvm_lowering()
-    pipeline.add_cleanup()
-    return pipeline.run(module)
+    """
+    Lower MLIR ops within the module to MLIR LLVM IR dialect.
+
+    A PyTorch model is expected to be imported as Linalg ops using
+    tensor abstraction.
+    This compilation function applies simple rewrites (notably, bufferization
+    and scalar lowering of the compute ops) in preparation for further jitting.
+
+    Args:
+        module: MLIR module coming from PyTorch importer.
+    Returns:
+        ir.Module: MLIR module with lowered IR
+    """
+    pm = PassManager("builtin.module", module.context)
+
+    # Preprocess.
+    # Use standard C interface wrappers for functions.
+    pm.add("func.func(llvm-request-c-wrappers)")
+
+    # Bufferize.
+    add_bundle(pm, PassBundles.BufferizationBundle)
+    add_bundle(pm, PassBundles.CanonicalizeBundle)
+
+    # Lower to LLVM.
+    add_bundle(pm, PassBundles.LLVMLoweringBundle)
+    add_bundle(pm, PassBundles.CanonicalizeBundle)
+
+    # IR is transformed in-place.
+    pm.run(module.operation)
+
+    # Return the same module which now holds LLVM IR dialect ops.
+    return module
 
 
 def jit_compile_model_decorator():

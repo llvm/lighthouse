@@ -5,7 +5,7 @@ from mlir.dialects.transform import xegpu
 from mlir.dialects.bufferization import LayoutMapOption
 from mlir.dialects import transform
 from mlir.dialects.transform import structured
-from lighthouse.utils.mlir import (
+from lighthouse.pipeline.helper import (
     apply_registered_pass,
     canonicalize,
     match,
