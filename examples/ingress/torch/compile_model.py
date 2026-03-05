@@ -8,6 +8,7 @@ from mlir import ir
 from mlir.passmanager import PassManager
 
 from lighthouse.ingress.torch import cpu_backend, TargetDialect
+from lighthouse.pipeline.helper import PassBundles, add_bundle
 
 
 def lower_to_llvm(module: ir.Module) -> ir.Module:
@@ -31,23 +32,12 @@ def lower_to_llvm(module: ir.Module) -> ir.Module:
     pm.add("func.func(llvm-request-c-wrappers)")
 
     # Bufferize.
-    pm.add(
-        "one-shot-bufferize{function-boundary-type-conversion=identity-layout-map bufferize-function-boundaries}"
-    )
-    pm.add("drop-equivalent-buffer-results")
-    pm.add("buffer-deallocation-pipeline")
-    pm.add("cse")
-    pm.add("canonicalize")
+    add_bundle(pm, PassBundles.BufferizationBundle)
+    add_bundle(pm, PassBundles.CleanupBundle)
 
     # Lower to LLVM.
-    pm.add("convert-linalg-to-loops")
-    pm.add("convert-scf-to-cf")
-    pm.add("convert-to-llvm")
-    pm.add("reconcile-unrealized-casts")
-
-    # Cleanup
-    pm.add("cse")
-    pm.add("canonicalize")
+    add_bundle(pm, PassBundles.LLVMLoweringBundle)
+    add_bundle(pm, PassBundles.CleanupBundle)
 
     # IR is transformed in-place.
     pm.run(module.operation)
