@@ -11,14 +11,14 @@ assert isinstance(config := eval("config"), TestingConfig)
 
 def find_filecheck() -> str:
     """Find the full path of the newest FileCheck in the system."""
-    # If FileCheck is available in path, use it.
-    path = shutil.which("FileCheck")
-    if path:
-        return "FileCheck"
     # If environment variable is set, use it.
     if filecheck_path := os.environ.get("FILECHECK"):
         if os.path.isfile(filecheck_path) and os.access(filecheck_path, os.X_OK):
             return filecheck_path
+    # If FileCheck is available in path, use it.
+    path = shutil.which("FileCheck")
+    if path:
+        return "FileCheck" # Avoid full path when none is needed
     # Otherwise, search for FileCheck in the system and return the newest one.
     for version in range(21, 0, -1):
         path = shutil.which("FileCheck-{}".format(version))
