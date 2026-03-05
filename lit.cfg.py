@@ -1,11 +1,35 @@
 import os
 import importlib.util
+import shutil
 
 import lit.formats
 from lit.TestingConfig import TestingConfig
 
 # Imagine that, all your variables defined and with type information!
 assert isinstance(config := eval("config"), TestingConfig)
+
+
+def find_filecheck() -> str:
+    """Find the full path of the newest FileCheck in the system."""
+    # If environment variable is set, use it.
+    if filecheck_path := os.environ.get("FILECHECK"):
+        if os.path.isfile(filecheck_path) and os.access(filecheck_path, os.X_OK):
+            return filecheck_path
+    # If FileCheck is available in path, use it.
+    path = shutil.which("FileCheck")
+    if path:
+        return "FileCheck"  # Avoid full path when none is needed
+    # Otherwise, search for FileCheck in the system and return the newest one.
+    for version in range(21, 0, -1):
+        path = shutil.which("FileCheck-{}".format(version))
+        if path:
+            return path
+    # If not found, raise an error.
+    raise FileNotFoundError(
+        "FileCheck not found in the system. Please install LLVM to get FileCheck or \
+         set the FILECHECK environment variable to point to the FileCheck executable."
+    )
+
 
 project_root = os.path.dirname(__file__)
 
@@ -18,8 +42,7 @@ config.substitutions.append(("%CACHE", project_root + "/cache"))
 config.substitutions.append(("%VIRTUAL_ENV", os.environ.get("VIRTUAL_ENV", "")))
 python = os.environ.get("PYTHON", "python")
 config.substitutions.append(("%PYTHON", python))
-if filecheck_path := os.environ.get("FILECHECK"):
-    config.substitutions.append(("FileCheck", filecheck_path))
+config.substitutions.append(("FileCheck", find_filecheck()))
 
 for pkg in ["torch", "mpi4py", "mpich", "impi-rt"]:
     if importlib.util.find_spec(pkg):
