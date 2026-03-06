@@ -151,7 +151,7 @@ class ElementwiseSum(Workload):
 
                 if stop_at_stage == "bufferized":
                     transform.YieldOp()
-                    return schedule_module
+                    return [schedule_module]
 
                 mod = apply_bundle(mod, PassBundles.LLVMLoweringBundle)
                 transform.YieldOp()
