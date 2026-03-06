@@ -25,7 +25,7 @@ from lighthouse.workload import benchmark
 from lighthouse.utils.memref import to_ctype as memref_to_ctype
 from lighthouse.utils.numpy import numpy_to_ctype
 from lighthouse.schedule.xegpu.mlp_schedule import get_schedule_module
-from lighthouse.ingress.gpu import generate_mlp_payload
+from lighthouse.ingress.mlir_gen import generate_gpu_mlp_payload
 
 from xegpu_workload import XeGPUWorkload, matmul_complexity
 import parameter_selector
@@ -115,7 +115,7 @@ class XeGPUMLP(XeGPUWorkload):
         if self.has_bias:
             raise NotImplementedError("Bias initialization not implemented")
 
-        return input_array, output_array, *weights
+        return output_array, input_array, *weights
 
     @cached_property
     def _reference_solution(self) -> np.ndarray:
@@ -124,8 +124,8 @@ class XeGPUMLP(XeGPUWorkload):
         host_arrays = self._initial_host_arrays
         # use float32 data type for efficiency
         host_arrays = [arr.astype(np.float32) for arr in host_arrays]
-        input_array = host_arrays[0]
-        output_array = host_arrays[1]
+        output_array = host_arrays[0]
+        input_array = host_arrays[1]
         weights = host_arrays[2:]
 
         a_array = input_array
@@ -153,7 +153,7 @@ class XeGPUMLP(XeGPUWorkload):
         output_gpu = self._allocate_array(
             "output", self.output_shape, self.ab_type, execution_engine
         )
-        gpu_arrays = [input_gpu, output_gpu]
+        gpu_arrays = [output_gpu, input_gpu]
         for i, (in_size, out_size) in enumerate(self.weight_shapes):
             W_gpu = self._allocate_array(
                 f"weight_{i}", (in_size, out_size), self.ab_type, execution_engine
@@ -222,7 +222,7 @@ class XeGPUMLP(XeGPUWorkload):
         return flop_count, memory_reads, memory_writes
 
     def payload_module(self) -> ir.Module:
-        mod = generate_mlp_payload(
+        mod = generate_gpu_mlp_payload(
             func_name=self.payload_function_name,
             batch_size=self.batch_size,
             input_size=self.input_size,
@@ -230,6 +230,7 @@ class XeGPUMLP(XeGPUWorkload):
             hidden_layer_sizes=self.hidden_layer_sizes,
             ab_type_str=self.ab_type,
             c_type_str=self.c_type,
+            result_type_str=self.ab_type,
             has_bias=self.has_bias,
             has_relu=self.has_relu,
             accumulate_c=self.accumulate_c,
