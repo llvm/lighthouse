@@ -122,7 +122,7 @@ class ElementwiseSum(Workload):
 
         return mod
 
-    def schedule_module(
+    def schedule_modules(
         self, stop_at_stage: Optional[str] = None, parameters: Optional[dict] = None
     ) -> ir.Module:
         schedule_module = ir.Module.create()
@@ -156,7 +156,7 @@ class ElementwiseSum(Workload):
                 mod = apply_bundle(mod, PassBundles.LLVMLoweringBundle)
                 transform.YieldOp()
 
-        return schedule_module
+        return [schedule_module]
 
 
 if __name__ == "__main__":

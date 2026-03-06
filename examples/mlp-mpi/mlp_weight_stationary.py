@@ -102,6 +102,7 @@ def generate_mlp_payload(
             sd_ai = shard.shard(a, sh_act)
             sd_bi = shard.shard(b, sh_win)
             sd_ci = shard.shard(c, sh_wout)
+            sd_r = shard.shard(r, sh_act)
 
             empty0 = tensor.empty((M, N), f32)
             fill0 = linalg.fill(cst, outs=[empty0])
@@ -119,10 +120,13 @@ def generate_mlp_payload(
             sd_fill1 = shard.shard(fill1, sh_ac, annotate_for_users=True)
             mm1 = linalg.matmul(sig, sd_ci, outs=[sd_fill1])
 
-            res = shard.shard(mm1, sh_act, annotate_for_users=True)
-            bufferization.materialize_in_destination(
-                None, res, r, restrict=True, writable=True
+            sd_res = shard.shard(mm1, sh_act, annotate_for_users=True)
+            res = bufferization.materialize_in_destination(
+                t_mk,
+                sd_res,
+                sd_r,  # , restrict=True, writable=True
             )
+            return shard.shard(res, sh_act, annotate_for_users=True)
 
         # --- allocation helpers ---
         _emit_alloc("act", t_mk, split_act)

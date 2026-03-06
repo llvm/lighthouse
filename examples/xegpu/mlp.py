@@ -252,17 +252,19 @@ class XeGPUMLP(XeGPUWorkload):
         )
         return mod
 
-    def schedule_module(
+    def schedule_modules(
         self, stop_at_stage: Optional[str] = None, parameters: Optional[dict] = None
-    ) -> ir.Module:
-        return get_schedule_module(
-            has_bias=self.has_bias,
-            has_relu=self.has_relu,
-            skip_final_layer_relu=True,
-            stop_at_stage=stop_at_stage,
-            nlayers=self.nlayers,
-            params=parameters,
-        )
+    ) -> list[ir.Module]:
+        return [
+            get_schedule_module(
+                has_bias=self.has_bias,
+                has_relu=self.has_relu,
+                skip_final_layer_relu=True,
+                stop_at_stage=stop_at_stage,
+                nlayers=self.nlayers,
+                params=parameters,
+            )
+        ]
 
     def shared_libs(self) -> list[str]:
         return ["libmlir_levelzero_runtime.so"]

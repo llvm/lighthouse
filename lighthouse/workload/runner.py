@@ -125,14 +125,22 @@ def benchmark(
     # get original payload module
     payload_module = workload.payload_module()
 
+    # Lower payload with one or more schedules
+    # If more than one, do the first one before emitting benchmark function and the rest after.
+    # This allows for modifying function signature before extracting it for the benchmark function.
+    schedule_modules = workload.schedule_modules(parameters=schedule_parameters)
+    assert isinstance(schedule_modules, list)
+    if len(schedule_modules) > 1:
+        schedule_modules[0].body.operations[0].apply(payload_module)
+        schedule_modules = schedule_modules[1:]
+
     # add benchmark function with timing
     emit_benchmark_function(
         payload_module, workload.payload_function_name, nruns, nwarmup
     )
 
-    # lower
-    schedule_module = workload.schedule_module(parameters=schedule_parameters)
-    schedule_module.body.operations[0].apply(payload_module)
+    for schedule_module in schedule_modules:
+        schedule_module.body.operations[0].apply(payload_module)
 
     # get execution engine, rtclock requires mlir_c_runner
     libs = workload.shared_libs()
