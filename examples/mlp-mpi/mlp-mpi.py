@@ -30,7 +30,7 @@ from lighthouse.utils.memref import (
     deallocate_memrefs_on_exit,
 )
 from lighthouse.pipeline.helper import apply_registered_pass, match
-from lighthouse.workload import Workload, execute
+from lighthouse.workload import Workload, benchmark
 
 from mlp_weight_stationary import generate_mlp_payload
 
@@ -123,19 +123,16 @@ class DistMLP(Workload):
         ]
         # allocation functions use the same sharding annotations as the payload,
         # so that each rank allocates only the part of the data it owns.
-        for i, v in enumerate(["act", "win", "wout"]):
-            execution_engine.invoke(f"alloc_{v}", memref_to_ctype(memrefs[i + 1]))
+        for i, v in enumerate(["act", "win", "wout", "act"]):
+            execution_engine.invoke(f"alloc_{v}", memref_to_ctype(memrefs[i]))
         return memrefs
 
-    def _init_inout(self, r: np.ndarray, a: np.ndarray, b: np.ndarray, c: np.ndarray):
+    def _init_inout(self, a: np.ndarray, b: np.ndarray, c: np.ndarray, r: np.ndarray):
         rprint(" * Initializing input arrays...")
         np.random.seed(self.comm_rank)  # different seed for each rank
-        A = ranked_memref_to_numpy([a])
-        B = ranked_memref_to_numpy([b])
-        C = ranked_memref_to_numpy([c])
-        A[:] = np.random.rand(*A.shape).astype(self.dtype)
-        B[:] = np.random.rand(*B.shape).astype(self.dtype)
-        C[:] = np.random.rand(*C.shape).astype(self.dtype)
+        for arr in [a, b, c, r]:
+            tmp = ranked_memref_to_numpy([arr])
+            tmp[:] = np.random.rand(*tmp.shape).astype(self.dtype)
 
     @contextmanager
     def allocate_inputs(self, execution_engine: ExecutionEngine):
@@ -164,7 +161,7 @@ class DistMLP(Workload):
     def _reference_solution(self, execution_engine: ExecutionEngine) -> np.ndarray:
         rprint(" * Gathering input data...")
         gathered = [
-            self._gather(self.input_memrefs[i + 1], execution_engine, f"gather_{v}")
+            self._gather(self.input_memrefs[i], execution_engine, f"gather_{v}")
             for i, v in enumerate(["act", "win", "wout"])
         ]
 
@@ -181,7 +178,7 @@ class DistMLP(Workload):
     def check_correctness(
         self, execution_engine: ExecutionEngine, verbose: int = 0
     ) -> bool:
-        gathered = self._gather(self.input_memrefs[0], execution_engine, "gather_act")
+        gathered = self._gather(self.input_memrefs[-1], execution_engine, "gather_act")
         with deallocate_memrefs_on_exit([gathered], execution_engine, "dealloc_2d"):
             R = ranked_memref_to_numpy([gathered])
             R_ref = self._reference_solution(execution_engine)
@@ -269,89 +266,113 @@ class DistMLP(Workload):
 
         return mod
 
-    def schedule_module(
+    def schedule_modules(
         self, stop_at_stage: Optional[str] = None, parameters: Optional[dict] = None
-    ) -> ir.Module:
-        schedule_module = ir.Module.create()
-        schedule_module.operation.attributes["transform.with_named_sequence"] = (
+    ) -> list[ir.Module]:
+        """Generate two schedules: one that deals with sharding propagation, partition, and MPI.
+        Another one for all the rest"""
+        pre_schedule = ir.Module.create()
+        pre_schedule.operation.attributes["transform.with_named_sequence"] = (
             ir.UnitAttr.get()
         )
-        with ir.InsertionPoint(schedule_module.body):
+        with ir.InsertionPoint(pre_schedule.body):
+            named_sequence = transform.named_sequence(
+                "__transform_pre",
+                [transform.AnyOpType.get()],
+                [],
+                arg_attrs=[{"transform.readonly": ir.UnitAttr.get()}],
+            )
+        with ir.InsertionPoint(named_sequence.body):
+            anytype = transform.AnyOpType.get()
+            func = match(named_sequence.bodyTarget, ops={"func.func"})
+            func = apply_registered_pass(
+                func,
+                "sharding-propagation",
+                options={"traversal": "forward-backward"},
+            )
+            if self.verbose > 0:
+                transform.PrintOp(target=func)
+            func = apply_registered_pass(func, "shard-partition")
+            func = apply_registered_pass(func, "canonicalize")
+            if self.verbose > 0:
+                transform.PrintOp(target=func)
+            func = apply_registered_pass(func, "shard-simplify")
+            if self.verbose > 0:
+                transform.PrintOp(target=func)
+            func = apply_registered_pass(func, "convert-shard-to-mpi")
+            func = apply_registered_pass(func, "canonicalize")
+            if self.verbose > 0:
+                transform.PrintOp(target=func)
+            func = apply_registered_pass(func, "tosa-to-linalg")
+            transform.YieldOp()
+            func = None
+
+        main_schedule = ir.Module.create()
+        main_schedule.operation.attributes["transform.with_named_sequence"] = (
+            ir.UnitAttr.get()
+        )
+        with ir.InsertionPoint(main_schedule.body):
             named_sequence = transform.named_sequence(
                 "__transform_main",
                 [transform.AnyOpType.get()],
                 [],
                 arg_attrs=[{"transform.readonly": ir.UnitAttr.get()}],
             )
-            with ir.InsertionPoint(named_sequence.body):
-                anytype = transform.AnyOpType.get()
-                func = match(named_sequence.bodyTarget, ops={"func.func"})
-                func = apply_registered_pass(
-                    func,
-                    "sharding-propagation",
-                    options={"traversal": "forward-backward"},
-                )
-                if self.verbose > 0:
-                    transform.PrintOp(target=func)
-                func = apply_registered_pass(func, "shard-partition")
-                func = apply_registered_pass(func, "canonicalize")
-                if self.verbose > 0:
-                    transform.PrintOp(target=func)
-                func = apply_registered_pass(func, "shard-simplify")
-                if self.verbose > 0:
-                    transform.PrintOp(target=func)
-                func = apply_registered_pass(func, "convert-shard-to-mpi")
-                func = apply_registered_pass(func, "canonicalize")
-                if self.verbose > 0:
-                    transform.PrintOp(target=func)
-                func = apply_registered_pass(func, "tosa-to-linalg")
-                mod = transform.get_parent_op(
-                    anytype, func, op_name="builtin.module", deduplicate=True
-                )
-                mod = apply_registered_pass(mod, "tosa-to-tensor")
-                mod = apply_registered_pass(mod, "linalg-generalize-named-ops")
-                mod = apply_registered_pass(mod, "canonicalize")
-                mod = apply_registered_pass(mod, "linalg-fuse-elementwise-ops")
-                mod = apply_registered_pass(mod, "arith-expand")
-                mod = apply_registered_pass(mod, "memref-expand")
-                mod = apply_registered_pass(mod, "empty-tensor-to-alloc-tensor")
-                mod = apply_registered_pass(mod, "canonicalize")
-                identity_layout = LayoutMapOption.IdentityLayoutMap
-                mod = OneShotBufferizeOp(
-                    mod,
-                    allow_return_allocs_from_loops=True,
-                    bufferize_function_boundaries=True,
-                    function_boundary_type_conversion=identity_layout,
-                )
-                mod = apply_registered_pass(mod, "expand-realloc")
-                mod = apply_registered_pass(mod, "canonicalize")
-                mod = apply_registered_pass(mod, "buffer-deallocation-simplification")
-                mod = apply_registered_pass(mod, "bufferization-lower-deallocations")
-                mod = apply_registered_pass(mod, "cse")
-                mod = apply_registered_pass(mod, "canonicalize")
-                mod = apply_registered_pass(mod, "convert-bufferization-to-memref")
-                mod = apply_registered_pass(mod, "convert-linalg-to-parallel-loops")
-                mod = apply_registered_pass(mod, "scf-parallel-loop-fusion")
-                mod = apply_registered_pass(mod, "canonicalize")
-                mod = apply_registered_pass(mod, "fold-memref-alias-ops")
-                mod = apply_registered_pass(mod, "expand-strided-metadata")
-                mod = apply_registered_pass(mod, "convert-math-to-funcs")
-                mod = apply_registered_pass(mod, "lower-affine")
-                mod = apply_registered_pass(mod, "convert-scf-to-cf")
-                mod = apply_registered_pass(mod, "symbol-dce")
-                mod = apply_registered_pass(mod, "finalize-memref-to-llvm")
-                mod = apply_registered_pass(mod, "convert-math-to-llvm")
-                mod = apply_registered_pass(mod, "convert-math-to-libm")
-                mod = apply_registered_pass(mod, "convert-func-to-llvm")
-                mod = apply_registered_pass(mod, "canonicalize")
-                mod = apply_registered_pass(mod, "convert-to-llvm")
-                mod = apply_registered_pass(mod, "reconcile-unrealized-casts")
-                mod = apply_registered_pass(mod, "cse")
-                if self.verbose > 1:
-                    transform.PrintOp(target=mod)
-                transform.YieldOp()
+        with ir.InsertionPoint(named_sequence.body):
+            anytype = transform.AnyOpType.get()
+            func = match(named_sequence.bodyTarget, ops={"func.func"})
+            mod = transform.get_parent_op(
+                anytype, func, op_name="builtin.module", deduplicate=True
+            )
+            mod = apply_registered_pass(mod, "tosa-to-tensor")
+            mod = apply_registered_pass(mod, "linalg-generalize-named-ops")
+            mod = apply_registered_pass(mod, "canonicalize")
+            mod = apply_registered_pass(mod, "linalg-fuse-elementwise-ops")
+            mod = apply_registered_pass(mod, "arith-expand")
+            mod = apply_registered_pass(mod, "memref-expand")
+            mod = apply_registered_pass(mod, "empty-tensor-to-alloc-tensor")
+            mod = apply_registered_pass(mod, "canonicalize")
+            identity_layout = LayoutMapOption.IdentityLayoutMap
+            mod = OneShotBufferizeOp(
+                mod,
+                allow_return_allocs_from_loops=True,
+                bufferize_function_boundaries=True,
+                function_boundary_type_conversion=identity_layout,
+            )
+            mod = apply_registered_pass(
+                mod,
+                "drop-equivalent-buffer-results",
+                options={"modify-public-functions": True},
+            )
+            mod = apply_registered_pass(mod, "expand-realloc")
+            mod = apply_registered_pass(mod, "canonicalize")
+            mod = apply_registered_pass(mod, "buffer-deallocation-simplification")
+            mod = apply_registered_pass(mod, "bufferization-lower-deallocations")
+            mod = apply_registered_pass(mod, "cse")
+            mod = apply_registered_pass(mod, "canonicalize")
+            mod = apply_registered_pass(mod, "convert-bufferization-to-memref")
+            mod = apply_registered_pass(mod, "convert-linalg-to-parallel-loops")
+            mod = apply_registered_pass(mod, "scf-parallel-loop-fusion")
+            mod = apply_registered_pass(mod, "canonicalize")
+            mod = apply_registered_pass(mod, "fold-memref-alias-ops")
+            mod = apply_registered_pass(mod, "expand-strided-metadata")
+            mod = apply_registered_pass(mod, "convert-math-to-funcs")
+            mod = apply_registered_pass(mod, "lower-affine")
+            mod = apply_registered_pass(mod, "convert-scf-to-cf")
+            mod = apply_registered_pass(mod, "symbol-dce")
+            mod = apply_registered_pass(mod, "finalize-memref-to-llvm")
+            mod = apply_registered_pass(mod, "convert-math-to-llvm")
+            mod = apply_registered_pass(mod, "convert-math-to-libm")
+            mod = apply_registered_pass(mod, "convert-func-to-llvm")
+            mod = apply_registered_pass(mod, "canonicalize")
+            mod = apply_registered_pass(mod, "convert-to-llvm")
+            mod = apply_registered_pass(mod, "reconcile-unrealized-casts")
+            mod = apply_registered_pass(mod, "cse")
+            if self.verbose > 1:
+                transform.PrintOp(target=mod)
+            transform.YieldOp()
 
-        return schedule_module
+        return [pre_schedule, main_schedule]
 
 
 if __name__ == "__main__":
@@ -365,7 +386,20 @@ if __name__ == "__main__":
     with ir.Context(), ir.Location.unknown():
         wload = DistMLP(args, P, R)
 
-        rprint(" Execute".center(60, "-"))
-        execute(wload, verbose=args.verbose)
+        # execute(wload, verbose=args.verbose)
+        rprint(" Benchmark".center(60, "-"))
+        times = benchmark(
+            wload, nruns=10, nwarmup=1, check_correctness=True, verbose=args.verbose
+        )
+        # compute statistics
+        times *= 1e6
+        mean = np.mean(times)
+        min = np.min(times)
+        max = np.max(times)
+        std = np.std(times)
+        print(f"Timings (us): mean={mean:.2f}+/-{std:.2f} min={min:.2f} max={max:.2f}")
+        flop_count = wload.get_complexity()[0]
+        gflops = flop_count / (mean * 1e-6) / 1e9
+        print(f"Throughput: {gflops:.2f} GFLOPS")
 
     MPI.Finalize()

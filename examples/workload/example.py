@@ -118,7 +118,7 @@ class ElementwiseSum(Workload):
 
         return mod
 
-    def schedule_module(
+    def schedule_modules(
         self, stop_at_stage: Optional[str] = None, parameters: Optional[dict] = None
     ) -> ir.Module:
         schedule_module = ir.Module.create()
@@ -148,7 +148,7 @@ class ElementwiseSum(Workload):
 
                 if stop_at_stage == "bufferized":
                     transform.YieldOp()
-                    return schedule_module
+                    return [schedule_module]
 
                 mod = apply_registered_pass(mod, "convert-scf-to-cf")
                 mod = apply_registered_pass(mod, "finalize-memref-to-llvm")
@@ -158,7 +158,7 @@ class ElementwiseSum(Workload):
                 mod = apply_registered_pass(mod, "reconcile-unrealized-casts")
                 transform.YieldOp()
 
-        return schedule_module
+        return [schedule_module]
 
 
 if __name__ == "__main__":
