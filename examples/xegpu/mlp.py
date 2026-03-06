@@ -49,7 +49,7 @@ class XeGPUMLP(XeGPUWorkload):
         output_size: int,
         hidden_layer_sizes: Optional[list[int]] = None,
         ab_type: str = "f16",
-        c_type: str = "f32",
+        acc_type: str = "f32",
         has_bias: bool = False,
         has_relu: bool = False,
         accumulate_c: bool = False,
@@ -70,15 +70,14 @@ class XeGPUMLP(XeGPUWorkload):
         self.bias_shapes = [(o,) for o in layer_sizes[1:]] if has_bias else []
 
         assert ab_type == "f16", "Only f16 type is supported for A and B"
-        assert c_type == "f32", "Only f32 type is supported for C"
+        assert acc_type == "f32", "Only f32 type is supported for accumulator"
         self.ab_type = ab_type
-        self.c_type = c_type
+        self.acc_type = acc_type
         type_str_to_numpy = {
             "f16": np.float16,
             "f32": np.float32,
         }
         self.ab_dtype = type_str_to_numpy[ab_type]
-        self.c_dtype = type_str_to_numpy[c_type]
         self.has_bias = has_bias
         self.has_relu = has_relu
         self.accumulate_c = accumulate_c
@@ -222,7 +221,6 @@ class XeGPUMLP(XeGPUWorkload):
 
     def get_complexity(self) -> tuple[int, int, int]:
         nbytes_ab = np.dtype(self.ab_dtype).itemsize
-        nbytes_c = np.dtype(self.c_dtype).itemsize
 
         flop_count = 0
         memory_reads = 0
@@ -230,7 +228,7 @@ class XeGPUMLP(XeGPUWorkload):
         for i, (M, N, K) in enumerate(self.matmul_layers):
             relu = self.has_relu if i < len(self.matmul_layers) - 1 else False
             f, r, w = matmul_complexity(
-                M, N, K, self.has_bias, relu, self.accumulate_c, nbytes_ab, nbytes_c
+                M, N, K, self.has_bias, relu, self.accumulate_c, nbytes_ab, nbytes_ab
             )
             flop_count += f
             memory_reads += r
@@ -245,7 +243,7 @@ class XeGPUMLP(XeGPUWorkload):
             output_size=self.output_size,
             hidden_layer_sizes=self.hidden_layer_sizes,
             ab_type=get_mlir_elem_type(self.ab_type),
-            c_type=get_mlir_elem_type(self.c_type),
+            acc_type=get_mlir_elem_type(self.acc_type),
             bias_type=get_mlir_elem_type(self.ab_type),
             result_type=get_mlir_elem_type(self.ab_type),
             has_bias=self.has_bias,
@@ -366,9 +364,6 @@ def parse_cli():
 if __name__ == "__main__":
     args = parse_cli()
 
-    ab_type = "f16"
-    c_type = "f32"
-
     # use identity weights in correctness check
     # this may affect performance metrics
     identity_weights = args.check_result
@@ -379,8 +374,6 @@ if __name__ == "__main__":
             input_size=args.input_size,
             output_size=args.output_size,
             hidden_layer_sizes=args.hidden_sizes,
-            ab_type=ab_type,
-            c_type=c_type,
             has_bias=args.bias,
             has_relu=args.relu,
             accumulate_c=args.accumulate_c,
@@ -390,6 +383,8 @@ if __name__ == "__main__":
         print(f"MLP with {len(matmuls)} layers")
         for i, (M, N, K) in enumerate(matmuls):
             print(f"  Layer {i}: M={M}, N={N}, K={K}")
+        ab_type = wload.ab_type
+        acc_type = wload.acc_type
 
         params = parameter_selector.get_matmul_parameters(wload)
 
@@ -422,7 +417,7 @@ if __name__ == "__main__":
                 f"i={args.input_size} "
                 f"o={args.output_size} "
                 f"hs={list2str(hidden_sizes)} "
-                f"dt={ab_type},{c_type} "
+                f"dt={ab_type},{acc_type} "
                 f"time(us): {elapsed:.2f} "
                 f"GFLOPS: {gflops:.2f}"
             )

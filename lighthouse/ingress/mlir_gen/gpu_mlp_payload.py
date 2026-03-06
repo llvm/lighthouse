@@ -14,7 +14,7 @@ def generate_gpu_mlp_payload(
     output_size: int,
     hidden_layer_sizes: list[int],
     ab_type: ir.Type,
-    c_type: ir.Type,
+    acc_type: ir.Type,
     bias_type: ir.Type,
     result_type: ir.Type,
     has_bias: bool,
@@ -82,7 +82,7 @@ def generate_gpu_mlp_payload(
                 layer_output = emit_mlp_layer(
                     layer_input_tensor,
                     weight_tensor,
-                    acc_type=c_type,
+                    acc_type=acc_type,
                     result_type=ab_type if hidden_layer else result_type,
                     acc_tensor=c_tensor if accumulate_c else None,
                     bias_tensor=bias_tensor,
@@ -100,8 +100,8 @@ def generate_gpu_mlp_payload(
                 layer_input_tensor = layer_output
 
         emit_gpu_util_funcs(ab_type, rank=2)
-        if c_type != ab_type:
-            emit_gpu_util_funcs(c_type, rank=2)
+        if result_type != ab_type:
+            emit_gpu_util_funcs(result_type, rank=2)
         if has_bias:
             emit_gpu_util_funcs(bias_type, rank=1)
 
