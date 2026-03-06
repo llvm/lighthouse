@@ -148,7 +148,7 @@ class ElementwiseSum(Workload):
 
                 if stop_at_stage == "bufferized":
                     transform.YieldOp()
-                    return schedule_module
+                    return [schedule_module]
 
                 mod = apply_registered_pass(mod, "convert-scf-to-cf")
                 mod = apply_registered_pass(mod, "finalize-memref-to-llvm")
