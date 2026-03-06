@@ -30,7 +30,7 @@ from lighthouse.utils.memref import (
     deallocate_memrefs_on_exit,
 )
 from lighthouse.pipeline.helper import apply_registered_pass, match
-from lighthouse.workload import Workload, execute, benchmark
+from lighthouse.workload import Workload, benchmark
 
 from mlp_weight_stationary import generate_mlp_payload
 
@@ -266,16 +266,18 @@ class DistMLP(Workload):
 
         return mod
 
-    def schedule_module(
+    def schedule_modules(
         self, stop_at_stage: Optional[str] = None, parameters: Optional[dict] = None
-    ) -> ir.Module:
-        schedule_module = ir.Module.create()
-        schedule_module.operation.attributes["transform.with_named_sequence"] = (
+    ) -> list[ir.Module]:
+        """Generate two schedules: one that deals with sharding propagation, partition, and MPI.
+        Another one for all the rest"""
+        pre_schedule = ir.Module.create()
+        pre_schedule.operation.attributes["transform.with_named_sequence"] = (
             ir.UnitAttr.get()
         )
-        with ir.InsertionPoint(schedule_module.body):
+        with ir.InsertionPoint(pre_schedule.body):
             named_sequence = transform.named_sequence(
-                "__transform_main",
+                "__transform_pre",
                 [transform.AnyOpType.get()],
                 [],
                 arg_attrs=[{"transform.readonly": ir.UnitAttr.get()}],
@@ -294,11 +296,31 @@ class DistMLP(Workload):
             func = apply_registered_pass(func, "canonicalize")
             if self.verbose > 0:
                 transform.PrintOp(target=func)
+            func = apply_registered_pass(func, "shard-simplify")
+            if self.verbose > 0:
+                transform.PrintOp(target=func)
             func = apply_registered_pass(func, "convert-shard-to-mpi")
             func = apply_registered_pass(func, "canonicalize")
             if self.verbose > 0:
                 transform.PrintOp(target=func)
             func = apply_registered_pass(func, "tosa-to-linalg")
+            transform.YieldOp()
+            func = None
+
+        main_schedule = ir.Module.create()
+        main_schedule.operation.attributes["transform.with_named_sequence"] = (
+            ir.UnitAttr.get()
+        )
+        with ir.InsertionPoint(main_schedule.body):
+            named_sequence = transform.named_sequence(
+                "__transform_main",
+                [transform.AnyOpType.get()],
+                [],
+                arg_attrs=[{"transform.readonly": ir.UnitAttr.get()}],
+            )
+        with ir.InsertionPoint(named_sequence.body):
+            anytype = transform.AnyOpType.get()
+            func = match(named_sequence.bodyTarget, ops={"func.func"})
             mod = transform.get_parent_op(
                 anytype, func, op_name="builtin.module", deduplicate=True
             )
@@ -316,6 +338,11 @@ class DistMLP(Workload):
                 allow_return_allocs_from_loops=True,
                 bufferize_function_boundaries=True,
                 function_boundary_type_conversion=identity_layout,
+            )
+            mod = apply_registered_pass(
+                mod,
+                "drop-equivalent-buffer-results",
+                options={"modify-public-functions": True},
             )
             mod = apply_registered_pass(mod, "expand-realloc")
             mod = apply_registered_pass(mod, "canonicalize")
@@ -345,7 +372,7 @@ class DistMLP(Workload):
                 transform.PrintOp(target=mod)
             transform.YieldOp()
 
-        return schedule_module
+        return [pre_schedule, main_schedule]
 
 
 if __name__ == "__main__":

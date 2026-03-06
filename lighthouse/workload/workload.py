@@ -36,13 +36,13 @@ class Workload(ABC):
         pass
 
     @abstractmethod
-    def schedule_module(
+    def schedule_modules(
         self,
         stop_at_stage: Optional[str] = None,
         parameters: Optional[dict] = None,
-    ) -> ir.Module:
+    ) -> list[ir.Module]:
         """
-        Generate the MLIR module containing the transform schedule.
+        Generate one or more MLIR modules containing the transform schedules.
 
         The `stop_at_stage` argument can be used to interrupt lowering at
         a desired IR level for debugging purposes.
@@ -56,25 +56,28 @@ class Workload(ABC):
         schedule_parameters: Optional[dict] = None,
     ) -> ir.Module:
         """
-        Apply transform schedule to the payload module.
+        Apply transform schedules to the payload module.
 
         Optionally dumps the payload IR at the desired level and/or the
-        transform schedule to stdout.
+        transform schedules to stdout.
 
         Returns the lowered payload module.
         """
         payload_module = self.payload_module()
-        schedule_module = self.schedule_module(
+        schedule_modules = self.schedule_modules(
             stop_at_stage=dump_payload, parameters=schedule_parameters
         )
+        assert isinstance(schedule_modules, list)
         if not dump_payload or dump_payload != "initial":
-            # apply schedule on payload module
-            named_seq = schedule_module.body.operations[0]
-            named_seq.apply(payload_module)
+            for schedule_module in schedule_modules:
+                # apply schedule on payload module
+                named_seq = schedule_module.body.operations[0]
+                named_seq.apply(payload_module)
         if dump_payload:
             print(payload_module)
         if dump_schedule:
-            print(schedule_module)
+            for schedule_module in schedule_modules:
+                print(schedule_module)
         return payload_module
 
     @abstractmethod
