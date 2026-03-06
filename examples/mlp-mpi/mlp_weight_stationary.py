@@ -1,7 +1,7 @@
 """Generate an MLIR module for a weight-stationary distributed MLP."""
 
 from mlir import ir
-from mlir.dialects import arith, linalg, memref, shard, tensor, tosa
+from mlir.dialects import arith, linalg, memref, shard, tensor, tosa, bufferization
 from lighthouse.utils.mlir import func_cif
 
 _GRID = "grid0"
@@ -88,8 +88,8 @@ def generate_mlp_payload(
         g.operation.attributes["sym_visibility"] = ir.StringAttr.get("private")
 
         # --- payload function ---
-        @func_cif(t_mk, t_kn, t_nk, name=func_name)
-        def _(a, b, c):
+        @func_cif(t_mk, t_kn, t_nk, t_mk, name=func_name)
+        def _(a, b, c, r):
             cst = arith.constant(f32, 0.0)
 
             sh_act = shard.sharding(_GRID, _axes(split_act), [], [])
@@ -119,7 +119,10 @@ def generate_mlp_payload(
             sd_fill1 = shard.shard(fill1, sh_ac, annotate_for_users=True)
             mm1 = linalg.matmul(sig, sd_ci, outs=[sd_fill1])
 
-            return shard.shard(mm1, sh_act, annotate_for_users=True)
+            res = shard.shard(mm1, sh_act, annotate_for_users=True)
+            bufferization.materialize_in_destination(
+                None, res, r, restrict=True, writable=True
+            )
 
         # --- allocation helpers ---
         _emit_alloc("act", t_mk, split_act)

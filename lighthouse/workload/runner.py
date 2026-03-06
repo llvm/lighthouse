@@ -44,6 +44,7 @@ def execute(
     engine = get_engine(payload_module, shared_libs=workload.shared_libs())
 
     with workload.allocate_inputs(execution_engine=engine) as inputs:
+        print(" * Executing...")
         # prepare function arguments
         packed_args = to_packed_args(inputs)
 
