@@ -118,7 +118,7 @@ class XeGPUMLP(XeGPUWorkload):
         biases = []
         if self.has_bias:
             for o in self.bias_shapes:
-                b = gen_random(o, self.c_dtype)
+                b = gen_random(o, self.ab_dtype)
                 biases.append(b)
 
         return output_array, input_array, weights, biases
@@ -166,7 +166,7 @@ class XeGPUMLP(XeGPUWorkload):
         if self.has_bias:
             for i, (out_size,) in enumerate(self.bias_shapes):
                 b_gpu = self._allocate_array(
-                    f"bias_{i}", (out_size,), self.c_type, execution_engine
+                    f"bias_{i}", (out_size,), self.ab_type, execution_engine
                 )
                 gpu_arrays_1d.append(b_gpu)
 
@@ -181,7 +181,7 @@ class XeGPUMLP(XeGPUWorkload):
         if self.has_bias:
             for host_arr, gpu_arr in zip(biases, gpu_arrays_1d):
                 execution_engine.invoke(
-                    "gpu_copy_1d_" + self.c_type,
+                    "gpu_copy_1d_" + self.ab_type,
                     numpy_to_ctype(host_arr),
                     memref_to_ctype(gpu_arr),
                 )
@@ -246,6 +246,7 @@ class XeGPUMLP(XeGPUWorkload):
             hidden_layer_sizes=self.hidden_layer_sizes,
             ab_type=get_mlir_elem_type(self.ab_type),
             c_type=get_mlir_elem_type(self.c_type),
+            bias_type=get_mlir_elem_type(self.ab_type),
             result_type=get_mlir_elem_type(self.ab_type),
             has_bias=self.has_bias,
             has_relu=self.has_relu,

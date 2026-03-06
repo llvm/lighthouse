@@ -22,6 +22,7 @@ def generate_gpu_matmul_payload(
         hidden_layer_sizes=[],
         ab_type=ab_type,
         c_type=c_type,
+        bias_type=c_type,
         result_type=c_type,
         has_bias=has_bias,
         has_relu=has_relu,
