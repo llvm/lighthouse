@@ -61,12 +61,12 @@ class Knob(NonDeterministic):
     divides: Optional[int] = None
 
     def __post_init__(self):
-        assert self.options or (
-            None not in (self.lower_bound, self.upper_bound)
-        ), "Options attribute not finitely specified"
-        assert (
-            self.divisible_by is None or self.divisible_by > 0
-        ), "divisible_by must be positive"
+        assert self.options or (None not in (self.lower_bound, self.upper_bound)), (
+            "Options attribute not finitely specified"
+        )
+        assert self.divisible_by is None or self.divisible_by > 0, (
+            "divisible_by must be positive"
+        )
         assert self.divides is None or self.divides > 0, "divides must be positive"
 
     def __repr__(self):
@@ -186,9 +186,9 @@ def trace_smt_op(op: ir.Operation, env: dict) -> dict:
 
         case smt.AssertOp():
             pred = env[op.input]
-            assert isinstance(
-                pred, Predicate
-            ), "SMT assert expected argument to map to a Predicate node"
+            assert isinstance(pred, Predicate), (
+                "SMT assert expected argument to map to a Predicate node"
+            )
             env[op] = pred
 
         case _:

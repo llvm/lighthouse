@@ -352,9 +352,9 @@ def bundle_xegpu_mlp_schedule(
     if stop_at_stage == "xegpu-initial":
         raise PipelineInterrupt()
 
-    assert (
-        len(gpu_mod_ops) == nlayers
-    ), "Expected one gpu.module per MLP layer after outlining"
+    assert len(gpu_mod_ops) == nlayers, (
+        "Expected one gpu.module per MLP layer after outlining"
+    )
     for gpu_mod, layer_params in zip(gpu_mod_ops, params):
         gpu_func = match(gpu_mod, ops={"gpu.func"})
         xegpu_wg_annotation_for_mlp_layer(gpu_func, **layer_params, has_bias=has_bias)

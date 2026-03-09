@@ -221,7 +221,9 @@ def constrain_params(
             ]
 
             mixed_result_op = MixedResultConstrainParamsOp(
-                params=param_args, result_values_or_types=result_values_or_types, **kwargs
+                params=param_args,
+                result_values_or_types=result_values_or_types,
+                **kwargs,
             )
             # Move the body of the original op to the version with (mixed) results.
             constrain_params.body_.blocks[0].append_to(mixed_result_op.body_)
