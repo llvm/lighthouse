@@ -2,6 +2,13 @@
 
 # Simply demonstrates applying a schedule to a payload.
 # To do so generates a basic payload and a basic schedule, purely as an example.
+# The following demonstrates doing so from the cmdline:
+
+# RUN: mkdir -p %t
+# RUN: %PYTHON %S/transform_a_payload_according_to_a_schedule.py payload > %t/payload.mlir
+# RUN: %PYTHON %S/transform_a_payload_according_to_a_schedule.py schedule > %t/schedule.mlir
+# RUN: lh-transform %t/schedule.mlir %t/payload.mlir | FileCheck %S/transform_a_payload_according_to_a_schedule.py
+
 
 import sys
 
