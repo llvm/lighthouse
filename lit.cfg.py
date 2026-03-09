@@ -54,5 +54,5 @@ if os.path.isdir(torch_kernels_dir):
 
 for tool in os.listdir(project_root + "/tools"):
     tool_path = os.path.join(project_root, "tools", tool)
-    if tool.startswith("lh-") and os.access(tool_path, os.X_OK):
+    if os.access(tool_path, os.X_OK):
         config.substitutions.append((tool, tool_path))
