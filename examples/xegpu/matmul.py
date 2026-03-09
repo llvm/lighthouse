@@ -21,7 +21,10 @@ from lighthouse.workload import benchmark
 from lighthouse.utils.memref import to_ctype as memref_to_ctype
 from lighthouse.utils.numpy import numpy_to_ctype
 from lighthouse.schedule.xegpu.mlp_schedule import get_schedule_module
-from lighthouse.ingress.mlir_gen import generate_gpu_matmul_payload
+from lighthouse.ingress.mlir_gen import (
+    generate_gpu_matmul_payload,
+    get_mlir_elem_type,
+)
 
 from xegpu_workload import XeGPUWorkload, matmul_complexity
 
@@ -166,8 +169,8 @@ class XeGPUMatMul(XeGPUWorkload):
             M=self.M,
             N=self.N,
             K=self.K,
-            ab_type_str=self.ab_type,
-            c_type_str=self.c_type,
+            ab_type=get_mlir_elem_type(self.ab_type),
+            c_type=get_mlir_elem_type(self.c_type),
             has_bias=self.has_bias,
             has_relu=self.has_relu,
             accumulate_c=self.accumulate_c,

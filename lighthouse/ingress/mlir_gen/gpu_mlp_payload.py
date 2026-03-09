@@ -4,7 +4,6 @@ from mlir.dialects import linalg, gpu, bufferization, arith, tensor
 from .gpu_utils import emit_gpu_util_funcs, emit_buf_to_tensor
 from .named import add_bias, relu, times_weights
 from .generic import convert_float_type
-from .utils import get_mlir_elem_type
 from lighthouse.utils.mlir import func_cif
 
 
@@ -14,18 +13,15 @@ def generate_gpu_mlp_payload(
     input_size: int,
     output_size: int,
     hidden_layer_sizes: list[int],
-    ab_type_str: str,
-    c_type_str: str,
-    result_type_str: str,
+    ab_type: ir.Type,
+    c_type: ir.Type,
+    result_type: ir.Type,
     has_bias: bool,
     has_relu: bool,
     accumulate_c: bool,
     relu_on_final_layer: bool = False,
 ) -> ir.Module:
     """Generate payload function module for an MLP kernel."""
-    ab_type = get_mlir_elem_type(ab_type_str)
-    c_type = get_mlir_elem_type(c_type_str)
-    result_type = get_mlir_elem_type(result_type_str)
     mod = ir.Module.create()
     memref_in_t = ir.MemRefType.get((batch_size, input_size), ab_type)
     memref_out_t = ir.MemRefType.get((batch_size, output_size), result_type)
@@ -55,17 +51,11 @@ def generate_gpu_mlp_payload(
             biases = args[2 + nlayers :] if has_bias else [None] * nlayers
             output_tensor = emit_buf_to_tensor(output, restrict=True, writable=True)
             input_tensor = emit_buf_to_tensor(input, restrict=True)
-            weight_tensors = []
-            for weight_memref in weights:
-                weight_tensor = emit_buf_to_tensor(weight_memref, restrict=True)
-                weight_tensors.append(weight_tensor)
-            bias_tensors = []
-            for bias_memref in biases:
-                if has_bias:
-                    bias_tensor = emit_buf_to_tensor(bias_memref, restrict=True)
-                else:
-                    bias_tensor = None
-                bias_tensors.append(bias_tensor)
+            weight_tensors = [emit_buf_to_tensor(w, restrict=True) for w in weights]
+            bias_tensors = [
+                emit_buf_to_tensor(b, restrict=True) if has_bias else None
+                for b in biases
+            ]
 
             layer_input_tensor = input_tensor
             to_dealloc = None
@@ -88,7 +78,6 @@ def generate_gpu_mlp_payload(
                         )
                 # skip relu for final layer
                 hidden_layer = i < nlayers - 1
-                emit_relu = has_relu if hidden_layer or relu_on_final_layer else False
                 layer_output = emit_mlp_layer(
                     layer_input_tensor,
                     weight_tensor,
@@ -96,7 +85,7 @@ def generate_gpu_mlp_payload(
                     result_type=ab_type if hidden_layer else result_type,
                     acc_tensor=c_tensor if accumulate_c else None,
                     bias_tensor=bias_tensor,
-                    has_relu=emit_relu,
+                    has_relu=(hidden_layer or relu_on_final_layer) and has_relu,
                 )
                 bufferization.materialize_in_destination(
                     None, layer_output, c_memref, restrict=True, writable=True

@@ -1,3 +1,5 @@
+from types import FunctionType
+
 from mlir import ir
 from mlir.dialects import linalg, arith, tensor, math
 
@@ -155,7 +157,7 @@ def softmax(inputs: ir.Value, softmax_buf: ir.Value) -> ir.Value:
     return dived_bcasted_summed_exped
 
 
-def elementwise(input, output, elemwise_func):
+def elementwise(input: ir.Value, output: ir.Value, elemwise_func: FunctionType):
     assert input.type.shape == output.type.shape
     result_elem_type = output.type.element_type
     rank = len(output.type.shape)
@@ -174,7 +176,7 @@ def elementwise(input, output, elemwise_func):
     return f
 
 
-def convert_float_type(input, output):
+def convert_float_type(input: ir.Value, output: ir.Value):
     in_elem_type = input.type.element_type
     out_elem_type = output.type.element_type
     assert in_elem_type != out_elem_type, "Cannot cast to same type."
