@@ -7,7 +7,7 @@ from mlir.dialects.transform import xegpu
 from mlir.dialects.bufferization import LayoutMapOption
 from mlir.dialects import transform
 from mlir.dialects.transform import structured
-from lighthouse.utils.mlir import (
+from lighthouse.pipeline.helper import (
     apply_registered_pass,
     canonicalize,
     match,
@@ -555,7 +555,6 @@ def xegpu_wg_annotation_for_mlp_layer(
         xegpu.set_op_layout_attr(
             bcast_load, result=True, index=0, **output_layout, slice_dims=[0]
         )
-        raise NotImplementedError("Bias layout propagation is not supported.")
 
     transform.apply_cse(gpu_func)
     canonicalize(gpu_func)

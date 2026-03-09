@@ -25,7 +25,10 @@ from lighthouse.workload import benchmark
 from lighthouse.utils.memref import to_ctype as memref_to_ctype
 from lighthouse.utils.numpy import numpy_to_ctype
 from lighthouse.schedule.xegpu.mlp_schedule import get_schedule_module
-from lighthouse.ingress.gpu import generate_mlp_payload
+from lighthouse.ingress.mlir_gen import (
+    generate_gpu_mlp_payload,
+    get_mlir_elem_type,
+)
 
 from xegpu_workload import XeGPUWorkload, matmul_complexity
 import parameter_selector
@@ -46,7 +49,7 @@ class XeGPUMLP(XeGPUWorkload):
         output_size: int,
         hidden_layer_sizes: Optional[list[int]] = None,
         ab_type: str = "f16",
-        c_type: str = "f32",
+        acc_type: str = "f32",
         has_bias: bool = False,
         has_relu: bool = False,
         accumulate_c: bool = False,
@@ -62,23 +65,22 @@ class XeGPUMLP(XeGPUWorkload):
         layer_sizes = [self.input_size] + self.hidden_layer_sizes + [self.output_size]
         self.weight_shapes = list(zip(layer_sizes[:-1], layer_sizes[1:]))
         self.matmul_layers = [(self.batch_size, o, i) for i, o in self.weight_shapes]
+        self.nlayers = len(self.matmul_layers)
         self.identity_weights = identity_weights
+        self.bias_shapes = [(o,) for o in layer_sizes[1:]] if has_bias else []
 
         assert ab_type == "f16", "Only f16 type is supported for A and B"
-        assert c_type == "f32", "Only f32 type is supported for C"
+        assert acc_type == "f32", "Only f32 type is supported for accumulator"
         self.ab_type = ab_type
-        self.c_type = c_type
+        self.acc_type = acc_type
         type_str_to_numpy = {
             "f16": np.float16,
             "f32": np.float32,
         }
         self.ab_dtype = type_str_to_numpy[ab_type]
-        self.c_dtype = type_str_to_numpy[c_type]
         self.has_bias = has_bias
         self.has_relu = has_relu
         self.accumulate_c = accumulate_c
-        if has_bias:
-            raise NotImplementedError("Bias is not implemented yet")
 
         if len(self.matmul_layers) == 1 and self.has_relu:
             warnings.warn("Using ReLU on a single layer model has no effect.")
@@ -112,29 +114,32 @@ class XeGPUMLP(XeGPUWorkload):
                 W = gen_random((i, o), self.ab_dtype)
             weights.append(W)
 
+        biases = []
         if self.has_bias:
-            raise NotImplementedError("Bias initialization not implemented")
+            for o in self.bias_shapes:
+                b = gen_random(o, self.ab_dtype)
+                biases.append(b)
 
-        return input_array, output_array, *weights
+        return output_array, input_array, weights, biases
 
     @cached_property
     def _reference_solution(self) -> np.ndarray:
         """Compute reference solution on host with numpy."""
         # NOTE for large problems the solution can overflow float16 range
-        host_arrays = self._initial_host_arrays
+        output_array, input_array, weights, biases = self._initial_host_arrays
         # use float32 data type for efficiency
-        host_arrays = [arr.astype(np.float32) for arr in host_arrays]
-        input_array = host_arrays[0]
-        output_array = host_arrays[1]
-        weights = host_arrays[2:]
+        output_array = output_array.astype(np.float32)
+        input_array = input_array.astype(np.float32)
+        weights = [w.astype(np.float32) for w in weights]
+        biases = [b.astype(np.float32) for b in biases]
 
         a_array = input_array
         for i, W in enumerate(weights):
             C_ref = a_array @ W
+            if self.has_bias:
+                C_ref += biases[i]
             if self.has_relu and i < len(weights) - 1:
                 C_ref = np.maximum(C_ref, 0)
-            if self.has_bias:
-                raise NotImplementedError("Bias verification not implemented")
             a_array = C_ref.astype(self.ab_dtype).astype(np.float32)
 
         C_ref += output_array
@@ -143,35 +148,45 @@ class XeGPUMLP(XeGPUWorkload):
     def _get_input_arrays(
         self, execution_engine: ExecutionEngine
     ) -> list[ctypes.Structure]:
-        if self.has_bias:
-            raise NotImplementedError("Bias allocation not implemented yet")
-
-        # allocate arrays on device
+        # Allocate device memory for inputs and outputs.
         input_gpu = self._allocate_array(
             "input", self.input_shape, self.ab_type, execution_engine
         )
         output_gpu = self._allocate_array(
             "output", self.output_shape, self.ab_type, execution_engine
         )
-        gpu_arrays = [input_gpu, output_gpu]
+        gpu_arrays_2d = [output_gpu, input_gpu]
         for i, (in_size, out_size) in enumerate(self.weight_shapes):
             W_gpu = self._allocate_array(
                 f"weight_{i}", (in_size, out_size), self.ab_type, execution_engine
             )
-            gpu_arrays.append(W_gpu)
+            gpu_arrays_2d.append(W_gpu)
+        gpu_arrays_1d = []
+        if self.has_bias:
+            for i, (out_size,) in enumerate(self.bias_shapes):
+                b_gpu = self._allocate_array(
+                    f"bias_{i}", (out_size,), self.ab_type, execution_engine
+                )
+                gpu_arrays_1d.append(b_gpu)
 
-        # get initial host arrays
-        host_arrays = self._initial_host_arrays
-        # copy initial values to device
-        for host_arr, gpu_arr in zip(host_arrays, gpu_arrays):
+        # Copy initial values to device.
+        input_arr, output_arr, weights, biases = self._initial_host_arrays
+        for host_arr, gpu_arr in zip([input_arr, output_arr] + weights, gpu_arrays_2d):
             execution_engine.invoke(
-                "gpu_copy_" + self.ab_type,
+                "gpu_copy_2d_" + self.ab_type,
                 numpy_to_ctype(host_arr),
                 memref_to_ctype(gpu_arr),
             )
+        if self.has_bias:
+            for host_arr, gpu_arr in zip(biases, gpu_arrays_1d):
+                execution_engine.invoke(
+                    "gpu_copy_1d_" + self.ab_type,
+                    numpy_to_ctype(host_arr),
+                    memref_to_ctype(gpu_arr),
+                )
 
-        # return memrefs for the payload function
-        return gpu_arrays
+        # Return memrefs for the payload function.
+        return gpu_arrays_2d + gpu_arrays_1d
 
     def check_correctness(
         self, execution_engine: ExecutionEngine, verbose: int = 0
@@ -180,7 +195,7 @@ class XeGPUMLP(XeGPUWorkload):
         res_gpu = self.gpu_memrefs[("output", self.ab_type)]
         res_host_copy = np.zeros(self.output_shape, dtype=self.ab_dtype)
         execution_engine.invoke(
-            "gpu_copy_" + self.ab_type,
+            "gpu_copy_2d_" + self.ab_type,
             memref_to_ctype(res_gpu),
             numpy_to_ctype(res_host_copy),
         )
@@ -206,7 +221,6 @@ class XeGPUMLP(XeGPUWorkload):
 
     def get_complexity(self) -> tuple[int, int, int]:
         nbytes_ab = np.dtype(self.ab_dtype).itemsize
-        nbytes_c = np.dtype(self.c_dtype).itemsize
 
         flop_count = 0
         memory_reads = 0
@@ -214,7 +228,7 @@ class XeGPUMLP(XeGPUWorkload):
         for i, (M, N, K) in enumerate(self.matmul_layers):
             relu = self.has_relu if i < len(self.matmul_layers) - 1 else False
             f, r, w = matmul_complexity(
-                M, N, K, self.has_bias, relu, self.accumulate_c, nbytes_ab, nbytes_c
+                M, N, K, self.has_bias, relu, self.accumulate_c, nbytes_ab, nbytes_ab
             )
             flop_count += f
             memory_reads += r
@@ -222,14 +236,16 @@ class XeGPUMLP(XeGPUWorkload):
         return flop_count, memory_reads, memory_writes
 
     def payload_module(self) -> ir.Module:
-        mod = generate_mlp_payload(
+        mod = generate_gpu_mlp_payload(
             func_name=self.payload_function_name,
             batch_size=self.batch_size,
             input_size=self.input_size,
             output_size=self.output_size,
             hidden_layer_sizes=self.hidden_layer_sizes,
-            ab_type_str=self.ab_type,
-            c_type_str=self.c_type,
+            ab_type=get_mlir_elem_type(self.ab_type),
+            acc_type=get_mlir_elem_type(self.acc_type),
+            bias_type=get_mlir_elem_type(self.ab_type),
+            result_type=get_mlir_elem_type(self.ab_type),
             has_bias=self.has_bias,
             has_relu=self.has_relu,
             accumulate_c=self.accumulate_c,
@@ -244,7 +260,7 @@ class XeGPUMLP(XeGPUWorkload):
             has_relu=self.has_relu,
             skip_final_layer_relu=True,
             stop_at_stage=stop_at_stage,
-            nlayers=len(self.matmul_layers),
+            nlayers=self.nlayers,
             params=parameters,
         )
 
@@ -297,6 +313,11 @@ def parse_cli():
         help="Number of warm-up iterations before benchmarking.",
     )
     parser.add_argument(
+        "--bias",
+        action="store_true",
+        help="Add bias to each layer.",
+    )
+    parser.add_argument(
         "--relu",
         action="store_true",
         help="Add ReLU activation function to each layer except the output layer.",
@@ -343,9 +364,6 @@ def parse_cli():
 if __name__ == "__main__":
     args = parse_cli()
 
-    ab_type = "f16"
-    c_type = "f32"
-
     # use identity weights in correctness check
     # this may affect performance metrics
     identity_weights = args.check_result
@@ -356,9 +374,7 @@ if __name__ == "__main__":
             input_size=args.input_size,
             output_size=args.output_size,
             hidden_layer_sizes=args.hidden_sizes,
-            ab_type=ab_type,
-            c_type=c_type,
-            has_bias=False,
+            has_bias=args.bias,
             has_relu=args.relu,
             accumulate_c=args.accumulate_c,
             identity_weights=identity_weights,
@@ -367,6 +383,8 @@ if __name__ == "__main__":
         print(f"MLP with {len(matmuls)} layers")
         for i, (M, N, K) in enumerate(matmuls):
             print(f"  Layer {i}: M={M}, N={N}, K={K}")
+        ab_type = wload.ab_type
+        acc_type = wload.acc_type
 
         params = parameter_selector.get_matmul_parameters(wload)
 
@@ -399,7 +417,7 @@ if __name__ == "__main__":
                 f"i={args.input_size} "
                 f"o={args.output_size} "
                 f"hs={list2str(hidden_sizes)} "
-                f"dt={ab_type},{c_type} "
+                f"dt={ab_type},{acc_type} "
                 f"time(us): {elapsed:.2f} "
                 f"GFLOPS: {gflops:.2f}"
             )

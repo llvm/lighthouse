@@ -29,7 +29,7 @@ from lighthouse.utils.memref import (
     to_ctype as memref_to_ctype,
     deallocate_memrefs_on_exit,
 )
-from lighthouse.utils.mlir import apply_registered_pass, match
+from lighthouse.pipeline.helper import apply_registered_pass, match
 from lighthouse.workload import Workload, execute
 
 from mlp_weight_stationary import generate_mlp_payload
@@ -295,6 +295,9 @@ class DistMLP(Workload):
                     transform.PrintOp(target=func)
                 func = apply_registered_pass(func, "shard-partition")
                 func = apply_registered_pass(func, "canonicalize")
+                if self.verbose > 0:
+                    transform.PrintOp(target=func)
+                func = apply_registered_pass(func, "shard-simplify")
                 if self.verbose > 0:
                     transform.PrintOp(target=func)
                 func = apply_registered_pass(func, "convert-shard-to-mpi")

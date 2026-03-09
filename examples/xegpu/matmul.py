@@ -22,7 +22,10 @@ from lighthouse.workload import benchmark
 from lighthouse.utils.memref import to_ctype as memref_to_ctype
 from lighthouse.utils.numpy import numpy_to_ctype
 from lighthouse.schedule.xegpu.mlp_schedule import get_schedule_module
-from lighthouse.ingress.gpu import generate_matmul_payload
+from lighthouse.ingress.mlir_gen import (
+    generate_gpu_matmul_payload,
+    get_mlir_elem_type,
+)
 
 from xegpu_workload import XeGPUWorkload, matmul_complexity
 
@@ -55,6 +58,7 @@ class XeGPUMatMul(XeGPUWorkload):
         self.a_shape = (M, K)
         self.b_shape = (K, N)
         self.c_shape = (M, N)
+        self.bias_shape = (N,)
         assert ab_type == "f16", "Only f16 type is supported for A and B"
         assert c_type == "f32", "Only f32 type is supported for C"
         self.ab_type = ab_type
@@ -68,8 +72,6 @@ class XeGPUMatMul(XeGPUWorkload):
         self.has_bias = has_bias
         self.has_relu = has_relu
         self.accumulate_c = accumulate_c
-        if has_bias:
-            raise NotImplementedError("Bias is not implemented yet")
 
     @cached_property
     def _initial_host_arrays(self) -> list[np.ndarray]:
@@ -82,51 +84,66 @@ class XeGPUMatMul(XeGPUWorkload):
             return a.astype(dtype)
 
         np.random.seed(2)
-        A = gen_random((self.M, self.K), self.ab_dtype)
-        B = gen_random((self.K, self.N), self.ab_dtype)
-        C = gen_random((self.M, self.N), self.c_dtype)
-        return A, B, C
+        A = gen_random(self.a_shape, self.ab_dtype)
+        B = gen_random(self.b_shape, self.ab_dtype)
+        C = gen_random(self.c_shape, self.c_dtype)
+        bias = None
+        if self.has_bias:
+            bias = gen_random(self.bias_shape, self.c_dtype)
+        return C, A, B, bias
 
     @cached_property
     def _reference_solution(self) -> np.ndarray:
         """Compute reference solution on host with numpy."""
-        A, B, C = self._initial_host_arrays
+        C, A, B, bias = self._initial_host_arrays
         # use float32 data type for efficiency
         f32 = np.float32
         C_ref = A.astype(f32) @ B.astype(f32)
         if self.accumulate_c:
             C_ref += C.astype(f32)
+        if self.has_bias:
+            C_ref += bias.astype(f32)
         if self.has_relu:
             C_ref = np.maximum(C_ref, 0)
-        if self.has_bias:
-            raise NotImplementedError("Bias verification not implemented")
         return C_ref
 
     def _get_input_arrays(
         self, execution_engine: ExecutionEngine
     ) -> list[ctypes.Structure]:
+        # Allocate device memory for inputs and outputs.
         A_gpu = self._allocate_array("A", self.a_shape, self.ab_type, execution_engine)
         B_gpu = self._allocate_array("B", self.b_shape, self.ab_type, execution_engine)
         C_gpu = self._allocate_array("C", self.c_shape, self.c_type, execution_engine)
+        if self.has_bias:
+            bias_gpu = self._allocate_array(
+                "bias", self.bias_shape, self.c_type, execution_engine
+            )
 
-        A_host, B_host, C_host = self._initial_host_arrays
-        # copy initial values to device
-        copy_ab, copy_c = ("gpu_copy_" + s for s in (self.ab_type, self.c_type))
+        # Copy initial values to device.
+        C_host, A_host, B_host, bias_host = self._initial_host_arrays
+        copy_ab, copy_c = ("gpu_copy_2d_" + s for s in (self.ab_type, self.c_type))
         execution_engine.invoke(copy_ab, numpy_to_ctype(A_host), memref_to_ctype(A_gpu))
         execution_engine.invoke(copy_ab, numpy_to_ctype(B_host), memref_to_ctype(B_gpu))
         execution_engine.invoke(copy_c, numpy_to_ctype(C_host), memref_to_ctype(C_gpu))
+        if self.has_bias:
+            copy_bias = "gpu_copy_1d_" + self.c_type
+            execution_engine.invoke(
+                copy_bias, numpy_to_ctype(bias_host), memref_to_ctype(bias_gpu)
+            )
 
-        # return memrefs for the payload function
-        return [A_gpu, B_gpu, C_gpu]
+        # Return memrefs for the payload function.
+        if self.has_bias:
+            return [C_gpu, A_gpu, B_gpu, bias_gpu]
+        return [C_gpu, A_gpu, B_gpu]
 
     def check_correctness(
         self, execution_engine: ExecutionEngine, verbose: int = 0
     ) -> bool:
-        # copy result from device to host
+        # Copy result from device to host.
         C_gpu = self.gpu_memrefs[("C", self.c_type)]
         C_host_copy = np.zeros((self.M, self.N), dtype=self.c_dtype)
         execution_engine.invoke(
-            "gpu_copy_" + self.c_type,
+            "gpu_copy_2d_" + self.c_type,
             memref_to_ctype(C_gpu),
             numpy_to_ctype(C_host_copy),
         )
@@ -162,13 +179,13 @@ class XeGPUMatMul(XeGPUWorkload):
         )
 
     def payload_module(self) -> ir.Module:
-        mod = generate_matmul_payload(
+        mod = generate_gpu_matmul_payload(
             func_name=self.payload_function_name,
             M=self.M,
             N=self.N,
             K=self.K,
-            ab_type_str=self.ab_type,
-            c_type_str=self.c_type,
+            ab_type=get_mlir_elem_type(self.ab_type),
+            c_type=get_mlir_elem_type(self.c_type),
             has_bias=self.has_bias,
             has_relu=self.has_relu,
             accumulate_c=self.accumulate_c,
@@ -223,7 +240,7 @@ def parse_cli():
     parser.add_argument(
         "--k-tile",
         type=int,
-        default=32,
+        default=64,
         help="Inner reduction dimension tile size K.",
     )
     parser.add_argument(
@@ -271,6 +288,11 @@ def parse_cli():
         type=int,
         default=20,
         help="Number of warm-up iterations before benchmarking.",
+    )
+    parser.add_argument(
+        "--bias",
+        action="store_true",
+        help="Add bias after the matrix multiplication.",
     )
     parser.add_argument(
         "--relu",
@@ -349,7 +371,7 @@ if __name__ == "__main__":
             K=K,
             ab_type=ab_type,
             c_type=c_type,
-            has_bias=False,
+            has_bias=args.bias,
             has_relu=args.relu,
             accumulate_c=not args.no_accumulate_c,
         )

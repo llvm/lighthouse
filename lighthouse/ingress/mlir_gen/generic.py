@@ -1,16 +1,9 @@
-from typing import Union
+from types import FunctionType
 
 from mlir import ir
 from mlir.dialects import linalg, arith, tensor, math
 
-from .utils import (
-    affine_map,
-    get_bias,
-    get_outputs,
-    get_weights,
-    parallel,
-    reduction,
-)
+from .utils import affine_map, parallel, reduction
 
 
 def affine_maps_and_iter_types(rank: int):
@@ -56,14 +49,7 @@ def affine_maps_and_iter_types(rank: int):
     return affine_maps, iterator_types
 
 
-def times_weights(
-    inputs: ir.Value,
-    weights_or_weights_type: Union[ir.Value, ir.RankedTensorType],
-    outputs_or_outputs_type: Union[ir.Value, ir.RankedTensorType],
-) -> ir.Value:
-    weights: ir.Value = get_weights(weights_or_weights_type)
-    outputs: ir.Value = get_outputs(outputs_or_outputs_type)
-
+def times_weights(inputs: ir.Value, weights: ir.Value, outputs: ir.Value) -> ir.Value:
     if weights.type.rank == 5:  # tiled weights with vnni blocking
         vnni_block = weights.type.get_dim_size(4)
         assert inputs.type.shape[-1] % vnni_block == 0
@@ -91,9 +77,7 @@ def times_weights(
     return inputs_times_weights
 
 
-def add_bias(inputs: ir.Value, bias_or_bias_type: Union[ir.Value, ir.Type] = None):
-    bias: ir.Value = get_bias(bias_or_bias_type)
-
+def add_bias(inputs: ir.Value, bias: ir.Value):
     M, N, mb, nb = [ir.AffineDimExpr.get(i) for i in range(4)]
     affine_maps, iterator_types = {
         2: ([affine_map(2, [N]), affine_map(2, [M, N])], [parallel] * 2),
@@ -123,11 +107,7 @@ def relu(inputs: ir.Value):
     return relu_ed
 
 
-def softmax(
-    inputs: ir.Value, softmax_buf_or_softmax_buf_type: Union[ir.Value, ir.Type]
-) -> ir.Value:
-    softmax_buf = get_outputs(softmax_buf_or_softmax_buf_type)
-
+def softmax(inputs: ir.Value, softmax_buf: ir.Value) -> ir.Value:
     shape, elem_type = inputs.type.shape, inputs.type.element_type
     exp_out_uninit = tensor.EmptyOp(shape, elem_type)
 
@@ -175,3 +155,34 @@ def softmax(
         return arith.DivFOp(exped_input, normalizing_term)
 
     return dived_bcasted_summed_exped
+
+
+def elementwise(input: ir.Value, output: ir.Value, elemwise_func: FunctionType):
+    assert input.type.shape == output.type.shape
+    result_elem_type = output.type.element_type
+    rank = len(output.type.shape)
+    id_map = id_map = ir.AffineMap.get_identity(rank)
+    par_iter = linalg.IteratorType.parallel
+
+    @linalg.generic(
+        [input],
+        [output],
+        [id_map, id_map],
+        rank * [par_iter],
+    )
+    def f(a, b):
+        return elemwise_func(result_elem_type, a)
+
+    return f
+
+
+def convert_float_type(input: ir.Value, output: ir.Value):
+    in_elem_type = input.type.element_type
+    out_elem_type = output.type.element_type
+    assert in_elem_type != out_elem_type, "Cannot cast to same type."
+    assert isinstance(in_elem_type, ir.FloatType), "Source must be float type"
+    assert isinstance(out_elem_type, ir.FloatType), "Target must be float type"
+    in_width = input.type.element_type.width
+    out_width = output.type.element_type.width
+    op = arith.truncf if in_width > out_width else arith.extf
+    return elementwise(input, output, op)

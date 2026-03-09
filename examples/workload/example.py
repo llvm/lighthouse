@@ -18,7 +18,7 @@ from mlir.dialects import func, linalg, bufferization
 from mlir.dialects import transform
 from mlir.execution_engine import ExecutionEngine
 
-from lighthouse.utils.mlir import apply_registered_pass, canonicalize, match
+from lighthouse.pipeline.helper import apply_registered_pass, canonicalize, match
 from lighthouse.workload import Workload, execute, benchmark
 
 
