@@ -8,7 +8,7 @@ def __getattr__(name):
     """Enable lazy loading of submodules.
 
     Enables `import lighthouse.ingress as lh_ingress; lh_ingress.<submodule>` with
-    loading of (the submodule's heavy) depenendencies only upon being needed.
+    loading of (the submodule's heavy) dependencies only upon being needed.
     """
 
     if name in __all__:
