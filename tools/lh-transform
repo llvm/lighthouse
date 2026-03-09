@@ -15,8 +15,12 @@ if __name__ == "__main__":
     arg_parser = argparse.ArgumentParser(
         prog="lh-transform", description="Apply a schedule to a payload module"
     )
-    arg_parser.add_argument("schedule", help="path to file containing MLIR schedule module")
-    arg_parser.add_argument("payload", help="path to file containing MLIR payload module")
+    arg_parser.add_argument(
+        "schedule", help="path to file containing MLIR schedule module"
+    )
+    arg_parser.add_argument(
+        "payload", help="path to file containing MLIR payload module"
+    )
     args = arg_parser.parse_args(sys.argv[1:])
 
     with ir.Context(), ir.Location.unknown():
