@@ -1,4 +1,5 @@
 import os
+import shlex
 import importlib.util
 import shutil
 
@@ -38,11 +39,17 @@ config.test_format = lit.formats.ShTest(True)
 config.test_source_root = project_root
 config.test_exec_root = project_root + "/lit.out"
 
+config.substitutions.append(("FileCheck", find_filecheck()))
+
 config.substitutions.append(("%CACHE", project_root + "/cache"))
 config.substitutions.append(("%VIRTUAL_ENV", os.environ.get("VIRTUAL_ENV", "")))
 python = os.environ.get("PYTHON", "python")
 config.substitutions.append(("%PYTHON", python))
-config.substitutions.append(("FileCheck", find_filecheck()))
+if pythonpath := os.environ.get("PYTHONPATH"):
+    config.substitutions[-1] = (
+        "%PYTHON",
+        f"env PYTHONPATH={shlex.quote(pythonpath)} {python}",
+    )
 
 for pkg in ["torch", "mpi4py", "mpich", "impi-rt"]:
     if importlib.util.find_spec(pkg):
