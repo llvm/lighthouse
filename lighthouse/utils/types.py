@@ -8,6 +8,8 @@ W = TypeVar("W")
 
 
 class LazyChainMap(Mapping, Generic[K, V, W]):
+    """A mapping that applies a function to the values of an underlying dictionary on access."""
+
     def __init__(self, data: dict[K, V], func: Callable[[V], W]):
         self._data = data
         self._func = func

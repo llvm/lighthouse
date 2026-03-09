@@ -7,11 +7,14 @@ __all__ = ["SMTIntValue", "assert_", "register_and_load"]
 
 
 def register_and_load(context=None):
+    """Register and load the SMTIntValue caster."""
+
     SMTIntValue.register_value_caster()
 
 
 def assert_(predicate: ir.Value[smt.BoolType] | bool):
     """Assert normally if a bool else produce an SMT assertion op."""
+
     if isinstance(predicate, bool):
         assert predicate
     else:
@@ -32,6 +35,8 @@ def swapped(
 
 
 class SMTIntValue(ir.Value[smt.IntType]):
+    """A Value caster for `!smt.int` that supports Pythonic arithmetic and comparison operations."""
+
     def __init__(self, v):
         super().__init__(v)
 

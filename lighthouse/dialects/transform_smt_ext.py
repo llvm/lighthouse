@@ -12,11 +12,16 @@ __all__ = [
     "register_and_load",
 ]
 
+
 def register_and_load(context=None):
+    """Register and load the TransformSMTDialectExtension and its operations."""
+
     TransformSMTDialectExtension.load()
 
 
 class TransformSMTDialectExtension(ext.Dialect, name="transform_smt_ext"):
+    """A Transform Dialect extension for SMT-related operations."""
+
     @classmethod
     def load(cls, *args, **kwargs):
         super(TransformSMTDialectExtension, cls).load(*args, **kwargs)
@@ -29,6 +34,13 @@ class TransformSMTDialectExtension(ext.Dialect, name="transform_smt_ext"):
 class ConstrainParamsOp(
     TransformSMTDialectExtension.Operation, name="constrain_params"
 ):
+    """Constrain transform params by SMT ops while also producing new params.
+
+    In effect applies a predicate defined by the SMT ops in the body, which can
+    reference the parameters as block arguments as !smt.int. The result params
+    are defined by the !smt.int values yielded from the body.
+    """
+
     results_: Sequence[ext.Result[transform.AnyParamType]]
     params: Sequence[ext.Operand[transform.AnyParamType]]
     body_: ext.Region
@@ -49,6 +61,8 @@ class ConstrainParamsOp(
             setattr(cls, "_interfaces_attached", True)
 
     class ConstrainParamsTransformOpInterfaceModel(transform.TransformOpInterface):
+        """TransformOpInterface impl for evaluating the SMT constraints and producing new params."""
+
         @staticmethod
         def apply(
             op: "ConstrainParamsOp",
@@ -56,17 +70,24 @@ class ConstrainParamsOp(
             results: transform.TransformResults,
             state: transform.TransformState,
         ) -> transform.DiagnosedSilenceableFailure:
+            # Set up the tracing environment by obtaining the transform params
+            # and mapping them to Node constants, so that the traced Node
+            # representation will refer to the params as just constants.
             env = dict()
             for operand in op.params:
                 params = state.get_params(operand)
                 assert len(params) == 1 and isinstance(params[0].value, int)
                 env[operand] = trace.Constant(params[0].value)
 
+            # Obtained traced representation of the body of the op.
             env = trace.trace_tune_and_smt_ops(op.operation, env)
 
-            if not env[op].evaluate(env):  # evaluate the conjoined predicate
+            # Evaluate the predicate that represents the successful execution of the body.
+            if not env[op].evaluate(env):
                 return transform.DiagnosedSilenceableFailure.DefiniteFailure
 
+            # If the predicate is satisfied, we can extract the values of the result params
+            # from the environment and set them as the results of the transformation.
             for result in op.results:
                 res_value = env[result].evaluate(env)
                 i64 = ir.IntegerType.get_signless(64)
@@ -88,6 +109,16 @@ class ConstrainParamsOp(
 
 
 class MixedResultConstrainParamsOp(ConstrainParamsOp):
+    """ConstrainParamsOp that supports both integer and SMTIntValues as results.
+
+    Used to support `constrain_params` as a decorator on functions that yield a
+    mix of Python integers and `!smt.int`s (which are either arguments to the
+    function/block or the result of operations in the body). Upon the body's function
+    returning, the original ConstrainParamsOp is replaced with this version
+    that has the same parameters but whose `.results` corresponds to the mix of
+    integers and SMT values yielded from the body.
+    """
+
     def __init__(
         self,
         *args,
@@ -109,109 +140,62 @@ class MixedResultConstrainParamsOp(ConstrainParamsOp):
         return self._results
 
 
-# class ConstrainParamsOpDecorator(ConstrainParamsOp):
-#    def __init__(
-#        self,
-#        *params: transform.AnyParamType | int,
-#        results: Sequence[int | ext.Result[transform.AnyParamType]] | None = None,
-#        **kwargs,
-#    ):
-#        transform_params = [p for p in params if isinstance(p, ir.Value)]
-#        super().__init__([], transform_params, **kwargs)
-#        block_arg_types = [smt.IntType.get()] * len(transform_params)
-#        self.body_.blocks.append(*block_arg_types)
-#
-#        self._arguments = []
-#        self._results = results
-#        smt_arguments = iter(self.body.arguments)
-#        for param in params:
-#            if isinstance(param, int):
-#                self._arguments.append(param)
-#            else:
-#                self._arguments.append(next(smt_arguments))
-#
-#    @property
-#    def results(self) -> Sequence[ext.Result | int]:
-#        """Returns the yielded results of the decorated function, which are either
-#        integers or the transform parameters that correspond to the yielded SMT
-#        int values."""
-#        assert self._results is not None, (
-#            "Results are not available until the decorated function is called"
-#        )
-#        return self._results
-#
-#    def __call__(self, func):
-#        with ir.InsertionPoint(self.body):
-#            yielded_results = func(*self._arguments)
-#
-#            smt.yield_(res for res in yielded_results if isinstance(res, ir.Value))
-#
-#        print(f"{yielded_results=}")
-#        if len(yielded_results) == 0:
-#            return self
-#
-#        # In case of yielded results, we need to create a new ConstrainParamsOp with the same parameters and a body that contains the original body of the decorator, but with the yielded results as the results of the new op. We then replace the original op with the new one and return it.
-#        result_types = [transform.AnyParamType.get()] * sum(
-#            1 for res in yielded_results if isinstance(res, ir.Value)
-#        )
-#        with ir.InsertionPoint(self):
-#            self_with_results = ConstrainParamsOp(
-#                result_types, self.params, loc=self.location
-#            )
-#            self.body_.blocks[0].append_to(self_with_results.body_)
-#            # new_block = self_with_results.body_.blocks.append(
-#            #    *orig_block.arguments.types
-#            # )
-#            # arg_mapping = dict(zip(orig_block.arguments, new_block.arguments))
-#            # lh_utils_rewrite.move_block(orig_block, new_block, arg_mapping)
-#            # self.erase()
-#
-#        results = []
-#        op_results = iter(self_with_results.results)
-#        for yielded_result in yielded_results:
-#            if isinstance(yielded_result, int):
-#                results.append(yielded_result)
-#            elif isinstance(yielded_result, ir.Value):
-#                results.append(next(op_results))
-#            else:
-#                assert False, "Unsupported yielded result type"
-#        setattr(self_with_results, "_results", results)
-#        return self_with_results
-
-
 @overload
 def constrain_params(
     *params: ir.Value | int, loc=None, ip=None
-) -> Callable[..., MixedResultConstrainParamsOp]: ...
+) -> Callable[..., MixedResultConstrainParamsOp]:
+    """Calls the decorated function with param args converted to !smt.int args.
+
+    The decorated function defines the body of the ConstrainParamsOp and handles
+    args as `!smt.int` or Python integer. The function should yield a mix of
+    Python integers and `!smt.int`s (the latter can be either block arguments or
+    results of operations in the body). The original ConstrainParamsOp created
+    by the decorator will be replaced with a MixedResultConstrainParamsOp that
+    has the same parameters but whose results correspond to the mix of integers
+    and SMT values yielded from the body.
+    """
+
+    ...
 
 
 @overload
 def constrain_params(
     results: Sequence[ir.Type],
     params: Sequence[transform.AnyParamType],
-    arg_types: Sequence[ir.Type],
     loc=None,
     ip=None,
-) -> ConstrainParamsOp: ...
+) -> ConstrainParamsOp:
+    """Creates a ConstrainParamsOp where the body is defined by the caller."""
+
+    ...
 
 
 def constrain_params(
     *args, **kwargs
 ) -> ConstrainParamsOp | Callable[..., MixedResultConstrainParamsOp]:
+    """Creates a ConstrainParamsOp or a decorator for a function that yields mixed results."""
+
     # The second overload:
-    if len(args) == 0 or isinstance(args[0], ir.Type):
-        arg_types = kwargs.pop("arg_types")
+    if len(args) == 0 or not (
+        isinstance(args[0], ir.Value) or isinstance(args[0], int)
+    ):
+        params = kwargs.get("params") or args[1]
+        arg_types = [smt.IntType.get()] * len(params)
         op = ConstrainParamsOp(*args, **kwargs)
         op.body_.blocks.append(*arg_types)
         return op
 
     # The first overload:
-    # return ConstrainParamsOpDecorator(*args, **kwargs)
     def wrapper(func):
+        # Create a ConstrainParamsOp with just the transform parameters as block arguments.
         param_args = [p for p in args if isinstance(p, ir.Value)]
         constrain_params = ConstrainParamsOp([], param_args, **kwargs)
         constrain_params.body_.blocks.append(*[smt.IntType.get()] * len(param_args))
 
+        # Call `func` with !smt.int block arguments for corresponding transform params,
+        # and just normal ints for those passed via `args`. The body of `func` will be
+        # the body of the op, and it can yield a mix of Python integers and `!smt.int`s.
+        # A corresponding `smt.yield` will be generated as the terminator.
         block_args_iter = iter(constrain_params.body_.blocks[0].arguments)
         with ir.InsertionPoint(constrain_params.body):
             yielded_results = func(
@@ -224,21 +208,25 @@ def constrain_params(
                 yielded_results = [yielded_results]
             smt.yield_(res for res in yielded_results if isinstance(res, ir.Value))
 
-        if len(yielded_results) == 0:
-            return constrain_params
+            # In case no results are returned, the current ConstrainParamsOp is sufficient.
+            if len(yielded_results) == 0:
+                return constrain_params
 
-        result_values_or_types = [
-            transform.AnyParamType.get() if isinstance(res, ir.Value) else res
-            for res in yielded_results
-        ]
+            # Create a new version of the ConstrainParamsOp that has the same
+            # parameters but whose results correspond to the mix of integers and
+            # SMT values yielded from the body.
+            result_values_or_types = [
+                transform.AnyParamType.get() if isinstance(res, ir.Value) else res
+                for res in yielded_results
+            ]
 
-        mixed_result_op = MixedResultConstrainParamsOp(
-            params=param_args, result_values_or_types=result_values_or_types, **kwargs
-        )
-        # Move the body of the original op to the version with (mixed) results.
-        constrain_params.body_.blocks[0].append_to(mixed_result_op.body_)
-        # Safe to remove as the op doesn't have results, so no users either.
-        constrain_params.erase()
-        return mixed_result_op
+            mixed_result_op = MixedResultConstrainParamsOp(
+                params=param_args, result_values_or_types=result_values_or_types, **kwargs
+            )
+            # Move the body of the original op to the version with (mixed) results.
+            constrain_params.body_.blocks[0].append_to(mixed_result_op.body_)
+            # Safe to remove as the op doesn't have results, so no users either.
+            constrain_params.erase()
+            return mixed_result_op
 
     return wrapper

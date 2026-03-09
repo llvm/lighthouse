@@ -3,7 +3,7 @@ import re
 import ast
 import math
 from dataclasses import dataclass
-from typing import Any, Callable, Literal, Optional
+from typing import Any, Callable, Literal, Optional, Sequence
 from functools import wraps
 from operator import mod
 
@@ -23,6 +23,8 @@ def knob(
     result: Optional[ir.Type] = None,
     **kwargs,
 ) -> "KnobValue":
+    """Create a `transform.tune.knob` op whose result is wrapped in/cast to KnobValue."""
+
     options = ir.DictAttr.get()
     result = result or transform.AnyParamType.get()
     return KnobValue(
@@ -39,10 +41,14 @@ def update_knob_options(knob: transform_tune.KnobOp, key, value):
 
 
 class KnobValue(ir.Value):
+    """Wrapper for KnobOp's result for a pythonic API for specifying the knob's constraints."""
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
-    def in_(self, options):
+    def in_(self, options: Sequence):
+        """Specify that the knob's value must be among the given options."""
+
         i64 = ir.IntegerType.get_signless(64)
         options_attr = ir.ArrayAttr.get([ir.IntegerAttr.get(i64, v) for v in options])
 
@@ -54,32 +60,47 @@ class KnobValue(ir.Value):
 
     @staticmethod
     def ast_rewrite(in_exprs: bool = False):
+        """Decorator to allow `in` expressions on KnobOps in the function's body.
+
+        Rewrite the function's AST to replace `in` expressions with calls to `In`,
+        which in case the LHS is a KnobOp corresponds to calling `KnobOp.in_`.
+        """
+
         def decorator(func: Callable):
             @wraps(func)
             def wrapper(*args, **kwargs):
+                # Get the func's textual source and deal with the function being indented.
                 func_source = inspect.getsource(func)
                 indent = math.inf
                 for line in func_source.splitlines():
                     indent = min(indent, len(re.match(" *", line).group(0)))
-                func_source = "\n".join(line[indent:] for line in func_source.splitlines())
+                func_source = "\n".join(
+                    line[indent:] for line in func_source.splitlines()
+                )
+                # Obtain the corresponding AST.
                 func_ast = ast.parse(func_source)
                 func_def_ast = func_ast.body[0]
 
-                # TODO: carefully remove just the @KnobValue.ast_rewrite decorator in case of multiple decorators.
+                # TODO: in case of multiple decorators, remove just @KnobValue.ast_rewrite
                 func_def_ast.decorator_list.clear()  # Remove the decorator to avoid infinite recursion.
                 if in_exprs:
+                    # Apply the rewriting of `in` expressions.
                     func_def_ast.body = [
                         InTransformer().visit(stmt) for stmt in func_def_ast.body
                     ]
                     ast.fix_missing_locations(func_def_ast)
+                # Obtain executable code which still needs an execution environment.
                 mod = compile(ast.unparse(func_ast), filename="<ast>", mode="exec")
                 frame = inspect.currentframe()
                 assert frame and frame.f_back
+                # Make the original function's globals and locals available to the rewritten function.
                 temp_globals = frame.f_back.f_globals.copy()
                 temp_globals |= frame.f_back.f_locals.copy()
                 temp_locals = frame.f_back.f_locals.copy()
                 temp_globals["In"] = In
+                # Make the rewritten function available as a value at the original name.
                 exec(mod, temp_globals, temp_locals)
+                # Call the rewritten function and return its result.
                 return temp_locals[func.__name__](*args, **kwargs)
 
             return wrapper
@@ -135,6 +156,11 @@ class KnobValue(ir.Value):
 
 @dataclass
 class KnobExpression:
+    """Helper class to represent expressions on KnobValues that then occur in equalities.
+
+    In order to support (the LHS) in such constraints as `knob("X") % 16 == 0`.
+    """
+
     lhs: KnobValue | int
     rhs: KnobValue | int
     operator: Literal[mod]
@@ -161,6 +187,12 @@ class KnobExpression:
 
 @dataclass
 class In:
+    """Helper for rewriting `in` expressions.
+
+    Only `knob('X') in Y` gets mapped to `knob('X').in_(Y)` everything else
+    corresponds to just a regular Python `in` expression.
+    """
+
     lhs: Any
     rhs: Any
 
@@ -171,6 +203,8 @@ class In:
 
 
 class InTransformer(ast.NodeTransformer):
+    """AST transformer to rewrite `in` expressions to calls to `In`."""
+
     def visit_Compare(self, node: ast.Compare) -> Any:
         self.generic_visit(node)
         if len(node.ops) == 1 and isinstance(node.ops[0], ast.In):
