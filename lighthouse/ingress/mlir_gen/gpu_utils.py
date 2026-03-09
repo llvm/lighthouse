@@ -45,9 +45,10 @@ def emit_gpu_copy(suffix: str, element_type: ir.Type, rank: int = 2):
         gpu.memcpy(None, [], dst, src)
 
 
-def emit_gpu_util_funcs(element_type: ir.Type):
+def emit_gpu_util_funcs(element_type: ir.Type, rank: int = 2):
     """Emit GPU utility functions for allocation, deallocation and copy."""
-    suffix = get_elem_type_str(type(element_type))
-    emit_gpu_alloc(suffix, element_type)
-    emit_gpu_dealloc(suffix, element_type)
-    emit_gpu_copy(suffix, element_type)
+    type_str = get_elem_type_str(type(element_type))
+    suffix = f"{rank}d_{type_str}"
+    emit_gpu_alloc(suffix, element_type, rank)
+    emit_gpu_dealloc(suffix, element_type, rank)
+    emit_gpu_copy(suffix, element_type, rank)

@@ -67,14 +67,19 @@ class XeGPUWorkload(Workload, ABC):
         mref = make_nd_memref_descriptor(len(shape), as_ctype(dtype))()
         ptr_mref = memref_to_ctype(mref)
         ptr_dims = [ctypes.pointer(ctypes.c_int32(d)) for d in shape]
-        execution_engine.invoke("gpu_alloc_" + dtype_str, ptr_mref, *ptr_dims)
+        rank = len(shape)
+        assert rank in (1, 2), "Only 1d or 2d arrays are supported."
+        suffix = f"{rank}d_{dtype_str}"
+        execution_engine.invoke("gpu_alloc_" + suffix, ptr_mref, *ptr_dims)
         self.gpu_memrefs[key] = mref
         return mref
 
     def _deallocate_all(self, execution_engine: ExecutionEngine):
         for (_, dtype_str), mref in self.gpu_memrefs.items():
             ptr_mref = ctypes.pointer(ctypes.pointer(mref))
-            execution_engine.invoke("gpu_dealloc_" + dtype_str, ptr_mref)
+            rank = len(mref.shape)
+            suffix = f"{rank}d_{dtype_str}"
+            execution_engine.invoke("gpu_dealloc_" + suffix, ptr_mref)
         self.gpu_memrefs = {}
 
     @contextmanager

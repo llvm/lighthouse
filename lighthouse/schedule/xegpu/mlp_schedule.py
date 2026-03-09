@@ -418,7 +418,6 @@ def xegpu_wg_annotation_for_mlp_layer(gpu_func: ir.Value, params: dict, has_bias
         xegpu.set_op_layout_attr(
             bcast_load, result=True, index=0, **output_layout, slice_dims=[0]
         )
-        raise NotImplementedError("Bias layout propagation is not supported.")
 
     transform.apply_cse(gpu_func)
     canonicalize(gpu_func)

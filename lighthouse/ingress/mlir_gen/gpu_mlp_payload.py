@@ -14,7 +14,8 @@ def generate_gpu_mlp_payload(
     output_size: int,
     hidden_layer_sizes: list[int],
     ab_type: ir.Type,
-    c_type: ir.Type,
+    acc_type: ir.Type,
+    bias_type: ir.Type,
     result_type: ir.Type,
     has_bias: bool,
     has_relu: bool,
@@ -33,7 +34,7 @@ def generate_gpu_mlp_payload(
         memref_t = ir.MemRefType.get((in_size, out_size), ab_type)
         weight_memref_types.append(memref_t)
         if has_bias:
-            memref_t = ir.MemRefType.get((out_size,), c_type)
+            memref_t = ir.MemRefType.get((out_size,), bias_type)
             bias_memref_types.append(memref_t)
     with ir.InsertionPoint(mod.body):
         # function argument order:
@@ -81,7 +82,7 @@ def generate_gpu_mlp_payload(
                 layer_output = emit_mlp_layer(
                     layer_input_tensor,
                     weight_tensor,
-                    acc_type=c_type,
+                    acc_type=acc_type,
                     result_type=ab_type if hidden_layer else result_type,
                     acc_tensor=c_tensor if accumulate_c else None,
                     bias_tensor=bias_tensor,
@@ -98,9 +99,11 @@ def generate_gpu_mlp_payload(
                     to_dealloc = c_memref
                 layer_input_tensor = layer_output
 
-        emit_gpu_util_funcs(ab_type)
-        if c_type != ab_type:
-            emit_gpu_util_funcs(c_type)
+        emit_gpu_util_funcs(ab_type, rank=2)
+        if result_type != ab_type:
+            emit_gpu_util_funcs(result_type, rank=2)
+        if has_bias:
+            emit_gpu_util_funcs(bias_type, rank=1)
 
     return mod
 
@@ -128,11 +131,14 @@ def emit_mlp_layer(
         zero_tensor = linalg.fill(zero, outs=[empty])
         acc_tensor = zero_tensor
     terminal = times_weights(a_tensor, b_tensor, acc_tensor)
+    if bias_tensor is not None:
+        if bias_tensor.type.element_type != acc_type:
+            empty = tensor.empty((N,), acc_type)
+            bias_tensor = convert_float_type(bias_tensor, empty)
+        terminal = add_bias(terminal, bias_tensor)
     if convert_result:
         empty = tensor.empty((M, N), result_type)
         terminal = convert_float_type(terminal, empty)
-    if bias_tensor is not None:
-        terminal = add_bias(terminal, bias_tensor)
     if has_relu:
         terminal = relu(terminal)
 
