@@ -31,7 +31,7 @@ from lighthouse.utils.memref import (
 )
 from lighthouse.pipeline.helper import apply_registered_pass, match
 from lighthouse.workload import Workload, benchmark
-
+from lighthouse.schedule.x86 import tile_and_vector_matmul
 from mlp_weight_stationary import generate_mlp_payload
 
 from mpi4py import MPI
@@ -304,8 +304,12 @@ class DistMLP(Workload):
             if self.verbose > 0:
                 transform.PrintOp(target=func)
             func = apply_registered_pass(func, "tosa-to-linalg")
+            func = apply_registered_pass(func, "tosa-to-tensor")
             transform.YieldOp()
             func = None
+
+        tile_schedule = tile_and_vector_matmul.create()
+        tile_schedule.body.operations[0].verify()
 
         main_schedule = ir.Module.create()
         main_schedule.operation.attributes["transform.with_named_sequence"] = (
@@ -324,7 +328,6 @@ class DistMLP(Workload):
             mod = transform.get_parent_op(
                 anytype, func, op_name="builtin.module", deduplicate=True
             )
-            mod = apply_registered_pass(mod, "tosa-to-tensor")
             mod = apply_registered_pass(mod, "linalg-generalize-named-ops")
             mod = apply_registered_pass(mod, "canonicalize")
             mod = apply_registered_pass(mod, "linalg-fuse-elementwise-ops")
@@ -358,12 +361,14 @@ class DistMLP(Workload):
             mod = apply_registered_pass(mod, "expand-strided-metadata")
             mod = apply_registered_pass(mod, "convert-math-to-funcs")
             mod = apply_registered_pass(mod, "lower-affine")
+            mod = apply_registered_pass(mod, "convert-vector-to-scf")
             mod = apply_registered_pass(mod, "convert-scf-to-cf")
             mod = apply_registered_pass(mod, "symbol-dce")
             mod = apply_registered_pass(mod, "finalize-memref-to-llvm")
             mod = apply_registered_pass(mod, "convert-math-to-llvm")
             mod = apply_registered_pass(mod, "convert-math-to-libm")
             mod = apply_registered_pass(mod, "convert-func-to-llvm")
+            mod = apply_registered_pass(mod, "convert-vector-to-llvm")
             mod = apply_registered_pass(mod, "canonicalize")
             mod = apply_registered_pass(mod, "convert-to-llvm")
             mod = apply_registered_pass(mod, "reconcile-unrealized-casts")
@@ -372,7 +377,7 @@ class DistMLP(Workload):
                 transform.PrintOp(target=mod)
             transform.YieldOp()
 
-        return [pre_schedule, main_schedule]
+        return [pre_schedule, tile_schedule, main_schedule]
 
 
 if __name__ == "__main__":
@@ -397,9 +402,9 @@ if __name__ == "__main__":
         min = np.min(times)
         max = np.max(times)
         std = np.std(times)
-        print(f"Timings (us): mean={mean:.2f}+/-{std:.2f} min={min:.2f} max={max:.2f}")
+        rprint(f"Timings (us): mean={mean:.2f}+/-{std:.2f} min={min:.2f} max={max:.2f}")
         flop_count = wload.get_complexity()[0]
         gflops = flop_count / (mean * 1e-6) / 1e9
-        print(f"Throughput: {gflops:.2f} GFLOPS")
+        rprint(f"Throughput: {gflops:.2f} GFLOPS")
 
     MPI.Finalize()
