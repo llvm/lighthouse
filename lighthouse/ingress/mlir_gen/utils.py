@@ -9,6 +9,26 @@ from mlir import ir
 from mlir.dialects import arith, linalg, tensor
 
 
+def get_mlir_elem_type(type_str: str):
+    if type_str == "f16":
+        return ir.F16Type.get()
+    if type_str == "bf16":
+        return ir.BF16Type.get()
+    if type_str == "f32":
+        return ir.F32Type.get()
+    raise ValueError(f"Unsupported element type string '{type_str}'")
+
+
+def get_elem_type_str(elem_type: type):
+    if elem_type == ir.F16Type:
+        return "f16"
+    if elem_type == ir.BF16Type:
+        return "bf16"
+    if elem_type == ir.F32Type:
+        return "f32"
+    raise ValueError(f"Unsupported element type '{elem_type}'")
+
+
 class ConstantInitKind(Enum):
     ones = auto()
     distinct = auto()
