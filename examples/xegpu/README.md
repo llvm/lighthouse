@@ -65,7 +65,7 @@ export PYTHONPATH=${LLVM_BUILD_DIR}/tools/mlir/python_packages/mlir_core/
 
 ## Matrix multiplication benchmark
 
-Run the default 4k (float16, float16) -> float32 matrix multiplication benchmark with correctness test:
+Run the default 4k (float16, float16) -> float32 matrix-multipy-accumulate benchmark with correctness test:
 
 ```bash
 python matmul.py --check-result
@@ -77,13 +77,25 @@ Set different M, N, K problem size
 python matmul.py --sizes 1024 2048 4096 ...
 ```
 
-Run with ReLU post-op:
+To run matrix multiply (C = A * B) kernel instead of matrix-multiply-accumulate (C += A * B):
 
 ```bash
-python matmul.py --relu ...
+python matmul.py --no-accumulate-c ...
 ```
 
-See all command line arguments:
+Run with bias and ReLU post-op:
+
+```bash
+python matmul.py --bias --relu ...
+```
+
+Set tiling parameters from the command line:
+
+```bash
+python matmul.py --wg-tile 128 256 ...
+```
+
+See all command-line arguments:
 
 ```bash
 python matmul.py --help
@@ -124,8 +136,72 @@ Add bias to all layers and ReLU to hidden layers:
 python mlp.py --bias --relu ...
 ```
 
-See all command line arguments:
+## Kernel tuning
+
+### Exhaustive grid search
+
+`tune_matmul_gridsearch.py` performs an exhaustive grid search on a matrix multiplication kernel. It takes similar arguments as the `matmul.py` benchmark:
 
 ```bash
-python mlp.py --help
+python tune_matmul_gridsearch.py --sizes 1024 2048 4096 --bias --relu --no-accumulate-c
 ```
+
+The executed parameter combinations are stored in `out_gridsearch.csv` file along with the obtained performance metrics:
+
+```txt
+M,N,K,wg_m,wg_n,sg_m,sg_n,k,load_a_m,load_a_k,load_b_k,load_b_n,pf_a_m,pf_a_k,pf_b_k,pf_b_n,pf_nb,time (us),GFLOPS/s
+4096,4096,4096,64,256,32,32,64,8,16,16,16,8,16,8,16,1,???,???
+...
+```
+
+To get information about the search space (e.g., tile parameter choices) without actually executing the kernels run with `--dry-run` flag:
+
+```bash
+python tune_matmul_gridsearch.py --dry-run
+```
+
+Example output:
+
+```txt
+ab_type='f16'
+c_type='f32'
+has_bias=False
+has_relu=False
+accumulate_c=True
+Variable set:
+wg_m=[64, 128, 256]
+wg_n=[64, 128, 256]
+sg_m=[32, 64, 128]
+sg_n=[32, 64, 128]
+k=[16, 32, 64, 128, 256]
+load_a_m=[8, 16, 32]
+load_a_k=[8, 16, 32]
+load_b_k=[8, 16, 32]
+load_b_n=[8, 16, 32]
+pf_a_m=[8, 16, 32]
+pf_a_k=[8, 16, 32]
+pf_b_k=[8, 16, 32]
+pf_b_n=[8, 16, 32]
+pf_nb=[1]
+Total complexity: 2657205 configurations
+Number of executed configurations: 3588
+```
+
+Total complexity is the number of parameter combinations without any filtering. The number of executed configurations shows the number of valid combinations, i.e. ones that satisfy appropriate (e.g., hardware) constraints.
+
+To dump the best found configurations as JSON files at the end of the search, use `--dump-json n` flag where `n` stands for the number of best configurations. The files are named as `matmul_params_*_00.json` with increasing integer suffix (best configuration being 00).
+
+> [!NOTE]
+> Running the grid search typically takes several hours to complete.
+
+### Adaptive sampling with Genetic Algorithm
+
+`tune_matmul_ga.py` employs a genetic algorithm for adaptive sampling to explore the kernel tuning search space. This approach is typically an order of magnitude faster while discovering high throughput parameter combinations.
+
+The command-line interface is similar to `tune_matmul_gridsearch.py`:
+
+```bash
+python tune_matmul_ga.py --sizes 1024 2048 4096 --bias --relu --dump-json 10
+```
+
+The executed parameter combinations are stored in `out_genetic_algorithm.csv` file.
