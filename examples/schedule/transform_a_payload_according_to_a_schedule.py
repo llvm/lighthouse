@@ -3,6 +3,8 @@
 # Simply demonstrates applying a schedule to a payload.
 # To do so generates a basic payload and a basic schedule, purely as an example.
 
+import sys
+
 from mlir.ir import Context, Location, InsertionPoint, Operation, Module
 from mlir.ir import RankedTensorType, F32Type, UnitAttr
 from mlir.dialects import arith, func, linalg, tensor, transform
@@ -21,13 +23,11 @@ def example_payload() -> Module:
     Res = matmul(..., C=X)
     """
 
-    print("NOTE: example payload module:")
     payload = Module.create()
     with InsertionPoint(payload.body):
         matrixType = RankedTensorType.get([16, 16], F32Type.get())
 
         # NB: Do the CHECKing on the transformed output:
-        # CHECK-LABEL: result of applying schedule to payload
         # CHECK: func.func @fold_add_on_two_matmuls
         # CHECK-SAME:      (%[[MATRIX_A:.*]]: {{.*}}, %[[MATRIX_B:.*]]: {{.*}}, %[[WEIGHTS:.*]]: {{.*}})
         @func.func(matrixType, matrixType, matrixType)
@@ -45,14 +45,12 @@ def example_payload() -> Module:
             # CHECK: return %[[RES]]
             return added
 
-    print(payload)
     return payload
 
 
 def example_schedule() -> Module:
     """Basic schedule wrapping a single rewrite pattern."""
 
-    print("NOTE: example schedule module:")
     schedule_module = Module.create()
     schedule_module.operation.attributes["transform.with_named_sequence"] = (
         UnitAttr.get()
@@ -75,17 +73,27 @@ def example_schedule() -> Module:
                 )  # TODO: expose dedicated builder upstream
             transform.yield_([])
 
-    print(schedule_module)
     return schedule_module
 
 
 with Context(), Location.unknown():
     payload = example_payload()
     schedule_module = example_schedule()
-    # Actual schedule is defined by the contained transform.named_sequence:
-    schedule: transform.NamedSequenceOp = schedule_module.body.operations[0]
 
-    schedule.apply(payload)  # The actual transformation happens here.
+    if len(sys.argv) > 1 and sys.argv[1] == "schedule":
+        print(schedule_module)
+    elif len(sys.argv) > 1 and sys.argv[1] == "payload":
+        print(payload)
+    else:
+        print("// NOTE: example payload module:")
+        print(payload)
+        print("// NOTE: example schedule module:")
+        print(schedule_module)
 
-    print("NOTE: result of applying schedule to payload:")
-    print(payload)
+        # Actual schedule is defined by the contained transform.named_sequence:
+        schedule: transform.NamedSequenceOp = schedule_module.body.operations[0]
+
+        schedule.apply(payload)  # The actual transformation happens here.
+
+        print("// NOTE: result of applying schedule to payload:")
+        print(payload)

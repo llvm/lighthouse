@@ -43,6 +43,8 @@ config.substitutions.append(("%VIRTUAL_ENV", os.environ.get("VIRTUAL_ENV", "")))
 python = os.environ.get("PYTHON", "python")
 config.substitutions.append(("%PYTHON", python))
 config.substitutions.append(("FileCheck", find_filecheck()))
+if pythonpath := os.environ.get("PYTHONPATH"):
+    config.substitutions[-1] = ("%PYTHON", f"env PYTHONPATH={pythonpath} {python}")
 
 for pkg in ["torch", "mpi4py", "mpich", "impi-rt"]:
     if importlib.util.find_spec(pkg):
@@ -51,3 +53,8 @@ for pkg in ["torch", "mpi4py", "mpich", "impi-rt"]:
 torch_kernels_dir = project_root + "/third_party/KernelBench/KernelBench"
 if os.path.isdir(torch_kernels_dir):
     config.available_features.add("kernel_bench")
+
+for tool in os.listdir(project_root + "/tools"):
+    tool_path = os.path.join(project_root, "tools", tool)
+    if tool.startswith("lh-") and os.access(tool_path, os.X_OK):
+        config.substitutions.append((tool, tool_path))

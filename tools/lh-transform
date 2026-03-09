@@ -1,0 +1,35 @@
+#!/usr/bin/env python
+
+#  Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+#  See https://llvm.org/LICENSE.txt for license information.
+#  SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+
+import argparse
+import sys
+
+from mlir import ir
+from mlir.dialects import transform
+
+
+if __name__ == "__main__":
+    arg_parser = argparse.ArgumentParser(
+        prog="lh-transform", description="Apply a schedule to a payload module"
+    )
+    arg_parser.add_argument("schedule", help="path to file containing MLIR schedule module")
+    arg_parser.add_argument("payload", help="path to file containing MLIR payload module")
+    args = arg_parser.parse_args(sys.argv[1:])
+
+    with ir.Context(), ir.Location.unknown():
+        with open(args.schedule) as sched_file, open(args.payload) as payload_file:
+            schedule_module = ir.Module.parse(sched_file.read())
+            payload_module = ir.Module.parse(payload_file.read())
+
+        schedule = schedule_module.body.operations[0]
+        if not isinstance(schedule, transform.NamedSequenceOp):
+            sys.exit(
+                "The following op was expected to be a `transform.named_sequence`, instead got:\n"
+                + str(schedule)
+            )
+        schedule.apply(payload_module)
+
+        print(payload_module)
