@@ -38,4 +38,4 @@ jobs:
         run: |
           export FILECHECK=FileCheck-18 # Ubuntu's llvm-dev appends a version number.
           uv sync --extra runtime_mpich
-          uv run lit examples/mlp-mpi --verbose  # Makes sure to substitute FileCheck for $FILECHECK
+          uv run lit examples/feed-forward-mpi --verbose  # Makes sure to substitute FileCheck for $FILECHECK
