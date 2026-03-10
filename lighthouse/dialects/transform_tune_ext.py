@@ -89,8 +89,12 @@ class KnobValue(ir.Value):
                         InTransformer().visit(stmt) for stmt in func_def_ast.body
                     ]
                     ast.fix_missing_locations(func_def_ast)
-                # Obtain executable code which still needs an execution environment.
-                mod = compile(ast.unparse(func_ast), filename="<ast>", mode="exec")
+                # Adjust line numbers to match the original source file.
+                source_file = inspect.getsourcefile(func) or "<ast>"
+                _, start_lineno = inspect.getsourcelines(func)
+                ast.increment_lineno(func_ast, start_lineno - 1)
+                # Compile from the AST directly to preserve line number mapping.
+                mod = compile(func_ast, filename=source_file, mode="exec")
                 frame = inspect.currentframe()
                 assert frame and frame.f_back
                 # Make the original function's globals and locals available to the rewritten function.

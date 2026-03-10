@@ -208,27 +208,27 @@ def constrain_params(
                 yielded_results = [yielded_results]
             smt.yield_(res for res in yielded_results if isinstance(res, ir.Value))
 
-            # In case no results are returned, the current ConstrainParamsOp is sufficient.
-            if len(yielded_results) == 0:
-                return constrain_params
+        # In case no results are returned, the current ConstrainParamsOp is sufficient.
+        if len(yielded_results) == 0:
+            return constrain_params
 
-            # Create a new version of the ConstrainParamsOp that has the same
-            # parameters but whose results correspond to the mix of integers and
-            # SMT values yielded from the body.
-            result_values_or_types = [
-                transform.AnyParamType.get() if isinstance(res, ir.Value) else res
-                for res in yielded_results
-            ]
+        # Create a new version of the ConstrainParamsOp that has the same
+        # parameters but whose results correspond to the mix of integers and
+        # SMT values yielded from the body.
+        result_values_or_types = [
+            transform.AnyParamType.get() if isinstance(res, ir.Value) else res
+            for res in yielded_results
+        ]
 
-            mixed_result_op = MixedResultConstrainParamsOp(
-                params=param_args,
-                result_values_or_types=result_values_or_types,
-                **kwargs,
-            )
-            # Move the body of the original op to the version with (mixed) results.
-            constrain_params.body_.blocks[0].append_to(mixed_result_op.body_)
-            # Safe to remove as the op doesn't have results, so no users either.
-            constrain_params.erase()
-            return mixed_result_op
+        mixed_result_op = MixedResultConstrainParamsOp(
+            params=param_args,
+            result_values_or_types=result_values_or_types,
+            **kwargs,
+        )
+        # Move the body of the original op to the version with (mixed) results.
+        constrain_params.body_.blocks[0].append_to(mixed_result_op.body_)
+        # Safe to remove as the op doesn't have results, so no users either.
+        constrain_params.erase()
+        return mixed_result_op
 
     return wrapper

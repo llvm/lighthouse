@@ -69,15 +69,14 @@ class Workload(ABC):
         schedule_module = self.schedule_module(
             stop_at_stage=dump_payload, parameters=schedule_parameters
         )
-        if dump_schedule:
-            print(schedule_module)
-            sys.exit(0)
         if not dump_payload or dump_payload != "initial":
             # apply schedule on payload module
             named_seq = schedule_module.body.operations[0]
             named_seq.apply(payload_module)
         if dump_payload:
             print(payload_module)
+        if dump_schedule:
+            print(schedule_module)
         return payload_module
 
     @abstractmethod

@@ -247,28 +247,28 @@ def parse_cli():
         "--load-tile-a",
         type=int,
         nargs=2,
-        default=[16, 32],
+        default=[32, 16],
         help="Tile size for loading A matrix for DPAS op.",
     )
     parser.add_argument(
         "--load-tile-b",
         type=int,
         nargs=2,
-        default=[16, 16],
+        default=[32, 16],
         help="Tile size for loading B matrix for DPAS op.",
     )
     parser.add_argument(
         "--prefetch-tile-a",
         type=int,
         nargs=2,
-        default=[16, 32],
+        default=[8, 32],
         help="Tile size for cooperative prefetching of subgroup A matrix",
     )
     parser.add_argument(
         "--prefetch-tile-b",
         type=int,
         nargs=2,
-        default=[16, 16],
+        default=[8, 32],
         help="Tile size for cooperative prefetching of subgroup B matrix",
     )
     parser.add_argument(

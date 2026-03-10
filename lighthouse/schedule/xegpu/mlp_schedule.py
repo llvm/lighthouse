@@ -16,6 +16,22 @@ from lighthouse.pipeline.helper import (
 from lighthouse.dialects import smt_ext, transform_smt_ext as td_smt_ext
 from lighthouse.dialects.transform_tune_ext import knob, KnobValue
 
+# hardware constraints
+DPAS = namedtuple("DPAS", ["M", "N", "K", "A_TILE", "B_TILE", "C_TILE"])(
+    8, 16, 16, (8, 16), (16, 16), (8, 16)
+)
+PREFETCH_INST_DATA = [8, 16]
+NB_WORKITEMS = 16  # workitems in subgroup
+LOAD_MAX_ROWS = 32
+LOAD_MAX_COLS = 16
+PFETCH_MIN_ROWS = 8
+PFETCH_MAX_ROWS = 32
+PFETCH_MIN_COLS = 16
+PFETCH_MAX_COLS = 32
+MAX_NB_SG_THREADS = 64
+# heuristics: skip likely suboptimal configurations
+MIN_NB_THREADS = 16
+
 
 class PipelineInterrupt(Exception):
     """Exception to signal early termination of the transform schedule."""
@@ -31,15 +47,6 @@ def match_and_split(*args, nhandles=1, **kwargs):
     if nhandles == 1:
         matched_ops = [matched_ops]
     return matched_ops
-
-
-# hardware constraints
-DPAS = namedtuple("DPAS", ["M", "N", "K", "A_TILE", "B_TILE", "C_TILE"])(
-    8, 16, 16, (8, 16), (16, 16), (8, 16)
-)
-PREFETCH_INST_DATA = [8, 16]
-NB_WORKITEMS = 16  # workitems in subgroup
-LOAD_TILE_SIZES = [8, 16, 32]
 
 
 @KnobValue.ast_rewrite(in_exprs=True)
@@ -66,11 +73,18 @@ def checked_params_or_knobs(
 
     # NB: Constraints on knobs will be added as attributes on the KnobOps, while
     #     constraints on concrete values will be checked immediately.
-    assert 64 <= wg_m <= 256 and m % wg_m == 0 and wg_m % DPAS.M == 0
-    assert 64 <= wg_n <= 256 and n % wg_n == 0 and wg_n % DPAS.N == 0
-    assert 32 <= sg_m <= 128 and m % sg_m == 0 and sg_m % DPAS.M == 0
-    assert 32 <= sg_n <= 128 and n % sg_n == 0 and sg_n % DPAS.N == 0
-    assert 16 <= k_tile <= 50 and k % k_tile == 0 and k_tile % DPAS.K == 0
+    assert min(max(m // 4, 16), 64) <= wg_m <= min(m, 256)
+    assert m % wg_m == 0 and wg_m % DPAS.M == 0
+    assert min(max(n // 4, 16), 64) <= wg_n <= min(n, 256)
+    assert n % wg_n == 0 and wg_n % DPAS.N == 0
+    assert min(max(m // 8, 16), 32) <= sg_m <= min(m, 128)
+    assert m % sg_m == 0 and sg_m % DPAS.M == 0
+    assert min(max(n // 8, 16), 32) <= sg_n <= min(n, 128)
+    assert n % sg_n == 0 and sg_n % DPAS.N == 0
+    assert 16 <= k_tile <= min(k, 256)
+    assert k % k_tile == 0 and k_tile % DPAS.K == 0
+
+    LOAD_TILE_SIZES = [8, 16, 32]
     assert load_a_m in LOAD_TILE_SIZES and load_a_m % DPAS.M == 0
     assert load_a_k in LOAD_TILE_SIZES and load_a_k % DPAS.K == 0
     assert load_b_k in LOAD_TILE_SIZES and load_b_k % DPAS.K == 0
@@ -317,7 +331,10 @@ def bundle_xegpu_mlp_schedule(
             sg_m_threads = WG_M // SG_M
             sg_n_threads = WG_N // SG_N
             sg_threads = sg_m_threads * sg_n_threads
-            smt_ext.assert_(sg_threads <= 64)
+            smt_ext.assert_(sg_threads <= MAX_NB_SG_THREADS, "too many SG threads")
+            if isinstance(sg_threads, smt_ext.SMTIntValue):
+                # NB: Constraint only enabled during tuning.
+                smt_ext.assert_(sg_threads >= MIN_NB_THREADS, "too few SG threads")
 
             # number of threads collapsed to 1d layout
             return sg_threads * NB_WORKITEMS
@@ -352,9 +369,9 @@ def bundle_xegpu_mlp_schedule(
     if stop_at_stage == "xegpu-initial":
         raise PipelineInterrupt()
 
-    assert len(gpu_mod_ops) == nlayers, (
-        "Expected one gpu.module per MLP layer after outlining"
-    )
+    assert (
+        len(gpu_mod_ops) == nlayers
+    ), "Expected one gpu.module per MLP layer after outlining"
     for gpu_mod, layer_params in zip(gpu_mod_ops, params):
         gpu_func = match(gpu_mod, ops={"gpu.func"})
         xegpu_wg_annotation_for_mlp_layer(gpu_func, **layer_params, has_bias=has_bias)
@@ -398,6 +415,7 @@ def xegpu_wg_annotation_for_mlp_layer(
     # Calculate with SMT ops in case of symbolic values, normal ints in case of concrete values.
     @td_smt_ext.constrain_params(wg_m, wg_n, sg_m, sg_n)
     def calc_sg_layout(WG_M, WG_N, SG_M, SG_N):
+        # NB: Constraint on overall num SG threads already dealt with elsewhere.
         return WG_M // SG_M, WG_N // SG_N
 
     sg_layout = calc_sg_layout.results
@@ -424,40 +442,59 @@ def xegpu_wg_annotation_for_mlp_layer(
         SG_M, SG_N, K_TILE, LDA_M, LDA_K, LDB_K, LDB_N, PFA_M, PFA_K, PFB_K, PFB_N
     ):
         # NB: normal asserts in case of concrete values, SMT assert ops for symbolic values
-        # TODO: Tuomas' comments explaining constraints:
-        smt_ext.assert_(SG_M % PFA_M == 0)
         smt_ext.assert_(SG_M % LDA_M == 0)
-
-        smt_ext.assert_(SG_N % PFB_N == 0)
-        smt_ext.assert_(SG_N % LDB_N == 0)
-        smt_ext.assert_(K_TILE % PFA_K == 0)
-        smt_ext.assert_(K_TILE % PFB_K == 0)
         smt_ext.assert_(K_TILE % LDA_K == 0)
         smt_ext.assert_(K_TILE % LDB_K == 0)
+        smt_ext.assert_(SG_N % LDB_N == 0)
 
-        smt_ext.assert_(LDA_M * LDA_K >= 16 * 16)
-        smt_ext.assert_(LDB_K * LDB_N >= 16 * 16)
+        smt_ext.assert_(LDA_M <= LOAD_MAX_ROWS)
+        smt_ext.assert_(LDA_K <= LOAD_MAX_COLS)
+        smt_ext.assert_(LDB_K <= LOAD_MAX_ROWS)
+        smt_ext.assert_(LDB_N <= LOAD_MAX_COLS)
 
-        smt_ext.assert_(LDA_M <= LDA_K)
-        smt_ext.assert_(LDB_K <= LDB_N)
-        smt_ext.assert_(LDB_N == DPAS.N)
+        smt_ext.assert_(SG_M % PFA_M == 0)
+        smt_ext.assert_(K_TILE % PFA_K == 0)
+        smt_ext.assert_(K_TILE % PFB_K == 0)
+        smt_ext.assert_(SG_N % PFB_N == 0)
 
-        PFA_M_step = SG_M // PFA_M
-        PFA_K_step = K_TILE // PFA_K
-        smt_ext.assert_(PFA_M_step * PFA_K_step <= 64)
+        smt_ext.assert_(PFA_M <= PFETCH_MAX_ROWS)
+        smt_ext.assert_(PFA_K <= PFETCH_MAX_COLS)
+        smt_ext.assert_(PFB_K <= PFETCH_MAX_ROWS)
+        smt_ext.assert_(PFB_N <= PFETCH_MAX_COLS)
+        smt_ext.assert_(PFA_M >= PFETCH_MIN_ROWS)
+        smt_ext.assert_(PFA_K >= PFETCH_MIN_COLS)
+        smt_ext.assert_(PFB_K >= PFETCH_MIN_ROWS)
+        smt_ext.assert_(PFB_N >= PFETCH_MIN_COLS)
 
-        PFB_K_step = K_TILE // PFB_K
-        PFB_N_step = SG_N // PFB_N
-        smt_ext.assert_(PFB_K_step * PFB_N_step <= 64)
+        smt_ext.assert_(LDA_M % DPAS.M == 0)
+        smt_ext.assert_(LDA_K % DPAS.K == 0)
+        smt_ext.assert_(LDB_K % DPAS.K == 0)
+        smt_ext.assert_(LDB_N % DPAS.N == 0)
 
-        smt_ext.assert_(PFA_M * PFA_K >= 16 * 16)
-        smt_ext.assert_(PFA_M >= PFA_K)
+        nb_load_b_n = LDB_N // DPAS.N
+        # unsupported VNNI layout, loaded tile can only be row-sliced for vnni
+        # NOTE this can plausibly be relaxed
+        smt_ext.assert_(nb_load_b_n <= 1, "invalid load_tile_b_n for VNNI")
 
-        smt_ext.assert_(PFB_K * PFB_N >= 16 * 16)
-        smt_ext.assert_(PFB_K >= PFB_N)
-        smt_ext.assert_((SG_M // DPAS.M) * (SG_N // DPAS.N) * (K_TILE // DPAS.K) <= 64)
+        # prefetch A layout
+        nb_prefetch_a_m = SG_M // PFA_M
+        nb_prefetch_a_k = K_TILE // PFA_K
+        nb_prefetch_a = nb_prefetch_a_m * nb_prefetch_a_k
+        smt_ext.assert_(nb_prefetch_a <= MAX_NB_SG_THREADS)
+        if isinstance(nb_prefetch_a, smt_ext.SMTIntValue):
+            # NB: Constraint only enabled during tuning.
+            smt_ext.assert_(nb_prefetch_a_m * nb_prefetch_a_k >= MIN_NB_THREADS)
 
-        return PFA_M_step, PFA_K_step, PFB_K_step, PFB_N_step
+        # prefetch B layout
+        nb_prefetch_b_k = K_TILE // PFB_K
+        nb_prefetch_b_n = SG_N // PFB_N
+        nb_prefetch_b = nb_prefetch_b_k * nb_prefetch_b_n
+        smt_ext.assert_(nb_prefetch_b <= MAX_NB_SG_THREADS)
+        if isinstance(nb_prefetch_b, smt_ext.SMTIntValue):
+            # NB: Constraint only enabled during tuning.
+            smt_ext.assert_(nb_prefetch_b_k * nb_prefetch_b_n >= MIN_NB_THREADS)
+
+        return nb_prefetch_a_m, nb_prefetch_a_k, nb_prefetch_b_k, nb_prefetch_b_n
 
     prefetch_layout_a = constrain_and_calculate_load_and_prefetch_params.results[0:2]
     prefetch_layout_b = constrain_and_calculate_load_and_prefetch_params.results[2:4]

@@ -12,13 +12,15 @@ def register_and_load(context=None):
     SMTIntValue.register_value_caster()
 
 
-def assert_(predicate: ir.Value[smt.BoolType] | bool):
+def assert_(predicate: ir.Value[smt.BoolType] | bool, error_message: str = ""):
     """Assert normally if a bool else produce an SMT assertion op."""
 
     if isinstance(predicate, bool):
-        assert predicate
+        assert predicate, error_message
     else:
-        smt.assert_(predicate)
+        assert_ = smt.assert_(predicate)
+        if error_message:
+            assert_.attributes["error"] = ir.StringAttr.get(error_message)
 
 
 def int_to_smt(operand: "int | SMTIntValue") -> "SMTIntValue":
