@@ -5,13 +5,7 @@ from mlir.dialects.transform import structured
 from mlir.dialects.transform import tensor
 from mlir.dialects.transform import vector
 from mlir.dialects.transform import x86
-
-
-def _cleanup(target):
-    func = structured.MatchOp.match_op_names(target, ["func.func"]).result
-    transform.apply_cse(func)
-    with ir.InsertionPoint(transform.ApplyPatternsOp(func).patterns):
-        transform.apply_patterns_canonicalization()
+from lighthouse.pipeline.helper import cleanup_func
 
 
 def create(tile_size=64) -> ir.Module:
@@ -57,7 +51,7 @@ def create(tile_size=64) -> ir.Module:
         ):
             structured.apply_patterns_linalg_fold_unit_extent_dims_via_slices()
             structured.apply_patterns_linalg_fold_pack_unpack_into_empty()
-        _cleanup(named_seq.bodyTarget)
+        cleanup_func(named_seq.bodyTarget)
 
         # Register tiling.
         reg_tile_m = 8
@@ -87,7 +81,7 @@ def create(tile_size=64) -> ir.Module:
                 peel_front=False,
                 fail_if_already_divisible=False,
             )
-        _cleanup(named_seq.bodyTarget)
+        cleanup_func(named_seq.bodyTarget)
 
         # Register unroll.
         gemms = structured.MatchOp.match_op_names(named_seq.bodyTarget, [gemm_name])
@@ -100,7 +94,7 @@ def create(tile_size=64) -> ir.Module:
             loop.loop_unroll(loops[2], reg_tile_k)
             loop.loop_unroll(loops[0], reg_tile_m)
             transform.yield_()
-        _cleanup(named_seq.bodyTarget)
+        cleanup_func(named_seq.bodyTarget)
 
         # Vectorize operations.
         gemms = structured.MatchOp.match_op_names(named_seq.bodyTarget, [gemm_name])
@@ -115,7 +109,7 @@ def create(tile_size=64) -> ir.Module:
         ):
             vector.apply_patterns_vector_reduction_to_contract()
             vector.apply_patterns_vector_transfer_permutation_patterns()
-        _cleanup(named_seq.bodyTarget)
+        cleanup_func(named_seq.bodyTarget)
 
         # Loop hoisting.
         all_loops = structured.MatchOp(
@@ -148,7 +142,7 @@ def create(tile_size=64) -> ir.Module:
                 lowering_strategy=vector.VectorContractLowering.OuterProduct
             )
             vector.apply_patterns_vector_lower_outerproduct()
-        _cleanup(named_seq.bodyTarget)
+        cleanup_func(named_seq.bodyTarget)
 
         transform.yield_()
     return schedule
