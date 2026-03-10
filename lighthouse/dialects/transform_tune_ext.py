@@ -172,7 +172,6 @@ class KnobExpression:
     def __eq__(self, other):
         assert other == 0, "Only equality to zero supported for now."
         assert self.operator is mod
-        i64 = ir.IntegerType.get_signless(64)
         if isinstance(self.lhs, KnobValue):
             assert isinstance(self.lhs.owner.options, ir.DictAttr)
             assert isinstance(self.rhs, int)

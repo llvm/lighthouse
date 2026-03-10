@@ -4,8 +4,6 @@ Abstract base class for workloads.
 Defines the expected interface for generic workload execution methods.
 """
 
-import sys
-
 from mlir import ir
 from mlir.execution_engine import ExecutionEngine
 from abc import ABC, abstractmethod
