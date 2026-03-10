@@ -1,4 +1,4 @@
-"""Generate an MLIR module for a weight-stationary distributed MLP."""
+"""Generate an MLIR module for a weight-stationary distributed feed-forward layer."""
 
 from mlir import ir
 from mlir.dialects import arith, linalg, memref, shard, tensor, tosa, bufferization
@@ -47,7 +47,7 @@ def _emit_dealloc_2d():
         memref.dealloc(arg)
 
 
-def generate_mlp_payload(
+def generate_ff_payload(
     *,
     func_name: str,
     M: int,
@@ -63,7 +63,7 @@ def generate_mlp_payload(
     split_mm0_c: list[list[int]],
     split_sigmoid: list[list[int]],
 ) -> ir.Module:
-    """Generate the full MLIR module for the weight-stationary distributed MLP.
+    """Generate the full MLIR module for the weight-stationary distributed feed-forward layer.
     Also adds helper functions for allocation, deallocation and gather."""
     mod = ir.Module.create()
     f32 = ir.F32Type.get()

@@ -4,7 +4,7 @@
 # RUN: mpirun -n 4 %PYTHON %s --mpilib=%VIRTUAL_ENV/lib/libmpi.so.12 --grid 4 1 | FileCheck %s
 # CHECK: PASSED
 """
-A single MLP that can run on multiple MPI ranks,
+A single feed-forward layer that can run on multiple MPI ranks,
 following a 1d/2d weight-stationary partition strategy
 (see a and b from figure 2 of https://arxiv.org/pdf/2211.05102)
 """
@@ -32,7 +32,7 @@ from lighthouse.utils.memref import (
 from lighthouse.pipeline.helper import apply_registered_pass, match
 from lighthouse.workload import Workload, benchmark
 from lighthouse.schedule.x86 import tile_and_vector_matmul
-from mlp_weight_stationary import generate_mlp_payload
+from ff_weight_stationary import generate_ff_payload
 
 from mpi4py import MPI
 
@@ -50,7 +50,7 @@ def rprint(*args, **kwargs):
 
 def parse_cla():
     parser = argparse.ArgumentParser(
-        description="MLP on MPI using MLIR",
+        description="Feed-Forward on MPI using MLIR",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument(
@@ -94,9 +94,9 @@ def parse_cla():
     return args
 
 
-class DistMLP(Workload):
+class DistFF(Workload):
     """
-    A single MLP that can run on multiple MPI ranks.
+    A single feed-forward layer that can run on multiple MPI ranks.
 
     A[:] = sigmoid(A@B)@C
 
@@ -237,7 +237,7 @@ class DistMLP(Workload):
             grid=grid,
         )
         if len(self.grid) == 1:
-            mod = generate_mlp_payload(
+            mod = generate_ff_payload(
                 **common,
                 split_act=[[], [0]],
                 split_win=[[], [0]],
@@ -247,7 +247,7 @@ class DistMLP(Workload):
                 split_sigmoid=[[], [0]],
             )
         else:
-            mod = generate_mlp_payload(
+            mod = generate_ff_payload(
                 **common,
                 split_act=[[], [0, 1]],
                 split_win=[[0], [1]],
@@ -389,7 +389,7 @@ if __name__ == "__main__":
     R = MPI.COMM_WORLD.Get_rank()
 
     with ir.Context(), ir.Location.unknown():
-        wload = DistMLP(args, P, R)
+        wload = DistFF(args, P, R)
 
         # execute(wload, verbose=args.verbose)
         rprint(" Benchmark".center(60, "-"))
