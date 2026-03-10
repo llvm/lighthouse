@@ -87,3 +87,9 @@ def match(*args, **kwargs):
 def canonicalize(op):
     with ir.InsertionPoint(transform.apply_patterns(op).patterns):
         transform.apply_patterns_canonicalization()
+
+
+def cleanup_func(target):
+    func = structured.MatchOp.match_op_names(target, ["func.func"]).result
+    transform.apply_cse(func)
+    canonicalize(func)
