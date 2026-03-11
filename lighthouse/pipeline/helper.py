@@ -15,12 +15,12 @@ class Pass:
         self.name = name
         self.options = options
 
-    def str_options(self) -> str:
-        """serialize the options dictionary for pass manager consumption"""
+    def __str__(self) -> str:
+        """serialize name + options dictionary for pass manager consumption"""
         if not self.options:
-            return ""
+            return self.name
         options_str = " ".join(f"{key}={value}" for key, value in self.options.items())
-        return f"{{{options_str}}}"
+        return f"{self.name}{{{options_str}}}"
 
 
 class PassBundles:
@@ -65,7 +65,7 @@ class PassBundles:
 # Utility function to add a bundle of passes to a PassManager. This can be used to easily add a predefined set of passes to a pipeline.
 def add_bundle(pm: PassManager, bundle: list[Pass]) -> None:
     for p in bundle:
-        pm.add(p.name + p.str_options())
+        pm.add(str(p))
 
 
 # Utility function to add a bundle of passes to a Schedule. This can be used to easily add a predefined set of passes to a pipeline.
