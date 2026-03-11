@@ -35,6 +35,9 @@ def lower_to_llvm(module: ir.Module) -> ir.Module:
     add_bundle(pm, PassBundles.BufferizationBundle)
     add_bundle(pm, PassBundles.CleanupBundle)
 
+    # Middle-end lowering.
+    add_bundle(pm, PassBundles.MLIRLoweringBundle)
+
     # Lower to LLVM.
     add_bundle(pm, PassBundles.LLVMLoweringBundle)
     add_bundle(pm, PassBundles.CleanupBundle)
