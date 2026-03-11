@@ -12,7 +12,10 @@ def get_mlir_library_path():
     pkg_path = ir.__file__
     if "python_packages" in pkg_path:
         # looks like a local mlir install
-        path = os.path.join(pkg_path.split("python_packages")[0], "lib")
+        build_tools_mlir_dir = pkg_path.split("python_packages")[0]
+        build_tools_dir = build_tools_mlir_dir.rsplit("mlir")[0]
+        build_dir = build_tools_dir.rsplit("tools")[0]
+        path = os.path.join(build_dir, "lib")
     else:
         # maybe installed in python path
         path = os.path.join(os.path.split(pkg_path)[0], "_mlir_libs")

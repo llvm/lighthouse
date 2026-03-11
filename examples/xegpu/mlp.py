@@ -21,6 +21,7 @@ import numpy as np
 from mlir import ir
 from mlir.execution_engine import ExecutionEngine
 
+from lighthouse import dialects as lh_dialects
 from lighthouse.workload import benchmark
 from lighthouse.utils.memref import to_ctype as memref_to_ctype
 from lighthouse.utils.numpy import numpy_to_ctype
@@ -65,7 +66,6 @@ class XeGPUMLP(XeGPUWorkload):
         layer_sizes = [self.input_size] + self.hidden_layer_sizes + [self.output_size]
         self.weight_shapes = list(zip(layer_sizes[:-1], layer_sizes[1:]))
         self.matmul_layers = [(self.batch_size, o, i) for i, o in self.weight_shapes]
-        self.nlayers = len(self.matmul_layers)
         self.identity_weights = identity_weights
         self.bias_shapes = [(o,) for o in layer_sizes[1:]] if has_bias else []
 
@@ -260,7 +260,6 @@ class XeGPUMLP(XeGPUWorkload):
             has_relu=self.has_relu,
             skip_final_layer_relu=True,
             stop_at_stage=stop_at_stage,
-            nlayers=self.nlayers,
             params=parameters,
         )
 
@@ -369,6 +368,8 @@ if __name__ == "__main__":
     identity_weights = args.check_result
 
     with ir.Context(), ir.Location.unknown():
+        lh_dialects.register_and_load()
+
         wload = XeGPUMLP(
             batch_size=args.batch_size,
             input_size=args.input_size,

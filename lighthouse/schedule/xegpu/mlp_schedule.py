@@ -1,3 +1,5 @@
+from collections import namedtuple
+
 from mlir import ir
 from mlir.dialects.transform import loop
 from mlir.dialects.transform import bufferization
@@ -10,7 +12,25 @@ from lighthouse.pipeline.helper import (
     canonicalize,
     match,
 )
-from typing import Optional
+
+from lighthouse.dialects import smt_ext, transform_smt_ext as td_smt_ext
+from lighthouse.dialects.transform_tune_ext import knob, KnobValue
+
+# hardware constraints
+DPAS = namedtuple("DPAS", ["M", "N", "K", "A_TILE", "B_TILE", "C_TILE"])(
+    8, 16, 16, (8, 16), (16, 16), (8, 16)
+)
+PREFETCH_INST_DATA = [8, 16]
+NB_WORKITEMS = 16  # workitems in subgroup
+LOAD_MAX_ROWS = 32
+LOAD_MAX_COLS = 16
+PFETCH_MIN_ROWS = 8
+PFETCH_MAX_ROWS = 32
+PFETCH_MIN_COLS = 16
+PFETCH_MAX_COLS = 32
+MAX_NB_SG_THREADS = 64
+# heuristics: skip likely suboptimal configurations
+MIN_NB_THREADS = 16
 
 
 class PipelineInterrupt(Exception):
@@ -29,20 +49,75 @@ def match_and_split(*args, nhandles=1, **kwargs):
     return matched_ops
 
 
-# hardware constraints
-DPAS_TILE = [8, 16, 16]
-PREFETCH_INST_DATA = [8, 16]
-NB_WORKITEMS = 16  # workitems in subgroup
+@KnobValue.ast_rewrite(in_exprs=True)
+def checked_params_or_knobs(
+    params: dict[str, int | None], layer_id=""
+) -> dict[str, int | KnobValue]:
+    """Check the parameters for validity and replace `None`s with knobs with asserted ranges."""
+    m, n, k = params["m"], params["n"], params["k"]
+    assert isinstance(m, int) and isinstance(n, int) and isinstance(k, int)
+    assert m > 0 and n > 0 and k > 0
+    wg_m = params["wg_m"] or knob(layer_id + "wg_m")
+    wg_n = params["wg_n"] or knob(layer_id + "wg_n")
+    sg_m = params["sg_m"] or knob(layer_id + "sg_m")
+    sg_n = params["sg_n"] or knob(layer_id + "sg_n")
+    k_tile = params["k_tile"] or knob(layer_id + "k_tile")
+    load_a_m = params["load_a_m"] or knob(layer_id + "load_a_m")
+    load_a_k = params["load_a_k"] or knob(layer_id + "load_a_k")
+    load_b_k = params["load_b_k"] or knob(layer_id + "load_b_k")
+    load_b_n = params["load_b_n"] or knob(layer_id + "load_b_n")
+    prefetch_a_m = params["prefetch_a_m"] or knob(layer_id + "prefetch_a_m")
+    prefetch_a_k = params["prefetch_a_k"] or knob(layer_id + "prefetch_a_k")
+    prefetch_b_k = params["prefetch_b_k"] or knob(layer_id + "prefetch_b_k")
+    prefetch_b_n = params["prefetch_b_n"] or knob(layer_id + "prefetch_b_n")
+
+    # NB: Constraints on knobs will be added as attributes on the KnobOps, while
+    #     constraints on concrete values will be checked immediately.
+    assert min(max(m // 4, 16), 64) <= wg_m <= min(m, 256)
+    assert m % wg_m == 0 and wg_m % DPAS.M == 0
+    assert min(max(n // 4, 16), 64) <= wg_n <= min(n, 256)
+    assert n % wg_n == 0 and wg_n % DPAS.N == 0
+    assert min(max(m // 8, 16), 32) <= sg_m <= min(m, 128)
+    assert m % sg_m == 0 and sg_m % DPAS.M == 0
+    assert min(max(n // 8, 16), 32) <= sg_n <= min(n, 128)
+    assert n % sg_n == 0 and sg_n % DPAS.N == 0
+    assert 16 <= k_tile <= min(k, 256)
+    assert k % k_tile == 0 and k_tile % DPAS.K == 0
+
+    LOAD_TILE_SIZES = [8, 16, 32]
+    assert load_a_m in LOAD_TILE_SIZES and load_a_m % DPAS.M == 0
+    assert load_a_k in LOAD_TILE_SIZES and load_a_k % DPAS.K == 0
+    assert load_b_k in LOAD_TILE_SIZES and load_b_k % DPAS.K == 0
+    assert load_b_n in LOAD_TILE_SIZES and load_b_n % DPAS.N == 0
+    assert prefetch_a_m in LOAD_TILE_SIZES
+    assert prefetch_a_k in LOAD_TILE_SIZES
+    assert prefetch_b_k in LOAD_TILE_SIZES
+    assert prefetch_b_n in LOAD_TILE_SIZES
+
+    return {
+        "wg_m": wg_m,
+        "wg_n": wg_n,
+        "sg_m": sg_m,
+        "sg_n": sg_n,
+        "k_tile": k_tile,
+        "load_a_m": load_a_m,
+        "load_a_k": load_a_k,
+        "load_b_k": load_b_k,
+        "load_b_n": load_b_n,
+        "prefetch_a_m": prefetch_a_m,
+        "prefetch_a_k": prefetch_a_k,
+        "prefetch_b_k": prefetch_b_k,
+        "prefetch_b_n": prefetch_b_n,
+    }
 
 
 def get_schedule_module(
+    params: list[dict[str, int | None]],
     has_bias: bool = False,
     has_relu: bool = False,
     has_convert_c: bool = True,
     skip_final_layer_relu: bool = False,
     stop_at_stage: str = "",
-    nlayers: int = 1,
-    params: Optional[dict] = None,
 ) -> ir.Module:
     """Generate transform schedule module."""
     mod = ir.Module.create()
@@ -64,41 +139,43 @@ def get_schedule_module(
                 op_name="builtin.module",
                 deduplicate=True,
             )
+            for i, layer_params in enumerate(params):
+                layer_params |= checked_params_or_knobs(
+                    layer_params, layer_id=f"layer_{i}_"
+                )
+
             xegpu_mlp_transform_schedule(
                 payload_mod,
+                params=params,
                 has_bias=has_bias,
                 has_relu=has_relu,
                 has_convert_c=has_convert_c,
                 skip_final_layer_relu=skip_final_layer_relu,
                 stop_at_stage=stop_at_stage,
-                nlayers=nlayers,
-                params=params,
             )
 
     return mod
 
 
 def xegpu_mlp_transform_schedule(
-    mod: ir.Value,
+    mod: ir.Value[transform.AnyOpType],
+    params: list[dict[str, int | KnobValue]],
     has_bias: bool = False,
     has_relu: bool = False,
     has_convert_c: bool = True,
     skip_final_layer_relu: bool = False,
     stop_at_stage: str = "",
-    nlayers: int = 1,
-    params: Optional[list[dict]] = None,
 ):
     """Transform schedule for MLP-like payload."""
     try:
         mod = bundle_xegpu_mlp_schedule(
             mod,
+            params=params,
             has_bias=has_bias,
             has_relu=has_relu,
             has_convert_c=has_convert_c,
             skip_final_layer_relu=skip_final_layer_relu,
             stop_at_stage=stop_at_stage,
-            nlayers=nlayers,
-            params=params,
         )
 
         mod = bundle_xegpu_to_binary(
@@ -112,26 +189,21 @@ def xegpu_mlp_transform_schedule(
 
 
 def bundle_xegpu_mlp_schedule(
-    mod: ir.Value,
+    mod: ir.Value[transform.AnyOpType],
+    params: list[dict[str, int | KnobValue]],
     has_bias: bool = False,
     has_relu: bool = False,
     skip_final_layer_relu: bool = False,
     has_convert_c: bool = True,
     stop_at_stage: str = "",
-    nlayers: int = 1,
-    params: Optional[list[dict]] = None,
-) -> ir.Module:
+) -> ir.Value[transform.AnyOpType]:
     """Schedule for lowering MLP-like payload to xegpu wg level."""
-    if params is None:
-        raise ValueError("Schedule parameters must be provided.")
+    nlayers = len(params)
 
     if stop_at_stage == "initial":
         raise PipelineInterrupt()
 
     anytype = transform.AnyOpType.get()
-
-    for i in range(nlayers):
-        assert f"layer_{i}" in params, f"Missing parameters for 'layer_{i}'"
 
     # wg tiling
     if has_convert_c:
@@ -156,17 +228,14 @@ def bundle_xegpu_mlp_schedule(
             terminal_ops = list(relu_ops) + [terminal_ops[-1]]
 
     # tile each layer separately
-    for i_layer in range(nlayers):
-        layer_params = params[f"layer_{i_layer}"]
+    for terminal_op, layer_params in zip(terminal_ops, params):
         # tunable parameters: wg level tiling
         wg_tile = [layer_params["wg_m"], layer_params["wg_n"]]
-        sg_tile = [layer_params["sg_m"], layer_params["sg_n"]]
-        k_tile = layer_params["k"]
+        k_tile = layer_params["k_tile"]
 
-        terminal = terminal_ops[i_layer]
-        # FIXME use structured.structured_fuse
+        # FIXME: use structured.structured_fuse
         _, wg_loop = structured.FuseOp(
-            terminal, tile_sizes=wg_tile, use_forall=True
+            terminal_op, tile_sizes=wg_tile, use_forall=True
         ).results
         transform.apply_cse(mod)
         canonicalize(mod)
@@ -241,16 +310,38 @@ def bundle_xegpu_mlp_schedule(
 
     # set correct number of gpu threads
     launch_ops = match_and_split(mod, ops={"gpu.launch"}, nhandles=nlayers)
-    for i_layer, launch_op in enumerate(launch_ops):
-        layer_params = params[f"layer_{i_layer}"]
+    assert len(launch_ops) == nlayers
+    for launch_op, layer_params in zip(launch_ops, params):
         # tunable parameters
-        wg_tile = [layer_params["wg_m"], layer_params["wg_n"]]
-        sg_tile = [layer_params["sg_m"], layer_params["sg_n"]]
+        wg_m, wg_n = layer_params["wg_m"], layer_params["wg_n"]
+        sg_m, sg_n = layer_params["sg_m"], layer_params["sg_n"]
 
-        # derived parameters
-        sg_layout = [wg_tile[0] // sg_tile[0], wg_tile[1] // sg_tile[1]]
-        # number of threads collapsed to 1d layout
-        nb_threads = sg_layout[0] * sg_layout[1] * NB_WORKITEMS
+        @td_smt_ext.constrain_params(wg_m, wg_n, sg_m, sg_n)
+        def constrain_wg_sg_and_calc_nb_threads(
+            WG_M: int | smt_ext.SMTIntValue,
+            WG_N: int | smt_ext.SMTIntValue,
+            SG_M: int | smt_ext.SMTIntValue,
+            SG_N: int | smt_ext.SMTIntValue,
+        ):
+            # NB: normal asserts in case of concrete values, SMT assert ops for symbolic values.
+            smt_ext.assert_(WG_M % SG_M == 0)
+            smt_ext.assert_(WG_N % SG_N == 0)
+
+            # NB: normal ints in case of concrete values, SMT int values for symbolic values.
+            sg_m_threads = WG_M // SG_M
+            sg_n_threads = WG_N // SG_N
+            sg_threads = sg_m_threads * sg_n_threads
+            smt_ext.assert_(sg_threads <= MAX_NB_SG_THREADS, "too many SG threads")
+            if isinstance(sg_threads, smt_ext.SMTIntValue):
+                # NB: Constraint only enabled during tuning.
+                smt_ext.assert_(sg_threads >= MIN_NB_THREADS, "too few SG threads")
+
+            # number of threads collapsed to 1d layout
+            return sg_threads * NB_WORKITEMS
+
+        nb_threads: int | smt_ext.SMTIntValue = (
+            constrain_wg_sg_and_calc_nb_threads.results
+        )
 
         xegpu.set_gpu_launch_threads(launch_op, threads=[nb_threads, 1, 1])
 
@@ -278,11 +369,12 @@ def bundle_xegpu_mlp_schedule(
     if stop_at_stage == "xegpu-initial":
         raise PipelineInterrupt()
 
-    for i_layer, gpu_mod in enumerate(gpu_mod_ops):
+    assert len(gpu_mod_ops) == nlayers, (
+        "Expected one gpu.module per MLP layer after outlining"
+    )
+    for gpu_mod, layer_params in zip(gpu_mod_ops, params):
         gpu_func = match(gpu_mod, ops={"gpu.func"})
-        xegpu_wg_annotation_for_mlp_layer(
-            gpu_func, params[f"layer_{i_layer}"], has_bias=has_bias
-        )
+        xegpu_wg_annotation_for_mlp_layer(gpu_func, **layer_params, has_bias=has_bias)
 
     if stop_at_stage == "xegpu-wg":
         raise PipelineInterrupt()
@@ -290,44 +382,126 @@ def bundle_xegpu_mlp_schedule(
     return mod
 
 
-def xegpu_wg_annotation_for_mlp_layer(gpu_func: ir.Value, params: dict, has_bias: bool):
+def xegpu_wg_annotation_for_mlp_layer(
+    gpu_func: ir.Value,
+    *,
+    wg_m: int | KnobValue,
+    wg_n: int | KnobValue,
+    sg_m: int | KnobValue,
+    sg_n: int | KnobValue,
+    k_tile: int | KnobValue,
+    load_a_m: int | KnobValue,
+    load_a_k: int | KnobValue,
+    load_b_k: int | KnobValue,
+    load_b_n: int | KnobValue,
+    prefetch_a_m: int | KnobValue,
+    prefetch_a_k: int | KnobValue,
+    prefetch_b_k: int | KnobValue,
+    prefetch_b_n: int | KnobValue,
+    nb_prefetch: int,
+    has_bias: bool,
+    **_catch_all,
+):
     """
     Adds prefetching and XeGPU anchor layout annotations for an MLP layer.
 
     Should be applied after the payload has been converted to XeGPU using
     the convert-vector-to-xegpu pass.
     """
+
     anytype = transform.AnyOpType.get()
     anyvalue = transform.AnyValueType.get()
 
-    dpas_shape_a = [DPAS_TILE[0], DPAS_TILE[2]]
-    dpas_shape_b = [DPAS_TILE[2], DPAS_TILE[1]]
-    dpas_shape_c = [DPAS_TILE[0], DPAS_TILE[1]]
+    # Calculate with SMT ops in case of symbolic values, normal ints in case of concrete values.
+    @td_smt_ext.constrain_params(wg_m, wg_n, sg_m, sg_n)
+    def calc_sg_layout(WG_M, WG_N, SG_M, SG_N):
+        # NB: Constraint on overall num SG threads already dealt with elsewhere.
+        return WG_M // SG_M, WG_N // SG_N
 
-    wg_tile = [params["wg_m"], params["wg_n"]]
-    sg_tile = [params["sg_m"], params["sg_n"]]
-    k_tile = params["k"]
+    sg_layout = calc_sg_layout.results
 
-    sg_layout = [wg_tile[0] // sg_tile[0], wg_tile[1] // sg_tile[1]]
+    load_tile_a = [load_a_m, load_a_k]
+    load_tile_b = [load_b_k, load_b_n]
+    prefetch_tile_a = [prefetch_a_m, prefetch_a_k]
+    prefetch_tile_b = [prefetch_b_k, prefetch_b_n]
 
-    load_tile_a = [params["load_a_m"], params["load_a_k"]]
-    load_tile_b = [params["load_b_k"], params["load_b_n"]]
-    prefetch_tile_a = [params["pf_a_m"], params["pf_a_k"]]
-    prefetch_tile_b = [params["pf_b_k"], params["pf_b_n"]]
-    nb_prefetch = params["pf_nb"]
+    @td_smt_ext.constrain_params(
+        sg_m,
+        sg_n,
+        k_tile,
+        load_a_m,
+        load_a_k,
+        load_b_k,
+        load_b_n,
+        prefetch_a_m,
+        prefetch_a_k,
+        prefetch_b_k,
+        prefetch_b_n,
+    )
+    def constrain_and_calculate_load_and_prefetch_params(
+        SG_M, SG_N, K_TILE, LDA_M, LDA_K, LDB_K, LDB_N, PFA_M, PFA_K, PFB_K, PFB_N
+    ):
+        # NB: normal asserts in case of concrete values, SMT assert ops for symbolic values
+        smt_ext.assert_(SG_M % LDA_M == 0)
+        smt_ext.assert_(K_TILE % LDA_K == 0)
+        smt_ext.assert_(K_TILE % LDB_K == 0)
+        smt_ext.assert_(SG_N % LDB_N == 0)
 
-    prefetch_layout_a = [
-        wg_tile[0] // prefetch_tile_a[0],
-        k_tile // prefetch_tile_a[1],
-    ]
-    prefetch_layout_b = [
-        k_tile // prefetch_tile_b[0],
-        wg_tile[1] // prefetch_tile_b[1],
-    ]
+        smt_ext.assert_(LDA_M <= LOAD_MAX_ROWS)
+        smt_ext.assert_(LDA_K <= LOAD_MAX_COLS)
+        smt_ext.assert_(LDB_K <= LOAD_MAX_ROWS)
+        smt_ext.assert_(LDB_N <= LOAD_MAX_COLS)
+
+        smt_ext.assert_(SG_M % PFA_M == 0)
+        smt_ext.assert_(K_TILE % PFA_K == 0)
+        smt_ext.assert_(K_TILE % PFB_K == 0)
+        smt_ext.assert_(SG_N % PFB_N == 0)
+
+        smt_ext.assert_(PFA_M <= PFETCH_MAX_ROWS)
+        smt_ext.assert_(PFA_K <= PFETCH_MAX_COLS)
+        smt_ext.assert_(PFB_K <= PFETCH_MAX_ROWS)
+        smt_ext.assert_(PFB_N <= PFETCH_MAX_COLS)
+        smt_ext.assert_(PFA_M >= PFETCH_MIN_ROWS)
+        smt_ext.assert_(PFA_K >= PFETCH_MIN_COLS)
+        smt_ext.assert_(PFB_K >= PFETCH_MIN_ROWS)
+        smt_ext.assert_(PFB_N >= PFETCH_MIN_COLS)
+
+        smt_ext.assert_(LDA_M % DPAS.M == 0)
+        smt_ext.assert_(LDA_K % DPAS.K == 0)
+        smt_ext.assert_(LDB_K % DPAS.K == 0)
+        smt_ext.assert_(LDB_N % DPAS.N == 0)
+
+        nb_load_b_n = LDB_N // DPAS.N
+        # unsupported VNNI layout, loaded tile can only be row-sliced for vnni
+        # NOTE this can plausibly be relaxed
+        smt_ext.assert_(nb_load_b_n <= 1, "invalid load_tile_b_n for VNNI")
+
+        # prefetch A layout
+        nb_prefetch_a_m = SG_M // PFA_M
+        nb_prefetch_a_k = K_TILE // PFA_K
+        nb_prefetch_a = nb_prefetch_a_m * nb_prefetch_a_k
+        smt_ext.assert_(nb_prefetch_a <= MAX_NB_SG_THREADS)
+        if isinstance(nb_prefetch_a, smt_ext.SMTIntValue):
+            # NB: Constraint only enabled during tuning.
+            smt_ext.assert_(nb_prefetch_a_m * nb_prefetch_a_k >= MIN_NB_THREADS)
+
+        # prefetch B layout
+        nb_prefetch_b_k = K_TILE // PFB_K
+        nb_prefetch_b_n = SG_N // PFB_N
+        nb_prefetch_b = nb_prefetch_b_k * nb_prefetch_b_n
+        smt_ext.assert_(nb_prefetch_b <= MAX_NB_SG_THREADS)
+        if isinstance(nb_prefetch_b, smt_ext.SMTIntValue):
+            # NB: Constraint only enabled during tuning.
+            smt_ext.assert_(nb_prefetch_b_k * nb_prefetch_b_n >= MIN_NB_THREADS)
+
+        return nb_prefetch_a_m, nb_prefetch_a_k, nb_prefetch_b_k, nb_prefetch_b_n
+
+    prefetch_layout_a = constrain_and_calculate_load_and_prefetch_params.results[0:2]
+    prefetch_layout_b = constrain_and_calculate_load_and_prefetch_params.results[2:4]
 
     # matmul matrix shapes
-    sg_tile_a = [sg_tile[0], k_tile]
-    sg_tile_b = [k_tile, sg_tile[1]]
+    sg_tile_a = [sg_m, k_tile]
+    sg_tile_b = [k_tile, sg_n]
 
     # add layouts to DPAS op operands
     k_loop = match(gpu_func, ops={"scf.for"})
@@ -382,7 +556,7 @@ def xegpu_wg_annotation_for_mlp_layer(gpu_func: ir.Value, params: dict, has_bias
     }
     # A tile dpas layout
     layout_dpas_a = layout_load_a.copy()
-    layout_dpas_a["inst_data"] = dpas_shape_a
+    layout_dpas_a["inst_data"] = DPAS.A_TILE
     annotate_ab_load(tile_a, layout_load_a, layout_dpas_a)
 
     # B tile load layout
@@ -393,14 +567,14 @@ def xegpu_wg_annotation_for_mlp_layer(gpu_func: ir.Value, params: dict, has_bias
     }
     # B tile dpas layout
     layout_dpas_b = layout_load_b.copy()
-    layout_dpas_b["inst_data"] = dpas_shape_b
+    layout_dpas_b["inst_data"] = DPAS.B_TILE
     annotate_ab_load(tile_b, layout_load_b, layout_dpas_b)
 
     # C tile layout
     output_layout = {
         "sg_layout": sg_layout,
-        "sg_data": sg_tile,
-        "inst_data": dpas_shape_c,
+        "sg_data": [sg_m, sg_n],
+        "inst_data": DPAS.C_TILE,
     }
     # C tile dpas anchor layout
     xegpu.set_op_layout_attr(dpas_op, index=0, **layout_dpas_a)
@@ -429,7 +603,9 @@ def xegpu_wg_annotation_for_mlp_layer(gpu_func: ir.Value, params: dict, has_bias
     transform.apply_cse(gpu_func)
 
 
-def bundle_xegpu_to_binary(mod, stop_at_stage: str = "") -> ir.Module:
+def bundle_xegpu_to_binary(
+    mod, stop_at_stage: str = ""
+) -> ir.Value[transform.AnyOpType]:
     """Schedule for lowering xegpu wg level to binary."""
     # upstream xegpu/xevm pipeline is payload independent.
     mod = apply_registered_pass(
