@@ -13,8 +13,8 @@ import argparse
 import ctypes
 from contextlib import contextmanager
 from typing import Optional
-
 import numpy as np
+
 from mlir import ir
 from mlir.dialects import transform
 from mlir.dialects.transform.bufferization import OneShotBufferizeOp
@@ -25,12 +25,13 @@ from mlir.runtime.np_to_memref import (
     make_nd_memref_descriptor,
     as_ctype,
 )
+
 from lighthouse.utils.memref import (
     to_ctype as memref_to_ctype,
     deallocate_memrefs_on_exit,
 )
 from lighthouse.pipeline.helper import apply_registered_pass, match
-from lighthouse.workload import Workload, benchmark
+from lighthouse.workload import Workload, benchmark, get_bench_wrapper_schedule
 from lighthouse.schedule.x86 import tile_and_vector_matmul
 from ff_weight_stationary import generate_ff_payload
 
@@ -102,8 +103,6 @@ class DistFF(Workload):
 
     where A, B, C are (M,K), (K,N), (N,K) matrices respectively.
     """
-
-    payload_function_name = "payload"
 
     def __init__(self, args, P: int, R: int):
         self.M = args.sizes[0]
@@ -308,8 +307,9 @@ class DistFF(Workload):
             transform.YieldOp()
             func = None
 
+        bench_schedule = get_bench_wrapper_schedule(self)
+
         tile_schedule = tile_and_vector_matmul.create()
-        tile_schedule.body.operations[0].verify()
 
         main_schedule = ir.Module.create()
         main_schedule.operation.attributes["transform.with_named_sequence"] = (
@@ -377,7 +377,7 @@ class DistFF(Workload):
                 transform.PrintOp(target=mod)
             transform.YieldOp()
 
-        return [pre_schedule, tile_schedule, main_schedule]
+        return [pre_schedule, bench_schedule, tile_schedule, main_schedule]
 
 
 if __name__ == "__main__":
@@ -394,7 +394,7 @@ if __name__ == "__main__":
         # execute(wload, verbose=args.verbose)
         rprint(" Benchmark".center(60, "-"))
         times = benchmark(
-            wload, nruns=10, nwarmup=1, check_correctness=True, verbose=args.verbose
+            wload, nruns=100, nwarmup=10, check_correctness=True, verbose=args.verbose
         )
         # compute statistics
         times *= 1e6

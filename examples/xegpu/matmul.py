@@ -19,7 +19,7 @@ import numpy as np
 from mlir import ir
 from mlir.execution_engine import ExecutionEngine
 
-from lighthouse.workload import benchmark
+from lighthouse.workload import benchmark, get_bench_wrapper_schedule
 from lighthouse.utils.memref import to_ctype as memref_to_ctype
 from lighthouse.utils.numpy import numpy_to_ctype
 from lighthouse.schedule.xegpu.mlp_schedule import get_schedule_module
@@ -197,6 +197,7 @@ class XeGPUMatMul(XeGPUWorkload):
         self, stop_at_stage: Optional[str] = None, parameters: Optional[dict] = None
     ) -> list[ir.Module]:
         return [
+            get_bench_wrapper_schedule(self),
             get_schedule_module(
                 has_bias=self.has_bias,
                 has_relu=self.has_relu,
@@ -204,7 +205,7 @@ class XeGPUMatMul(XeGPUWorkload):
                 stop_at_stage=stop_at_stage,
                 nlayers=1,
                 params={"layer_0": parameters},
-            )
+            ),
         ]
 
     def shared_libs(self) -> list[str]:
