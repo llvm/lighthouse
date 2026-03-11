@@ -24,6 +24,7 @@ class Workload(ABC):
     """
 
     payload_function_name: str = "payload"
+    benchmark_function_name: str = "bench_payload"
 
     @abstractmethod
     def shared_libs(self) -> list[str]:

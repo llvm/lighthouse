@@ -23,7 +23,7 @@ from lighthouse.pipeline.helper import (
     apply_bundle,
     match,
 )
-from lighthouse.workload import Workload, execute, benchmark
+from lighthouse.workload import Workload, execute, benchmark, get_bench_wrapper_schedule
 
 
 class ElementwiseSum(Workload):
@@ -156,7 +156,7 @@ class ElementwiseSum(Workload):
                 mod = apply_bundle(mod, PassBundles.LLVMLoweringBundle)
                 transform.YieldOp()
 
-        return [schedule_module]
+        return [get_bench_wrapper_schedule(self), schedule_module]
 
 
 if __name__ == "__main__":

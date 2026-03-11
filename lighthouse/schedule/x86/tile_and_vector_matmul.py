@@ -145,4 +145,6 @@ def create(tile_size=64) -> ir.Module:
         cleanup_func(named_seq.bodyTarget)
 
         transform.yield_()
+
+    schedule.body.operations[0].verify()
     return schedule
