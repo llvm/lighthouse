@@ -4,8 +4,8 @@ from mlir.dialects.transform import structured
 
 from .builders import create_schedule
 from .builders import create_named_sequence
-from lighthouse.transforms import loop_hoisting
-from lighthouse.transforms import cleanup
+from lighthouse.transform import loop_hoisting
+from lighthouse.transform import cleanup
 
 
 def schedule_loop_hoisting() -> ir.Module:

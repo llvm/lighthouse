@@ -3,8 +3,8 @@ from mlir.dialects import transform
 
 from .builders import create_schedule
 from .builders import create_named_sequence
-from lighthouse.transforms import linalg_morph_ops
-from lighthouse.transforms import cleanup
+from lighthouse.transform import linalg_morph_ops
+from lighthouse.transform import cleanup
 
 
 def schedule_linalg_to_generic_ops() -> ir.Module:

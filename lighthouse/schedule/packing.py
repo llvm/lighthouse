@@ -3,9 +3,9 @@ from mlir.dialects import transform
 
 from .builders import create_schedule
 from .builders import create_named_sequence
-from lighthouse.transforms import block_pack_matmuls
-from lighthouse.transforms import pack_propagation
-from lighthouse.transforms import cleanup
+from lighthouse.transform import block_pack_matmuls
+from lighthouse.transform import pack_propagation
+from lighthouse.transform import cleanup
 
 
 def schedule_pack_matmuls(

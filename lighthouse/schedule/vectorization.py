@@ -5,9 +5,9 @@ from mlir.dialects.transform import vector
 
 from .builders import create_schedule
 from .builders import create_named_sequence
-from lighthouse.transforms import vectorize_ops
-from lighthouse.transforms import x86_vector_patterns
-from lighthouse.transforms import cleanup
+from lighthouse.transform import vectorize_ops
+from lighthouse.transform import x86_vector_patterns
+from lighthouse.transform import cleanup
 
 
 def schedule_vectorize_linalg() -> ir.Module:
