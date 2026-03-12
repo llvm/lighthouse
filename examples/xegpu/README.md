@@ -1,4 +1,4 @@
-# XeGPU benchmarks
+# XeGPU examples
 
 ## Installation
 
@@ -112,10 +112,10 @@ MLP with 3 layers
   Layer 2: M=128, N=8192, K=16384
 ```
 
-Add ReLU to all hidden layers:
+Add bias to all layers and ReLU to hidden layers:
 
 ```bash
-python mlp.py --relu ...
+python mlp.py --bias --relu ...
 ```
 
 See all command line arguments:
