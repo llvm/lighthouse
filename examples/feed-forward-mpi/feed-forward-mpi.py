@@ -59,8 +59,15 @@ def parse_cla():
         "-s",
         type=int,
         nargs=3,
-        default=[64, 128, 32],
+        default=[128, 256, 512],
         help="M,N,K matrix sizes (Activations=MxK, WeightsIn=KxN, WeightsOut=NxK, Result=MxK).",
+    )
+    parser.add_argument(
+        "--tile-size",
+        "-t",
+        type=int,
+        default=64,
+        help="Tile size for the tiled schedule.",
     )
     parser.add_argument(
         "--grid",
@@ -68,6 +75,18 @@ def parse_cla():
         default=[WORLD_SIZE],
         nargs="+",
         help="The shape of the device grid (1 or 2 dimensions). The product of the grid dimensions must match the number of MPI ranks. Use '0' if 2d grid dimensions should be inferred automatically.",
+    )
+    parser.add_argument(
+        "--nruns",
+        type=int,
+        default=1000,
+        help="Number of runs to average the execution time.",
+    )
+    parser.add_argument(
+        "--nwarmup",
+        type=int,
+        default=20,
+        help="Number of warm-up iterations before benchmarking.",
     )
     parser.add_argument(
         "--verbose",
@@ -108,6 +127,7 @@ class DistFF(Workload):
         self.M = args.sizes[0]
         self.N = args.sizes[1]
         self.K = args.sizes[2]
+        self.tile_size = args.tile_size
         self.comm_size = WORLD_SIZE  # number of MPI ranks
         self.comm_rank = WORLD_RANK  # rank of this MPI process
         self.dtype = np.float32
@@ -124,6 +144,11 @@ class DistFF(Workload):
         # so that each rank allocates only the part of the data it owns.
         for i, v in enumerate(["act", "win", "wout", "act"]):
             execution_engine.invoke(f"alloc_{v}", memref_to_ctype(memrefs[i]))
+            tmp = ranked_memref_to_numpy([memrefs[i]])
+            if not all(s % self.tile_size == 0 for s in tmp.shape):
+                raise ValueError(
+                    f"Memref {v}'s shape {tmp.shape} not divisible by tile_size {self.tile_size}"
+                )
         return memrefs
 
     def _init_inout(self, a: np.ndarray, b: np.ndarray, c: np.ndarray, r: np.ndarray):
@@ -303,13 +328,12 @@ class DistFF(Workload):
             if self.verbose > 0:
                 transform.PrintOp(target=func)
             func = apply_registered_pass(func, "tosa-to-linalg")
-            func = apply_registered_pass(func, "tosa-to-tensor")
             transform.YieldOp()
             func = None
 
         bench_schedule = get_bench_wrapper_schedule(self)
 
-        tile_schedule = tile_and_vector_matmul.create()
+        tile_schedule = tile_and_vector_matmul.create(self.tile_size)
 
         main_schedule = ir.Module.create()
         main_schedule.operation.attributes["transform.with_named_sequence"] = (
@@ -394,7 +418,11 @@ if __name__ == "__main__":
         # execute(wload, verbose=args.verbose)
         rprint(" Benchmark".center(60, "-"))
         times = benchmark(
-            wload, nruns=100, nwarmup=10, check_correctness=True, verbose=args.verbose
+            wload,
+            nruns=args.nruns,
+            nwarmup=args.nwarmup,
+            check_correctness=True,
+            verbose=args.verbose,
         )
         # compute statistics
         times *= 1e6
