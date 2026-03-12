@@ -3,9 +3,13 @@ Utility to choose matmul tile size parameters.
 """
 
 import json
+from pathlib import Path
+from lighthouse.workload import Workload
+
+DEFAULT_JSON_FILE = str(Path(__file__).parent / "matmul_params.json")
 
 
-def load_param_database(json_file: str = "matmul_params.json"):
+def load_param_database(json_file: str = DEFAULT_JSON_FILE) -> dict:
     matmul_param_db = {}
     with open(json_file, "r") as f:
         data = json.load(f)
@@ -20,7 +24,7 @@ def load_param_database(json_file: str = "matmul_params.json"):
 matmul_param_db = load_param_database()
 
 
-def get_matmul_parameters(workload):
+def get_matmul_parameters(workload: Workload) -> dict:
     parameters = {}
     for i, shape in enumerate(workload.matmul_layers):
         if shape not in matmul_param_db:
