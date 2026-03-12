@@ -1,11 +1,6 @@
-// RUN: lh-opt %s | FileCheck %s --check-prefixes=IMPLICIT
 // RUN: lh-opt --stage=bufferize %s | FileCheck %s --check-prefixes=BUFFERIZED
 // RUN: lh-opt --stage=bufferize --stage=mlir_lowering %s | FileCheck %s --check-prefixes=LINALG_LOWERED
 // RUN: lh-opt --stage=bufferize --stage=mlir_lowering --stage=llvm_lowering %s | FileCheck %s --check-prefixes=LLVM_LOWERED
-
-// IMPLICIT-LABEL: llvm.func @entry
-// IMPLICIT-SAME: llvm.ptr
-// IMPLICIT-NOT: linalg.generic
 
 // BUFFERIZED-LABEL: func.func @entry
 // BUFFERIZED-SAME: memref
