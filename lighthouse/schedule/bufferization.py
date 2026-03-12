@@ -6,7 +6,7 @@ from mlir.dialects.bufferization import LayoutMapOption
 from .builders import create_schedule
 from .builders import create_named_sequence
 from lighthouse.transform import cleanup
-from lighthouse.transform import apply_pass
+from lighthouse.pipeline.helper import apply_registered_pass
 
 
 def bufferize(deallocation_pipeline: bool = False) -> ir.Module:
@@ -14,17 +14,19 @@ def bufferize(deallocation_pipeline: bool = False) -> ir.Module:
     named_seq = create_named_sequence(schedule, input_types=[transform.any_op_t()])
 
     with ir.InsertionPoint(named_seq.body):
-        bufferization.bufferization_eliminate_empty_tensors(named_seq.bodyTarget)
-        bufferization.bufferization_one_shot_bufferize(
-            named_seq.bodyTarget,
+        target = named_seq.bodyTarget
+        bufferization.bufferization_eliminate_empty_tensors(target)
+        target = bufferization.bufferization_one_shot_bufferize(
+            transform.any_op_t(),
+            target,
             function_boundary_type_conversion=LayoutMapOption.IdentityLayoutMap,
             bufferize_function_boundaries=True,
         )
-        apply_pass(named_seq.bodyTarget, "drop-equivalent-buffer-results")
+        target = apply_registered_pass(target, "drop-equivalent-buffer-results")
         if deallocation_pipeline:
-            apply_pass(named_seq.bodyTarget, "buffer-deallocation-pipeline")
-        apply_pass(named_seq.bodyTarget, "convert-bufferization-to-memref")
-        cleanup(named_seq.bodyTarget)
+            target = apply_registered_pass(target, "buffer-deallocation-pipeline")
+        target = apply_registered_pass(target, "convert-bufferization-to-memref")
+        cleanup(target)
 
         transform.yield_()
     return schedule

@@ -11,15 +11,6 @@ def cleanup(target: ir.Operation | ir.Value):
         transform.apply_patterns_canonicalization()
 
 
-def apply_pass(target: ir.Operation | ir.Value, pass_name: str, **options):
-    transform.apply_registered_pass(
-        transform.any_op_t(),
-        target,
-        pass_name,
-        **options,
-    )
-
-
 def loop_hoisting(
     target: ir.Operation | ir.Value, target_op: str | structured.MatchInterfaceEnum
 ):

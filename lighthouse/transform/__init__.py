@@ -1,5 +1,4 @@
 from .common import cleanup
-from .common import apply_pass
 from .common import loop_hoisting
 from .linalg import linalg_morph_ops
 from .tiling import tile_ops
@@ -10,7 +9,6 @@ from .vectorization import vectorize_all_ops
 from .vectorization import x86_vector_patterns
 
 __all__ = [
-    "apply_pass",
     "block_pack_matmuls",
     "cleanup",
     "linalg_morph_ops",

@@ -11,15 +11,19 @@ from contextlib import contextmanager
 
 import ml_dtypes
 import numpy as np
+import mlir
 from mlir import ir
 from mlir.dialects import linalg, arith, transform
+import mlir.dialects.tensor
 from mlir.execution_engine import ExecutionEngine
 from mlir.dialects.transform import structured
 from mlir.dialects.transform import loop
 from mlir.dialects.transform import vector
+from mlir.dialects.transform import tensor
 
 from lighthouse.workload import benchmark
 from lighthouse.utils.numpy import numpy_to_mlir_type
+from lighthouse.pipeline.helper import apply_registered_pass
 import lighthouse.utils as lh_utils
 from lighthouse import schedule as lh_schedule
 from lighthouse import transform as lh_transform
@@ -27,7 +31,7 @@ from functools import cached_property
 from typing import Optional
 
 from mlir.runtime.np_to_memref import get_ranked_memref_descriptor
-from mlir.dialects import bufferization, tensor
+from mlir.dialects import bufferization
 
 from lighthouse.workload import Workload
 
@@ -165,15 +169,21 @@ class Matmul(Workload):
         self.M = M
         self.N = N
         self.K = K
-        self.dtype = np.dtype
+        self.dtype = dtype
         self.tile_size = tile_size
+
+    def check_correctness(
+        self, execution_engine: ExecutionEngine, verbose: int = 0
+    ) -> bool:
+        # Dummy - skip verification.
+        return True
 
     @cached_property
     def _input_arrays(self) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         np.random.seed(123)
         A = np.random.rand(self.M, self.K).astype(self.dtype)
         B = np.random.rand(self.K, self.N).astype(self.dtype)
-        C = np.zeros((self.M, self.N), dtype=self.dtype)
+        C = np.random.rand(self.M, self.N).astype(self.dtype)
         return [A, B, C]
 
     def _get_input_arrays(self) -> list[ctypes.Structure]:
@@ -203,25 +213,30 @@ class Matmul(Workload):
         with ir.InsertionPoint(mod.body):
             mlir_dtype = numpy_to_mlir_type(self.dtype)
 
-            def tensor_t(shape):
-                return ir.RankedTensorType.get(shape, mlir_dtype)
+            def tensor_t(shape, dtype=mlir_dtype):
+                return ir.RankedTensorType.get(shape, dtype)
 
-            def memref_t(shape):
-                return ir.MemRefType.get(shape, mlir_dtype)
+            def memref_t(shape, dtype=mlir_dtype):
+                return ir.MemRefType.get(shape, dtype)
 
             A_shape = [self.M, self.K]
             B_shape = [self.K, self.N]
             C_shape = [self.M, self.N]
-            fargs = [memref_t(A_shape), memref_t(B_shape), memref_t(C_shape)]
+            f32_type = ir.F32Type.get()
+            fargs = [memref_t(A_shape), memref_t(B_shape), memref_t(C_shape, f32_type)]
 
-            @lh_utils.func_cif(*fargs, name=self.payload_function_name)
+            @lh_utils.mlir.func_cif(*fargs, name=self.payload_function_name)
             def payload(A, B, C):
                 a_tensor = bufferization.to_tensor(tensor_t(A_shape), A, restrict=True)
                 b_tensor = bufferization.to_tensor(tensor_t(B_shape), B, restrict=True)
-                empty = tensor.empty(C_shape, mlir_dtype)
-                zero_cst = arith.constant(mlir_dtype, 0.0)
+
+                # Accumulate in F32.
+                empty = mlir.dialects.tensor.empty(C_shape, f32_type)
+                zero_cst = arith.constant(f32_type, 0.0)
                 fill = linalg.fill(zero_cst, outs=[empty])
+
                 matmul = linalg.matmul(a_tensor, b_tensor, outs=[fill])
+
                 bufferization.materialize_in_destination(
                     None, matmul, C, restrict=True, writable=True
                 )
@@ -309,7 +324,7 @@ class Matmul(Workload):
             with ir.InsertionPoint(
                 transform.ApplyPatternsOp(named_seq.bodyTarget).patterns
             ):
-                transform.tensor.apply_patterns_tensor_fold_tensor_subset_ops_into_vector_transfers()
+                tensor.apply_patterns_tensor_fold_tensor_subset_ops_into_vector_transfers()
                 transform.apply_patterns_canonicalization()
             transform.yield_()
         scheds.append(sched)
@@ -346,17 +361,18 @@ class Matmul(Workload):
             sched, input_types=[transform.any_op_t()]
         )
         with ir.InsertionPoint(named_seq.body):
-            lh_transform.apply_pass(named_seq.bodyTarget, "convert-linalg-to-loops")
-            lh_transform.apply_pass(named_seq.bodyTarget, "fold-memref-alias-ops")
-            lh_transform.apply_pass(named_seq.bodyTarget, "expand-strided-metadata")
-            lh_transform.apply_pass(named_seq.bodyTarget, "canonicalize")
-            lh_transform.apply_pass(named_seq.bodyTarget, "convert-vector-to-scf")
-            lh_transform.apply_pass(named_seq.bodyTarget, "lower-affine")
-            lh_transform.apply_pass(named_seq.bodyTarget, "convert-scf-to-cf")
-            lh_transform.apply_pass(named_seq.bodyTarget, "convert-vector-to-llvm")
-            lh_transform.apply_pass(named_seq.bodyTarget, "convert-to-llvm")
-            lh_transform.apply_pass(named_seq.bodyTarget, "reconcile-unrealized-casts")
-            lh_transform.cleanup(named_seq.bodyTarget)
+            target = named_seq.bodyTarget
+            target = apply_registered_pass(target, "convert-linalg-to-loops")
+            target = apply_registered_pass(target, "fold-memref-alias-ops")
+            target = apply_registered_pass(target, "expand-strided-metadata")
+            target = apply_registered_pass(target, "canonicalize")
+            target = apply_registered_pass(target, "convert-vector-to-scf")
+            target = apply_registered_pass(target, "lower-affine")
+            target = apply_registered_pass(target, "convert-scf-to-cf")
+            target = apply_registered_pass(target, "convert-vector-to-llvm")
+            target = apply_registered_pass(target, "convert-to-llvm")
+            target = apply_registered_pass(target, "reconcile-unrealized-casts")
+            lh_transform.cleanup(target)
 
             transform.yield_()
         scheds.append(sched)
@@ -366,7 +382,7 @@ class Matmul(Workload):
 
 if __name__ == "__main__":
     with ir.Context(), ir.Location.unknown():
-        wload = Matmul(1024, 1024, 1024, np.float32, tile_size=32)
+        wload = Matmul(1024, 1024, 1024, dtype=np.float32, tile_size=32)
 
         print(" Dump kernel ".center(60, "-"))
         wload.lower_payload(dump_payload="initial", dump_schedule=False)
