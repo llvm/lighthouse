@@ -181,8 +181,9 @@ class Matmul(Workload):
     def check_correctness(
         self, execution_engine: ExecutionEngine, verbose: int = 0
     ) -> bool:
-        # Dummy - skip verification.
-        return True
+        A, B, C = self._input_arrays
+        out_ref = np.matmul(A, B, dtype=np.float32)
+        return np.allclose(C, out_ref)
 
     @cached_property
     def _input_arrays(self) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -394,7 +395,7 @@ if __name__ == "__main__":
         wload.lower_payload(dump_payload="initial", dump_schedule=False)
 
         print(" Benchmark ".center(60, "-"))
-        times = benchmark(wload, check_correctness=False)
+        times = benchmark(wload, check_correctness=True)
         times *= 1e6  # convert to microseconds
         # compute statistics
         mean = np.mean(times)
