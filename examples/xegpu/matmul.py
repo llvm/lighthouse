@@ -1,7 +1,9 @@
 # RUN: %PYTHON %s --dump-kernel=xegpu-wg | FileCheck %s
+# RUN: %PYTHON %s --dump-kernel=xegpu-wg --bias | FileCheck %s
 # RUN: %PYTHON %s --dump-kernel=xegpu-wg --relu | FileCheck %s
+# RUN: %PYTHON %s --dump-kernel=xegpu-wg --bias --relu | FileCheck %s
 # RUN: %PYTHON %s --dump-kernel=xegpu-wg --no-accumulate-c | FileCheck %s
-# RUN: %PYTHON %s --dump-kernel=xegpu-wg --relu --no-accumulate-c | FileCheck %s
+# RUN: %PYTHON %s --dump-kernel=xegpu-wg --bias --relu --no-accumulate-c | FileCheck %s
 # CHECK: module attributes {gpu.container_module} {
 
 """
@@ -236,7 +238,7 @@ def parse_cli():
     parser.add_argument(
         "--k-tile",
         type=int,
-        default=64,
+        default=128,
         help="Inner reduction dimension tile size K.",
     )
     parser.add_argument(
@@ -257,14 +259,14 @@ def parse_cli():
         "--prefetch-tile-a",
         type=int,
         nargs=2,
-        default=[8, 32],
+        default=[8, 16],
         help="Tile size for cooperative prefetching of subgroup A matrix",
     )
     parser.add_argument(
         "--prefetch-tile-b",
         type=int,
         nargs=2,
-        default=[8, 32],
+        default=[16, 16],
         help="Tile size for cooperative prefetching of subgroup B matrix",
     )
     parser.add_argument(
