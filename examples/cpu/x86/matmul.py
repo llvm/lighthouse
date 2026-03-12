@@ -163,8 +163,14 @@ class Matmul(Workload):
     def __init__(self, M: int, N: int, K: int, dtype=np.float32, tile_size: int = 32):
         if dtype not in [np.float32, ml_dtypes.bfloat16]:
             raise ValueError("Unsupported data type")
+        if dtype == ml_dtypes.bfloat16:
+            # For BF16, enforce fixed tile size due to current rewriter pattern matching limitation.
+            # TODO: Relax when x86 BF16 pass supports dynamic indexing.
+            tile_size = 32
         if tile_size % 32 != 0:
             raise ValueError(f"Tile must be a multiple of 32 but got: {tile_size}")
+        if any(dim % tile_size != 0 for dim in [M, N, K]):
+            raise ValueError("Dimensions must be divisible by the tile")
 
         self.M = M
         self.N = N
@@ -395,7 +401,9 @@ if __name__ == "__main__":
         min = np.min(times)
         max = np.max(times)
         std = np.std(times)
-        print(f"Timings (us): mean={mean:.2f}+/-{std:.2f} min={min:.2f} max={max:.2f}")
+        print(
+            f"Timings (us): mean = {mean:.2f} +/-{std:.2f} min={min:.2f} max={max:.2f}"
+        )
         flop_count = wload.get_complexity()[0]
         gflops = flop_count / (mean * 1e-6) / 1e9
         print(f"Throughput: {gflops:.2f} GFLOPS")
