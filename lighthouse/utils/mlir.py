@@ -31,7 +31,7 @@ def get_mlir_library_path():
     else:
         # maybe installed in python path
         path = pkg_path / "_mlir_libs"
-        assert os.path.isdir(path), f"Directory not found {path}"
+        assert os.path.isfile(path / run_utils_so), err_msg
     return path
 
 
