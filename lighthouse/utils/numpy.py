@@ -11,6 +11,7 @@ def numpy_to_ctype(arr: np.ndarray) -> ctypes._Pointer:
     """Convert numpy array to memref and ctypes **void pointer."""
     return to_ctype(get_ranked_memref_descriptor(arr))
 
+
 def numpy_to_mlir_type(dtype, ctx: ir.Context | None = None) -> ir.Type:
     if ctx is None:
         ctx = ir.Context.current
