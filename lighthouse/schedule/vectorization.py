@@ -6,11 +6,12 @@ from mlir.dialects.transform import vector
 from .builders import create_schedule
 from .builders import create_named_sequence
 from lighthouse.transform import vectorize_ops
+from lighthouse.transform import vectorize_all_ops
 from lighthouse.transform import x86_vector_patterns
 from lighthouse.transform import cleanup
 
 
-def schedule_vectorize_linalg() -> ir.Module:
+def vectorize_linalg() -> ir.Module:
     schedule = create_schedule()
     named_seq = create_named_sequence(schedule, input_types=[transform.any_op_t()])
 
@@ -32,7 +33,19 @@ def schedule_vectorize_linalg() -> ir.Module:
     return schedule
 
 
-def schedule_x86_vectorization() -> ir.Module:
+def vectorize_all() -> ir.Module:
+    schedule = create_schedule()
+    named_seq = create_named_sequence(schedule, input_types=[transform.any_op_t()])
+
+    with ir.InsertionPoint(named_seq.body):
+        vectorize_all_ops(named_seq.bodyTarget)
+        cleanup(named_seq.bodyTarget)
+
+        transform.yield_()
+    return schedule
+
+
+def x86_vectorization() -> ir.Module:
     schedule = create_schedule()
     named_seq = create_named_sequence(schedule, input_types=[transform.any_op_t()])
 

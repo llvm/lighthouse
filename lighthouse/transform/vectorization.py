@@ -25,7 +25,7 @@ def vectorize_ops(
         transform.yield_()
 
 
-def vectorize_all(
+def vectorize_all_ops(
     target: ir.Operation | ir.Value,
 ):
     func = structured.MatchOp.match_op_names(target, ["func.func"]).result

@@ -8,7 +8,7 @@ from lighthouse.transform import loop_hoisting
 from lighthouse.transform import cleanup
 
 
-def schedule_loop_hoisting() -> ir.Module:
+def hoist_loops() -> ir.Module:
     schedule = create_schedule()
     named_seq = create_named_sequence(schedule, input_types=[transform.any_op_t()])
 

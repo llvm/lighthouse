@@ -7,7 +7,7 @@ from lighthouse.transform import tile_ops
 from lighthouse.transform import cleanup
 
 
-def schedule_tile_ops(
+def tile(
     target_op: str,
     tile_sizes: list[int],
     fuse_producers: bool = False,

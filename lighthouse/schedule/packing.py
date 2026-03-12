@@ -8,7 +8,7 @@ from lighthouse.transform import pack_propagation
 from lighthouse.transform import cleanup
 
 
-def schedule_pack_matmuls(
+def pack_matmuls(
     block_factors: list[int],
     lhs_transpose_outer_block: bool = False,
     lhs_transpose_inner_block: bool = False,
