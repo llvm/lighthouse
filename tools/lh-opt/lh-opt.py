@@ -22,36 +22,31 @@ def create_driver(module: ir.Module, stages: list[str]) -> Driver:
     """Create the driver's pipeline by selecting the passes that will run"""
     driver = Driver(module)
     if not stages:
-        # Add all stages if no stages are specified.
-        driver.bufferize()
-        driver.mlir_lowering()
-        driver.llvm_lowering()
-        driver.cleanup()
+        raise ValueError("At least one stage must be specified.")
     else:
         for t in stages:
-            if t == "bufferize":
-                driver.bufferize()
-            elif t == "mlir_lowering":
-                driver.mlir_lowering()
-            elif t == "llvm_lowering":
-                driver.llvm_lowering()
-            elif t == "cleanup":
-                driver.cleanup()
-            else:
-                raise ValueError(f"Unsupported transformation: {t}")
+            driver.add_stage(t)
 
     return driver
 
 
 if __name__ == "__main__":
-    Parser = argparse.ArgumentParser(description="Lighthouse Optimization Pipeline")
+    Parser = argparse.ArgumentParser(
+        description="""
+    Lighthouse Optimization Pipeline
+
+    Applies a series of transformations to an input MLIR module, and produces an optimized MLIR module as output.
+    The transformations are applied in argument order, selected by the user. The names of the passes are registered
+    by the driver.
+    """
+    )
     Parser.add_argument(
         "payload_module", type=str, help="Path to the payload MLIR module to optimize."
     )
     Parser.add_argument(
         "--stage",
         action="append",
-        help="List of transformations to apply to the input module. Supported transformations: bufferize, lower_to_llvm, mlir_lowering, cleanup.",
+        help="List of transformations to apply to the input module.",
     )
     args = Parser.parse_args()
 

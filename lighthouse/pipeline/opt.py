@@ -90,27 +90,39 @@ class Driver:
     A simple driver that runs the optimization pipeline on a given workload.
     This is a high-level interface that abstracts away the details of the optimization pipeline,
     and provides a simple interface for running the pipeline on a given workload.
+
+    Note: this driver is opinionated and incomplete. For now it only adds some bundles,
+    no schedules, no custom passes. This will change in time.
     """
 
     def __init__(self, module: ir.Module):
         self.context = module.context
         self.opt = Opt(module)
+        self.available_stages = {
+            "bufferize": PassStage(
+                "bufferize",
+                self.context,
+                PassBundles.BufferizationBundle + PassBundles.CleanupBundle,
+            ),
+            "mlir_lowering": PassStage(
+                "mlir_lowering",
+                self.context,
+                PassBundles.MLIRLoweringBundle + PassBundles.CleanupBundle,
+            ),
+            "llvm_lowering": PassStage(
+                "llvm_lowering",
+                self.context,
+                PassBundles.LLVMLoweringBundle + PassBundles.CleanupBundle,
+            ),
+            "cleanup": PassStage("cleanup", self.context, PassBundles.CleanupBundle),
+        }
 
-    def bufferize(self) -> None:
-        pipeline = PassBundles.BufferizationBundle + PassBundles.CleanupBundle
-        self.opt.add_stage(PassStage("Bufferization", self.context, pipeline))
-
-    def mlir_lowering(self) -> None:
-        pipeline = PassBundles.MLIRLoweringBundle + PassBundles.CleanupBundle
-        self.opt.add_stage(PassStage("MLIR Lowering", self.context, pipeline))
-
-    def llvm_lowering(self) -> None:
-        pipeline = PassBundles.LLVMLoweringBundle + PassBundles.CleanupBundle
-        self.opt.add_stage(PassStage("LLVM Lowering", self.context, pipeline))
-
-    def cleanup(self) -> None:
-        pipeline = PassBundles.CleanupBundle
-        self.opt.add_stage(PassStage("Cleanup", self.context, pipeline))
+    def add_stage(self, stage_name: str) -> None:
+        if stage_name not in self.available_stages:
+            raise ValueError(
+                f"Unsupported stage: {stage_name}. Avaliable stages: {list(self.available_stages.keys())}"
+            )
+        self.opt.add_stage(self.available_stages[stage_name])
 
     def run(self) -> ir.Module:
         return self.opt.apply()
