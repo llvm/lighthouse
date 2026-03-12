@@ -33,11 +33,9 @@ def create_driver(module: ir.Module, stages: list[str]) -> Driver:
 if __name__ == "__main__":
     Parser = argparse.ArgumentParser(
         description="""
-    Lighthouse Optimization Pipeline
-
-    Applies a series of transformations to an input MLIR module, and produces an optimized MLIR module as output.
-    The transformations are applied in argument order, selected by the user. The names of the passes are registered
-    by the driver.
+    Lighthouse Optimization Pipeline: Applies a series of transformations to an input MLIR module,
+    and produces an optimized MLIR module as output. The transformations are applied in argument order.
+    The names of the passes are registered by the driver.
     """
     )
     Parser.add_argument(
