@@ -1,7 +1,9 @@
 # RUN: %PYTHON %s --dump-kernel=xegpu-wg | FileCheck %s
+# RUN: %PYTHON %s --dump-kernel=xegpu-wg --bias | FileCheck %s
 # RUN: %PYTHON %s --dump-kernel=xegpu-wg --relu | FileCheck %s
+# RUN: %PYTHON %s --dump-kernel=xegpu-wg --bias --relu | FileCheck %s
 # RUN: %PYTHON %s --dump-kernel=xegpu-wg --no-accumulate-c | FileCheck %s
-# RUN: %PYTHON %s --dump-kernel=xegpu-wg --relu --no-accumulate-c | FileCheck %s
+# RUN: %PYTHON %s --dump-kernel=xegpu-wg --bias --relu --no-accumulate-c | FileCheck %s
 # CHECK: module attributes {gpu.container_module} {
 
 """
