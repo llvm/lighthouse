@@ -58,3 +58,8 @@ for pkg in ["torch", "mpi4py", "mpich", "impi-rt"]:
 torch_kernels_dir = project_root + "/third_party/KernelBench/KernelBench"
 if os.path.isdir(torch_kernels_dir):
     config.available_features.add("kernel_bench")
+
+for tool in os.listdir(project_root + "/tools"):
+    tool_path = os.path.join(project_root, "tools", tool)
+    if os.access(tool_path, os.X_OK):
+        config.substitutions.append((tool, tool_path))
