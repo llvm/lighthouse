@@ -1,6 +1,7 @@
 #! /usr/bin/env python
 
 import argparse
+import os
 
 from mlir import ir
 from lighthouse.pipeline.opt import Driver
@@ -8,6 +9,10 @@ from lighthouse.pipeline.opt import Driver
 
 def import_payload(path: str) -> ir.Module:
     """Import an MLIR text file into the payload module"""
+    if path is None:
+        raise ValueError("Path to the payload module must be provided.")
+    if not os.path.exists(path):
+        raise ValueError(f"Path to the payload module does not exist: {path}")
     with ir.Context():
         with open(path, "r") as f:
             return ir.Module.parse(f.read())

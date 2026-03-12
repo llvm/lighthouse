@@ -13,12 +13,11 @@ class Stage:
     and will keep track of the current state of the module after the transformations are applied.
     """
 
-    def __init__(self, name: str, module: ir.Module):
+    def __init__(self, name: str):
         self.name = name
-        self.module = module
 
     @abstractmethod
-    def apply(self) -> ir.Module:
+    def apply(self, module: ir.Module) -> ir.Module:
         """
         Apply the transformations for this stage to the given module, and return the transformed module.
         """
@@ -30,19 +29,16 @@ class PassStage(Stage):
     A stage that applies a predefined set of passes to the module. This is a simple wrapper around a PassManager.
     """
 
-    def __init__(self, name: str, module: ir.Module, passes: list[str]):
-        super().__init__(name, module)
-        self.pm = PassManager("builtin.module", self.module.context)
+    def __init__(self, name: str, context: ir.Context, passes: list[str]):
+        super().__init__(name)
+        self.pm = PassManager("builtin.module", context)
         add_bundle(self.pm, passes)
 
-    def apply(self) -> ir.Module:
-        if self.module is None:
-            raise ValueError("Twice apply won't fly.")
-        self.pm.run(self.module.operation)
-        # Nullify the module to prevent accidental reuse.
-        ret = self.module
-        self.module = None
-        return ret
+    def apply(self, module: ir.Module) -> ir.Module:
+        if module is None:
+            raise ValueError("Missing module to apply passes to.")
+        self.pm.run(module.operation)
+        return module
 
 
 class TransformStage(Stage):
@@ -50,20 +46,15 @@ class TransformStage(Stage):
     A stage that applies a predefined set of transformations to the module. This is a simple wrapper around a Transform Schedule.
     """
 
-    def __init__(
-        self, name: str, module: ir.Module, schedule: transform.TransformOpInterface
-    ):
-        super().__init__(name, module)
+    def __init__(self, name: str, schedule: transform.TransformOpInterface):
+        super().__init__(name)
         self.schedule = schedule
 
-    def apply(self) -> ir.Module:
-        if self.module is None:
-            raise ValueError("Twice apply won't fly.")
-        self.schedule.apply(self.module.operation)
-        # Nullify the module to prevent accidental reuse.
-        ret = self.module
-        self.module = None
-        return ret
+    def apply(self, module: ir.Module) -> ir.Module:
+        if module is None:
+            raise ValueError("Missing module to apply transformations to.")
+        self.schedule.apply(module.operation)
+        return module
 
 
 class Opt:
@@ -87,7 +78,7 @@ class Opt:
         if self.payload_module is None:
             raise ValueError("Twice apply won't fly.")
         for stage in self.pipeline:
-            self.payload_module = stage.apply()
+            self.payload_module = stage.apply(self.payload_module)
         # Nullify the module to prevent accidental reuse.
         ret = self.payload_module
         self.payload_module = None
@@ -102,28 +93,24 @@ class Driver:
     """
 
     def __init__(self, module: ir.Module):
-        self.module = module
-        self.opt = Opt(self.module)
+        self.context = module.context
+        self.opt = Opt(module)
 
     def bufferize(self) -> None:
-        bufferization_pipeline = (
-            PassBundles.BufferizationBundle + PassBundles.CleanupBundle
-        )
-        self.opt.add_stage(
-            PassStage("Bufferization", self.module, bufferization_pipeline)
-        )
+        pipeline = PassBundles.BufferizationBundle + PassBundles.CleanupBundle
+        self.opt.add_stage(PassStage("Bufferization", self.context, pipeline))
 
     def mlir_lowering(self) -> None:
-        lowering_pipeline = PassBundles.MLIRLoweringBundle + PassBundles.CleanupBundle
-        self.opt.add_stage(PassStage("MLIR Lowering", self.module, lowering_pipeline))
+        pipeline = PassBundles.MLIRLoweringBundle + PassBundles.CleanupBundle
+        self.opt.add_stage(PassStage("MLIR Lowering", self.context, pipeline))
 
     def llvm_lowering(self) -> None:
-        lowering_pipeline = PassBundles.LLVMLoweringBundle + PassBundles.CleanupBundle
-        self.opt.add_stage(PassStage("LLVM Lowering", self.module, lowering_pipeline))
+        pipeline = PassBundles.LLVMLoweringBundle + PassBundles.CleanupBundle
+        self.opt.add_stage(PassStage("LLVM Lowering", self.context, pipeline))
 
     def cleanup(self) -> None:
-        bufferization_pipeline = PassBundles.CleanupBundle
-        self.opt.add_stage(PassStage("Cleanup", self.module, bufferization_pipeline))
+        pipeline = PassBundles.CleanupBundle
+        self.opt.add_stage(PassStage("Cleanup", self.context, pipeline))
 
     def run(self) -> ir.Module:
         return self.opt.apply()
