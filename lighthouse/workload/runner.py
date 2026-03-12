@@ -129,9 +129,10 @@ def benchmark(
         payload_module, workload.payload_function_name, nruns, nwarmup
     )
 
-    # lower
-    schedule_module = workload.schedule_module(parameters=schedule_parameters)
-    schedule_module.body.operations[0].apply(payload_module)
+    # Lower payload with one or more schedules
+    schedule_modules = workload.schedule_modules(parameters=schedule_parameters)
+    for schedule_module in schedule_modules:
+        schedule_module.body.operations[0].apply(payload_module)
 
     # get execution engine, rtclock requires mlir_c_runner
     libs = workload.shared_libs()
