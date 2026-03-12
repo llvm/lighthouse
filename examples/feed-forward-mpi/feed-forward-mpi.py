@@ -80,13 +80,13 @@ def parse_cla():
     parser.add_argument(
         "--nruns",
         type=int,
-        default=1000,
+        default=50,
         help="Number of runs to average the execution time.",
     )
     parser.add_argument(
         "--nwarmup",
         type=int,
-        default=20,
+        default=5,
         help="Number of warm-up iterations before benchmarking.",
     )
     parser.add_argument(
@@ -336,10 +336,28 @@ class DistFF(Workload):
                 "drop-equivalent-buffer-results",
                 options={"modify-public-functions": True},
             )
-            mod = apply_registered_pass(mod, "buffer-deallocation-simplification")
-            mod = apply_registered_pass(mod, "bufferization-lower-deallocations")
-            mod = apply_registered_pass(mod, "cse")
-            mod = apply_registered_pass(mod, "canonicalize")
+
+            # Run passes to inject deallocations. Don't do this for dealloc_2d, though.
+            for fname in [
+                self.benchmark_function_name,
+                self.payload_function_name,
+                "gather_act",
+                "gather_win",
+                "gather_wout",
+                "alloc_act",
+                "alloc_win",
+                "alloc_wout",
+            ]:
+                func = match(
+                    mod,
+                    ops={"func.func"},
+                    op_attrs={"sym_name": ir.StringAttr.get(fname)},
+                )
+                func = apply_registered_pass(func, "buffer-deallocation-pipeline")
+                mod = transform.get_parent_op(
+                    anytype, func, op_name="builtin.module", deduplicate=True
+                )
+
             mod = apply_registered_pass(mod, "convert-linalg-to-parallel-loops")
             mod = apply_registered_pass(mod, "scf-parallel-loop-fusion")
             mod = apply_registered_pass(mod, "canonicalize")
