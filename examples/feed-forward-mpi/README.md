@@ -4,7 +4,7 @@ This example shows how MLIR's sharding infrastructure can be used to distribute 
 
 Currently, only the lower part of the sharding pipeline is used: `shard-partition`, `convert-shard-to-mpi`, and lowering to LLVM. Therefore, the ingress MLIR is fully annotated.
 
-The example implements a single feed-fowrad layer, following a 1D/2D weight-stationary partition strategy as described in figures 2a and 2b of https://arxiv.org/pdf/2211.05102.
+The example implements a single feed-forwad layer, following a 1D/2D weight-stationary partition strategy as described in figures 2a and 2b of https://arxiv.org/pdf/2211.05102.
 
 ## Prerequisites
 

@@ -68,7 +68,15 @@ class Workload(ABC):
         schedule_modules = self.schedule_modules(
             stop_at_stage=dump_payload, parameters=schedule_parameters
         )
-        assert isinstance(schedule_modules, list)
+        if not isinstance(schedule_modules, list):
+            raise TypeError(
+                f"schedule_modules() must return a list of ir.Module instances, "
+                f"got {type(schedule_modules).__name__}"
+            )
+        if not schedule_modules:
+            raise ValueError(
+                "schedule_modules() must return at least one schedule module."
+            )
         if not dump_payload or dump_payload != "initial":
             for schedule_module in schedule_modules:
                 # apply schedule on payload module

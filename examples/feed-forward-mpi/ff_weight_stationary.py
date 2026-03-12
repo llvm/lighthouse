@@ -124,7 +124,7 @@ def generate_ff_payload(
             res = bufferization.materialize_in_destination(
                 t_mk,
                 sd_res,
-                sd_r,  # , restrict=True, writable=True
+                sd_r,
             )
             return shard.shard(res, sh_act, annotate_for_users=True)
 
