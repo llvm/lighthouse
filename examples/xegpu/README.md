@@ -57,6 +57,12 @@ Override the default LLVM package by setting `PYTHONPATH` to the local LLVM Pyth
 export PYTHONPATH=${LLVM_INSTALL_DIR}/python_packages/mlir_core
 ```
 
+If you wish to point to the build directory instead, do:
+
+```bash
+export PYTHONPATH=${LLVM_BUILD_DIR}/tools/mlir/python_packages/mlir_core/
+```
+
 ## Matrix multiplication benchmark
 
 Run the default 4k (float16, float16) -> float32 matrix multiplication benchmark with correctness test:
