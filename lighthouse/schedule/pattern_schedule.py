@@ -1,7 +1,6 @@
-from contextlib import contextmanager
 from mlir import rewrite, ir
 from mlir.dialects import ext, transform
-from mlir.dialects.transform import AnyOpType
+from lighthouse.schedule.utils import schedule_boilerplate
 
 
 @ext.register_dialect
@@ -33,21 +32,6 @@ def rewrite_pattern(patterns: dict, pname: str):
                     patternset.add(op_name, match_and_rewrite, benefit=1)
 
     return RewritePattern
-
-
-@contextmanager
-def schedule_boilerplate():
-    schedule = ir.Module.create()
-    schedule.operation.attributes["transform.with_named_sequence"] = ir.UnitAttr.get()
-    with ir.InsertionPoint(schedule.body):
-        named_sequence = transform.NamedSequenceOp(
-            "__transform_main",
-            [AnyOpType.get()],
-            [AnyOpType.get()],
-            arg_attrs=[{"transform.consumed": ir.UnitAttr.get()}],
-        )
-        with ir.InsertionPoint(named_sequence.body):
-            yield schedule, named_sequence
 
 
 def pattern_rewrite_schedule(patterns: dict, pname: str = "rewrite_pattern"):

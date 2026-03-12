@@ -32,6 +32,7 @@ from lighthouse.utils.memref import (
 )
 from lighthouse.pipeline.helper import apply_registered_pass, match
 from lighthouse.workload import Workload, benchmark, get_bench_wrapper_schedule
+from lighthouse.schedule.utils import schedule_boilerplate
 from lighthouse.schedule.x86 import tile_and_vector_matmul
 from ff_weight_stationary import generate_ff_payload
 
@@ -290,24 +291,8 @@ class DistFF(Workload):
 
         return mod
 
-    def schedule_modules(
-        self, stop_at_stage: Optional[str] = None, parameters: Optional[dict] = None
-    ) -> list[ir.Module]:
-        """Generate two schedules: one that deals with sharding propagation, partition, and MPI.
-        Another one for all the rest"""
-        pre_schedule = ir.Module.create()
-        pre_schedule.operation.attributes["transform.with_named_sequence"] = (
-            ir.UnitAttr.get()
-        )
-        with ir.InsertionPoint(pre_schedule.body):
-            named_sequence = transform.named_sequence(
-                "__transform_pre",
-                [transform.AnyOpType.get()],
-                [],
-                arg_attrs=[{"transform.readonly": ir.UnitAttr.get()}],
-            )
-        with ir.InsertionPoint(named_sequence.body):
-            anytype = transform.AnyOpType.get()
+    def get_shard_schedule(self):
+        with schedule_boilerplate() as (schedule, named_sequence):
             func = match(named_sequence.bodyTarget, ops={"func.func"})
             func = apply_registered_pass(
                 func,
@@ -317,7 +302,6 @@ class DistFF(Workload):
             if self.verbose > 0:
                 transform.PrintOp(target=func)
             func = apply_registered_pass(func, "shard-partition")
-            func = apply_registered_pass(func, "canonicalize")
             if self.verbose > 0:
                 transform.PrintOp(target=func)
             func = apply_registered_pass(func, "shard-simplify")
@@ -329,36 +313,17 @@ class DistFF(Workload):
                 transform.PrintOp(target=func)
             func = apply_registered_pass(func, "tosa-to-linalg")
             transform.YieldOp()
-            func = None
+        return schedule
 
-        bench_schedule = get_bench_wrapper_schedule(self)
-
-        tile_schedule = tile_and_vector_matmul.create(self.tile_size)
-
-        main_schedule = ir.Module.create()
-        main_schedule.operation.attributes["transform.with_named_sequence"] = (
-            ir.UnitAttr.get()
-        )
-        with ir.InsertionPoint(main_schedule.body):
-            named_sequence = transform.named_sequence(
-                "__transform_main",
-                [transform.AnyOpType.get()],
-                [],
-                arg_attrs=[{"transform.readonly": ir.UnitAttr.get()}],
-            )
-        with ir.InsertionPoint(named_sequence.body):
+    def get_lower_schedule(self):
+        with schedule_boilerplate() as (schedule, named_sequence):
             anytype = transform.AnyOpType.get()
             func = match(named_sequence.bodyTarget, ops={"func.func"})
             mod = transform.get_parent_op(
                 anytype, func, op_name="builtin.module", deduplicate=True
             )
             mod = apply_registered_pass(mod, "linalg-generalize-named-ops")
-            mod = apply_registered_pass(mod, "canonicalize")
             mod = apply_registered_pass(mod, "linalg-fuse-elementwise-ops")
-            mod = apply_registered_pass(mod, "arith-expand")
-            mod = apply_registered_pass(mod, "memref-expand")
-            mod = apply_registered_pass(mod, "empty-tensor-to-alloc-tensor")
-            mod = apply_registered_pass(mod, "canonicalize")
             identity_layout = LayoutMapOption.IdentityLayoutMap
             mod = OneShotBufferizeOp(
                 mod,
@@ -371,27 +336,18 @@ class DistFF(Workload):
                 "drop-equivalent-buffer-results",
                 options={"modify-public-functions": True},
             )
-            mod = apply_registered_pass(mod, "expand-realloc")
-            mod = apply_registered_pass(mod, "canonicalize")
             mod = apply_registered_pass(mod, "buffer-deallocation-simplification")
             mod = apply_registered_pass(mod, "bufferization-lower-deallocations")
             mod = apply_registered_pass(mod, "cse")
             mod = apply_registered_pass(mod, "canonicalize")
-            mod = apply_registered_pass(mod, "convert-bufferization-to-memref")
             mod = apply_registered_pass(mod, "convert-linalg-to-parallel-loops")
             mod = apply_registered_pass(mod, "scf-parallel-loop-fusion")
             mod = apply_registered_pass(mod, "canonicalize")
-            mod = apply_registered_pass(mod, "fold-memref-alias-ops")
             mod = apply_registered_pass(mod, "expand-strided-metadata")
-            mod = apply_registered_pass(mod, "convert-math-to-funcs")
             mod = apply_registered_pass(mod, "lower-affine")
             mod = apply_registered_pass(mod, "convert-vector-to-scf")
             mod = apply_registered_pass(mod, "convert-scf-to-cf")
             mod = apply_registered_pass(mod, "symbol-dce")
-            mod = apply_registered_pass(mod, "finalize-memref-to-llvm")
-            mod = apply_registered_pass(mod, "convert-math-to-llvm")
-            mod = apply_registered_pass(mod, "convert-math-to-libm")
-            mod = apply_registered_pass(mod, "convert-func-to-llvm")
             mod = apply_registered_pass(mod, "convert-vector-to-llvm")
             mod = apply_registered_pass(mod, "canonicalize")
             mod = apply_registered_pass(mod, "convert-to-llvm")
@@ -400,8 +356,22 @@ class DistFF(Workload):
             if self.verbose > 1:
                 transform.PrintOp(target=mod)
             transform.YieldOp()
+        return schedule
 
-        return [pre_schedule, bench_schedule, tile_schedule, main_schedule]
+    def schedule_modules(
+        self, stop_at_stage: Optional[str] = None, parameters: Optional[dict] = None
+    ) -> list[ir.Module]:
+        """Generate schedules:
+        - sharding propagation, partition, and MPI, tosa-to-linalg
+        - adding benchmark wrapper
+        - tile_and_vector
+        - all the rest"""
+        return [
+            self.get_shard_schedule(),
+            get_bench_wrapper_schedule(self),
+            tile_and_vector_matmul.create(self.tile_size),
+            self.get_lower_schedule(),
+        ]
 
 
 if __name__ == "__main__":

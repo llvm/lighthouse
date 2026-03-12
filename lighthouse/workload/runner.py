@@ -66,21 +66,17 @@ def execute(
                 raise ValueError("Benchmark verification failed.")
 
 
-def bench_wrapper_pattern(funcname: str, get_bench_name=None):
+def bench_wrapper_pattern(funcname: str, benchname=None):
     """Returns a rewrite pattern that matches a function named `funcname` and clones it
-    as a new function with name given by `get_bench_name(funcname)` (default: "bench_" + funcname).
+    as a new function with name given by `benchname` (default: "bench_" + funcname).
     The new function is a benchmark wrapper that calls the payload function and times it.
     Every function call is timed separately. Returns the times (seconds) in a memref,
     which is passed as an additional argument to the benchmark function.
     It also takes two additional arguments for the number of runs and warmup iterations.
     """
-    marker = "__wrapped__"
-    if get_bench_name is None:
-
-        def default_bench_name(name):
-            return f"bench_{name}"
-
-        get_bench_name = default_bench_name
+    marker = "__bench_wrapped__"
+    if benchname is None:
+        benchname = f"bench_{funcname}"
 
     def match_and_rewrite(op, rewriter):
         if op.name.value != funcname:
@@ -100,7 +96,7 @@ def bench_wrapper_pattern(funcname: str, get_bench_name=None):
             index_t = ir.IndexType.get()
             args = payload_arguments + [time_memref_t, index_t, index_t]
 
-            @func_cif(*args, name=get_bench_name(funcname))
+            @func_cif(*args, name=benchname)
             def bench(*args):
                 index_t = ir.IndexType.get()
                 zero = arith.constant(index_t, 0)
@@ -129,7 +125,7 @@ def get_bench_wrapper_schedule(workload: Workload):
         {
             "func.func": bench_wrapper_pattern(
                 workload.payload_function_name,
-                lambda name: workload.benchmark_function_name,
+                workload.benchmark_function_name,
             )
         },
         "add_bench_pattern",
