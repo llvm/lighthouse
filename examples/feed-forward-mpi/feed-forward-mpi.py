@@ -315,7 +315,7 @@ class DistFF(Workload):
             transform.YieldOp()
         return schedule
 
-    def get_lower_schedule(self):
+    def get_bufferize_schedule(self):
         with schedule_boilerplate() as (schedule, named_sequence):
             anytype = transform.AnyOpType.get()
             func = match(named_sequence.bodyTarget, ops={"func.func"})
@@ -325,9 +325,10 @@ class DistFF(Workload):
             mod = apply_registered_pass(mod, "linalg-generalize-named-ops")
             mod = apply_registered_pass(mod, "linalg-fuse-elementwise-ops")
             identity_layout = LayoutMapOption.IdentityLayoutMap
+            mod = apply_registered_pass(mod, "eliminate-empty-tensors")
             mod = OneShotBufferizeOp(
                 mod,
-                allow_return_allocs_from_loops=True,
+                allow_return_allocs_from_loops=False,
                 bufferize_function_boundaries=True,
                 function_boundary_type_conversion=identity_layout,
             )
@@ -339,7 +340,6 @@ class DistFF(Workload):
 
             # Run passes to inject deallocations. Don't do this for dealloc_2d, though.
             for fname in [
-                self.benchmark_function_name,
                 self.payload_function_name,
                 "gather_act",
                 "gather_win",
@@ -357,7 +357,16 @@ class DistFF(Workload):
                 mod = transform.get_parent_op(
                     anytype, func, op_name="builtin.module", deduplicate=True
                 )
+            transform.YieldOp()
+        return schedule
 
+    def get_lower_schedule(self):
+        with schedule_boilerplate() as (schedule, named_sequence):
+            anytype = transform.AnyOpType.get()
+            func = match(named_sequence.bodyTarget, ops={"func.func"})
+            mod = transform.get_parent_op(
+                anytype, func, op_name="builtin.module", deduplicate=True
+            )
             mod = apply_registered_pass(mod, "convert-linalg-to-parallel-loops")
             mod = apply_registered_pass(mod, "scf-parallel-loop-fusion")
             mod = apply_registered_pass(mod, "canonicalize")
@@ -386,8 +395,9 @@ class DistFF(Workload):
         - all the rest"""
         return [
             self.get_shard_schedule(),
-            get_bench_wrapper_schedule(self),
             tile_and_vector_matmul.create(self.tile_size),
+            self.get_bufferize_schedule(),
+            get_bench_wrapper_schedule(self, use_memrefs=True),
             self.get_lower_schedule(),
         ]
 
