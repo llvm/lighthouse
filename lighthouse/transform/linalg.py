@@ -11,6 +11,17 @@ def linalg_morph_ops(
     generic_to_category: bool = False,
     generic_to_named: bool = False,
 ):
+    """
+    Apply linalg morphism to all target's nested functions.
+
+    Args:
+        target: Handle to matcher's target
+        named_to_generic: Named to generic ops
+        named_to_category: Named to category ops
+        category_to_generic: Category to generic ops
+        generic_to_category: Generic to category ops
+        generic_to_named: Generic to named ops
+    """
     func = structured.MatchOp.match_op_names(target, ["func.func"]).result
     transform.apply_registered_pass(
         transform.any_op_t(),

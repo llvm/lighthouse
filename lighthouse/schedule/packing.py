@@ -15,6 +15,16 @@ def pack_matmuls(
     rhs_transpose_outer_block: bool = True,
     rhs_transpose_inner_block: bool = True,
 ) -> ir.Module:
+    """
+    Pack all matmuls.
+
+    Args:
+        block_factors: Block sizes (mb, nb, kb)
+        lhs_transpose_outer_block: A matrix MB x KB => KB x MB
+        lhs_transpose_inner_block: A matrix mb x kb => kb x mb
+        rhs_transpose_outer_block: B matrix KB x NB => NB x KB
+        rhs_transpose_inner_block: B matrix kb x nb => nb x kb
+    """
     schedule = create_schedule()
     named_seq = create_named_sequence(schedule, input_types=[transform.any_op_t()])
 

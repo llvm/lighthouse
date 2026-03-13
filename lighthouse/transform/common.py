@@ -5,6 +5,12 @@ from mlir.dialects.transform import structured
 
 
 def cleanup(target: ir.Operation | ir.Value):
+    """
+    Apply canonicalization to all target's nested functions.
+
+    Args:
+        target: Handle to matcher's target
+    """
     func = structured.MatchOp.match_op_names(target, ["func.func"]).result
     transform.apply_cse(func)
     with ir.InsertionPoint(transform.ApplyPatternsOp(func).patterns):
@@ -14,6 +20,13 @@ def cleanup(target: ir.Operation | ir.Value):
 def loop_hoisting(
     target: ir.Operation | ir.Value, target_op: str | structured.MatchInterfaceEnum
 ):
+    """
+    Apply loop hoisting to all matching ops.
+
+    Args:
+        target: Handle to matcher's target
+        target_op: Ops to be matched
+    """
     if isinstance(target_op, structured.MatchInterfaceEnum):
         ops = structured.MatchOp(
             transform.any_op_t(),

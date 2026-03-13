@@ -12,6 +12,7 @@ from lighthouse.transform import cleanup
 
 
 def vectorize_linalg() -> ir.Module:
+    """Vectorize all linalg ops."""
     schedule = create_schedule()
     named_seq = create_named_sequence(schedule, input_types=[transform.any_op_t()])
 
@@ -34,6 +35,7 @@ def vectorize_linalg() -> ir.Module:
 
 
 def vectorize_all() -> ir.Module:
+    """Vectorize all ops."""
     schedule = create_schedule()
     named_seq = create_named_sequence(schedule, input_types=[transform.any_op_t()])
 
@@ -46,6 +48,7 @@ def vectorize_all() -> ir.Module:
 
 
 def x86_vectorization() -> ir.Module:
+    """Apply x86-specific vector rewrites."""
     schedule = create_schedule()
     named_seq = create_named_sequence(schedule, input_types=[transform.any_op_t()])
 

@@ -10,6 +10,12 @@ from lighthouse.pipeline.helper import apply_registered_pass
 
 
 def bufferize(deallocation_pipeline: bool = False) -> ir.Module:
+    """
+    Bufferize all ops.
+
+    Args:
+        deallocation_pipeline: Applies deallocation pipeline
+    """
     schedule = create_schedule()
     named_seq = create_named_sequence(schedule, input_types=[transform.any_op_t()])
 

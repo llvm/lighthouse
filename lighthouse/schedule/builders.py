@@ -5,6 +5,12 @@ from mlir.dialects import transform
 
 
 def create_schedule() -> ir.Module:
+    """
+    Create a transform schedule module.
+
+    Returns:
+        MLIR module
+    """
     schedule = ir.Module.create()
     schedule.operation.attributes["transform.with_named_sequence"] = ir.UnitAttr.get()
     return schedule
@@ -17,6 +23,19 @@ def create_named_sequence(
     result_types: Sequence[ir.Type] = [],
     is_readonly: bool = True,
 ) -> transform.NamedSequenceOp:
+    """
+    Create a named sequence inside a schedule module.
+
+    Args:
+        sym_name: Name
+        input_types: Input types
+        result_types: Result types
+        is_readonly: Mark inputs as readonly
+
+    Returns:
+        Named transform sequence
+    """
+
     arg_attrs = None
     if is_readonly:
         arg_attrs = [{"transform.readonly": ir.UnitAttr.get()}]

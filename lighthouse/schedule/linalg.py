@@ -8,6 +8,7 @@ from lighthouse.transform import cleanup
 
 
 def linalg_to_generic() -> ir.Module:
+    """Morph all linalg ops to generic ops."""
     schedule = create_schedule()
     named_seq = create_named_sequence(schedule, input_types=[transform.any_op_t()])
 
@@ -22,6 +23,7 @@ def linalg_to_generic() -> ir.Module:
 
 
 def linalg_to_category() -> ir.Module:
+    """Morph all linalg ops to category ops."""
     schedule = create_schedule()
     named_seq = create_named_sequence(schedule, input_types=[transform.any_op_t()])
 
@@ -36,6 +38,7 @@ def linalg_to_category() -> ir.Module:
 
 
 def linalg_to_named() -> ir.Module:
+    """Morph all linalg ops to named ops."""
     schedule = create_schedule()
     named_seq = create_named_sequence(schedule, input_types=[transform.any_op_t()])
 
