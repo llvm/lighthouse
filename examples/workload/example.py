@@ -23,7 +23,7 @@ from lighthouse.pipeline.helper import (
     apply_bundle,
     match,
 )
-from lighthouse.workload import Workload, execute, benchmark
+from lighthouse.workload import Workload, execute, benchmark, get_bench_wrapper_schedule
 
 
 class ElementwiseSum(Workload):
@@ -122,7 +122,7 @@ class ElementwiseSum(Workload):
 
         return mod
 
-    def schedule_module(
+    def schedule_modules(
         self, stop_at_stage: Optional[str] = None, parameters: Optional[dict] = None
     ) -> ir.Module:
         schedule_module = ir.Module.create()
@@ -151,12 +151,12 @@ class ElementwiseSum(Workload):
 
                 if stop_at_stage == "bufferized":
                     transform.YieldOp()
-                    return schedule_module
+                    return [schedule_module]
 
                 mod = apply_bundle(mod, PassBundles.LLVMLoweringBundle)
                 transform.YieldOp()
 
-        return schedule_module
+        return [get_bench_wrapper_schedule(self), schedule_module]
 
 
 if __name__ == "__main__":

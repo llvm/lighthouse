@@ -8,7 +8,8 @@ from mlir import ir
 from mlir.dialects import func, arith, scf, memref
 from mlir.execution_engine import ExecutionEngine
 from mlir.runtime.np_to_memref import get_ranked_memref_descriptor
-from lighthouse.utils.mlir import get_mlir_library_path
+from lighthouse.schedule.pattern_schedule import pattern_rewrite_schedule
+from lighthouse.utils.mlir import func_cif, get_mlir_library_path
 from lighthouse.utils.memref import to_packed_args
 from lighthouse.workload import Workload
 from typing import Optional
@@ -40,8 +41,12 @@ def execute(
 ):
     # lower payload with schedule
     payload_module = workload.lower_payload(schedule_parameters=schedule_parameters)
-    # get execution engine
-    engine = get_engine(payload_module, shared_libs=workload.shared_libs())
+    # get execution engine, rtclock requires mlir_c_runner
+    libs = workload.shared_libs()
+    c_runner_lib = "libmlir_c_runner_utils.so"
+    if c_runner_lib not in libs:
+        libs.append(c_runner_lib)
+    engine = get_engine(payload_module, shared_libs=libs)
 
     with workload.allocate_inputs(execution_engine=engine) as inputs:
         # prepare function arguments
@@ -61,56 +66,91 @@ def execute(
                 raise ValueError("Benchmark verification failed.")
 
 
-def emit_benchmark_function(
-    payload_module: ir.Module,
-    payload_function_name: str,
-    nruns: int,
-    nwarmup: int,
-):
+def _tensor_to_memref_type(t):
+    """Convert a RankedTensorType to a MemRefType with the same shape and element type."""
+    ranked = ir.RankedTensorType(t)
+    return ir.MemRefType.get(ranked.shape, ranked.element_type)
+
+
+def bench_wrapper_pattern(funcname: str, benchname=None, use_memrefs: bool = False):
+    """Returns a rewrite pattern that matches a function named `funcname` and clones it
+    as a new function with name given by `benchname` (default: "bench_" + funcname).
+    The new function is a benchmark wrapper that calls the payload function and times it.
+    Every function call is timed separately. Returns the times (seconds) in a memref,
+    which is passed as an additional argument to the benchmark function.
+    It also takes two additional arguments for the number of runs and warmup iterations.
+
+    If `use_memrefs` is True, any tensor-typed payload arguments are replaced with
+    corresponding memref types in the wrapper signature. The payload function is assumed
+    to accept memrefs as well.
     """
-    Emit a benchmark function that calls payload function and times it.
+    marker = "__bench_wrapped__"
+    if benchname is None:
+        benchname = f"bench_{funcname}"
 
-    Every function call is timed separately. Returns the times (seconds) in a
-    memref.
-    """
-    # find original payload function
-    payload_func = None
-    for op in payload_module.operation.regions[0].blocks[0]:
-        if isinstance(op, func.FuncOp) and op.name.value == payload_function_name:
-            payload_func = op
-            break
-    assert payload_func is not None, "Could not find payload function"
-    payload_arguments = payload_func.type.inputs
+    def match_and_rewrite(op, rewriter):
+        if op.name.value != funcname:
+            return True  # Failed match, return truthy value
+        if marker in op.attributes:
+            return True  # Already wrapped, skip
+        payload_arguments = op.type.inputs
+        num_payload_args = len(payload_arguments)
 
-    # emit benchmark function that calls payload and times it
-    with ir.InsertionPoint(payload_module.body):
-        # define rtclock function
-        f64_t = ir.F64Type.get()
-        func.FuncOp("rtclock", ((), (f64_t,)), visibility="private")
-        # emit benchmark function
-        time_memref_t = ir.MemRefType.get((nruns,), f64_t)
-        args = payload_arguments + [time_memref_t]
+        if use_memrefs:
+            wrapper_arguments = [
+                _tensor_to_memref_type(t) if isinstance(t, ir.RankedTensorType) else t
+                for t in payload_arguments
+            ]
+        else:
+            wrapper_arguments = list(payload_arguments)
 
-        @func.func(*args)
-        def benchmark(*args):
+        with rewriter.ip, op.location:
+            # define rtclock function
+            f64_t = ir.F64Type.get()
+            func.FuncOp("rtclock", ((), (f64_t,)), visibility="private")
+            # emit benchmark function
+            time_memref_t = ir.MemRefType.get(
+                (ir.ShapedType.get_dynamic_size(),), f64_t
+            )
             index_t = ir.IndexType.get()
-            zero = arith.constant(index_t, 0)
-            one = arith.constant(index_t, 1)
-            nwarmup_cst = arith.constant(index_t, nwarmup)
-            for i in scf.for_(zero, nwarmup_cst, one):
-                # FIXME(upstream): func.call is broken for this use case?
-                func.CallOp(payload_func, list(args[: len(payload_arguments)]))
-                scf.yield_(())
-            nruns_cst = arith.constant(index_t, nruns)
-            for i in scf.for_(zero, nruns_cst, one):
-                tic = func.call((f64_t,), "rtclock", ())
-                func.CallOp(payload_func, list(args[: len(payload_arguments)]))
-                toc = func.call((f64_t,), "rtclock", ())
-                time = arith.subf(toc, tic)
-                memref.store(time, args[-1], [i])
-                scf.yield_(())
+            args = wrapper_arguments + [time_memref_t, index_t, index_t]
 
-        benchmark.func_op.attributes["llvm.emit_c_interface"] = ir.UnitAttr.get()
+            @func_cif(*args, name=benchname)
+            def bench(*args):
+                index_t = ir.IndexType.get()
+                zero = arith.constant(index_t, 0)
+                one = arith.constant(index_t, 1)
+                call_args = list(args[:num_payload_args])
+                for i in scf.for_(zero, args[-1], one):
+                    # FIXME(upstream): func.call is broken for this use case?
+                    func.CallOp(op, call_args)
+                    scf.yield_(())
+                for i in scf.for_(zero, args[-2], one):
+                    tic = func.call((f64_t,), "rtclock", ())
+                    func.CallOp(op, call_args)
+                    toc = func.call((f64_t,), "rtclock", ())
+                    time = arith.subf(toc, tic)
+                    memref.store(time, args[-3], [i])
+                    scf.yield_(())
+
+        # Mark original function as wrapped
+        op.attributes[marker] = ir.UnitAttr.get()
+        return None  # Success
+
+    return match_and_rewrite
+
+
+def get_bench_wrapper_schedule(workload: Workload, use_memrefs: bool = False):
+    return pattern_rewrite_schedule(
+        {
+            "func.func": bench_wrapper_pattern(
+                workload.payload_function_name,
+                workload.benchmark_function_name,
+                use_memrefs=use_memrefs,
+            )
+        },
+        "add_bench_pattern",
+    )
 
 
 def benchmark(
@@ -124,14 +164,10 @@ def benchmark(
     # get original payload module
     payload_module = workload.payload_module()
 
-    # add benchmark function with timing
-    emit_benchmark_function(
-        payload_module, workload.payload_function_name, nruns, nwarmup
-    )
-
-    # lower
-    schedule_module = workload.schedule_module(parameters=schedule_parameters)
-    schedule_module.body.operations[0].apply(payload_module)
+    # Lower payload with one or more schedules
+    schedule_modules = workload.schedule_modules(parameters=schedule_parameters)
+    for schedule_module in schedule_modules:
+        schedule_module.body.operations[0].apply(payload_module)
 
     # get execution engine, rtclock requires mlir_c_runner
     libs = workload.shared_libs()
@@ -157,10 +193,10 @@ def benchmark(
         # allocate buffer for timings and prepare arguments
         time_array = np.zeros((nruns,), dtype=np.float64)
         time_memref = get_ranked_memref_descriptor(time_array)
-        packed_args_with_time = to_packed_args(inputs + [time_memref])
+        packed_args_with_time = to_packed_args(inputs + [time_memref, nruns, nwarmup])
 
         # call benchmark function
-        benchmark_func = engine.lookup("benchmark")
+        benchmark_func = engine.lookup(workload.benchmark_function_name)
         benchmark_func(packed_args_with_time)
 
     return time_array

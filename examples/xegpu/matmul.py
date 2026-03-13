@@ -19,7 +19,7 @@ import numpy as np
 from mlir import ir
 from mlir.execution_engine import ExecutionEngine
 
-from lighthouse.workload import benchmark
+from lighthouse.workload import benchmark, get_bench_wrapper_schedule
 from lighthouse.utils.memref import to_ctype as memref_to_ctype
 from lighthouse.utils.numpy import numpy_to_ctype
 from lighthouse.schedule.xegpu.mlp_schedule import get_schedule_module
@@ -193,17 +193,20 @@ class XeGPUMatMul(XeGPUWorkload):
         )
         return mod
 
-    def schedule_module(
+    def schedule_modules(
         self, stop_at_stage: Optional[str] = None, parameters: Optional[dict] = None
-    ) -> ir.Module:
-        return get_schedule_module(
-            has_bias=self.has_bias,
-            has_relu=self.has_relu,
-            has_convert_c=False,
-            stop_at_stage=stop_at_stage,
-            nlayers=1,
-            params={"layer_0": parameters},
-        )
+    ) -> list[ir.Module]:
+        return [
+            get_bench_wrapper_schedule(self),
+            get_schedule_module(
+                has_bias=self.has_bias,
+                has_relu=self.has_relu,
+                has_convert_c=False,
+                stop_at_stage=stop_at_stage,
+                nlayers=1,
+                params={"layer_0": parameters},
+            ),
+        ]
 
     def shared_libs(self) -> list[str]:
         return ["libmlir_levelzero_runtime.so"]

@@ -4,7 +4,7 @@
 # RUN: mpirun -n 4 %PYTHON %s --mpilib=%VIRTUAL_ENV/lib/libmpi.so.12 --grid 4 1 | FileCheck %s
 # CHECK: PASSED
 """
-A single MLP that can run on multiple MPI ranks,
+A single feed-forward layer that can run on multiple MPI ranks,
 following a 1d/2d weight-stationary partition strategy
 (see a and b from figure 2 of https://arxiv.org/pdf/2211.05102)
 """
@@ -13,8 +13,8 @@ import argparse
 import ctypes
 from contextlib import contextmanager
 from typing import Optional
-
 import numpy as np
+
 from mlir import ir
 from mlir.dialects import transform
 from mlir.dialects.transform.bufferization import OneShotBufferizeOp
@@ -25,14 +25,16 @@ from mlir.runtime.np_to_memref import (
     make_nd_memref_descriptor,
     as_ctype,
 )
+
 from lighthouse.utils.memref import (
     to_ctype as memref_to_ctype,
     deallocate_memrefs_on_exit,
 )
 from lighthouse.pipeline.helper import apply_registered_pass, match
-from lighthouse.workload import Workload, execute
-
-from mlp_weight_stationary import generate_mlp_payload
+from lighthouse.workload import Workload, benchmark, get_bench_wrapper_schedule
+from lighthouse.schedule.utils import schedule_boilerplate
+from lighthouse.schedule.x86 import tile_and_vector_matmul
+from ff_weight_stationary import generate_ff_payload
 
 from mpi4py import MPI
 
@@ -50,7 +52,7 @@ def rprint(*args, **kwargs):
 
 def parse_cla():
     parser = argparse.ArgumentParser(
-        description="MLP on MPI using MLIR",
+        description="Feed-Forward on MPI using MLIR",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument(
@@ -58,8 +60,15 @@ def parse_cla():
         "-s",
         type=int,
         nargs=3,
-        default=[64, 128, 32],
+        default=[128, 256, 512],
         help="M,N,K matrix sizes (Activations=MxK, WeightsIn=KxN, WeightsOut=NxK, Result=MxK).",
+    )
+    parser.add_argument(
+        "--tile-size",
+        "-t",
+        type=int,
+        default=64,
+        help="Tile size for the tiled schedule.",
     )
     parser.add_argument(
         "--grid",
@@ -67,6 +76,18 @@ def parse_cla():
         default=[WORLD_SIZE],
         nargs="+",
         help="The shape of the device grid (1 or 2 dimensions). The product of the grid dimensions must match the number of MPI ranks. Use '0' if 2d grid dimensions should be inferred automatically.",
+    )
+    parser.add_argument(
+        "--nruns",
+        type=int,
+        default=50,
+        help="Number of runs to average the execution time.",
+    )
+    parser.add_argument(
+        "--nwarmup",
+        type=int,
+        default=5,
+        help="Number of warm-up iterations before benchmarking.",
     )
     parser.add_argument(
         "--verbose",
@@ -94,21 +115,20 @@ def parse_cla():
     return args
 
 
-class DistMLP(Workload):
+class DistFF(Workload):
     """
-    A single MLP that can run on multiple MPI ranks.
+    A single feed-forward layer that can run on multiple MPI ranks.
 
     A[:] = sigmoid(A@B)@C
 
     where A, B, C are (M,K), (K,N), (N,K) matrices respectively.
     """
 
-    payload_function_name = "payload"
-
     def __init__(self, args, P: int, R: int):
         self.M = args.sizes[0]
         self.N = args.sizes[1]
         self.K = args.sizes[2]
+        self.tile_size = args.tile_size
         self.comm_size = WORLD_SIZE  # number of MPI ranks
         self.comm_rank = WORLD_RANK  # rank of this MPI process
         self.dtype = np.float32
@@ -123,19 +143,21 @@ class DistMLP(Workload):
         ]
         # allocation functions use the same sharding annotations as the payload,
         # so that each rank allocates only the part of the data it owns.
-        for i, v in enumerate(["act", "win", "wout"]):
-            execution_engine.invoke(f"alloc_{v}", memref_to_ctype(memrefs[i + 1]))
+        for i, v in enumerate(["act", "win", "wout", "act"]):
+            execution_engine.invoke(f"alloc_{v}", memref_to_ctype(memrefs[i]))
+            tmp = ranked_memref_to_numpy([memrefs[i]])
+            if not all(s % self.tile_size == 0 for s in tmp.shape):
+                raise ValueError(
+                    f"Memref {v}'s shape {tmp.shape} not divisible by tile_size {self.tile_size}"
+                )
         return memrefs
 
-    def _init_inout(self, r: np.ndarray, a: np.ndarray, b: np.ndarray, c: np.ndarray):
+    def _init_inout(self, a: np.ndarray, b: np.ndarray, c: np.ndarray, r: np.ndarray):
         rprint(" * Initializing input arrays...")
         np.random.seed(self.comm_rank)  # different seed for each rank
-        A = ranked_memref_to_numpy([a])
-        B = ranked_memref_to_numpy([b])
-        C = ranked_memref_to_numpy([c])
-        A[:] = np.random.rand(*A.shape).astype(self.dtype)
-        B[:] = np.random.rand(*B.shape).astype(self.dtype)
-        C[:] = np.random.rand(*C.shape).astype(self.dtype)
+        for arr in [a, b, c, r]:
+            tmp = ranked_memref_to_numpy([arr])
+            tmp[:] = np.random.rand(*tmp.shape).astype(self.dtype)
 
     @contextmanager
     def allocate_inputs(self, execution_engine: ExecutionEngine):
@@ -164,7 +186,7 @@ class DistMLP(Workload):
     def _reference_solution(self, execution_engine: ExecutionEngine) -> np.ndarray:
         rprint(" * Gathering input data...")
         gathered = [
-            self._gather(self.input_memrefs[i + 1], execution_engine, f"gather_{v}")
+            self._gather(self.input_memrefs[i], execution_engine, f"gather_{v}")
             for i, v in enumerate(["act", "win", "wout"])
         ]
 
@@ -181,7 +203,7 @@ class DistMLP(Workload):
     def check_correctness(
         self, execution_engine: ExecutionEngine, verbose: int = 0
     ) -> bool:
-        gathered = self._gather(self.input_memrefs[0], execution_engine, "gather_act")
+        gathered = self._gather(self.input_memrefs[-1], execution_engine, "gather_act")
         with deallocate_memrefs_on_exit([gathered], execution_engine, "dealloc_2d"):
             R = ranked_memref_to_numpy([gathered])
             R_ref = self._reference_solution(execution_engine)
@@ -240,7 +262,7 @@ class DistMLP(Workload):
             grid=grid,
         )
         if len(self.grid) == 1:
-            mod = generate_mlp_payload(
+            mod = generate_ff_payload(
                 **common,
                 split_act=[[], [0]],
                 split_win=[[], [0]],
@@ -250,7 +272,7 @@ class DistMLP(Workload):
                 split_sigmoid=[[], [0]],
             )
         else:
-            mod = generate_mlp_payload(
+            mod = generate_ff_payload(
                 **common,
                 split_act=[[], [0, 1]],
                 split_win=[[0], [1]],
@@ -269,89 +291,115 @@ class DistMLP(Workload):
 
         return mod
 
-    def schedule_module(
-        self, stop_at_stage: Optional[str] = None, parameters: Optional[dict] = None
-    ) -> ir.Module:
-        schedule_module = ir.Module.create()
-        schedule_module.operation.attributes["transform.with_named_sequence"] = (
-            ir.UnitAttr.get()
-        )
-        with ir.InsertionPoint(schedule_module.body):
-            named_sequence = transform.named_sequence(
-                "__transform_main",
-                [transform.AnyOpType.get()],
-                [],
-                arg_attrs=[{"transform.readonly": ir.UnitAttr.get()}],
+    def get_shard_schedule(self):
+        with schedule_boilerplate() as (schedule, named_sequence):
+            func = match(named_sequence.bodyTarget, ops={"func.func"})
+            func = apply_registered_pass(
+                func,
+                "sharding-propagation",
+                options={"traversal": "forward-backward"},
             )
-            with ir.InsertionPoint(named_sequence.body):
-                anytype = transform.AnyOpType.get()
-                func = match(named_sequence.bodyTarget, ops={"func.func"})
-                func = apply_registered_pass(
-                    func,
-                    "sharding-propagation",
-                    options={"traversal": "forward-backward"},
+            if self.verbose > 0:
+                transform.PrintOp(target=func)
+            func = apply_registered_pass(func, "shard-partition")
+            if self.verbose > 0:
+                transform.PrintOp(target=func)
+            func = apply_registered_pass(func, "shard-simplify")
+            if self.verbose > 0:
+                transform.PrintOp(target=func)
+            func = apply_registered_pass(func, "convert-shard-to-mpi")
+            func = apply_registered_pass(func, "canonicalize")
+            if self.verbose > 0:
+                transform.PrintOp(target=func)
+            func = apply_registered_pass(func, "tosa-to-linalg")
+            transform.YieldOp()
+        return schedule
+
+    def get_bufferize_schedule(self):
+        with schedule_boilerplate() as (schedule, named_sequence):
+            anytype = transform.AnyOpType.get()
+            func = match(named_sequence.bodyTarget, ops={"func.func"})
+            mod = transform.get_parent_op(
+                anytype, func, op_name="builtin.module", deduplicate=True
+            )
+            mod = apply_registered_pass(mod, "linalg-generalize-named-ops")
+            mod = apply_registered_pass(mod, "linalg-fuse-elementwise-ops")
+            identity_layout = LayoutMapOption.IdentityLayoutMap
+            mod = apply_registered_pass(mod, "eliminate-empty-tensors")
+            mod = OneShotBufferizeOp(
+                mod,
+                allow_return_allocs_from_loops=False,
+                bufferize_function_boundaries=True,
+                function_boundary_type_conversion=identity_layout,
+            )
+            mod = apply_registered_pass(
+                mod,
+                "drop-equivalent-buffer-results",
+                options={"modify-public-functions": True},
+            )
+
+            # Run passes to inject deallocations. Don't do this for dealloc_2d, though.
+            for fname in [
+                self.payload_function_name,
+                "gather_act",
+                "gather_win",
+                "gather_wout",
+                "alloc_act",
+                "alloc_win",
+                "alloc_wout",
+            ]:
+                func = match(
+                    mod,
+                    ops={"func.func"},
+                    op_attrs={"sym_name": ir.StringAttr.get(fname)},
                 )
-                if self.verbose > 0:
-                    transform.PrintOp(target=func)
-                func = apply_registered_pass(func, "shard-partition")
-                func = apply_registered_pass(func, "canonicalize")
-                if self.verbose > 0:
-                    transform.PrintOp(target=func)
-                func = apply_registered_pass(func, "shard-simplify")
-                if self.verbose > 0:
-                    transform.PrintOp(target=func)
-                func = apply_registered_pass(func, "convert-shard-to-mpi")
-                func = apply_registered_pass(func, "canonicalize")
-                if self.verbose > 0:
-                    transform.PrintOp(target=func)
-                func = apply_registered_pass(func, "tosa-to-linalg")
+                func = apply_registered_pass(func, "buffer-deallocation-pipeline")
                 mod = transform.get_parent_op(
                     anytype, func, op_name="builtin.module", deduplicate=True
                 )
-                mod = apply_registered_pass(mod, "tosa-to-tensor")
-                mod = apply_registered_pass(mod, "linalg-generalize-named-ops")
-                mod = apply_registered_pass(mod, "canonicalize")
-                mod = apply_registered_pass(mod, "linalg-fuse-elementwise-ops")
-                mod = apply_registered_pass(mod, "arith-expand")
-                mod = apply_registered_pass(mod, "memref-expand")
-                mod = apply_registered_pass(mod, "empty-tensor-to-alloc-tensor")
-                mod = apply_registered_pass(mod, "canonicalize")
-                identity_layout = LayoutMapOption.IdentityLayoutMap
-                mod = OneShotBufferizeOp(
-                    mod,
-                    allow_return_allocs_from_loops=True,
-                    bufferize_function_boundaries=True,
-                    function_boundary_type_conversion=identity_layout,
-                )
-                mod = apply_registered_pass(mod, "expand-realloc")
-                mod = apply_registered_pass(mod, "canonicalize")
-                mod = apply_registered_pass(mod, "buffer-deallocation-simplification")
-                mod = apply_registered_pass(mod, "bufferization-lower-deallocations")
-                mod = apply_registered_pass(mod, "cse")
-                mod = apply_registered_pass(mod, "canonicalize")
-                mod = apply_registered_pass(mod, "convert-bufferization-to-memref")
-                mod = apply_registered_pass(mod, "convert-linalg-to-parallel-loops")
-                mod = apply_registered_pass(mod, "scf-parallel-loop-fusion")
-                mod = apply_registered_pass(mod, "canonicalize")
-                mod = apply_registered_pass(mod, "fold-memref-alias-ops")
-                mod = apply_registered_pass(mod, "expand-strided-metadata")
-                mod = apply_registered_pass(mod, "convert-math-to-funcs")
-                mod = apply_registered_pass(mod, "lower-affine")
-                mod = apply_registered_pass(mod, "convert-scf-to-cf")
-                mod = apply_registered_pass(mod, "symbol-dce")
-                mod = apply_registered_pass(mod, "finalize-memref-to-llvm")
-                mod = apply_registered_pass(mod, "convert-math-to-llvm")
-                mod = apply_registered_pass(mod, "convert-math-to-libm")
-                mod = apply_registered_pass(mod, "convert-func-to-llvm")
-                mod = apply_registered_pass(mod, "canonicalize")
-                mod = apply_registered_pass(mod, "convert-to-llvm")
-                mod = apply_registered_pass(mod, "reconcile-unrealized-casts")
-                mod = apply_registered_pass(mod, "cse")
-                if self.verbose > 1:
-                    transform.PrintOp(target=mod)
-                transform.YieldOp()
+            transform.YieldOp()
+        return schedule
 
-        return schedule_module
+    def get_lower_schedule(self):
+        with schedule_boilerplate() as (schedule, named_sequence):
+            anytype = transform.AnyOpType.get()
+            func = match(named_sequence.bodyTarget, ops={"func.func"})
+            mod = transform.get_parent_op(
+                anytype, func, op_name="builtin.module", deduplicate=True
+            )
+            mod = apply_registered_pass(mod, "convert-linalg-to-parallel-loops")
+            mod = apply_registered_pass(mod, "scf-parallel-loop-fusion")
+            mod = apply_registered_pass(mod, "canonicalize")
+            mod = apply_registered_pass(mod, "expand-strided-metadata")
+            mod = apply_registered_pass(mod, "lower-affine")
+            mod = apply_registered_pass(mod, "convert-vector-to-scf")
+            mod = apply_registered_pass(mod, "convert-scf-to-cf")
+            mod = apply_registered_pass(mod, "symbol-dce")
+            mod = apply_registered_pass(mod, "convert-vector-to-llvm")
+            mod = apply_registered_pass(mod, "canonicalize")
+            mod = apply_registered_pass(mod, "convert-to-llvm")
+            mod = apply_registered_pass(mod, "reconcile-unrealized-casts")
+            mod = apply_registered_pass(mod, "cse")
+            if self.verbose > 1:
+                transform.PrintOp(target=mod)
+            transform.YieldOp()
+        return schedule
+
+    def schedule_modules(
+        self, stop_at_stage: Optional[str] = None, parameters: Optional[dict] = None
+    ) -> list[ir.Module]:
+        """Generate schedules:
+        - sharding propagation, partition, and MPI, tosa-to-linalg
+        - adding benchmark wrapper
+        - tile_and_vector
+        - all the rest"""
+        return [
+            self.get_shard_schedule(),
+            tile_and_vector_matmul.create(self.tile_size),
+            self.get_bufferize_schedule(),
+            get_bench_wrapper_schedule(self, use_memrefs=True),
+            self.get_lower_schedule(),
+        ]
 
 
 if __name__ == "__main__":
@@ -363,9 +411,26 @@ if __name__ == "__main__":
     R = MPI.COMM_WORLD.Get_rank()
 
     with ir.Context(), ir.Location.unknown():
-        wload = DistMLP(args, P, R)
+        wload = DistFF(args, P, R)
 
-        rprint(" Execute".center(60, "-"))
-        execute(wload, verbose=args.verbose)
+        # execute(wload, verbose=args.verbose)
+        rprint(" Benchmark".center(60, "-"))
+        times = benchmark(
+            wload,
+            nruns=args.nruns,
+            nwarmup=args.nwarmup,
+            check_correctness=True,
+            verbose=args.verbose,
+        )
+        # compute statistics
+        times *= 1e6
+        mean = np.mean(times)
+        min = np.min(times)
+        max = np.max(times)
+        std = np.std(times)
+        rprint(f"Timings (us): mean={mean:.2f}+/-{std:.2f} min={min:.2f} max={max:.2f}")
+        flop_count = wload.get_complexity()[0]
+        gflops = flop_count / (mean * 1e-6) / 1e9
+        rprint(f"Throughput: {gflops:.2f} GFLOPS")
 
     MPI.Finalize()
