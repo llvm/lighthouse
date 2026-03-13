@@ -1,6 +1,6 @@
-// RUN: lh-opt --stage=bufferize %s | FileCheck %s --check-prefixes=BUFFERIZED
-// RUN: lh-opt --stage=bufferize --stage=mlir_lowering %s | FileCheck %s --check-prefixes=LINALG_LOWERED
-// RUN: lh-opt --stage=bufferize --stage=mlir_lowering --stage=llvm_lowering %s | FileCheck %s --check-prefixes=LLVM_LOWERED
+// RUN: lh-opt --stage=BufferizationBundle %s | FileCheck %s --check-prefixes=BUFFERIZED
+// RUN: lh-opt --stage=BufferizationBundle --stage=canonicalize --stage=MLIRLoweringBundle %s | FileCheck %s --check-prefixes=LINALG_LOWERED
+// RUN: lh-opt --stage=BufferizationBundle --stage=canonicalize --stage=MLIRLoweringBundle --stage=canonicalize --stage=LLVMLoweringBundle %s | FileCheck %s --check-prefixes=LLVM_LOWERED
 
 // BUFFERIZED-LABEL: func.func @entry
 // BUFFERIZED-SAME: memref

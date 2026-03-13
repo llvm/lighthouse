@@ -8,7 +8,7 @@ from mlir import ir
 from mlir.passmanager import PassManager
 
 from lighthouse.ingress.torch import cpu_backend, TargetDialect
-from lighthouse.pipeline.helper import PassBundles, add_bundle
+from lighthouse.pipeline.opt import PassBundles, add_bundle
 
 
 def lower_to_llvm(module: ir.Module) -> ir.Module:
@@ -32,15 +32,15 @@ def lower_to_llvm(module: ir.Module) -> ir.Module:
     pm.add("func.func(llvm-request-c-wrappers)")
 
     # Bufferize.
-    add_bundle(pm, PassBundles.BufferizationBundle)
-    add_bundle(pm, PassBundles.CleanupBundle)
+    add_bundle(pm, PassBundles["BufferizationBundle"])
+    add_bundle(pm, PassBundles["CleanupBundle"])
 
     # Middle-end lowering.
-    add_bundle(pm, PassBundles.MLIRLoweringBundle)
+    add_bundle(pm, PassBundles["MLIRLoweringBundle"])
 
     # Lower to LLVM.
-    add_bundle(pm, PassBundles.LLVMLoweringBundle)
-    add_bundle(pm, PassBundles.CleanupBundle)
+    add_bundle(pm, PassBundles["LLVMLoweringBundle"])
+    add_bundle(pm, PassBundles["CleanupBundle"])
 
     # IR is transformed in-place.
     pm.run(module.operation)
