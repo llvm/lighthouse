@@ -136,13 +136,16 @@ class TransformStage(Stage):
     A stage that applies a predefined set of transformations to the module. This is a simple wrapper around a Transform Schedule.
     """
 
-    def __init__(self, name: str, transform: Transform, context: ir.Context):
+    def __init__(self, name: str, context: ir.Context, filename: str):
         super().__init__(name)
-        self.schedule = (
-            import_mlir_module(transform.filename, context)
-            .operation.attributes["transform.schedule"]
-            .value
-        )
+        # TODO: Import via Python when the file name ends with .py,
+        # and via MLIR when the file name ends with .mlir.
+        self.module = import_mlir_module(filename, context)
+        if "transform.with_named_sequence" not in self.module.operation.attributes:
+            raise ValueError(
+                f"Transform module {filename} does is not a transform schedule."
+            )
+        self.schedule = self.module.body.operations[0]
 
     def apply(self, module: ir.Module) -> ir.Module:
         if module is None:

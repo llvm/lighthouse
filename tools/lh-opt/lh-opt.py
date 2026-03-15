@@ -1,21 +1,8 @@
 #! /usr/bin/env python
 
 import argparse
-import os
 
-from mlir import ir
 from lighthouse.pipeline.opt import Driver
-
-
-def import_payload(path: str) -> ir.Module:
-    """Import an MLIR text file into the payload module"""
-    if path is None:
-        raise ValueError("Path to the payload module must be provided.")
-    if not os.path.exists(path):
-        raise ValueError(f"Path to the payload module does not exist: {path}")
-    with ir.Context():
-        with open(path, "r") as f:
-            return ir.Module.parse(f.read())
 
 
 if __name__ == "__main__":
@@ -35,15 +22,21 @@ if __name__ == "__main__":
         required=True,
         help="List of transformations to apply to the input module.",
     )
+    Parser.add_argument(
+        "-O",
+        "--output",
+        default="-",
+        help="Path to the output MLIR module. Default stdout.",
+    )
     args = Parser.parse_args()
 
-    # Load the input module.
-    input_module = import_payload(args.payload_module)
-
-    # Create the driver and run the transformations.
-    print("Stages: ", args.stage)
+    # Create the driver and run the pipeline.
     driver = Driver(args.payload_module, args.stage)
-
-    # Run the pipeline and get the optimized module.
     optimized_module = driver.run()
-    print(optimized_module)
+
+    # Output the optimized module.
+    if args.output == "-":
+        print(optimized_module)
+    else:
+        with open(args.output, "w") as f:
+            f.write(str(optimized_module))
