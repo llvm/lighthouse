@@ -24,8 +24,10 @@ class Pass:
         return f"{self.name}{{{options_str}}}"
 
 
-# Predefined pass bundles for common transformations. These are not exhaustive and can be extended as needed.
-# The idea is to group together passes that are commonly used together in a pipeline, so that they can be easily added to a PassManager or Transform Schedule with a single function call.
+# Predefined pass bundles for common transformations.
+# These are not exhaustive and can be extended as needed.
+# The idea is to group together passes that are commonly used together in a pipeline,
+# so that they can be easily added to a PassManager or Transform Schedule with a single function call.
 PassBundles = {
     # All in one bufferization bundle.
     # This is self consistent and should be used together.
