@@ -1,8 +1,10 @@
 from abc import abstractmethod
+import os
 
 from mlir import ir
 from mlir.passmanager import PassManager
 from mlir.dialects import transform
+from lighthouse.pipeline.helper import import_mlir_module
 
 
 class Pass:
@@ -76,6 +78,22 @@ def apply_bundle(op, bundle: list[Pass], *args, **kwargs) -> None:
     return op
 
 
+class Transform:
+    """
+    A simple wrapper class for MLIR transforms.
+    Keeps the file name of the transform module to load,
+    to be easily passed to a TransformStage.
+    """
+
+    def __init__(self, name: str, filename: str):
+        self.name = name
+        self.filename = filename
+
+    def __str__(self) -> str:
+        """serialize name + filename for transform stage consumption"""
+        return f"{self.name}:{{{self.filename}}}"
+
+
 class Stage:
     """
     A stage in the optimization pipeline. Each stage will apply a specific set of transformations to the module,
@@ -118,9 +136,13 @@ class TransformStage(Stage):
     A stage that applies a predefined set of transformations to the module. This is a simple wrapper around a Transform Schedule.
     """
 
-    def __init__(self, name: str, schedule: transform.TransformOpInterface):
+    def __init__(self, name: str, transform: Transform, context: ir.Context):
         super().__init__(name)
-        self.schedule = schedule
+        self.schedule = (
+            import_mlir_module(transform.filename, context)
+            .operation.attributes["transform.schedule"]
+            .value
+        )
 
     def apply(self, module: ir.Module) -> ir.Module:
         if module is None:
@@ -129,70 +151,85 @@ class TransformStage(Stage):
         return module
 
 
-class Opt:
-    """
-    A simple optimizing pipeline that applies a predefined set of passes to an MLIR module.
-
-    The module will be changed in-place throughout the pipeline. Running passes or transform schedules
-    will change the internal representation, and this class will keep track of the current state of the module.
-    """
-
-    def __init__(self, payload_module: ir.Module):
-        self.payload_module = payload_module
-        if self.payload_module is None:
-            raise ValueError("Payload module must not be empty.")
-        self.pipeline = list[Stage]()
-
-    def add_stage(self, stage: Stage) -> None:
-        if isinstance(stage, Stage):
-            self.pipeline.append(stage)
-        elif isinstance(stage, list) and all(isinstance(s, Stage) for s in stage):
-            for s in stage:
-                self.pipeline.append(s)
-        elif isinstance(stage, list) and all(isinstance(s, Pass) for s in stage):
-            for p in stage:
-                self.pipeline.append(PassStage(p, self.payload_module.context, [p]))
-        else:
-            raise ValueError(
-                "Stage must be an instance of Stage or a list of Stage, or a list of Pass instances."
-            )
-
-    def apply(self) -> ir.Module:
-        if self.payload_module is None:
-            raise ValueError("Twice apply won't fly.")
-        for stage in self.pipeline:
-            self.payload_module = stage.apply(self.payload_module)
-        # Nullify the module to prevent accidental reuse.
-        ret = self.payload_module
-        self.payload_module = None
-        return ret
-
-
 class Driver:
     """
     A simple driver that runs the optimization pipeline on a given workload.
     This is a high-level interface that abstracts away the details of the optimization pipeline,
     and provides a simple interface for running the pipeline on a given workload.
 
-    Note: this driver is opinionated and incomplete. For now it only adds some bundles,
-    no schedules, no custom passes. This will change in time.
+    The pipeline is flexible until the first time it is run, at which point it becomes fixed and cannot be modified until reset is called.
+    This is to allow running the same pipeline on different modules, without accidentally modifying the pipeline after it has been run.
+
+    Calling reset() will clear the pipeline and the module, allowing for a new pipeline to be constructed and run on a new module.
     """
 
-    def __init__(self, module: ir.Module, stages: list[str] = []):
-        self.context = module.context
-        self.opt = Opt(module)
-        self.available_stages = PassBundles
-        for stage_name in stages:
-            self.add_stage(stage_name)
+    def __init__(self, filename: str, stages: list[str] = []):
+        # The context is shared across the entire pipeline, and is used to create the PassManager and Transform Schedules.
+        # The module is owned by the Driver to encapsulate its use through the pipeline.
+        # It is returned at the end of run() after being transformed by the stages in the pipeline.
+        self.context = ir.Context()
+        self.module = None
+        if filename:
+            self.import_payload(filename)
+        self.pipeline = list[Stage]()
+        self.pipeline_fixed = False
+        self.bundles = PassBundles
+        if stages:
+            self.add_stages(stages)
+
+    def import_payload(self, path: str) -> None:
+        """Import the payload module and set it as the current module in the pipeline."""
+        if self.module is not None:
+            raise ValueError("Module already imported. Reset to start again.")
+        self.module = import_mlir_module(path, self.context)
 
     def add_stage(self, stage_name: str) -> None:
-        # If not registered, add the stage as a pass stage with the given name.
-        # This allows for ad-hoc stages to be added to the pipeline,
-        # but also ensures that registered stages are added with the correct passes.
-        if stage_name in self.available_stages:
-            self.opt.add_stage(self.available_stages[stage_name])
+        if self.pipeline_fixed:
+            raise ValueError("Pipeline is fixed. Reset to start again.")
+        # Pass Bundle
+        if stage_name in self.bundles:
+            self.pipeline.append(
+                PassStage(
+                    self.bundles[stage_name], self.context, self.bundles[stage_name]
+                )
+            )
+        # Transform
+        elif os.path.exists(stage_name):
+            self.pipeline.append(TransformStage(stage_name, self.context, stage_name))
+        # Assume random strings represent a single pass
+        # Will crash later if the pass name is not registered.
         else:
-            self.opt.add_stage(PassStage(stage_name, self.context, [Pass(stage_name)]))
+            self.pipeline.append(
+                PassStage(stage_name, self.context, [Pass(stage_name)])
+            )
+
+    def add_stages(self, stages: list[str]) -> None:
+        for s in stages:
+            self.add_stage(s)
+
+    def reset(self) -> None:
+        """Reset the pipeline to an empty state, allowing for new stages to be added."""
+        self.pipeline = list[Stage]()
+        self.module = None
+        self.pipeline_fixed = False
 
     def run(self) -> ir.Module:
-        return self.opt.apply()
+        if self.module is None:
+            raise ValueError("Module must not be empty.")
+        if len(self.pipeline) == 0:
+            raise ValueError("Pipeline must have at least one stage.")
+        for stage in self.pipeline:
+            self.module = stage.apply(self.module)
+
+        # The pipeline is now fixed and cannot be modified until reset is called.
+        # This is to prevent accidental modifications to the pipeline after it has been run,
+        # and to ensure that different pipelines are not run on different modules.
+        self.pipeline_fixed = True
+
+        # We don't want to run the pipeline twice on the same module,
+        # so we clear the module from the driver after running the pipeline,
+        # and return it to the caller.
+        # To use the pipeline again, the caller must import a new module into the driver.
+        module = self.module
+        self.module = None
+        return module

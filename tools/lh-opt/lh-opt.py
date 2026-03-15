@@ -41,7 +41,8 @@ if __name__ == "__main__":
     input_module = import_payload(args.payload_module)
 
     # Create the driver and run the transformations.
-    driver = Driver(input_module, stages=args.stage)
+    print("Stages: ", args.stage)
+    driver = Driver(args.payload_module, args.stage)
 
     # Run the pipeline and get the optimized module.
     optimized_module = driver.run()
