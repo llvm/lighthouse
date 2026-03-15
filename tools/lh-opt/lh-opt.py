@@ -1,0 +1,42 @@
+#! /usr/bin/env python
+
+import argparse
+
+from lighthouse.pipeline.opt import Driver
+
+
+if __name__ == "__main__":
+    Parser = argparse.ArgumentParser(
+        description="""
+    Lighthouse Optimization Pipeline: Applies a series of transformations to an input MLIR module,
+    and produces an optimized MLIR module as output. The transformations are applied in argument order.
+    The names of the passes are registered by the driver.
+    """
+    )
+    Parser.add_argument(
+        "payload_module", type=str, help="Path to the payload MLIR module to optimize."
+    )
+    Parser.add_argument(
+        "--stage",
+        action="append",
+        required=True,
+        help="List of transformations to apply to the input module.",
+    )
+    Parser.add_argument(
+        "-O",
+        "--output",
+        default="-",
+        help="Path to the output MLIR module. Default stdout.",
+    )
+    args = Parser.parse_args()
+
+    # Create the driver and run the pipeline.
+    driver = Driver(args.payload_module, args.stage)
+    optimized_module = driver.run()
+
+    # Output the optimized module.
+    if args.output == "-":
+        print(optimized_module)
+    else:
+        with open(args.output, "w") as f:
+            f.write(str(optimized_module))
