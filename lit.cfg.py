@@ -41,6 +41,7 @@ config.test_exec_root = project_root + "/lit.out"
 
 config.substitutions.append(("FileCheck", find_filecheck()))
 config.substitutions.append(("lh-opt", project_root + "/tools/lh-opt/lh-opt.py"))
+config.substitutions.append(("%TEST", project_root + "/test"))
 
 config.substitutions.append(("%CACHE", project_root + "/cache"))
 config.substitutions.append(("%VIRTUAL_ENV", os.environ.get("VIRTUAL_ENV", "")))
