@@ -18,18 +18,6 @@ def import_payload(path: str) -> ir.Module:
             return ir.Module.parse(f.read())
 
 
-def create_driver(module: ir.Module, stages: list[str]) -> Driver:
-    """Create the driver's pipeline by selecting the passes that will run"""
-    driver = Driver(module)
-    if not stages:
-        raise ValueError("At least one stage must be specified.")
-    else:
-        for t in stages:
-            driver.add_stage(t)
-
-    return driver
-
-
 if __name__ == "__main__":
     Parser = argparse.ArgumentParser(
         description="""
@@ -44,6 +32,7 @@ if __name__ == "__main__":
     Parser.add_argument(
         "--stage",
         action="append",
+        required=True,
         help="List of transformations to apply to the input module.",
     )
     args = Parser.parse_args()
@@ -52,7 +41,7 @@ if __name__ == "__main__":
     input_module = import_payload(args.payload_module)
 
     # Create the driver and run the transformations.
-    driver = create_driver(input_module, args.stage)
+    driver = Driver(input_module, stages=args.stage)
 
     # Run the pipeline and get the optimized module.
     optimized_module = driver.run()
