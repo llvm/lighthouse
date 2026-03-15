@@ -176,10 +176,12 @@ class Driver:
     no schedules, no custom passes. This will change in time.
     """
 
-    def __init__(self, module: ir.Module):
+    def __init__(self, module: ir.Module, stages: list[str] = []):
         self.context = module.context
         self.opt = Opt(module)
         self.available_stages = PassBundles
+        for stage_name in stages:
+            self.add_stage(stage_name)
 
     def add_stage(self, stage_name: str) -> None:
         # If not registered, add the stage as a pass stage with the given name.
