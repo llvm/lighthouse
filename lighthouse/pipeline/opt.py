@@ -5,6 +5,7 @@ from mlir import ir
 from mlir.passmanager import PassManager
 from mlir.dialects import transform
 from lighthouse.pipeline.helper import import_mlir_module
+from lighthouse.pipeline.descriptor import PipelineDescriptor
 
 
 class Pass:
@@ -181,15 +182,25 @@ class Driver:
     def add_stage(self, stage_name: str) -> None:
         if self.pipeline_fixed:
             raise ValueError("Pipeline is fixed. Reset to start again.")
-        # Pass Bundle
+
         if stage_name in self.bundles:
+            # Pass Bundle
             self.pipeline.append(PassStage(self.bundles[stage_name], self.context))
-        # Transform
+
         elif os.path.exists(stage_name):
-            self.pipeline.append(TransformStage(stage_name, self.context))
-        # Assume random strings represent a single pass
-        # Will crash later if the pass name is not registered.
+            # Transform or YAML
+            if stage_name.endswith(".mlir"):
+                self.pipeline.append(TransformStage(stage_name, self.context))
+            elif stage_name.endswith(".yaml"):
+                desc = PipelineDescriptor(stage_name)
+                for s in desc.get_stages():
+                    self.add_stage(s)
+            else:
+                raise ValueError("Unknown file type {stage_name} for stage.")
+
         else:
+            # Assume random strings represent a single pass
+            # Will crash later if the pass name is not registered.
             self.pipeline.append(PassStage([Pass(stage_name)], self.context))
 
     def add_stages(self, stages: list[str]) -> None:
