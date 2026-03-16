@@ -174,7 +174,7 @@ class Driver:
         self.module = None
         if filename:
             self.import_payload(filename)
-        self.pipeline = list[Stage]()
+        self.pipeline: list[Stage] = []
         self.pipeline_fixed = False
         self.bundles = PassBundles
         if stages:
