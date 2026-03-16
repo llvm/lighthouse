@@ -12,7 +12,17 @@ def block_pack_matmuls(
     rhs_transpose_inner_block: bool = True,
 ) -> ir.Value:
     """
-    Block pack all to all target's nested linalg matmul ops.
+    Block pack all target's nested linalg matmul ops.
+
+    Pack a matmul operation into blocked layout with two levels of subdivision:
+    - major 2D blocks - outer dimensions, consist of minor blocks
+    - minor 2D blocks - inner dimensions, consist of scalar elements
+
+    A 2D matmul MxNxK gets reshaped into blocked 4D representation
+    as: [MB][NB][mb][nb] += [MB][KB][mb][kb] * [NB][KB][nb][kb]
+    where the (MB, NB, KB) dimensions represent the major blocks,
+    and the (mb, nb, kb) are the minor blocks of their respective
+    original 2D dimensions (M, N, K).
 
     Args:
         target: Handle to target
