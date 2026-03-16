@@ -1,11 +1,18 @@
-# RUN: %PYTHON %s | FileCheck %s
-# CHECK: func.func @payload
-# CHECK: Throughput:
+# RUN: %PYTHON %s --dump-kernel=vectorized | FileCheck %s
+# RUN: %PYTHON %s --dump-kernel=vectorized --dtype=bf16 --avx512 | FileCheck %s --check-prefix=AVX512
+
+# CHECK: vector.broadcast
+# CHECK: vector.fma
+
+# AVX512: x86.avx512.dot
+
 """
 Matrix multiplication C = A * B on CPU.
 """
 
 import ctypes
+import argparse
+import sys
 from contextlib import contextmanager
 
 import ml_dtypes
@@ -207,6 +214,9 @@ class Matmul(Workload):
         scheds.append(lh_schedule.tile("linalg.fill", tile_sizes=[1, 1, 1]))
         scheds.append(lh_schedule.tile("linalg.generic", tile_sizes=[1, 8]))
 
+        if stop_at_stage == "tiled":
+            return scheds
+
         # Vectorization.
         scheds.append(lh_schedule.vectorize_linalg())
         scheds.append(lh_schedule.hoist_loops())
@@ -250,6 +260,9 @@ class Matmul(Workload):
             transform.yield_()
         scheds.append(sched)
 
+        if stop_at_stage == "vectorized":
+            return scheds
+
         # Lower to LLVM.
         sched = lh_schedule.create_schedule()
         named_seq = lh_schedule.create_named_sequence(
@@ -275,24 +288,111 @@ class Matmul(Workload):
         return scheds
 
 
+def parse_cli():
+    parser = argparse.ArgumentParser(
+        description="CPU x86 vectorized matmul",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    parser.add_argument(
+        "--sizes",
+        type=int,
+        nargs=3,
+        default=[1024, 1024, 1024],
+        help="M,N,K matrix sizes (A=MxK, B=KxN, C=MxN).",
+    )
+    parser.add_argument(
+        "--tile-size",
+        type=int,
+        default=32,
+        help="Size to use for matmul tiling.",
+    )
+    parser.add_argument(
+        "--dtype",
+        type=str,
+        default="f32",
+        choices=[
+            "f32",
+            "bf16",
+        ],
+        help="Input data type.",
+    )
+    parser.add_argument(
+        "--avx512",
+        action=argparse.BooleanOptionalAction,
+        help="Enable AVX512 vectorization",
+    )
+    parser.add_argument(
+        "--nruns",
+        type=int,
+        default=100,
+        help="Number of runs to average the execution time.",
+    )
+    parser.add_argument(
+        "--nwarmup",
+        type=int,
+        default=10,
+        help="Number of warm-up iterations before benchmarking.",
+    )
+    parser.add_argument(
+        "--dump-kernel",
+        type=str,
+        choices=[
+            "initial",
+            "tiled",
+            "vectorized",
+            "final",
+        ],
+        help="Dump kernel IR at different stages of lowering and exit without "
+        "executing the kernel.",
+    )
+    parser.add_argument(
+        "--dump-schedule",
+        action="store_true",
+        help="Dump transform schedule.",
+    )
+    args = parser.parse_args()
+
+    return args
+
+
 if __name__ == "__main__":
+    args = parse_cli()
+
     with ir.Context(), ir.Location.unknown():
-        wload = Matmul(1024, 1024, 1024, dtype=np.float32, tile_size=32)
+        match args.dtype:
+            case "f32":
+                in_dtype = np.float32
+            case "bf16":
+                in_dtype = ml_dtypes.bfloat16
 
-        print(" Dump kernel ".center(60, "-"))
-        wload.lower_payload(dump_payload="initial", dump_schedule=False)
+        if in_dtype == ml_dtypes.bfloat16 and not args.avx512:
+            print("BF16 requires AVX512 enabled")
+            sys.exit(1)
 
-        print(" Benchmark ".center(60, "-"))
-        times = benchmark(wload, check_correctness=True)
-        times *= 1e6  # convert to microseconds
-        # compute statistics
-        mean = np.mean(times)
-        min = np.min(times)
-        max = np.max(times)
-        std = np.std(times)
-        print(
-            f"Timings (us): mean = {mean:.2f} +/-{std:.2f} min={min:.2f} max={max:.2f}"
-        )
-        flop_count = wload.get_complexity()[0]
-        gflops = flop_count / (mean * 1e-6) / 1e9
-        print(f"Throughput: {gflops:.2f} GFLOPS")
+        wload = Matmul(*args.sizes, dtype=in_dtype, tile_size=args.tile_size)
+
+        if args.dump_kernel or args.dump_schedule:
+            wload.lower_payload(
+                dump_payload=args.dump_kernel,
+                dump_schedule=args.dump_schedule,
+            )
+        else:
+            times = benchmark(
+                wload, check_correctness=True, nruns=args.nruns, nwarmup=args.nwarmup
+            )
+            times *= 1e6  # convert to microseconds
+
+            print(f"MxNxK: {args.sizes}")
+            print(f"Input dtype: {args.dtype}")
+
+            # compute statistics
+            mean = np.mean(times)
+            min = np.min(times)
+            max = np.max(times)
+            std = np.std(times)
+            print(
+                f"Timings (us): mean = {mean:.2f} +/-{std:.2f} min={min:.2f} max={max:.2f}"
+            )
+            flop_count = wload.get_complexity()[0]
+            gflops = flop_count / (mean * 1e-6) / 1e9
+            print(f"Throughput: {gflops:.2f} GFLOPS")
