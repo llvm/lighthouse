@@ -1,8 +1,5 @@
-from typing import Optional
-
 from mlir import rewrite, ir
 from mlir.dialects import ext, transform
-from lighthouse.schedule.utils import schedule_boilerplate
 
 
 def register_and_load(context=None):
