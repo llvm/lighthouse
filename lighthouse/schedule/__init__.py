@@ -5,6 +5,7 @@ from .linalg import linalg_to_generic
 from .linalg import linalg_to_category
 from .linalg import linalg_to_named
 from .linalg import linalg_morph
+from .linalg import linalg_contract_fold_unit_dims
 from .packing import pack_matmuls
 from .tiling import tile
 from .vectorization import vectorize_linalg
@@ -17,6 +18,7 @@ __all__ = [
     "create_named_sequence",
     "create_schedule",
     "hoist_loops",
+    "linalg_contract_fold_unit_dims",
     "linalg_morph",
     "linalg_to_category",
     "linalg_to_generic",

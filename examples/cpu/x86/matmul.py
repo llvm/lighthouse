@@ -15,8 +15,6 @@ from mlir import ir
 from mlir.dialects import linalg, arith, transform
 import mlir.dialects.tensor
 from mlir.execution_engine import ExecutionEngine
-from mlir.dialects.transform import structured
-from mlir.dialects.transform import loop
 from mlir.dialects.transform import vector
 from mlir.dialects.transform import tensor
 
@@ -26,6 +24,7 @@ from lighthouse.utils.numpy import numpy_to_mlir_type
 from lighthouse.pipeline.helper import apply_registered_pass
 import lighthouse.utils as lh_utils
 from lighthouse import schedule as lh_schedule
+import lighthouse.schedule.x86 as lh_schedule_x86
 from lighthouse import transform as lh_transform
 from functools import cached_property
 from typing import Optional
@@ -34,127 +33,6 @@ from mlir.runtime.np_to_memref import get_ranked_memref_descriptor
 from mlir.dialects import bufferization
 
 from lighthouse.workload import Workload
-
-
-def lower_packs_for_vectorization(
-    target: ir.Operation | ir.Value,
-    pack_tile_sizes: list[int],
-    vector_tile_sizes: list[int] | None = None,
-    vector_unroll_factors: list[int] = [],
-):
-    packs = lh_transform.match_op(target, "linalg.pack")
-    foreach_pack = transform.ForeachOp([], (packs,))
-    with ir.InsertionPoint(foreach_pack.body):
-        pack_op = foreach_pack.bodyTargets[0]
-        tiled_pack = structured.TileUsingForOp(
-            pack_op, sizes=pack_tile_sizes
-        ).tiled_linalg_op
-        _, _, transpose = structured.structured_lower_pack(
-            transform.OperationType.get("tensor.pad"),
-            transform.OperationType.get("tensor.expand_shape"),
-            transform.OperationType.get("linalg.transpose"),
-            tiled_pack,
-            lower_pad_like_with_insert_slice=False,
-        )
-        if vector_tile_sizes:
-            _, *loops = structured.TileUsingForOp(
-                transpose, sizes=vector_tile_sizes
-            ).results
-            for idx, factor in enumerate(reversed(vector_unroll_factors)):
-                loop.loop_unroll(loops[-1 - idx], factor)
-        transform.yield_()
-
-
-def lower_unpacks_for_vectorization(
-    target: ir.Operation | ir.Value,
-    unpack_tile_sizes: list[int],
-    vector_tile_sizes: list[int] | None = None,
-):
-    unpacks = lh_transform.match_op(target, "linalg.unpack")
-    foreach_unpack = transform.ForeachOp([], (unpacks,))
-    with ir.InsertionPoint(foreach_unpack.body):
-        unpack_op = foreach_unpack.bodyTargets[0]
-        tiled_unpack = structured.TileUsingForOp(
-            unpack_op, sizes=unpack_tile_sizes
-        ).tiled_linalg_op
-        if vector_tile_sizes:
-            tiled_unpack = structured.TileUsingForOp(
-                tiled_unpack, sizes=vector_tile_sizes
-            ).tiled_linalg_op
-        structured.structured_lower_unpack(
-            transform.OperationType.get("tensor.empty"),
-            transform.OperationType.get("linalg.transpose"),
-            transform.OperationType.get("tensor.collapse_shape"),
-            transform.OperationType.get("tensor.extract_slice"),
-            transform.OperationType.get("linalg.copy"),
-            tiled_unpack,
-            lower_unpad_like_with_extract_slice=True,
-        )
-        transform.yield_()
-
-
-def schedule_lower_packs_unpacks(tile_size: int) -> ir.Module:
-    sched = lh_schedule.create_schedule()
-    named_seq = lh_schedule.create_named_sequence(
-        sched, input_types=[transform.any_op_t()]
-    )
-
-    with ir.InsertionPoint(named_seq.body):
-        pack_unpack_vector_m = 8
-        pack_unpack_vector_n = min(64, tile_size)
-        lower_packs_for_vectorization(
-            named_seq.bodyTarget,
-            pack_tile_sizes=[1, 1],
-            vector_tile_sizes=[1, 1, pack_unpack_vector_m, pack_unpack_vector_n],
-            vector_unroll_factors=[
-                tile_size // pack_unpack_vector_n,
-            ],
-        )
-        lh_transform.cleanup(named_seq.bodyTarget)
-
-        lower_unpacks_for_vectorization(
-            named_seq.bodyTarget,
-            unpack_tile_sizes=[tile_size, tile_size],
-            vector_tile_sizes=[1],
-        )
-        transposes = lh_transform.match_op(named_seq.bodyTarget, "linalg.transpose")
-        lh_transform.vectorize_ops(transposes)
-
-        # Cleanup.
-        with ir.InsertionPoint(
-            transform.ApplyPatternsOp(named_seq.bodyTarget).patterns
-        ):
-            tensor.apply_patterns_tensor_fold_tensor_subset_ops_into_vector_transfers()
-            transform.apply_patterns_canonicalization()
-        with ir.InsertionPoint(
-            transform.ApplyPatternsOp(named_seq.bodyTarget).patterns
-        ):
-            vector.apply_patterns_vector_cast_away_vector_leading_one_dim()
-        lh_transform.cleanup(named_seq.bodyTarget)
-
-        transform.yield_()
-    return sched
-
-
-def schedule_linalg_contract_fold_unit_dims() -> ir.Module:
-    sched = lh_schedule.create_schedule()
-    named_seq = lh_schedule.create_named_sequence(
-        sched, input_types=[transform.any_op_t()]
-    )
-
-    with ir.InsertionPoint(named_seq.body):
-        ops = lh_transform.match_op(named_seq.bodyTarget, "func.func")
-        ops = lh_transform.linalg_morph_ops(ops, category_to_generic=True)
-        with ir.InsertionPoint(
-            transform.ApplyPatternsOp(named_seq.bodyTarget).patterns
-        ):
-            # Works only on generics.
-            structured.apply_patterns_linalg_fold_unit_extent_dims_via_slices()
-        lh_transform.linalg_morph_ops(ops, generic_to_category=True)
-        lh_transform.cleanup(named_seq.bodyTarget)
-
-        transform.yield_()
-    return sched
 
 
 class Matmul(Workload):
@@ -259,8 +137,11 @@ class Matmul(Workload):
     ) -> list[ir.Module]:
         scheds = []
 
+        # Insert performance measurements.
         scheds.append(get_bench_wrapper_schedule(self))
 
+        # GEMM block packing.
+        # Create cache-friendly access pattern across matmul tiles.
         scheds.append(
             lh_schedule.pack_matmuls(
                 block_factors=[self.tile_size, self.tile_size, self.tile_size],
@@ -268,7 +149,7 @@ class Matmul(Workload):
                 rhs_transpose_inner_block=False,
             )
         )
-        scheds.append(schedule_lower_packs_unpacks(self.tile_size))
+        scheds.append(lh_schedule_x86.lower_packs_unpacks(self.tile_size))
 
         # Convert to category ops for easier op matching.
         scheds.append(lh_schedule.linalg_to_category())
@@ -278,10 +159,9 @@ class Matmul(Workload):
         gemm_op = "linalg.contract"
         scheds.append(lh_schedule.tile(gemm_op, tile_sizes=[1, 1], fuse_producers=True))
 
-        # Further tiling into hardware-friendly sizes for later vectorization.
-        scheds.append(lh_schedule.tile("linalg.fill", tile_sizes=[1, 1, 1]))
-        scheds.append(lh_schedule.tile("linalg.generic", tile_sizes=[1, 1, 8]))
-        scheds.append(schedule_linalg_contract_fold_unit_dims())
+        # Fold extra parallel outer unit dims before further tiling to help later
+        # vectorization rewrites to recognize ops.
+        scheds.append(lh_schedule.linalg_contract_fold_unit_dims())
 
         # GEMM register tiling.
         # Ensure that computation can fit into vector registers.
@@ -322,6 +202,10 @@ class Matmul(Workload):
                 unroll_factors=reg_unroll_factors,
             )
         )
+
+        # Further tiling into hardware-friendly sizes for vectorization.
+        scheds.append(lh_schedule.tile("linalg.fill", tile_sizes=[1, 1, 1]))
+        scheds.append(lh_schedule.tile("linalg.generic", tile_sizes=[1, 8]))
 
         # Vectorization.
         scheds.append(lh_schedule.vectorize_linalg())

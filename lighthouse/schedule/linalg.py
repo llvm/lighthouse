@@ -1,5 +1,6 @@
 from mlir import ir
 from mlir.dialects import transform
+from mlir.dialects.transform import structured
 
 from .builders import create_schedule
 from .builders import create_named_sequence
@@ -75,3 +76,22 @@ def linalg_to_named() -> ir.Module:
     return linalg_morph(
         generic_to_named=True,
     )
+
+
+def linalg_contract_fold_unit_dims() -> ir.Module:
+    sched = create_schedule()
+    named_seq = create_named_sequence(sched, input_types=[transform.any_op_t()])
+
+    with ir.InsertionPoint(named_seq.body):
+        ops = lh_transform.match_op(named_seq.bodyTarget, "func.func")
+        ops = lh_transform.linalg_morph_ops(ops, category_to_generic=True)
+        with ir.InsertionPoint(
+            transform.ApplyPatternsOp(named_seq.bodyTarget).patterns
+        ):
+            # Works only on generics.
+            structured.apply_patterns_linalg_fold_unit_extent_dims_via_slices()
+        lh_transform.linalg_morph_ops(ops, generic_to_category=True)
+        lh_transform.cleanup(named_seq.bodyTarget)
+
+        transform.yield_()
+    return sched
