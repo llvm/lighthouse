@@ -141,34 +141,6 @@ def get_bench_wrapper_schedule(workload: Workload):
     schedule.body.operations[0].verify()
     return schedule
 
-    # """Return a transform module that applies the given rewrite patterns.
-    # patterns: dict mapping op names to match-and-rewrite functions.
-    # pname: name for the generated rewrite pattern operation."""
-
-    # rw_pattern = rewrite_pattern(patterns, pname)
-    # PatternDialect.load(register=False, reload=False)
-    # rw_pattern.attach_interface_impls()
-
-    # with schedule_boilerplate() as (schedule, named_seq):
-    #    apply_patterns_op = transform.ApplyPatternsOp(named_seq.bodyTarget)
-    #    with ir.InsertionPoint(apply_patterns_op.patterns):
-    #        rw_pattern()
-    #    transform.yield_([named_seq.bodyTarget])
-    #    named_seq.verify()
-
-    # schedule.body.operations[0].verify()
-    # return schedule
-
-    # return pattern_rewrite_schedule(
-    #    {
-    #        "func.func": bench_wrapper_pattern(
-    #            workload.payload_function_name,
-    #            workload.benchmark_function_name,
-    #        )
-    #    },
-    #    "add_bench_pattern",
-    # )
-
 
 def benchmark(
     workload: Workload,
