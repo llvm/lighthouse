@@ -89,7 +89,7 @@ class Transform:
         self.filename = filename
 
     def __str__(self) -> str:
-        """serialize name + filename for transform stage consumption"""
+        """serialize filename for transform stage consumption"""
         return f"{self.filename}"
 
 
