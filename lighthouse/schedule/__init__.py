@@ -1,6 +1,6 @@
 from .builders import create_schedule
 from .builders import create_named_sequence
-from .common import hoist_loops
+from .hoisting import hoist_loops
 from .linalg import linalg_to_generic
 from .linalg import linalg_to_category
 from .linalg import linalg_to_named
