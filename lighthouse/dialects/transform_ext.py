@@ -20,8 +20,8 @@ class PopulatePatternOp(TransformExtensionDialect.Operation, name="populate_patt
 
     To be used in the region of `transform.apply_patterns`."""
 
-    op_kind: ir.StringAttr
     pattern_name: ir.StringAttr
+    op_kind: ir.StringAttr
     priority: ir.IntegerAttr
 
     # A mapping from pattern names to their corresponding rewrite functions.
@@ -49,7 +49,7 @@ class PopulatePatternOp(TransformExtensionDialect.Operation, name="populate_patt
 
 
 def populate_pattern(
-    op_kind: str, pattern_name: str, priority: int
+    pattern_name: str, op_kind: str, priority: int
 ) -> PopulatePatternOp:
     """Camelcase constructor for PopulatePatternOp."""
     priority_attr = ir.IntegerAttr.get(ir.IntegerType.get_signless(32), priority)

@@ -131,8 +131,8 @@ def get_bench_wrapper_schedule(workload: Workload):
         apply_patterns_op = transform.apply_patterns(named_seq.bodyTarget)
         with ir.InsertionPoint(apply_patterns_op.patterns):
             populate_pattern(
-                op_kind="func.func",
                 pattern_name="bench_wrapper",
+                op_kind="func.func",
                 priority=1,
             )
         transform.yield_([named_seq.bodyTarget])
