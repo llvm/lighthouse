@@ -27,7 +27,7 @@ def create_named_sequence(
     Create a named sequence inside a schedule module.
 
     Args:
-        sym_name: Name
+        sym_name: Sequence name
         input_types: Input types
         result_types: Result types
         is_readonly: Mark inputs as readonly
