@@ -340,6 +340,7 @@ class DistFF(Workload):
 
             # Run passes to inject deallocations. Don't do this for dealloc_2d, though.
             for fname in [
+                self.benchmark_function_name,
                 self.payload_function_name,
                 "gather_act",
                 "gather_win",
@@ -395,9 +396,9 @@ class DistFF(Workload):
         - all the rest"""
         return [
             self.get_shard_schedule(),
+            get_bench_wrapper_schedule(self),
             tile_and_vector_matmul.create(self.tile_size),
             self.get_bufferize_schedule(),
-            get_bench_wrapper_schedule(self, use_memrefs=True),
             self.get_lower_schedule(),
         ]
 
