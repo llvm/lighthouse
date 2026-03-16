@@ -132,8 +132,6 @@ class TransformStage(Stage):
     """
 
     def __init__(self, filename: str, context: ir.Context):
-        # TODO: Import via Python when the file name ends with .py,
-        # and via MLIR when the file name ends with .mlir.
         self.module = import_mlir_module(filename, context)
         if "transform.with_named_sequence" not in self.module.operation.attributes:
             raise ValueError(
