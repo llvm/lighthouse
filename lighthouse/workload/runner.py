@@ -66,23 +66,13 @@ def execute(
                 raise ValueError("Benchmark verification failed.")
 
 
-def _tensor_to_memref_type(t):
-    """Convert a RankedTensorType to a MemRefType with the same shape and element type."""
-    ranked = ir.RankedTensorType(t)
-    return ir.MemRefType.get(ranked.shape, ranked.element_type)
-
-
-def bench_wrapper_pattern(funcname: str, benchname=None, use_memrefs: bool = False):
+def bench_wrapper_pattern(funcname: str, benchname=None):
     """Returns a rewrite pattern that matches a function named `funcname` and clones it
     as a new function with name given by `benchname` (default: "bench_" + funcname).
     The new function is a benchmark wrapper that calls the payload function and times it.
     Every function call is timed separately. Returns the times (seconds) in a memref,
     which is passed as an additional argument to the benchmark function.
     It also takes two additional arguments for the number of runs and warmup iterations.
-
-    If `use_memrefs` is True, any tensor-typed payload arguments are replaced with
-    corresponding memref types in the wrapper signature. The payload function is assumed
-    to accept memrefs as well.
     """
     marker = "__bench_wrapped__"
     if benchname is None:
@@ -94,15 +84,6 @@ def bench_wrapper_pattern(funcname: str, benchname=None, use_memrefs: bool = Fal
         if marker in op.attributes:
             return True  # Already wrapped, skip
         payload_arguments = op.type.inputs
-        num_payload_args = len(payload_arguments)
-
-        if use_memrefs:
-            wrapper_arguments = [
-                _tensor_to_memref_type(t) if isinstance(t, ir.RankedTensorType) else t
-                for t in payload_arguments
-            ]
-        else:
-            wrapper_arguments = list(payload_arguments)
 
         with rewriter.ip, op.location:
             # define rtclock function
@@ -113,21 +94,20 @@ def bench_wrapper_pattern(funcname: str, benchname=None, use_memrefs: bool = Fal
                 (ir.ShapedType.get_dynamic_size(),), f64_t
             )
             index_t = ir.IndexType.get()
-            args = wrapper_arguments + [time_memref_t, index_t, index_t]
+            args = payload_arguments + [time_memref_t, index_t, index_t]
 
             @func_cif(*args, name=benchname)
             def bench(*args):
                 index_t = ir.IndexType.get()
                 zero = arith.constant(index_t, 0)
                 one = arith.constant(index_t, 1)
-                call_args = list(args[:num_payload_args])
                 for i in scf.for_(zero, args[-1], one):
                     # FIXME(upstream): func.call is broken for this use case?
-                    func.CallOp(op, call_args)
+                    func.CallOp(op, list(args[: len(payload_arguments)]))
                     scf.yield_(())
                 for i in scf.for_(zero, args[-2], one):
                     tic = func.call((f64_t,), "rtclock", ())
-                    func.CallOp(op, call_args)
+                    func.CallOp(op, list(args[: len(payload_arguments)]))
                     toc = func.call((f64_t,), "rtclock", ())
                     time = arith.subf(toc, tic)
                     memref.store(time, args[-3], [i])
@@ -140,13 +120,12 @@ def bench_wrapper_pattern(funcname: str, benchname=None, use_memrefs: bool = Fal
     return match_and_rewrite
 
 
-def get_bench_wrapper_schedule(workload: Workload, use_memrefs: bool = False):
+def get_bench_wrapper_schedule(workload: Workload):
     return pattern_rewrite_schedule(
         {
             "func.func": bench_wrapper_pattern(
                 workload.payload_function_name,
                 workload.benchmark_function_name,
-                use_memrefs=use_memrefs,
             )
         },
         "add_bench_pattern",
