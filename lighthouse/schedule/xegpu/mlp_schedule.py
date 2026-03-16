@@ -339,7 +339,7 @@ def bundle_xegpu_mlp_schedule(
             # number of threads collapsed to 1d layout
             return sg_threads * NB_WORKITEMS
 
-        nb_threads: int | smt_ext.SMTIntValue = (
+        nb_threads: int | transform.AnyParamType = (
             constrain_wg_sg_and_calc_nb_threads.results
         )
 
