@@ -1,5 +1,8 @@
 from abc import abstractmethod
+import importlib
 import os
+from enum import Enum
+from pathlib import Path
 
 from mlir import ir
 from mlir.passmanager import PassManager
@@ -85,13 +88,25 @@ class Transform:
     to be easily passed to a TransformStage.
     """
 
-    def __init__(self, name: str, filename: str):
-        self.name = name
+    class Type(Enum):
+        MLIR = 1
+        Python = 2
+
+    def __init__(self, filename: str, options: dict = {}):
+        if filename.endswith(".mlir"):
+            self.type = Transform.Type.MLIR
+        elif filename.endswith(".py"):
+            self.type = Transform.Type.Python
+        else:
+            raise ValueError(f"Unsupported transform file type: {filename}")
         self.filename = filename
+        self.options = options
 
     def __str__(self) -> str:
-        """serialize name + filename for transform stage consumption"""
-        return f"{self.name}:{{{self.filename}}}"
+        """serialize name + filename for debugging purposes"""
+        if not self.options:
+            return self.name
+        return f"{self.filename}{{{self.options}}}"
 
 
 class Stage:
@@ -99,9 +114,6 @@ class Stage:
     A stage in the optimization pipeline. Each stage will apply a specific set of transformations to the module,
     and will keep track of the current state of the module after the transformations are applied.
     """
-
-    def __init__(self, name: str):
-        self.name = name
 
     @abstractmethod
     def apply(self, module: ir.Module) -> ir.Module:
@@ -116,8 +128,7 @@ class PassStage(Stage):
     A stage that applies a predefined set of passes to the module. This is a simple wrapper around a PassManager.
     """
 
-    def __init__(self, name: str, context: ir.Context, passes: list[Pass]):
-        super().__init__(name)
+    def __init__(self, passes: list[Pass], context: ir.Context):
         self.context = context
         self.pm = PassManager("builtin.module", self.context)
         add_bundle(self.pm, passes)
@@ -133,17 +144,49 @@ class PassStage(Stage):
 
 class TransformStage(Stage):
     """
-    A stage that applies a predefined set of transformations to the module. This is a simple wrapper around a Transform Schedule.
+    A stage that applies a predefined set of transformations to the module.
+    This is a simple wrapper around a Transform Schedule.
+
+    The MLIR file format must have:
+      * a module with attributes {transform.with_named_sequence}
+      * transform.named_sequence inside that module
+
+    The Python file format must have:
+      * a function called create_schedule
+      * with a dictionary argument for the options
     """
 
-    def __init__(self, name: str, context: ir.Context, filename: str):
-        super().__init__(name)
-        # TODO: Import via Python when the file name ends with .py,
-        # and via MLIR when the file name ends with .mlir.
-        self.module = import_mlir_module(filename, context)
-        if "transform.with_named_sequence" not in self.module.operation.attributes:
+    def __init__(self, transform: Transform, context: ir.Context):
+        self.PYTHON_FUNCTION = "create_schedule"
+        self.MLIR_ATTRIBUTE = "transform.with_named_sequence"
+
+        if transform.type == Transform.Type.MLIR:
+            # For MLIR transforms, we expect the file to define an MLIR transform sequence
+            # that we can import and apply to the module. This will be checked below.
+            self.module = import_mlir_module(transform.filename, context)
+        elif transform.type == Transform.Type.Python:
+            # For Python transforms, we expect the file to define a function called "create_schedule"
+            # that takes an MLIR module and returns a transformed MLIR module.
+            module_name = Path(os.path.basename(transform.filename)).stem
+            spec = importlib.util.spec_from_file_location(
+                module_name, transform.filename
+            )
+            transform_module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(transform_module)
+            if not hasattr(transform_module, self.PYTHON_FUNCTION):
+                raise ValueError(
+                    f"Transform module {transform.filename} does not define a {self.PYTHON_FUNCTION} function."
+                )
+            self.apply_transform = getattr(transform_module, self.PYTHON_FUNCTION)
+            with context, ir.Location.unknown():
+                self.module = self.apply_transform(transform.options)
+        else:
+            raise ValueError(f"Unsupported transform type: {transform.type}")
+
+        # Check if the imported module contains a schedule
+        if self.MLIR_ATTRIBUTE not in self.module.operation.attributes:
             raise ValueError(
-                f"Transform module {filename} does is not a transform schedule."
+                f"Transform module {transform.filename} does not define a {self.MLIR_ATTRIBUTE} attribute."
             )
         self.schedule = self.module.body.operations[0]
 
@@ -191,20 +234,14 @@ class Driver:
             raise ValueError("Pipeline is fixed. Reset to start again.")
         # Pass Bundle
         if stage_name in self.bundles:
-            self.pipeline.append(
-                PassStage(
-                    self.bundles[stage_name], self.context, self.bundles[stage_name]
-                )
-            )
+            self.pipeline.append(PassStage(self.bundles[stage_name], self.context))
         # Transform
         elif os.path.exists(stage_name):
-            self.pipeline.append(TransformStage(stage_name, self.context, stage_name))
+            self.pipeline.append(TransformStage(Transform(stage_name), self.context))
         # Assume random strings represent a single pass
         # Will crash later if the pass name is not registered.
         else:
-            self.pipeline.append(
-                PassStage(stage_name, self.context, [Pass(stage_name)])
-            )
+            self.pipeline.append(PassStage([Pass(stage_name)], self.context))
 
     def add_stages(self, stages: list[str]) -> None:
         for s in stages:
