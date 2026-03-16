@@ -13,7 +13,7 @@ def tile_ops(
     unroll_factors: list[int] = [],
 ):
     """
-    Tile all matching op.
+    Apply tiling to the target.
 
     Optionally, producer fusion can be applied to each tiled op.
     Optionally, peeling or unrolling can be applied to created loops.
@@ -21,9 +21,12 @@ def tile_ops(
     Args:
         target: Handle to target.
         tile_sizes: Tile sizes.
-            The sizes are applied in order of the target dimensions.
+            The sizes are applied in order of the target loops.
+            A tile size of zero implies no tiling for that loop.
+            If there are fewer tiles than the number of loops,
+            the inner loops are not tiled.
             See underlying transform ops for further details.
-        fuse_producers: Tile an op and greedily fuse its producers
+        fuse_producers: Tile target and greedily fuse its producers
         tile_interchange: Loop interchange after tiling
         peel_loops: List of loops to peel.
             Loops are peeled in the given order.

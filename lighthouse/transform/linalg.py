@@ -11,7 +11,7 @@ def linalg_morph_ops(
     generic_to_named: bool = False,
 ) -> ir.Value:
     """
-    Apply linalg morphism to all target's nested functions.
+    Apply linalg morphism to all target's nested ops.
 
     Args:
         target: Handle to target

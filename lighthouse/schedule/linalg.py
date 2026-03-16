@@ -79,10 +79,19 @@ def linalg_to_named() -> ir.Module:
 
 
 def linalg_contract_fold_unit_dims() -> ir.Module:
+    """
+    Fold unit dims of linalg contract.
+
+    NOTE: The rewrite currently applies linalg morphism and folds all generics.
+
+    Returns:
+        Schedule
+    """
     sched = create_schedule()
     named_seq = create_named_sequence(sched, input_types=[transform.any_op_t()])
 
     with ir.InsertionPoint(named_seq.body):
+        # TODO: Match only contracts when the folding pattern supports them.
         ops = lh_transform.match_op(named_seq.bodyTarget, "func.func")
         ops = lh_transform.linalg_morph_ops(ops, category_to_generic=True)
         with ir.InsertionPoint(

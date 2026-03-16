@@ -10,7 +10,7 @@ def vectorize_ops(
     vectorize_kwargs: dict = {},
 ):
     """
-    Vectorize all matching ops.
+    Apply vectorization to the target.
 
     Args:
         target: Handle to target
@@ -28,7 +28,7 @@ def vectorize_all_ops(
     target,
 ):
     """
-    Apply vectorization to all ops nested within target.
+    Apply vectorization to all target's nested ops.
 
     Args:
         target: Handle to target
@@ -40,7 +40,7 @@ def vectorize_all_ops(
 
 def x86_vector_patterns(target):
     """
-    Apply x86-specific vector patterns to the target.
+    Apply x86-specific vector patterns.
 
     Args:
         target: Handle to target

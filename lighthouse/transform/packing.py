@@ -12,7 +12,7 @@ def block_pack_matmuls(
     rhs_transpose_inner_block: bool = True,
 ) -> ir.Value:
     """
-    Block pack all linalg matmuls in target's nested functions.
+    Block pack all to all target's nested linalg matmul ops.
 
     Args:
         target: Handle to target
