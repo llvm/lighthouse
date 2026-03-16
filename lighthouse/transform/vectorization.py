@@ -5,8 +5,7 @@ from mlir.dialects.transform import x86
 
 
 def vectorize_ops(
-    target: ir.Operation | ir.Value,
-    target_op: str | structured.MatchInterfaceEnum,
+    target,
     vector_sizes: list = [],
     vectorize_kwargs: dict = {},
 ):
@@ -14,20 +13,11 @@ def vectorize_ops(
     Vectorize all matching ops.
 
     Args:
-        target: Handle to matcher's target
-        target_op: Ops to be matched
+        target: Handle to target
         vector_sizes: Vector sizes
         vectorize_kwargs: Options passed to vectorization transform
     """
-    if isinstance(target_op, structured.MatchInterfaceEnum):
-        ops = structured.MatchOp(
-            transform.any_op_t(),
-            target,
-            interface=target_op,
-        )
-    else:
-        ops = structured.MatchOp.match_op_names(target, [target_op])
-    foreach = transform.ForeachOp([], (ops,))
+    foreach = transform.ForeachOp([], (target,))
     with ir.InsertionPoint(foreach.body):
         op = foreach.bodyTargets[0]
         structured.structured_vectorize(op, vector_sizes, **vectorize_kwargs)
@@ -35,21 +25,20 @@ def vectorize_ops(
 
 
 def vectorize_all_ops(
-    target: ir.Operation | ir.Value,
+    target,
 ):
     """
-    Apply vectorization to all target's nested functions.
+    Apply vectorization to all ops nested within target.
 
     Args:
-        target: Handle to matcher's target
+        target: Handle to target
     """
-    func = structured.MatchOp.match_op_names(target, ["func.func"]).result
     structured.structured_vectorize_children_and_apply_patterns(
-        transform.any_op_t(), func
+        transform.any_op_t(), target
     )
 
 
-def x86_vector_patterns(target: ir.Operation | ir.Value):
+def x86_vector_patterns(target):
     """
     Apply x86-specific vector patterns to the target.
 

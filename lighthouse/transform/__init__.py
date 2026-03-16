@@ -1,5 +1,6 @@
 from .common import cleanup
 from .common import loop_hoisting
+from .common import match_op
 from .linalg import linalg_morph_ops
 from .tiling import tile_ops
 from .packing import block_pack_matmuls
@@ -13,6 +14,7 @@ __all__ = [
     "cleanup",
     "linalg_morph_ops",
     "loop_hoisting",
+    "match_op",
     "pack_propagation",
     "tile_ops",
     "vectorize_all_ops",

@@ -3,9 +3,7 @@ from mlir.dialects import transform
 
 from .builders import create_schedule
 from .builders import create_named_sequence
-from lighthouse.transform import block_pack_matmuls
-from lighthouse.transform import pack_propagation
-from lighthouse.transform import cleanup
+import lighthouse.transform as lh_transform
 
 
 def pack_matmuls(
@@ -24,21 +22,24 @@ def pack_matmuls(
         lhs_transpose_inner_block: A matrix mb x kb => kb x mb
         rhs_transpose_outer_block: B matrix KB x NB => NB x KB
         rhs_transpose_inner_block: B matrix kb x nb => nb x kb
+    Returns:
+        Schedule
     """
     schedule = create_schedule()
     named_seq = create_named_sequence(schedule, input_types=[transform.any_op_t()])
 
     with ir.InsertionPoint(named_seq.body):
-        block_pack_matmuls(
-            named_seq.bodyTarget,
+        ops = lh_transform.match_op(named_seq.bodyTarget, "func.func")
+        lh_transform.block_pack_matmuls(
+            ops,
             block_factors=block_factors,
             lhs_transpose_outer_block=lhs_transpose_outer_block,
             lhs_transpose_inner_block=lhs_transpose_inner_block,
             rhs_transpose_outer_block=rhs_transpose_outer_block,
             rhs_transpose_inner_block=rhs_transpose_inner_block,
         )
-        pack_propagation(named_seq.bodyTarget)
-        cleanup(named_seq.bodyTarget)
+        lh_transform.pack_propagation(named_seq.bodyTarget)
+        lh_transform.cleanup(named_seq.bodyTarget)
 
         transform.yield_()
     return schedule

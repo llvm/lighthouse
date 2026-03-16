@@ -5,8 +5,7 @@ from mlir.dialects.transform import structured
 
 
 def tile_ops(
-    target: ir.Operation | ir.Value,
-    target_op: str,
+    target,
     tile_sizes: list[int],
     fuse_producers: bool = False,
     tile_interchange: list[int] | None = None,
@@ -20,9 +19,10 @@ def tile_ops(
     Optionally, peeling or unrolling can be applied to created loops.
 
     Args:
-        target: Handle to matcher's target
-        target_op: Ops to be matched
-        tile_sizes: Tile sizes
+        target: Handle to target.
+        tile_sizes: Tile sizes.
+            The sizes are applied in order of the target dimensions.
+            See underlying transform ops for further details.
         fuse_producers: Tile an op and greedily fuse its producers
         tile_interchange: Loop interchange after tiling
         peel_loops: List of loops to peel.
@@ -36,8 +36,7 @@ def tile_ops(
         "Both unrolling and peeling is not supported"
     )
 
-    ops = structured.MatchOp.match_op_names(target, [target_op])
-    foreach = transform.ForeachOp([], (ops,))
+    foreach = transform.ForeachOp([], (target,))
     with ir.InsertionPoint(foreach.body):
         op = foreach.bodyTargets[0]
         if fuse_producers:

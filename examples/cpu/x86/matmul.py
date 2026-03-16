@@ -25,7 +25,6 @@ from lighthouse.workload import get_bench_wrapper_schedule
 from lighthouse.utils.numpy import numpy_to_mlir_type
 from lighthouse.pipeline.helper import apply_registered_pass
 import lighthouse.utils as lh_utils
-import lighthouse.pipeline.opt as lh_opt
 from lighthouse import schedule as lh_schedule
 from lighthouse import transform as lh_transform
 from functools import cached_property
@@ -43,7 +42,7 @@ def lower_packs_for_vectorization(
     vector_tile_sizes: list[int] | None = None,
     vector_unroll_factors: list[int] = [],
 ):
-    packs = structured.MatchOp.match_op_names(target, ["linalg.pack"])
+    packs = lh_transform.match_op(target, "linalg.pack")
     foreach_pack = transform.ForeachOp([], (packs,))
     with ir.InsertionPoint(foreach_pack.body):
         pack_op = foreach_pack.bodyTargets[0]
@@ -71,7 +70,7 @@ def lower_unpacks_for_vectorization(
     unpack_tile_sizes: list[int],
     vector_tile_sizes: list[int] | None = None,
 ):
-    unpacks = structured.MatchOp.match_op_names(target, ["linalg.unpack"])
+    unpacks = lh_transform.match_op(target, "linalg.unpack")
     foreach_unpack = transform.ForeachOp([], (unpacks,))
     with ir.InsertionPoint(foreach_unpack.body):
         unpack_op = foreach_unpack.bodyTargets[0]
@@ -118,7 +117,8 @@ def schedule_lower_packs_unpacks(tile_size: int) -> ir.Module:
             unpack_tile_sizes=[tile_size, tile_size],
             vector_tile_sizes=[1],
         )
-        lh_transform.vectorize_ops(named_seq.bodyTarget, "linalg.transpose")
+        transposes = lh_transform.match_op(named_seq.bodyTarget, "linalg.transpose")
+        lh_transform.vectorize_ops(transposes)
 
         # Cleanup.
         with ir.InsertionPoint(
@@ -143,13 +143,14 @@ def schedule_linalg_contract_fold_unit_dims() -> ir.Module:
     )
 
     with ir.InsertionPoint(named_seq.body):
-        lh_transform.linalg_morph_ops(named_seq.bodyTarget, category_to_generic=True)
+        ops = lh_transform.match_op(named_seq.bodyTarget, "func.func")
+        ops = lh_transform.linalg_morph_ops(ops, category_to_generic=True)
         with ir.InsertionPoint(
             transform.ApplyPatternsOp(named_seq.bodyTarget).patterns
         ):
             # Works only on generics.
             structured.apply_patterns_linalg_fold_unit_extent_dims_via_slices()
-        lh_transform.linalg_morph_ops(named_seq.bodyTarget, generic_to_category=True)
+        lh_transform.linalg_morph_ops(ops, generic_to_category=True)
         lh_transform.cleanup(named_seq.bodyTarget)
 
         transform.yield_()

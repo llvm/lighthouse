@@ -4,31 +4,32 @@ from mlir.dialects.transform import structured
 
 
 def block_pack_matmuls(
-    target: ir.Operation | ir.Value,
+    target,
     block_factors: list[int],
     lhs_transpose_outer_block: bool = False,
     lhs_transpose_inner_block: bool = False,
     rhs_transpose_outer_block: bool = True,
     rhs_transpose_inner_block: bool = True,
-):
+) -> ir.Value:
     """
     Block pack all linalg matmuls in target's nested functions.
 
     Args:
-        target: Handle to matcher's target
+        target: Handle to target
         block_factors: Block sizes (mb, nb, kb)
         lhs_transpose_outer_block: A matrix MB x KB => KB x MB
         lhs_transpose_inner_block: A matrix mb x kb => kb x mb
         rhs_transpose_outer_block: B matrix KB x NB => NB x KB
         rhs_transpose_inner_block: B matrix kb x nb => nb x kb
+    Returns:
+        New handle to target
     """
     assert len(block_factors) == 3, (
         f"Expected 3 block factors but got {len(block_factors)}"
     )
-    func = structured.MatchOp.match_op_names(target, ["func.func"]).result
-    transform.apply_registered_pass(
+    return transform.apply_registered_pass(
         transform.any_op_t(),
-        func,
+        target,
         "linalg-block-pack-matmul",
         options={
             "block-factors": block_factors,
@@ -40,7 +41,7 @@ def block_pack_matmuls(
     )
 
 
-def pack_propagation(target: ir.Operation | ir.Value):
+def pack_propagation(target):
     """
     Apply pack propagation patterns to the target.
 

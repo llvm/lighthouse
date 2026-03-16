@@ -5,7 +5,7 @@ from mlir.dialects.bufferization import LayoutMapOption
 
 from .builders import create_schedule
 from .builders import create_named_sequence
-from lighthouse.transform import cleanup
+import lighthouse.transform as lh_transform
 from lighthouse.pipeline.helper import apply_registered_pass
 
 
@@ -15,6 +15,8 @@ def bufferize(deallocation_pipeline: bool = False) -> ir.Module:
 
     Args:
         deallocation_pipeline: Applies deallocation pipeline
+    Returns:
+        Schedule
     """
     schedule = create_schedule()
     named_seq = create_named_sequence(schedule, input_types=[transform.any_op_t()])
@@ -32,7 +34,7 @@ def bufferize(deallocation_pipeline: bool = False) -> ir.Module:
         if deallocation_pipeline:
             target = apply_registered_pass(target, "buffer-deallocation-pipeline")
         target = apply_registered_pass(target, "convert-bufferization-to-memref")
-        cleanup(target)
+        lh_transform.cleanup(target)
 
         transform.yield_()
     return schedule
