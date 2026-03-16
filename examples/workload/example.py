@@ -18,6 +18,7 @@ from mlir.dialects import func, linalg, bufferization
 from mlir.dialects import transform
 from mlir.execution_engine import ExecutionEngine
 
+from lighthouse import dialects as lh_dialects
 from lighthouse.pipeline.helper import match
 from lighthouse.pipeline.opt import PassBundles, apply_bundle
 
@@ -159,6 +160,8 @@ class ElementwiseSum(Workload):
 
 if __name__ == "__main__":
     with ir.Context(), ir.Location.unknown():
+        lh_dialects.register_and_load()
+
         wload = ElementwiseSum(400, 400)
 
         print(" Dump kernel ".center(60, "-"))

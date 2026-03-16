@@ -5,10 +5,11 @@ Utility functions for running workloads.
 import numpy as np
 import os
 from mlir import ir
-from mlir.dialects import func, arith, scf, memref
+from mlir.dialects import func, arith, scf, memref, transform
 from mlir.execution_engine import ExecutionEngine
 from mlir.runtime.np_to_memref import get_ranked_memref_descriptor
-from lighthouse.schedule.pattern_schedule import pattern_rewrite_schedule
+from lighthouse.dialects.transform_ext import PopulatePatternOp, populate_pattern
+from lighthouse.schedule.utils import schedule_boilerplate
 from lighthouse.utils.mlir import func_cif, get_mlir_library_path
 from lighthouse.utils.memref import to_packed_args
 from lighthouse.workload import Workload
@@ -121,15 +122,23 @@ def bench_wrapper_pattern(funcname: str, benchname=None):
 
 
 def get_bench_wrapper_schedule(workload: Workload):
-    return pattern_rewrite_schedule(
-        {
-            "func.func": bench_wrapper_pattern(
-                workload.payload_function_name,
-                workload.benchmark_function_name,
-            )
-        },
-        "add_bench_pattern",
+    PopulatePatternOp.name_to_rewrite_pattern["bench_wrapper"] = bench_wrapper_pattern(
+        workload.payload_function_name,
+        workload.benchmark_function_name,
     )
+
+    with schedule_boilerplate() as (schedule, named_seq):
+        apply_patterns_op = transform.apply_patterns(named_seq.bodyTarget)
+        with ir.InsertionPoint(apply_patterns_op.patterns):
+            populate_pattern(
+                op_kind="func.func",
+                pattern_name="bench_wrapper",
+                priority=1,
+            )
+        transform.yield_([named_seq.bodyTarget])
+
+    schedule.body.operations[0].verify()
+    return schedule
 
 
 def benchmark(
