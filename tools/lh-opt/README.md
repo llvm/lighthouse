@@ -8,9 +8,18 @@ In the future we should enable user-registration of pases, bundles, schedules, e
 The way to use is demonstrated in the test `test/opt/pipeline-check.mlir`:
 
 ```
-// Runs one pass bundle over the file
-lh-opt --stage=bufferize file.mlir
+// Runs one pass over the file
+lh-opt --stage=canonicalize file.mlir
 
-// Runs multiple bundles in order on the file
-lh-opt --stage=bufferize --stage=mlir_lowering --stage=llvm_lowering file.mlir
+// Runs one pass bundle over the file
+lh-opt --stage=BufferizationBundle file.mlir
+
+// Runs one trasnform over the file
+lh-opt --stage=my-transform.mlir file.mlir
+
+// Runs a whole pipeline on the file
+lh-opt --stage=BufferizationBundle --stage=canonicalize --stage=my-transform.mlir --stage=canonicalize --stage=LLVMLoweringBundle file.mlir
 ```
+
+Note, this basic functionality is for testing purposes. For building larger pipelines a new method will need to be created.
+One idea is to use structured text files, like YAML or JSON, and then use `--stage=my-pipeline.json`.
