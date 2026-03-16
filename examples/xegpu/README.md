@@ -1,4 +1,4 @@
-# XeGPU benchmarks
+# XeGPU examples
 
 ## Installation
 
@@ -49,12 +49,18 @@ If cmake cannot find LevelZero, set environment variable `LEVEL_ZERO_DIR=<path-t
 
 ### Install Lighthouse
 
-Install Lighthouse as instructed in the main [README](../../../README.md).
+Install Lighthouse as instructed in the main [README](../../README.md).
 
 Override the default LLVM package by setting `PYTHONPATH` to the local LLVM Python bindings:
 
 ```bash
 export PYTHONPATH=${LLVM_INSTALL_DIR}/python_packages/mlir_core
+```
+
+If you wish to point to the build directory instead, do:
+
+```bash
+export PYTHONPATH=${LLVM_BUILD_DIR}/tools/mlir/python_packages/mlir_core/
 ```
 
 ## Matrix multiplication benchmark
@@ -112,10 +118,10 @@ MLP with 3 layers
   Layer 2: M=128, N=8192, K=16384
 ```
 
-Add ReLU to all hidden layers:
+Add bias to all layers and ReLU to hidden layers:
 
 ```bash
-python mlp.py --relu ...
+python mlp.py --bias --relu ...
 ```
 
 See all command line arguments:

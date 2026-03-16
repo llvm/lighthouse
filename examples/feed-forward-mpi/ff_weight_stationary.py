@@ -1,7 +1,7 @@
-"""Generate an MLIR module for a weight-stationary distributed MLP."""
+"""Generate an MLIR module for a weight-stationary distributed feed-forward layer."""
 
 from mlir import ir
-from mlir.dialects import arith, linalg, memref, shard, tensor, tosa
+from mlir.dialects import arith, linalg, memref, shard, tensor, tosa, bufferization
 from lighthouse.utils.mlir import func_cif
 
 _GRID = "grid0"
@@ -47,7 +47,7 @@ def _emit_dealloc_2d():
         memref.dealloc(arg)
 
 
-def generate_mlp_payload(
+def generate_ff_payload(
     *,
     func_name: str,
     M: int,
@@ -63,7 +63,7 @@ def generate_mlp_payload(
     split_mm0_c: list[list[int]],
     split_sigmoid: list[list[int]],
 ) -> ir.Module:
-    """Generate the full MLIR module for the weight-stationary distributed MLP.
+    """Generate the full MLIR module for the weight-stationary distributed feed-forward layer.
     Also adds helper functions for allocation, deallocation and gather."""
     mod = ir.Module.create()
     f32 = ir.F32Type.get()
@@ -88,8 +88,8 @@ def generate_mlp_payload(
         g.operation.attributes["sym_visibility"] = ir.StringAttr.get("private")
 
         # --- payload function ---
-        @func_cif(t_mk, t_kn, t_nk, name=func_name)
-        def _(a, b, c):
+        @func_cif(t_mk, t_kn, t_nk, t_mk, name=func_name)
+        def _(a, b, c, r):
             cst = arith.constant(f32, 0.0)
 
             sh_act = shard.sharding(_GRID, _axes(split_act), [], [])
@@ -102,6 +102,7 @@ def generate_mlp_payload(
             sd_ai = shard.shard(a, sh_act)
             sd_bi = shard.shard(b, sh_win)
             sd_ci = shard.shard(c, sh_wout)
+            sd_r = shard.shard(r, sh_act)
 
             empty0 = tensor.empty((M, N), f32)
             fill0 = linalg.fill(cst, outs=[empty0])
@@ -119,7 +120,13 @@ def generate_mlp_payload(
             sd_fill1 = shard.shard(fill1, sh_ac, annotate_for_users=True)
             mm1 = linalg.matmul(sig, sd_ci, outs=[sd_fill1])
 
-            return shard.shard(mm1, sh_act, annotate_for_users=True)
+            sd_res = shard.shard(mm1, sh_act, annotate_for_users=True)
+            res = bufferization.materialize_in_destination(
+                t_mk,
+                sd_res,
+                sd_r,
+            )
+            return shard.shard(res, sh_act, annotate_for_users=True)
 
         # --- allocation helpers ---
         _emit_alloc("act", t_mk, split_act)

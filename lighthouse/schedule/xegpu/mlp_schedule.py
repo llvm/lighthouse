@@ -53,7 +53,10 @@ def match_and_split(*args, nhandles=1, **kwargs):
 def checked_params_or_knobs(
     params: dict[str, int | None], layer_id=""
 ) -> dict[str, int | KnobValue]:
-    """Check the parameters for validity and replace `None`s with knobs with asserted ranges."""
+    """Check the parameters for validity and replace `None`s with knobs with asserted ranges.
+
+    Inserts the `KnobOp`s for any knobs that are created at the active `InsertionPoint` and
+    maps the parameter name to the (`Knob`)`Value` returned by the `KnobOp`."""
     m, n, k = params["m"], params["n"], params["k"]
     assert isinstance(m, int) and isinstance(n, int) and isinstance(k, int)
     assert m > 0 and n > 0 and k > 0
@@ -398,7 +401,7 @@ def xegpu_wg_annotation_for_mlp_layer(
     prefetch_a_k: int | KnobValue,
     prefetch_b_k: int | KnobValue,
     prefetch_b_n: int | KnobValue,
-    nb_prefetch: int,
+    prefetch_nb: int,
     has_bias: bool,
     **_catch_all,
 ):
@@ -477,24 +480,24 @@ def xegpu_wg_annotation_for_mlp_layer(
         smt_ext.assert_(nb_load_b_n <= 1, "invalid load_tile_b_n for VNNI")
 
         # prefetch A layout
-        nb_prefetch_a_m = SG_M // PFA_M
-        nb_prefetch_a_k = K_TILE // PFA_K
-        nb_prefetch_a = nb_prefetch_a_m * nb_prefetch_a_k
-        smt_ext.assert_(nb_prefetch_a <= MAX_NB_SG_THREADS)
-        if isinstance(nb_prefetch_a, smt_ext.SMTIntValue):
+        prefetch_nb_a_m = SG_M // PFA_M
+        prefetch_nb_a_k = K_TILE // PFA_K
+        prefetch_nb_a = prefetch_nb_a_m * prefetch_nb_a_k
+        smt_ext.assert_(prefetch_nb_a <= MAX_NB_SG_THREADS)
+        if isinstance(prefetch_nb_a, smt_ext.SMTIntValue):
             # NB: Constraint only enabled during tuning.
-            smt_ext.assert_(nb_prefetch_a_m * nb_prefetch_a_k >= MIN_NB_THREADS)
+            smt_ext.assert_(prefetch_nb_a_m * prefetch_nb_a_k >= MIN_NB_THREADS)
 
         # prefetch B layout
-        nb_prefetch_b_k = K_TILE // PFB_K
-        nb_prefetch_b_n = SG_N // PFB_N
-        nb_prefetch_b = nb_prefetch_b_k * nb_prefetch_b_n
-        smt_ext.assert_(nb_prefetch_b <= MAX_NB_SG_THREADS)
-        if isinstance(nb_prefetch_b, smt_ext.SMTIntValue):
+        prefetch_nb_b_k = K_TILE // PFB_K
+        prefetch_nb_b_n = SG_N // PFB_N
+        prefetch_nb_b = prefetch_nb_b_k * prefetch_nb_b_n
+        smt_ext.assert_(prefetch_nb_b <= MAX_NB_SG_THREADS)
+        if isinstance(prefetch_nb_b, smt_ext.SMTIntValue):
             # NB: Constraint only enabled during tuning.
-            smt_ext.assert_(nb_prefetch_b_k * nb_prefetch_b_n >= MIN_NB_THREADS)
+            smt_ext.assert_(prefetch_nb_b_k * prefetch_nb_b_n >= MIN_NB_THREADS)
 
-        return nb_prefetch_a_m, nb_prefetch_a_k, nb_prefetch_b_k, nb_prefetch_b_n
+        return prefetch_nb_a_m, prefetch_nb_a_k, prefetch_nb_b_k, prefetch_nb_b_n
 
     prefetch_layout_a = constrain_and_calculate_load_and_prefetch_params.results[0:2]
     prefetch_layout_b = constrain_and_calculate_load_and_prefetch_params.results[2:4]
@@ -510,25 +513,25 @@ def xegpu_wg_annotation_for_mlp_layer(
     tile_b = transform.get_operand(anyvalue, dpas_op, [1])
 
     # insert prefetch ops for DPAS A and B tiles
-    def add_prefetch(tile, nb_prefetch, **layout):
+    def add_prefetch(tile, prefetch_nb, **layout):
         desc_op = xegpu.insert_prefetch(
             tile,
-            nb_prefetch=nb_prefetch,
+            nb_prefetch=prefetch_nb,
         )
         pf_ops = transform.get_consumers_of_result(anytype, desc_op, 0)
-        for pf in transform.split_handle((anytype,) * (nb_prefetch + 1), pf_ops):
+        for pf in transform.split_handle((anytype,) * (prefetch_nb + 1), pf_ops):
             xegpu.set_op_layout_attr(pf, **layout)
 
     add_prefetch(
         tile_a,
-        nb_prefetch,
+        prefetch_nb,
         sg_layout=prefetch_layout_a,
         sg_data=prefetch_tile_a,
         inst_data=PREFETCH_INST_DATA,
     )
     add_prefetch(
         tile_b,
-        nb_prefetch,
+        prefetch_nb,
         sg_layout=prefetch_layout_b,
         sg_data=prefetch_tile_b,
         inst_data=PREFETCH_INST_DATA,
