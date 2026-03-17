@@ -18,8 +18,10 @@ from mlir.dialects import func, linalg, bufferization
 from mlir.dialects import transform
 from mlir.execution_engine import ExecutionEngine
 
-from lighthouse.pipeline.helper import apply_registered_pass, canonicalize, match
-from lighthouse.workload import Workload, execute, benchmark
+from lighthouse.pipeline.helper import match
+from lighthouse.pipeline.opt import PassBundles, apply_bundle
+
+from lighthouse.workload import Workload, execute, benchmark, get_bench_wrapper_schedule
 
 
 class ElementwiseSum(Workload):
@@ -118,7 +120,7 @@ class ElementwiseSum(Workload):
 
         return mod
 
-    def schedule_module(
+    def schedule_modules(
         self, stop_at_stage: Optional[str] = None, parameters: Optional[dict] = None
     ) -> ir.Module:
         schedule_module = ir.Module.create()
@@ -141,24 +143,18 @@ class ElementwiseSum(Workload):
                     op_name="builtin.module",
                     deduplicate=True,
                 )
-                mod = apply_registered_pass(mod, "one-shot-bufferize")
-                mod = apply_registered_pass(mod, "convert-linalg-to-loops")
-                transform.apply_cse(mod)
-                canonicalize(mod)
+                mod = apply_bundle(mod, PassBundles["BufferizationBundle"])
+                mod = apply_bundle(mod, PassBundles["MLIRLoweringBundle"])
+                mod = apply_bundle(mod, PassBundles["CleanupBundle"])
 
                 if stop_at_stage == "bufferized":
                     transform.YieldOp()
-                    return schedule_module
+                    return [schedule_module]
 
-                mod = apply_registered_pass(mod, "convert-scf-to-cf")
-                mod = apply_registered_pass(mod, "finalize-memref-to-llvm")
-                mod = apply_registered_pass(mod, "convert-cf-to-llvm")
-                mod = apply_registered_pass(mod, "convert-arith-to-llvm")
-                mod = apply_registered_pass(mod, "convert-func-to-llvm")
-                mod = apply_registered_pass(mod, "reconcile-unrealized-casts")
+                mod = apply_bundle(mod, PassBundles["LLVMLoweringBundle"])
                 transform.YieldOp()
 
-        return schedule_module
+        return [get_bench_wrapper_schedule(self), schedule_module]
 
 
 if __name__ == "__main__":

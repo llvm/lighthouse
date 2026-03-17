@@ -1,0 +1,5 @@
+Pipeline:
+  - pass: "one-shot-bufferize{function-boundary-type-conversion=identity-layout-map bufferize-function-boundaries}"
+  - pass: "drop-equivalent-buffer-results"
+  - pass: "buffer-deallocation-pipeline"
+  

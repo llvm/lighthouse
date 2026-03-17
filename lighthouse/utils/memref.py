@@ -50,12 +50,17 @@ def get_packed_arg(
     return packed_args
 
 
-def to_packed_args(memref_descs) -> ctypes.Array[ctypes.c_void_p]:
+def to_packed_args(args) -> ctypes.Array[ctypes.c_void_p]:
     """
-    Convert a list of memref descriptors into packed ctype arguments.
+    Convert a list of memref descriptors and/or integers into packed ctype arguments.
 
     Args:
-        memref_descs: A list of memref descriptors.
+        args: A list of memref descriptors or integers.
     """
-    ctype_args = [to_ctype(memref) for memref in memref_descs]
+    ctype_args = []
+    for arg in args:
+        if isinstance(arg, int):
+            ctype_args.append(ctypes.pointer(ctypes.c_int64(arg)))
+        else:
+            ctype_args.append(to_ctype(arg))
     return get_packed_arg(ctype_args)

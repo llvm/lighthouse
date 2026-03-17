@@ -1,0 +1,7 @@
+Pipeline:
+  - include: bufferization.yaml
+  - include: cleanup.yaml
+  - bundle: MLIRLoweringBundle
+  - bundle: CleanupBundle
+  - bundle: LLVMLoweringBundle
+  - pass: canonicalize

@@ -109,6 +109,7 @@ You'll need to specify the custom sources so `pip` can find all required depende
 Here are some common installation examples:
 
 1. Install Lighthouse only
+
 ```
 pip install . \
   --find-links https://llvm.github.io/eudsl/ \
@@ -116,6 +117,7 @@ pip install . \
 ```
 
 2. Install Lighthouse and torch-ingress dependencies
+
 ```
 pip install .[ingress_torch_cpu] \
   --find-links https://llvm.github.io/eudsl/ \
@@ -123,6 +125,10 @@ pip install .[ingress_torch_cpu] \
   --extra-index-url https://download.pytorch.org/whl \
   --only-binary :all:
 ```
+
+#### Installing with Intel XeGPU support
+
+To install Lighthouse with Intel XeGPU support see [examples/xegpu/README.md](examples/xegpu/README.md).
 
 ## Running pre-commit checks
 

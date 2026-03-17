@@ -1,7 +1,9 @@
 # RUN: %PYTHON %s --dump-kernel=xegpu-wg | FileCheck %s
+# RUN: %PYTHON %s --dump-kernel=xegpu-wg --bias | FileCheck %s
 # RUN: %PYTHON %s --dump-kernel=xegpu-wg --relu | FileCheck %s
+# RUN: %PYTHON %s --dump-kernel=xegpu-wg --bias --relu | FileCheck %s
 # RUN: %PYTHON %s --dump-kernel=xegpu-wg --no-accumulate-c | FileCheck %s
-# RUN: %PYTHON %s --dump-kernel=xegpu-wg --relu --no-accumulate-c | FileCheck %s
+# RUN: %PYTHON %s --dump-kernel=xegpu-wg --bias --relu --no-accumulate-c | FileCheck %s
 # CHECK: module attributes {gpu.container_module} {
 
 """
@@ -17,7 +19,7 @@ import numpy as np
 from mlir import ir
 from mlir.execution_engine import ExecutionEngine
 
-from lighthouse.workload import benchmark
+from lighthouse.workload import benchmark, get_bench_wrapper_schedule
 from lighthouse.utils.memref import to_ctype as memref_to_ctype
 from lighthouse.utils.numpy import numpy_to_ctype
 from lighthouse.schedule.xegpu.mlp_schedule import get_schedule_module
@@ -191,17 +193,20 @@ class XeGPUMatMul(XeGPUWorkload):
         )
         return mod
 
-    def schedule_module(
+    def schedule_modules(
         self, stop_at_stage: Optional[str] = None, parameters: Optional[dict] = None
-    ) -> ir.Module:
-        return get_schedule_module(
-            has_bias=self.has_bias,
-            has_relu=self.has_relu,
-            has_convert_c=False,
-            stop_at_stage=stop_at_stage,
-            nlayers=1,
-            params={"layer_0": parameters},
-        )
+    ) -> list[ir.Module]:
+        return [
+            get_bench_wrapper_schedule(self),
+            get_schedule_module(
+                has_bias=self.has_bias,
+                has_relu=self.has_relu,
+                has_convert_c=False,
+                stop_at_stage=stop_at_stage,
+                nlayers=1,
+                params={"layer_0": parameters},
+            ),
+        ]
 
     def shared_libs(self) -> list[str]:
         return ["libmlir_levelzero_runtime.so"]
@@ -236,7 +241,7 @@ def parse_cli():
     parser.add_argument(
         "--k-tile",
         type=int,
-        default=64,
+        default=128,
         help="Inner reduction dimension tile size K.",
     )
     parser.add_argument(
@@ -257,14 +262,14 @@ def parse_cli():
         "--prefetch-tile-a",
         type=int,
         nargs=2,
-        default=[8, 32],
+        default=[8, 16],
         help="Tile size for cooperative prefetching of subgroup A matrix",
     )
     parser.add_argument(
         "--prefetch-tile-b",
         type=int,
         nargs=2,
-        default=[8, 32],
+        default=[16, 16],
         help="Tile size for cooperative prefetching of subgroup B matrix",
     )
     parser.add_argument(

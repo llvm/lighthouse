@@ -1,0 +1,4 @@
+# Cleanup
+Pipeline:
+  - pass: cse
+  - pass: canonicalize
