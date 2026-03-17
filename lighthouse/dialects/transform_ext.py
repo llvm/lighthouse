@@ -3,10 +3,10 @@ from mlir.dialects import ext, transform
 
 
 def register_and_load(context=None):
-    PatternDialect.load()
+    TransformExtensionDialect.load()
 
 
-class PatternDialect(ext.Dialect, name="transform_ext"):
+class TransformExtensionDialect(ext.Dialect, name="transform_ext"):
     @classmethod
     def load(cls, *args, **kwargs):
         super().load(*args, **kwargs)
@@ -15,7 +15,7 @@ class PatternDialect(ext.Dialect, name="transform_ext"):
                 op_cls.attach_interface_impls()
 
 
-class PopulatePatternOp(PatternDialect.Operation, name="populate_pattern"):
+class PopulatePatternOp(TransformExtensionDialect.Operation, name="populate_pattern"):
     """An operation to populate a pattern set with a specific pattern."""
 
     op_kind: ir.StringAttr
