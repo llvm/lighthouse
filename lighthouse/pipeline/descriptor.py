@@ -1,6 +1,5 @@
 import yaml
 import os
-import re
 
 
 class PipelineDescriptor:
@@ -58,10 +57,7 @@ class PipelineDescriptor:
                 self.stages.append(filename)
 
             elif "pass" in stage:
-                # Passes are just strings, check with a simple regexp.
-                reg = re.compile(r"[\w\.]+\(?\w*\)?")
-                if not reg.match(stage["pass"]):
-                    raise ValueError(f"Invalid pass name: {stage['pass']}")
+                # Passes are just strings, let the pass manager validate.
                 self.stages.append(stage["pass"])
 
             elif "bundle" in stage:
