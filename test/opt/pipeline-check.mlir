@@ -4,6 +4,8 @@
 // RUN: lh-opt --stage=%TEST/opt/transforms/pipeline-check.mlir %s | FileCheck %s --check-prefixes=LLVM_LOWERED
 // RUN: lh-opt --stage=%TEST/opt/stages/pipeline-check.yaml %s | FileCheck %s --check-prefixes=LLVM_LOWERED
 // RUN: lh-opt --stage=%TEST/opt/stages/my-transform.yaml %s | FileCheck %s --check-prefixes=LLVM_LOWERED
+// RUN: lh-opt --stage=%TEST/opt/transforms/pipeline-check.py %s | FileCheck %s --check-prefixes=LLVM_LOWERED
+// RUN: lh-opt --stage=%TEST/opt/transforms/pipeline-check.py --stage=%TEST/opt/transforms/pipeline-check.py %s | FileCheck %s --check-prefixes=LLVM_LOWERED
 
 // BUFFERIZED-LABEL: func.func @entry
 // BUFFERIZED-SAME: memref

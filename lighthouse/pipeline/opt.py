@@ -1,4 +1,7 @@
 from abc import abstractmethod
+import importlib
+from enum import Enum
+from pathlib import Path
 import os
 
 from mlir import ir
@@ -86,12 +89,25 @@ class Transform:
     to be easily passed to a TransformStage.
     """
 
-    def __init__(self, filename: str):
+    class Type(Enum):
+        MLIR = 1
+        Python = 2
+
+    def __init__(self, filename: str, options: dict = {}):
+        if filename.endswith(".mlir"):
+            self.type = Transform.Type.MLIR
+        elif filename.endswith(".py"):
+            self.type = Transform.Type.Python
+        else:
+            raise ValueError(f"Unsupported transform file type: {filename}")
         self.filename = filename
+        self.options = options
 
     def __str__(self) -> str:
-        """serialize filename for transform stage consumption"""
-        return f"{self.filename}"
+        """serialize name + filename for debugging purposes"""
+        if not self.options:
+            return self.name
+        return f"{self.filename}{{{self.options}}}"
 
 
 class Stage:
@@ -129,14 +145,49 @@ class PassStage(Stage):
 
 class TransformStage(Stage):
     """
-    A stage that applies a predefined set of transformations to the module. This is a simple wrapper around a Transform Schedule.
+    A stage that applies a predefined set of transformations to the module.
+    This is a simple wrapper around a Transform Schedule.
+
+    The MLIR file format must have:
+      * a module with attributes {transform.with_named_sequence}
+      * transform.named_sequence inside that module
+
+    The Python file format must have:
+      * a function called create_schedule
+      * with a dictionary argument for the options
     """
 
-    def __init__(self, filename: str, context: ir.Context):
-        self.module = import_mlir_module(filename, context)
-        if "transform.with_named_sequence" not in self.module.operation.attributes:
+    def __init__(self, transform: Transform, context: ir.Context):
+        self.PYTHON_FUNCTION = "create_schedule"
+        self.MLIR_ATTRIBUTE = "transform.with_named_sequence"
+
+        if transform.type == Transform.Type.MLIR:
+            # For MLIR transforms, we expect the file to define an MLIR transform sequence
+            # that we can import and apply to the module. This will be checked below.
+            self.module = import_mlir_module(transform.filename, context)
+        elif transform.type == Transform.Type.Python:
+            # For Python transforms, we expect the file to define a function called "create_schedule"
+            # that takes an MLIR module and returns a transformed MLIR module.
+            module_name = Path(os.path.basename(transform.filename)).stem
+            spec = importlib.util.spec_from_file_location(
+                module_name, transform.filename
+            )
+            transform_module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(transform_module)
+            if not hasattr(transform_module, self.PYTHON_FUNCTION):
+                raise ValueError(
+                    f"Transform module {transform.filename} does not define a {self.PYTHON_FUNCTION} function."
+                )
+            self.apply_transform = getattr(transform_module, self.PYTHON_FUNCTION)
+            with context, ir.Location.unknown():
+                self.module = self.apply_transform(transform.options)
+        else:
+            raise ValueError(f"Unsupported transform type: {transform.type}")
+
+        # Check if the imported module contains a schedule
+        if self.MLIR_ATTRIBUTE not in self.module.operation.attributes:
             raise ValueError(
-                f"Transform module {filename} does is not a transform schedule."
+                f"Transform module {transform.filename} does not define a {self.MLIR_ATTRIBUTE} attribute."
             )
         self.schedule = self.module.body.operations[0]
 
@@ -189,14 +240,16 @@ class Driver:
 
         elif os.path.exists(stage_name):
             # Transform or YAML
-            if stage_name.endswith(".mlir"):
-                self.pipeline.append(TransformStage(stage_name, self.context))
+            if stage_name.endswith(".mlir") or stage_name.endswith(".py"):
+                self.pipeline.append(
+                    TransformStage(Transform(stage_name), self.context)
+                )
             elif stage_name.endswith(".yaml"):
                 desc = PipelineDescriptor(stage_name)
                 for s in desc.get_stages():
                     self.add_stage(s)
             else:
-                raise ValueError("Unknown file type {stage_name} for stage.")
+                raise ValueError(f"Unknown file type {stage_name} for stage.")
 
         else:
             # Assume random strings represent a single pass
