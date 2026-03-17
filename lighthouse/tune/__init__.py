@@ -1,3 +1,3 @@
 from . import trace, rewrite, enumerate
 
-__all__ = ["trace", "rewrite", "enumerate"]
+__all__ = ["enumerate", "rewrite", "trace"]
