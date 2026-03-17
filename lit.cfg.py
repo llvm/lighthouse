@@ -39,10 +39,9 @@ config.test_format = lit.formats.ShTest(True)
 config.test_source_root = project_root
 config.test_exec_root = project_root + "/lit.out"
 
+# Set up substitutions for tools and environment variables.
 config.substitutions.append(("FileCheck", find_filecheck()))
-config.substitutions.append(("lh-opt", project_root + "/tools/lh-opt/lh-opt.py"))
 config.substitutions.append(("%TEST", project_root + "/test"))
-
 config.substitutions.append(("%CACHE", project_root + "/cache"))
 config.substitutions.append(("%VIRTUAL_ENV", os.environ.get("VIRTUAL_ENV", "")))
 python = os.environ.get("PYTHON", "python")
@@ -53,6 +52,13 @@ if pythonpath := os.environ.get("PYTHONPATH"):
         f"env PYTHONPATH={shlex.quote(pythonpath)} {python}",
     )
 
+for tool_dir, _, files in os.walk(project_root + "/tools"):
+    for file in files:
+        tool_path = os.path.join(tool_dir, file)
+        if os.access(tool_path, os.X_OK):
+            config.substitutions.append((file, tool_path))
+
+# Set available features based on the presence of Python packages and git submodules.
 for pkg in ["torch", "mpi4py", "mpich", "impi-rt"]:
     if importlib.util.find_spec(pkg):
         config.available_features.add(pkg)

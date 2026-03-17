@@ -3,14 +3,10 @@ from mlir.dialects import ext, transform
 
 
 def register_and_load(context=None):
-    """Register and load the SMTIntValue caster."""
-
     PatternDialect.load()
 
 
 class PatternDialect(ext.Dialect, name="transform_ext"):
-    pass
-
     @classmethod
     def load(cls, *args, **kwargs):
         super().load(*args, **kwargs)
@@ -20,10 +16,15 @@ class PatternDialect(ext.Dialect, name="transform_ext"):
 
 
 class PopulatePatternOp(PatternDialect.Operation, name="populate_pattern"):
+    """An operation to populate a pattern set with a specific pattern."""
+
     op_kind: ir.StringAttr
     pattern_name: ir.StringAttr
     priority: ir.IntegerAttr
 
+    # A mapping from pattern names to their corresponding rewrite functions.
+    # This should be populated by the users of this operation. In effect serves
+    # as a registry for rewrite patterns that can be applied by this operation.
     name_to_rewrite_pattern = {}
 
     @classmethod
@@ -38,11 +39,10 @@ class PopulatePatternOp(PatternDialect.Operation, name="populate_pattern"):
             op: "PopulatePatternOp",
             patternset: rewrite.RewritePatternSet,
         ) -> None:
-            priority = op.priority.value
             patternset.add(
                 op.op_kind.value,
                 op.name_to_rewrite_pattern[op.pattern_name.value],
-                benefit=priority,
+                benefit=op.priority.value,
             )
 
 
