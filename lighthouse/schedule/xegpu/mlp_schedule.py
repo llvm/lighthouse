@@ -427,6 +427,8 @@ def xegpu_wg_annotation_for_mlp_layer(
     prefetch_tile_b = [prefetch_b_k, prefetch_b_n]
 
     @td_smt_ext.constrain_params(
+        wg_m,
+        wg_n,
         sg_m,
         sg_n,
         k_tile,
@@ -440,7 +442,19 @@ def xegpu_wg_annotation_for_mlp_layer(
         prefetch_b_n,
     )
     def constrain_and_calculate_load_and_prefetch_params(
-        SG_M, SG_N, K_TILE, LDA_M, LDA_K, LDB_K, LDB_N, PFA_M, PFA_K, PFB_K, PFB_N
+        WG_M,
+        WG_N,
+        SG_M,
+        SG_N,
+        K_TILE,
+        LDA_M,
+        LDA_K,
+        LDB_K,
+        LDB_N,
+        PFA_M,
+        PFA_K,
+        PFB_K,
+        PFB_N,
     ):
         # NB: normal asserts in case of concrete values, SMT assert ops for symbolic values
         smt_ext.assert_(SG_M % LDA_M == 0)
@@ -478,7 +492,7 @@ def xegpu_wg_annotation_for_mlp_layer(
         smt_ext.assert_(nb_load_b_n <= 1, "invalid load_tile_b_n for VNNI")
 
         # prefetch A layout
-        prefetch_nb_a_m = SG_M // PFA_M
+        prefetch_nb_a_m = WG_M // PFA_M
         prefetch_nb_a_k = K_TILE // PFA_K
         prefetch_nb_a = prefetch_nb_a_m * prefetch_nb_a_k
         smt_ext.assert_(prefetch_nb_a <= MAX_NB_SG_THREADS)
@@ -486,7 +500,7 @@ def xegpu_wg_annotation_for_mlp_layer(
 
         # prefetch B layout
         prefetch_nb_b_k = K_TILE // PFB_K
-        prefetch_nb_b_n = SG_N // PFB_N
+        prefetch_nb_b_n = WG_N // PFB_N
         prefetch_nb_b = prefetch_nb_b_k * prefetch_nb_b_n
         smt_ext.assert_(prefetch_nb_b <= MAX_NB_SG_THREADS)
         if isinstance(prefetch_nb_b, smt_ext.SMTIntValue):
