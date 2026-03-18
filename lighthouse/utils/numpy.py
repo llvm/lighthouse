@@ -12,7 +12,16 @@ def numpy_to_ctype(arr: np.ndarray) -> ctypes._Pointer:
     return to_ctype(get_ranked_memref_descriptor(arr))
 
 
-def numpy_to_mlir_type(dtype, ctx: ir.Context | None = None) -> ir.Type:
+def numpy_to_mlir_type(dtype: np.dtype, ctx: ir.Context | None = None) -> ir.Type:
+    """
+    Convert a numpy dtype into an MLIR type.
+
+    Args:
+        dtype: numpy dtype
+        ctx: MLIR context (default: current context)
+    Returns:
+        MLIR type
+    """
     if ctx is None:
         ctx = ir.Context.current
     with ctx:
