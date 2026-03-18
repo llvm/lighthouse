@@ -17,12 +17,13 @@ def convert_string(value: str) -> str | int | float | bool:
         return True
     elif value == "False":
         return False
-    elif value.isnumeric():
-        if value.find(".") or value.find("e"):
+    try:
+        return int(value)
+    except ValueError:
+        try:
             return float(value)
-        else:
-            return int(value)
-    return value
+        except ValueError:
+            return value
 
 
 def parse_csv(line: str, separator: str = ",") -> dict:
