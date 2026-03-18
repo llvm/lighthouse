@@ -5,7 +5,10 @@
 // RUN: lh-opt --stage=%TEST/opt/stages/pipeline-check.yaml %s | FileCheck %s --check-prefixes=LLVM_LOWERED
 // RUN: lh-opt --stage=%TEST/opt/stages/my-transform.yaml %s | FileCheck %s --check-prefixes=LLVM_LOWERED
 // RUN: lh-opt --stage=%TEST/opt/transforms/pipeline-check.py %s | FileCheck %s --check-prefixes=LLVM_LOWERED
-// RUN: lh-opt --stage=%TEST/opt/transforms/pipeline-check.py --stage=%TEST/opt/transforms/pipeline-check.py %s | FileCheck %s --check-prefixes=LLVM_LOWERED
+// RUN: lh-opt --stage=%TEST/opt/transforms/pipeline-check.py[] --stage=%TEST/opt/transforms/pipeline-check.py{} %s | FileCheck %s --check-prefixes=LLVM_LOWERED
+// RUN: lh-opt --stage=%TEST/opt/transforms/pipeline-check.py[]{skip_llvm=False} %s | FileCheck %s --check-prefixes=LLVM_LOWERED
+// RUN: lh-opt --stage=%TEST/opt/transforms/pipeline-check.py{skip_llvm=True} %s | FileCheck %s --check-prefixes=LINALG_LOWERED
+// RUN: lh-opt --stage=%TEST/opt/transforms/pipeline-check.py[gen=create_schedule]{skip_llvm} %s | FileCheck %s --check-prefixes=LINALG_LOWERED
 
 // BUFFERIZED-LABEL: func.func @entry
 // BUFFERIZED-SAME: memref

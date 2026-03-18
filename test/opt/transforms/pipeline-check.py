@@ -4,7 +4,7 @@ from lighthouse.pipeline.helper import match
 from lighthouse.pipeline.opt import PassBundles, apply_bundle
 
 
-def create_schedule(parameters: dict = {}) -> ir.Module:
+def create_schedule(options: dict = {}) -> ir.Module:
     """Creates a Transform Schedule for the test's optimization pipeline."""
 
     schedule_module = ir.Module.create()
@@ -30,7 +30,9 @@ def create_schedule(parameters: dict = {}) -> ir.Module:
             mod = apply_bundle(mod, PassBundles["BufferizationBundle"])
             mod = apply_bundle(mod, PassBundles["MLIRLoweringBundle"])
             mod = apply_bundle(mod, PassBundles["CleanupBundle"])
-            mod = apply_bundle(mod, PassBundles["LLVMLoweringBundle"])
+
+            if "skip_llvm" not in options or not options["skip_llvm"]:
+                mod = apply_bundle(mod, PassBundles["LLVMLoweringBundle"])
             transform.YieldOp()
 
     return schedule_module
