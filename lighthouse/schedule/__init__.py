@@ -1,5 +1,6 @@
 from .builders import create_schedule
 from .builders import create_named_sequence
+from .builders import schedule_boilerplate
 from .hoisting import hoist_loops
 from .linalg import linalg_to_generic
 from .linalg import linalg_to_category
@@ -24,6 +25,7 @@ __all__ = [
     "linalg_to_generic",
     "linalg_to_named",
     "pack_matmuls",
+    "schedule_boilerplate",
     "tile",
     "vectorize_all",
     "vectorize_linalg",
