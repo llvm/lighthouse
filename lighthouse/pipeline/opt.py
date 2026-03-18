@@ -37,8 +37,6 @@ def parse_csv(line: str, separator: str = ",") -> dict:
             result[key] = convert_string(value)
         else:
             result[arg] = True
-
-    print(f"{result}")
     return result
 
 
