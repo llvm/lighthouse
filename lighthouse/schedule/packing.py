@@ -1,13 +1,12 @@
 from mlir import ir
 from mlir.dialects import transform
 
-from .builders import create_schedule
-from .builders import create_named_sequence
+from .builders import schedule_boilerplate
 import lighthouse.transform as lh_transform
 
 
-def pack_matmuls(
-    block_factors: list[int],
+def block_pack_matmuls(
+    block_factors: tuple[int, int, int],
     lhs_transpose_outer_block: bool = False,
     lhs_transpose_inner_block: bool = False,
     rhs_transpose_outer_block: bool = True,
@@ -35,18 +34,22 @@ def pack_matmuls(
     Returns:
         Schedule
     """
-    schedule = create_schedule()
-    named_seq = create_named_sequence(schedule, input_types=[transform.any_op_t()])
+    if len(block_factors) != 3:
+        raise ValueError(f"Expected 3 block factors but got {len(block_factors)}")
 
-    with ir.InsertionPoint(named_seq.body):
+    with schedule_boilerplate() as (schedule, named_seq):
         ops = lh_transform.match_op(named_seq.bodyTarget, "func.func")
-        lh_transform.block_pack_matmuls(
+        transform.apply_registered_pass(
+            transform.any_op_t(),
             ops,
-            block_factors=block_factors,
-            lhs_transpose_outer_block=lhs_transpose_outer_block,
-            lhs_transpose_inner_block=lhs_transpose_inner_block,
-            rhs_transpose_outer_block=rhs_transpose_outer_block,
-            rhs_transpose_inner_block=rhs_transpose_inner_block,
+            "linalg-block-pack-matmul",
+            options={
+                "block-factors": block_factors,
+                "lhs-transpose-outer-blocks": lhs_transpose_outer_block,
+                "lhs-transpose-inner-blocks": lhs_transpose_inner_block,
+                "rhs-transpose-outer-blocks": rhs_transpose_outer_block,
+                "rhs-transpose-inner-blocks": rhs_transpose_inner_block,
+            },
         )
         lh_transform.pack_propagation(named_seq.bodyTarget)
         lh_transform.cleanup(named_seq.bodyTarget)

@@ -148,7 +148,7 @@ class Matmul(Workload):
         # GEMM block packing.
         # Create cache-friendly access pattern across matmul tiles.
         scheds.append(
-            lh_schedule.pack_matmuls(
+            lh_schedule.block_pack_matmuls(
                 block_factors=[self.tile_size, self.tile_size, self.tile_size],
                 rhs_transpose_outer_block=True,
                 rhs_transpose_inner_block=False,
@@ -157,7 +157,20 @@ class Matmul(Workload):
         scheds.append(lh_schedule_x86.lower_packs_unpacks(self.tile_size))
 
         # Convert to category ops for easier op matching.
-        scheds.append(lh_schedule.linalg_to_category())
+        with lh_schedule.schedule_boilerplate() as (sched, named_seq):
+            ops = lh_transform.match_op(named_seq.bodyTarget, "func.func")
+            transform.apply_registered_pass(
+                transform.any_op_t(),
+                ops,
+                "linalg-morph-ops",
+                options={
+                    "named-to-category": True,
+                    "generic-to-category": True,
+                },
+            )
+            lh_transform.cleanup(named_seq.bodyTarget)
+            transform.yield_()
+        scheds.append(sched)
 
         # GEMM cache tiling.
         # Create memory friendly access pattern.
@@ -219,11 +232,7 @@ class Matmul(Workload):
         scheds.append(lh_schedule.vectorize_linalg())
         scheds.append(lh_schedule.hoist_loops())
 
-        sched = lh_schedule.create_schedule()
-        named_seq = lh_schedule.create_named_sequence(
-            sched, input_types=[transform.any_op_t()]
-        )
-        with ir.InsertionPoint(named_seq.body):
+        with lh_schedule.schedule_boilerplate() as (sched, named_seq):
             with ir.InsertionPoint(
                 transform.ApplyPatternsOp(named_seq.bodyTarget).patterns
             ):
@@ -244,11 +253,7 @@ class Matmul(Workload):
         scheds.append(lh_schedule.vectorize_all())
 
         # Cleanup vector ops.
-        sched = lh_schedule.create_schedule()
-        named_seq = lh_schedule.create_named_sequence(
-            sched, input_types=[transform.any_op_t()]
-        )
-        with ir.InsertionPoint(named_seq.body):
+        with lh_schedule.schedule_boilerplate() as (sched, named_seq):
             with ir.InsertionPoint(
                 transform.ApplyPatternsOp(named_seq.bodyTarget).patterns
             ):
@@ -262,11 +267,7 @@ class Matmul(Workload):
             return scheds
 
         # Lower to LLVM.
-        sched = lh_schedule.create_schedule()
-        named_seq = lh_schedule.create_named_sequence(
-            sched, input_types=[transform.any_op_t()]
-        )
-        with ir.InsertionPoint(named_seq.body):
+        with lh_schedule.schedule_boilerplate() as (sched, named_seq):
             target = named_seq.bodyTarget
             target = apply_registered_pass(target, "convert-linalg-to-loops")
             target = apply_registered_pass(target, "fold-memref-alias-ops")

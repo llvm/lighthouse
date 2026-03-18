@@ -24,20 +24,6 @@ def vectorize_ops(
         transform.yield_()
 
 
-def vectorize_all_ops(
-    target,
-):
-    """
-    Apply vectorization to all target's nested ops.
-
-    Args:
-        target: Handle to target
-    """
-    structured.structured_vectorize_children_and_apply_patterns(
-        transform.any_op_t(), target
-    )
-
-
 def x86_vector_patterns(target):
     """
     Apply x86-specific vector patterns.

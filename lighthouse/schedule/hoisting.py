@@ -2,8 +2,7 @@ from mlir import ir
 from mlir.dialects import transform
 from mlir.dialects.transform.structured import MatchInterfaceEnum
 
-from .builders import create_schedule
-from .builders import create_named_sequence
+from .builders import schedule_boilerplate
 import lighthouse.transform as lh_transform
 
 
@@ -20,10 +19,7 @@ def hoist_loops(
     Returns:
         Schedule
     """
-    schedule = create_schedule()
-    named_seq = create_named_sequence(schedule, input_types=[transform.any_op_t()])
-
-    with ir.InsertionPoint(named_seq.body):
+    with schedule_boilerplate() as (schedule, named_seq):
         ops = lh_transform.match_op(named_seq.bodyTarget, target_op)
         lh_transform.loop_hoisting(ops)
         lh_transform.cleanup(named_seq.bodyTarget)

@@ -1,23 +1,17 @@
 from .cleanup import cleanup
 from .hoisting import loop_hoisting
 from .matchers import match_op
-from .linalg import linalg_morph_ops
 from .tiling import tile_ops
-from .packing import block_pack_matmuls
 from .packing import pack_propagation
 from .vectorization import vectorize_ops
-from .vectorization import vectorize_all_ops
 from .vectorization import x86_vector_patterns
 
 __all__ = [
-    "block_pack_matmuls",
     "cleanup",
-    "linalg_morph_ops",
     "loop_hoisting",
     "match_op",
     "pack_propagation",
     "tile_ops",
-    "vectorize_all_ops",
     "vectorize_ops",
     "x86_vector_patterns",
 ]

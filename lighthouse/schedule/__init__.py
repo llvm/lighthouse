@@ -2,12 +2,8 @@ from .builders import create_schedule
 from .builders import create_named_sequence
 from .builders import schedule_boilerplate
 from .hoisting import hoist_loops
-from .linalg import linalg_to_generic
-from .linalg import linalg_to_category
-from .linalg import linalg_to_named
-from .linalg import linalg_morph
 from .linalg import linalg_contract_fold_unit_dims
-from .packing import pack_matmuls
+from .packing import block_pack_matmuls
 from .tiling import tile
 from .vectorization import vectorize_linalg
 from .vectorization import vectorize_all
@@ -15,16 +11,12 @@ from .vectorization import x86_vectorization
 from .bufferization import bufferize
 
 __all__ = [
+    "block_pack_matmuls",
     "bufferize",
     "create_named_sequence",
     "create_schedule",
     "hoist_loops",
     "linalg_contract_fold_unit_dims",
-    "linalg_morph",
-    "linalg_to_category",
-    "linalg_to_generic",
-    "linalg_to_named",
-    "pack_matmuls",
     "schedule_boilerplate",
     "tile",
     "vectorize_all",

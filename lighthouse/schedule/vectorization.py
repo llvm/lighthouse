@@ -3,8 +3,7 @@ from mlir.dialects import transform
 from mlir.dialects.transform import structured
 from mlir.dialects.transform import vector
 
-from .builders import create_schedule
-from .builders import create_named_sequence
+from .builders import schedule_boilerplate
 import lighthouse.transform as lh_transform
 
 
@@ -15,10 +14,7 @@ def vectorize_linalg() -> ir.Module:
     Returns:
         Schedule
     """
-    schedule = create_schedule()
-    named_seq = create_named_sequence(schedule, input_types=[transform.any_op_t()])
-
-    with ir.InsertionPoint(named_seq.body):
+    with schedule_boilerplate() as (schedule, named_seq):
         ops = lh_transform.match_op(
             named_seq.bodyTarget, structured.MatchInterfaceEnum.LinalgOp
         )
@@ -45,12 +41,11 @@ def vectorize_all() -> ir.Module:
     Returns:
         Schedule
     """
-    schedule = create_schedule()
-    named_seq = create_named_sequence(schedule, input_types=[transform.any_op_t()])
-
-    with ir.InsertionPoint(named_seq.body):
+    with schedule_boilerplate() as (schedule, named_seq):
         ops = lh_transform.match_op(named_seq.bodyTarget, "func.func")
-        lh_transform.vectorize_all_ops(ops)
+        structured.structured_vectorize_children_and_apply_patterns(
+            transform.any_op_t(), ops
+        )
         lh_transform.cleanup(named_seq.bodyTarget)
 
         transform.yield_()
@@ -64,10 +59,7 @@ def x86_vectorization() -> ir.Module:
     Returns:
         Schedule
     """
-    schedule = create_schedule()
-    named_seq = create_named_sequence(schedule, input_types=[transform.any_op_t()])
-
-    with ir.InsertionPoint(named_seq.body):
+    with schedule_boilerplate() as (schedule, named_seq):
         lh_transform.x86_vector_patterns(named_seq.bodyTarget)
         lh_transform.cleanup(named_seq.bodyTarget)
 

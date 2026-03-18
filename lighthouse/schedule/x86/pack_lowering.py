@@ -5,7 +5,7 @@ from mlir.dialects.transform import loop
 from mlir.dialects.transform import vector
 from mlir.dialects.transform import tensor
 
-from lighthouse import schedule as lh_schedule
+from lighthouse.schedule import schedule_boilerplate
 from lighthouse import transform as lh_transform
 
 
@@ -90,12 +90,7 @@ def lower_packs_unpacks(tile_size: int) -> ir.Module:
     Returns:
         Schedule
     """
-    sched = lh_schedule.create_schedule()
-    named_seq = lh_schedule.create_named_sequence(
-        sched, input_types=[transform.any_op_t()]
-    )
-
-    with ir.InsertionPoint(named_seq.body):
+    with schedule_boilerplate() as (schedule, named_seq):
         pack_unpack_vector_m = max(8, tile_size)
         pack_unpack_vector_n = min(64, tile_size)
         packs = lh_transform.match_op(named_seq.bodyTarget, "linalg.pack")
@@ -131,4 +126,4 @@ def lower_packs_unpacks(tile_size: int) -> ir.Module:
         lh_transform.cleanup(named_seq.bodyTarget)
 
         transform.yield_()
-    return sched
+    return schedule

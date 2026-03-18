@@ -3,8 +3,7 @@ from mlir.dialects import transform
 from mlir.dialects.transform import bufferization
 from mlir.dialects.bufferization import LayoutMapOption
 
-from .builders import create_schedule
-from .builders import create_named_sequence
+from .builders import schedule_boilerplate
 import lighthouse.transform as lh_transform
 from lighthouse.pipeline.helper import apply_registered_pass
 
@@ -18,10 +17,7 @@ def bufferize(deallocation_pipeline: bool = False) -> ir.Module:
     Returns:
         Schedule
     """
-    schedule = create_schedule()
-    named_seq = create_named_sequence(schedule, input_types=[transform.any_op_t()])
-
-    with ir.InsertionPoint(named_seq.body):
+    with schedule_boilerplate() as (schedule, named_seq):
         target = named_seq.bodyTarget
         bufferization.bufferization_eliminate_empty_tensors(target)
         target = bufferization.bufferization_one_shot_bufferize(
