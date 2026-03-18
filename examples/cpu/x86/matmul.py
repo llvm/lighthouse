@@ -13,14 +13,13 @@ Matrix multiplication C = A * B on CPU.
 import ctypes
 import argparse
 import sys
+import warnings
 from contextlib import contextmanager
 
 import ml_dtypes
 import numpy as np
-import mlir
 from mlir import ir
-from mlir.dialects import linalg, arith, transform
-import mlir.dialects.tensor
+from mlir.dialects import linalg, transform
 from mlir.execution_engine import ExecutionEngine
 from mlir.dialects.transform import vector
 from mlir.dialects.transform import tensor
@@ -33,6 +32,7 @@ import lighthouse.utils as lh_utils
 from lighthouse import schedule as lh_schedule
 import lighthouse.schedule.x86 as lh_schedule_x86
 from lighthouse import transform as lh_transform
+import lighthouse.ingress.mlir_gen.utils as lh_mlir_utils
 from functools import cached_property
 from typing import Optional
 
@@ -52,8 +52,9 @@ class Matmul(Workload):
             raise ValueError("Unsupported data type")
         if dtype == ml_dtypes.bfloat16:
             # For BF16, enforce fixed tile size due to current rewriter pattern matching limitation.
-            # TODO: Relax when x86 BF16 pass supports dynamic indexing.
+            # TODO: Relax when x86 BF16 pass supports dynamic vector transfer indexing.
             tile_size = 32
+            warnings.warn(f"Overriding BF16 tile size to: {tile_size}")
         if tile_size % 32 != 0:
             raise ValueError(f"Tile must be a multiple of 32 but got: {tile_size}")
         if any(dim % tile_size != 0 for dim in [M, N, K]):
@@ -125,10 +126,7 @@ class Matmul(Workload):
                 b_tensor = bufferization.to_tensor(tensor_t(B_shape), B, restrict=True)
 
                 # Accumulate in F32.
-                empty = mlir.dialects.tensor.empty(C_shape, f32_type)
-                zero_cst = arith.constant(f32_type, 0.0)
-                fill = linalg.fill(zero_cst, outs=[empty])
-
+                fill = lh_mlir_utils.get_outputs(tensor_t(C_shape, f32_type))
                 matmul = linalg.matmul(a_tensor, b_tensor, outs=[fill])
 
                 bufferization.materialize_in_destination(
@@ -376,23 +374,24 @@ if __name__ == "__main__":
                 dump_payload=args.dump_kernel,
                 dump_schedule=args.dump_schedule,
             )
-        else:
-            times = benchmark(
-                wload, check_correctness=True, nruns=args.nruns, nwarmup=args.nwarmup
-            )
-            times *= 1e6  # convert to microseconds
+            sys.exit(0)
 
-            print(f"MxNxK: {args.sizes}")
-            print(f"Input dtype: {args.dtype}")
+        times = benchmark(
+            wload, check_correctness=True, nruns=args.nruns, nwarmup=args.nwarmup
+        )
+        times *= 1e6  # convert to microseconds
 
-            # compute statistics
-            mean = np.mean(times)
-            min = np.min(times)
-            max = np.max(times)
-            std = np.std(times)
-            print(
-                f"Timings (us): mean = {mean:.2f} +/-{std:.2f} min={min:.2f} max={max:.2f}"
-            )
-            flop_count = wload.get_complexity()[0]
-            gflops = flop_count / (mean * 1e-6) / 1e9
-            print(f"Throughput: {gflops:.2f} GFLOPS")
+        print(f"MxNxK: {args.sizes}")
+        print(f"Input dtype: {args.dtype}")
+
+        # compute statistics
+        mean = np.mean(times)
+        min = np.min(times)
+        max = np.max(times)
+        std = np.std(times)
+        print(
+            f"Timings (us): mean = {mean:.2f} +/-{std:.2f} min={min:.2f} max={max:.2f}"
+        )
+        flop_count = wload.get_complexity()[0]
+        gflops = flop_count / (mean * 1e-6) / 1e9
+        print(f"Throughput: {gflops:.2f} GFLOPS")
