@@ -9,29 +9,37 @@ def register_and_load(**kwargs):
     TransformDialectExtension.load(**kwargs)
 
 
-@ext.register_dialect
 class TransformDialectExtension(ext.Dialect, name="transform_ext"):
     @classmethod
     def load(cls, *args, **kwargs):
-        super(TransformDialectExtension, cls).load(*args, **kwargs, register=False)
+        # Registers the dialect and its op classes and loads the dialect and ops into the context.
+        super(TransformDialectExtension, cls).load(*args, **kwargs)
 
+        # Attach interfaces to just registered/loaded operations.
         for op in cls.operations:
-            if hasattr(op, "attach_interfaces"):
-                op.attach_interfaces()
+            if hasattr(op, "attach_interface_impls"):
+                op.attach_interface_impls()
 
 
-@ext.register_operation(TransformDialectExtension)
 class GetNamedAttributeOp(
     TransformDialectExtension.Operation, name="get_named_attribute"
 ):
+    """
+    Obtain a `target` op's associated attribute by `attr_name` as a `param`.
+
+    In case `target` resolves to multiple ops, the operation returns a list of
+    attributes. If any of the resolved `target` ops does not have an attribute
+    with the name `attr_name`, the operation fails.
+    """
+
     param: ext.Result[transform.AnyParamType[()]]
     target: ext.Operand[transform.AnyOpType]
     attr_name: ir.StringAttr
 
     @classmethod
-    def attach_interfaces(cls, ctx=None):
-        cls.TransformOpInterfaceModel.attach(cls.OPERATION_NAME, context=ctx)
-        cls.MemoryEffectsOpInterfaceModel.attach(cls.OPERATION_NAME, context=ctx)
+    def attach_interface_impls(cls, context=None):
+        cls.TransformOpInterfaceModel.attach(cls.OPERATION_NAME, context=context)
+        cls.MemoryEffectsOpInterfaceModel.attach(cls.OPERATION_NAME, context=context)
 
     class TransformOpInterfaceModel(transform.TransformOpInterface):
         @staticmethod
@@ -69,15 +77,22 @@ def get_named_attribute(target, attr_name) -> ir.Value[transform.AnyParamType]:
     return GetNamedAttributeOp(target=target, attr_name=attr_name).param
 
 
-@ext.register_operation(TransformDialectExtension)
 class ParamCmpEqOp(TransformDialectExtension.Operation, name="param_cmp_eq"):
+    """
+    Compare the values of the `lhs` and `rhs` parameters for equality.
+
+    The operation succeeds if the values are equal, and fails otherwise. If the
+    parameters resolve to multiple values, the operation succeeds if all values
+    are pairwise equal, and fails otherwise.
+    """
+
     lhs: ext.Operand[transform.AnyParamType]
     rhs: ext.Operand[transform.AnyParamType]
 
     @classmethod
-    def attach_interfaces(cls, ctx=None):
-        cls.TransformOpInterfaceModel.attach(cls.OPERATION_NAME, context=ctx)
-        cls.MemoryEffectsOpInterfaceModel.attach(cls.OPERATION_NAME, context=ctx)
+    def attach_interface_impls(cls, context=None):
+        cls.TransformOpInterfaceModel.attach(cls.OPERATION_NAME, context=context)
+        cls.MemoryEffectsOpInterfaceModel.attach(cls.OPERATION_NAME, context=context)
 
     class TransformOpInterfaceModel(transform.TransformOpInterface):
         @staticmethod
@@ -111,11 +126,17 @@ def param_cmp_eq(lhs, rhs):
     return ParamCmpEqOp(lhs=lhs, rhs=rhs)
 
 
-@ext.register_operation(TransformDialectExtension)
 class ReplaceOp(TransformDialectExtension.Operation, name="replace"):
+    """Replace the `target` operation(s) with a new `op_kind` operation.
+
+    If `new_operands` are provided, they are used as operands for the new
+    operation(s); otherwise, the operands of the `target` operation(s) are
+    reused. The result types of the new operation are the same as those of the `target`
+    """
+
     new_op: ext.Result[transform.AnyOpType[()]]
     target: ext.Operand[transform.AnyOpType]
-    new_name: ir.StringAttr
+    op_kind: ir.StringAttr
     new_operands: Sequence[ext.Operand[transform.AnyValueType]]
 
     @classmethod
@@ -143,7 +164,7 @@ class ReplaceOp(TransformDialectExtension.Operation, name="replace"):
                     "Expected number of operand values to match number of target ops"
                 )
 
-            new_op_name = op.new_name.value
+            new_op_name = op.op_kind.value
             new_op_attrs = {}
             if "new_attrs" in op.attributes:
                 new_attrs = op.attributes["new_attrs"]
