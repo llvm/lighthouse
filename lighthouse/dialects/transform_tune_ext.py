@@ -14,7 +14,7 @@ from mlir.dialects.transform import tune as transform_tune
 __all__ = ["KnobValue", "knob"]
 
 
-def register_and_load(context=None):
+def register_and_load(**kwargs):
     pass  # NB: currently nothing to register or load.
 
 

@@ -6,7 +6,7 @@ from mlir.dialects import smt
 __all__ = ["SMTIntValue", "assert_", "register_and_load"]
 
 
-def register_and_load(context=None):
+def register_and_load(**kwargs):
     """Register and load the SMTIntValue caster."""
 
     SMTIntValue.register_value_caster()

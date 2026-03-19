@@ -13,10 +13,10 @@ __all__ = [
 ]
 
 
-def register_and_load(context=None):
+def register_and_load(**kwargs):
     """Register and load the TransformSMTDialectExtension and its operations."""
 
-    TransformSMTDialectExtension.load()
+    TransformSMTDialectExtension.load(**kwargs)
 
 
 class TransformSMTDialectExtension(ext.Dialect, name="transform_smt_ext"):
@@ -24,7 +24,8 @@ class TransformSMTDialectExtension(ext.Dialect, name="transform_smt_ext"):
 
     @classmethod
     def load(cls, *args, **kwargs):
-        super(TransformSMTDialectExtension, cls).load(*args, **kwargs)
+        # Registers the dialect and its op classes and loads the dialect and ops into the context.
+        super().load(*args, **kwargs)
 
         for op in cls.operations:
             if hasattr(op, "attach_interfaces"):
