@@ -31,7 +31,7 @@ def create_schedule(options: dict = {}) -> ir.Module:
             mod = apply_bundle(mod, PassBundles["MLIRLoweringBundle"])
             mod = apply_bundle(mod, PassBundles["CleanupBundle"])
 
-            if "skip_llvm" not in options or not options["skip_llvm"]:
+            if not options.get("skip_llvm", False):
                 mod = apply_bundle(mod, PassBundles["LLVMLoweringBundle"])
             transform.YieldOp()
 

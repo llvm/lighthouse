@@ -148,7 +148,7 @@ class Transform:
 
     In the filename, the arguments ([...]) will define:
       * gen: function name in case of a python file,
-             what name to look for to get the module
+             what name to look for to get the MLIR module
       * seq: the named sequence to look for. FIXME: This is not implemented yet.
              Empty will pick the first.
 
