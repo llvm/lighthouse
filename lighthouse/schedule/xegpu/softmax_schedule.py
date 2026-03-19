@@ -222,7 +222,7 @@ def bundle_xegpu_softmax_schedule(
     store_ops = match_and_split(gpu_func, ops={"xegpu.store_nd"}, nhandles=1)
     sg_layout = [parameters["sg_rows"], 1]
     sg_data = [parameters["sg_rows"], parameters["sizes"][1]]
-    xegpu.set_op_layout_attr(store_ops[0], sg_layout=sg_layout, sg_data=sg_data)
+    xegpu.set_anchor_layout(store_ops[0], sg_layout=sg_layout, sg_data=sg_data)
 
     if stop_at_stage == "xegpu-wg":
         raise PipelineInterrupt()
