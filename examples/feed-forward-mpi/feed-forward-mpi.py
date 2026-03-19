@@ -17,8 +17,6 @@ import numpy as np
 
 from mlir import ir
 from mlir.dialects import transform
-from mlir.dialects.transform.bufferization import OneShotBufferizeOp
-from mlir.dialects.bufferization import LayoutMapOption
 from mlir.execution_engine import ExecutionEngine
 from mlir.runtime.np_to_memref import (
     ranked_memref_to_numpy,
@@ -292,53 +290,18 @@ class DistFF(Workload):
 
         return mod
 
-    def get_shard_schedule(self):
-        with schedule_boilerplate() as (schedule, named_sequence):
-            func = match(named_sequence.bodyTarget, ops={"func.func"})
-            func = apply_registered_pass(
-                func,
-                "sharding-propagation",
-                options={"traversal": "forward-backward"},
-            )
-            if self.verbose > 0:
-                transform.PrintOp(target=func)
-            func = apply_registered_pass(func, "shard-partition")
-            if self.verbose > 0:
-                transform.PrintOp(target=func)
-            func = apply_registered_pass(func, "shard-simplify")
-            if self.verbose > 0:
-                transform.PrintOp(target=func)
-            func = apply_registered_pass(func, "convert-shard-to-mpi")
-            func = apply_registered_pass(func, "canonicalize")
-            if self.verbose > 0:
-                transform.PrintOp(target=func)
-            func = apply_registered_pass(func, "tosa-to-linalg")
-            transform.YieldOp()
-        return schedule
+    def get_shard_pipeline(self):
+        return [
+            "func.func(sharding-propagation{traversal=forward-backward})",
+            "func.func(shard-partition)",
+            "func.func(shard-simplify)",
+            "func.func(convert-shard-to-mpi)",
+            "canonicalize",
+            "func.func(tosa-to-linalg)",
+        ]
 
-    def get_bufferize_schedule(self):
+    def get_bufferize_pipeline(self):
         with schedule_boilerplate() as (schedule, named_sequence):
-            anytype = transform.AnyOpType.get()
-            func = match(named_sequence.bodyTarget, ops={"func.func"})
-            mod = transform.get_parent_op(
-                anytype, func, op_name="builtin.module", deduplicate=True
-            )
-            mod = apply_registered_pass(mod, "linalg-generalize-named-ops")
-            mod = apply_registered_pass(mod, "linalg-fuse-elementwise-ops")
-            identity_layout = LayoutMapOption.IdentityLayoutMap
-            mod = apply_registered_pass(mod, "eliminate-empty-tensors")
-            mod = OneShotBufferizeOp(
-                mod,
-                allow_return_allocs_from_loops=False,
-                bufferize_function_boundaries=True,
-                function_boundary_type_conversion=identity_layout,
-            )
-            mod = apply_registered_pass(
-                mod,
-                "drop-equivalent-buffer-results",
-                options={"modify-public-functions": True},
-            )
-
             # Run passes to inject deallocations. Don't do this for dealloc_2d, though.
             for fname in [
                 self.benchmark_function_name,
@@ -351,57 +314,54 @@ class DistFF(Workload):
                 "alloc_wout",
             ]:
                 func = match(
-                    mod,
+                    named_sequence.bodyTarget,
                     ops={"func.func"},
                     op_attrs={"sym_name": ir.StringAttr.get(fname)},
                 )
                 func = apply_registered_pass(func, "buffer-deallocation-pipeline")
-                mod = transform.get_parent_op(
-                    anytype, func, op_name="builtin.module", deduplicate=True
-                )
             transform.YieldOp()
-        return schedule
 
-    def get_lower_schedule(self):
-        with schedule_boilerplate() as (schedule, named_sequence):
-            anytype = transform.AnyOpType.get()
-            func = match(named_sequence.bodyTarget, ops={"func.func"})
-            mod = transform.get_parent_op(
-                anytype, func, op_name="builtin.module", deduplicate=True
-            )
-            mod = apply_registered_pass(mod, "convert-linalg-to-parallel-loops")
-            mod = apply_registered_pass(mod, "scf-parallel-loop-fusion")
-            mod = apply_registered_pass(mod, "canonicalize")
-            mod = apply_registered_pass(mod, "expand-strided-metadata")
-            mod = apply_registered_pass(mod, "lower-affine")
-            mod = apply_registered_pass(mod, "convert-vector-to-scf")
-            mod = apply_registered_pass(mod, "convert-scf-to-cf")
-            mod = apply_registered_pass(mod, "symbol-dce")
-            mod = apply_registered_pass(mod, "convert-vector-to-llvm")
-            mod = apply_registered_pass(mod, "canonicalize")
-            mod = apply_registered_pass(mod, "convert-to-llvm")
-            mod = apply_registered_pass(mod, "reconcile-unrealized-casts")
-            mod = apply_registered_pass(mod, "cse")
-            if self.verbose > 1:
-                transform.PrintOp(target=mod)
-            transform.YieldOp()
-        return schedule
+        return [
+            "linalg-generalize-named-ops",
+            "eliminate-empty-tensors",
+            "one-shot-bufferize{bufferize-function-boundaries,function-boundary-type-conversion=identity-layout-map}",
+            "drop-equivalent-buffer-results{modify-public-functions=1}",
+        ] + [schedule]
+
+    def get_lower_pipeline(self):
+        return [
+            "convert-linalg-to-parallel-loops",
+            "scf-parallel-loop-fusion",
+            "canonicalize",
+            "expand-strided-metadata",
+            "lower-affine",
+            "convert-vector-to-scf",
+            "convert-scf-to-cf",
+            "symbol-dce",
+            "convert-vector-to-llvm",
+            "canonicalize",
+            "convert-to-llvm",
+            "reconcile-unrealized-casts",
+            "cse",
+        ]
 
     def pipeline(
         self, stop_at_stage: Optional[str] = None, parameters: Optional[dict] = None
-    ) -> list[ir.Module]:
+    ) -> list[ir.Module | str]:
         """Generate schedules:
         - sharding propagation, partition, and MPI, tosa-to-linalg
         - adding benchmark wrapper
         - tile_and_vector
         - all the rest"""
-        return [
-            self.get_shard_schedule(),
-            get_bench_wrapper_schedule(self),
-            tile_and_vector_matmul.create(self.tile_size),
-            self.get_bufferize_schedule(),
-            self.get_lower_schedule(),
-        ]
+        return (
+            self.get_shard_pipeline()
+            + [
+                get_bench_wrapper_schedule(self),
+                tile_and_vector_matmul.create(self.tile_size),
+            ]
+            + self.get_bufferize_pipeline()
+            + self.get_lower_pipeline()
+        )
 
 
 if __name__ == "__main__":

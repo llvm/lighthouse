@@ -40,6 +40,7 @@ def parse_csv(line: str, separator: str = ",") -> dict:
 
 
 def remove_args_and_opts(line: str) -> str:
+    print(line)
     if m := re.search(r"^([^[{]*)", line):
         line = m.group(0)
     return line
