@@ -11,7 +11,7 @@ from mlir.execution_engine import ExecutionEngine
 from mlir.runtime.np_to_memref import get_ranked_memref_descriptor
 
 from lighthouse.dialects import transform_ext
-from lighthouse.schedule.utils import schedule_boilerplate
+from lighthouse.schedule import schedule_boilerplate
 from lighthouse.utils.mlir import get_mlir_library_path
 from lighthouse.utils.memref import to_packed_args
 from lighthouse.workload import Workload
