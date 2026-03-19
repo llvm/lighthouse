@@ -17,9 +17,10 @@ from lighthouse.dialects import transform_smt_ext
 class Node(ABC):
     """Base class for `Node`s which can be evaluated w.r.t. an `environment`.
 
-    When tracing the IR, to construct a DAG of values dependent on tuneables,
-    each node in that DAG is of type `Node`. In the context of evaluating (the
-    roots) of these DAGs, `environment` means the tuneable |-> Python value map.
+    When tracing the IR to construct a DAG of values dependent on tuneables,
+    the DAG's nodes are all of (sub-)type (of) `Node`. In the context of
+    evaluating nodes of the DAG, such as the roots, `environment` means the
+    tuneable |-> value map.
     """
 
     @abstractmethod
