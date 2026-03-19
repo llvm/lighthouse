@@ -282,25 +282,30 @@ class Driver:
     Calling reset() will clear the pipeline and the module, allowing for a new pipeline to be constructed and run on a new module.
     """
 
-    def __init__(self, filename: str, stages: list[str] = []):
+    def __init__(self, payload: str | ir.Module = None, stages: list[str | Stage] = []):
         # The context is shared across the entire pipeline, and is used to create the PassManager and Transform Schedules.
         # The module is owned by the Driver to encapsulate its use through the pipeline.
         # It is returned at the end of run() after being transformed by the stages in the pipeline.
         self.context = ir.Context()
         self.module = None
-        if filename:
-            self.import_payload(filename)
+        if payload is not None:
+            self.import_payload(payload)
         self.pipeline: list[Stage] = []
         self.pipeline_fixed = False
         self.bundles = PassBundles
         if stages:
             self.add_stages(stages)
 
-    def import_payload(self, path: str) -> None:
-        """Import the payload module and set it as the current module in the pipeline."""
+    def import_payload(self, payload: str | ir.Module) -> None:
+        """Import the payload and set it as the current module in the pipeline. Accepts a file path or a ready ir.Module."""
         if self.module is not None:
             raise ValueError("Module already imported. Reset to start again.")
-        self.module = import_mlir_module(path, self.context)
+        if isinstance(payload, ir.Module):
+            if payload.context != self.context:
+                raise ValueError("Payload context does not match the Driver context.")
+            self.module = payload
+        else:
+            self.module = import_mlir_module(payload, self.context)
 
     def add_stage(self, stage: str | Stage) -> None:
         """Add a stage to the pipeline. Accepts a ready Stage object or a string (pass name, bundle name, or file path)."""
