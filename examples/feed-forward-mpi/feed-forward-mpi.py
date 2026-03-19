@@ -26,6 +26,7 @@ from mlir.runtime.np_to_memref import (
     as_ctype,
 )
 
+from lighthouse import dialects as lh_dialects
 from lighthouse.utils.memref import (
     to_ctype as memref_to_ctype,
     deallocate_memrefs_on_exit,
@@ -412,6 +413,8 @@ if __name__ == "__main__":
     R = MPI.COMM_WORLD.Get_rank()
 
     with ir.Context(), ir.Location.unknown():
+        lh_dialects.register_and_load()
+
         wload = DistFF(args, P, R)
 
         # execute(wload, verbose=args.verbose)

@@ -24,8 +24,8 @@ from mlir.execution_engine import ExecutionEngine
 from mlir.dialects.transform import vector
 from mlir.dialects.transform import tensor
 
-from lighthouse.workload import benchmark
-from lighthouse.workload import get_bench_wrapper_schedule
+from lighthouse import dialects as lh_dialects
+from lighthouse.workload import benchmark, get_bench_wrapper_schedule
 from lighthouse.utils.numpy import numpy_to_mlir_type
 from lighthouse.pipeline.helper import apply_registered_pass
 import lighthouse.utils as lh_utils
@@ -358,6 +358,8 @@ if __name__ == "__main__":
     args = parse_cli()
 
     with ir.Context(), ir.Location.unknown():
+        lh_dialects.register_and_load()
+
         match args.dtype:
             case "f32":
                 in_dtype = np.float32

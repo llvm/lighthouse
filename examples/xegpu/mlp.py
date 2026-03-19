@@ -24,6 +24,7 @@ import numpy as np
 from mlir import ir
 from mlir.execution_engine import ExecutionEngine
 
+from lighthouse import dialects as lh_dialects
 from lighthouse.workload import benchmark, get_bench_wrapper_schedule
 from lighthouse.utils.memref import to_ctype as memref_to_ctype
 from lighthouse.utils.numpy import numpy_to_ctype
@@ -375,6 +376,8 @@ if __name__ == "__main__":
     identity_weights = args.check_result
 
     with ir.Context(), ir.Location.unknown():
+        lh_dialects.register_and_load()
+
         wload = XeGPUMLP(
             batch_size=args.batch_size,
             input_size=args.input_size,

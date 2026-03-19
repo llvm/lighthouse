@@ -5,11 +5,14 @@ Utility functions for running workloads.
 import numpy as np
 import os
 from mlir import ir
-from mlir.dialects import func, arith, scf, memref
+from mlir.dialects import transform
+from mlir.dialects.transform import structured
 from mlir.execution_engine import ExecutionEngine
 from mlir.runtime.np_to_memref import get_ranked_memref_descriptor
-from lighthouse.schedule.pattern_schedule import pattern_rewrite_schedule
-from lighthouse.utils.mlir import func_cif, get_mlir_library_path
+
+from lighthouse.dialects import transform_ext
+from lighthouse.schedule import schedule_boilerplate
+from lighthouse.utils.mlir import get_mlir_library_path
 from lighthouse.utils.memref import to_packed_args
 from lighthouse.workload import Workload
 from typing import Optional
@@ -66,70 +69,21 @@ def execute(
                 raise ValueError("Benchmark verification failed.")
 
 
-def bench_wrapper_pattern(funcname: str, benchname=None):
-    """Returns a rewrite pattern that matches a function named `funcname` and clones it
-    as a new function with name given by `benchname` (default: "bench_" + funcname).
-    The new function is a benchmark wrapper that calls the payload function and times it.
-    Every function call is timed separately. Returns the times (seconds) in a memref,
-    which is passed as an additional argument to the benchmark function.
-    It also takes two additional arguments for the number of runs and warmup iterations.
-    """
-    marker = "__bench_wrapped__"
-    if benchname is None:
-        benchname = f"bench_{funcname}"
-
-    def match_and_rewrite(op, rewriter):
-        if op.name.value != funcname:
-            return True  # Failed match, return truthy value
-        if marker in op.attributes:
-            return True  # Already wrapped, skip
-        payload_arguments = op.type.inputs
-
-        with rewriter.ip, op.location:
-            # define rtclock function
-            f64_t = ir.F64Type.get()
-            func.FuncOp("rtclock", ((), (f64_t,)), visibility="private")
-            # emit benchmark function
-            time_memref_t = ir.MemRefType.get(
-                (ir.ShapedType.get_dynamic_size(),), f64_t
-            )
-            index_t = ir.IndexType.get()
-            args = payload_arguments + [time_memref_t, index_t, index_t]
-
-            @func_cif(*args, name=benchname)
-            def bench(*args):
-                index_t = ir.IndexType.get()
-                zero = arith.constant(index_t, 0)
-                one = arith.constant(index_t, 1)
-                for i in scf.for_(zero, args[-1], one):
-                    # FIXME(upstream): func.call is broken for this use case?
-                    func.CallOp(op, list(args[: len(payload_arguments)]))
-                    scf.yield_(())
-                for i in scf.for_(zero, args[-2], one):
-                    tic = func.call((f64_t,), "rtclock", ())
-                    func.CallOp(op, list(args[: len(payload_arguments)]))
-                    toc = func.call((f64_t,), "rtclock", ())
-                    time = arith.subf(toc, tic)
-                    memref.store(time, args[-3], [i])
-                    scf.yield_(())
-
-        # Mark original function as wrapped
-        op.attributes[marker] = ir.UnitAttr.get()
-        return None  # Success
-
-    return match_and_rewrite
-
-
 def get_bench_wrapper_schedule(workload: Workload):
-    return pattern_rewrite_schedule(
-        {
-            "func.func": bench_wrapper_pattern(
-                workload.payload_function_name,
-                workload.benchmark_function_name,
-            )
-        },
-        "add_bench_pattern",
-    )
+    with schedule_boilerplate() as (schedule, named_seq):
+        named_func = structured.structured_match(
+            transform.AnyOpType.get(),
+            target=named_seq.bodyTarget,
+            ops={"func.func"},
+            op_attrs={"sym_name": ir.StringAttr.get(workload.payload_function_name)},
+        )
+        bench_func = transform_ext.wrap_in_benching_func(
+            named_func, bench_name=workload.benchmark_function_name
+        )
+        transform.yield_([bench_func])
+
+    schedule.body.operations[0].verify()
+    return schedule
 
 
 def benchmark(

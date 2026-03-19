@@ -21,6 +21,7 @@ from mlir.runtime.np_to_memref import (
 from mlir.dialects import func, linalg, arith, memref
 from mlir.execution_engine import ExecutionEngine
 
+from lighthouse import dialects as lh_dialects
 from lighthouse.workload import execute, benchmark
 import lighthouse.utils as lh_utils
 
@@ -195,6 +196,8 @@ class ElementwiseSumMLIRAlloc(ElementwiseSum):
 
 if __name__ == "__main__":
     with ir.Context(), ir.Location.unknown():
+        lh_dialects.register_and_load()
+
         wload = ElementwiseSumMLIRAlloc(400, 400)
 
         print(" Dump kernel ".center(60, "-"))
