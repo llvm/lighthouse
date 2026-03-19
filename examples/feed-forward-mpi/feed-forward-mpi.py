@@ -32,7 +32,7 @@ from lighthouse.utils.memref import (
 )
 from lighthouse.pipeline.helper import apply_registered_pass, match
 from lighthouse.workload import Workload, benchmark, get_bench_wrapper_schedule
-from lighthouse.schedule.utils import schedule_boilerplate
+from lighthouse.schedule import schedule_boilerplate
 from lighthouse.schedule.x86 import tile_and_vector_matmul
 from ff_weight_stationary import generate_ff_payload
 

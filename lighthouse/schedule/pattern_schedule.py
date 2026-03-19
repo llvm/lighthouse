@@ -1,6 +1,6 @@
 from mlir import rewrite, ir
 from mlir.dialects import ext, transform
-from lighthouse.schedule.utils import schedule_boilerplate
+from lighthouse.schedule import schedule_boilerplate
 
 
 @ext.register_dialect
