@@ -10,6 +10,8 @@ from abc import ABC, abstractmethod
 from contextlib import contextmanager
 from typing import Optional
 
+from lighthouse.pipeline.opt import Driver, Stage, Transform, TransformStage
+
 
 class Workload(ABC):
     """
@@ -37,13 +39,16 @@ class Workload(ABC):
         pass
 
     @abstractmethod
-    def schedule_modules(
+    def pipeline(
         self,
         stop_at_stage: Optional[str] = None,
         parameters: Optional[dict] = None,
-    ) -> list[ir.Module]:
+    ) -> list[str | Stage | ir.Module]:
         """
-        Generate one or more MLIR modules containing the transform schedules.
+        Return a list of pipeline stages for lowering the payload.
+
+        Each element can be a ready Stage object, an ir.Module (transform
+        schedule), a Stage, or a string (pass name, bundle name, or file path).
 
         The `stop_at_stage` argument can be used to interrupt lowering at
         a desired IR level for debugging purposes.
@@ -57,37 +62,36 @@ class Workload(ABC):
         schedule_parameters: Optional[dict] = None,
     ) -> ir.Module:
         """
-        Apply transform schedules to the payload module.
+        Apply the pipeline stages to the payload module using the Driver.
 
         Optionally dumps the payload IR at the desired level and/or the
-        transform schedules to stdout.
+        pipeline stages to stdout.
 
         Returns the lowered payload module.
         """
         payload_module = self.payload_module()
-        schedule_modules = self.schedule_modules(
+        stages = self.pipeline(
             stop_at_stage=dump_payload, parameters=schedule_parameters
         )
-        if not isinstance(schedule_modules, list):
+        if not isinstance(stages, list):
             raise TypeError(
-                f"schedule_modules() must return a list of ir.Module instances, "
-                f"got {type(schedule_modules).__name__}"
+                f"pipeline() must return a list, got {type(stages).__name__}"
             )
-        if not schedule_modules:
-            raise ValueError(
-                "schedule_modules() must return at least one schedule module."
-            )
-        if not dump_payload or dump_payload != "initial":
-            for schedule_module in schedule_modules:
-                # apply schedule on payload module
-                named_seq = schedule_module.body.operations[0]
-                named_seq.apply(payload_module)
-        if dump_payload:
+        if dump_payload and dump_payload == "initial":
             print(payload_module)
+            return payload_module
+        stages = [
+            TransformStage(Transform(s), s.context) if isinstance(s, ir.Module) else s
+            for s in stages
+        ]
+        driver = Driver(payload_module, stages)
         if dump_schedule:
-            for schedule_module in schedule_modules:
-                print(schedule_module)
-        return payload_module
+            for stage in driver.pipeline:
+                print(stage)
+        module = driver.run()
+        if dump_payload:
+            print(module)
+        return module
 
     @abstractmethod
     @contextmanager

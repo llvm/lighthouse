@@ -97,13 +97,8 @@ def benchmark(
     check_correctness: bool = True,
     verbose: int = 0,
 ) -> np.ndarray:
-    # get original payload module
-    payload_module = workload.payload_module()
-
-    # Lower payload with one or more schedules
-    schedule_modules = workload.schedule_modules(parameters=schedule_parameters)
-    for schedule_module in schedule_modules:
-        schedule_module.body.operations[0].apply(payload_module)
+    # Lower payload with pipeline
+    payload_module = workload.lower_payload(schedule_parameters=schedule_parameters)
 
     # get execution engine, rtclock requires mlir_c_runner
     libs = workload.shared_libs()

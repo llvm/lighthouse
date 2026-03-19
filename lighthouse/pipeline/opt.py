@@ -188,7 +188,7 @@ class Transform:
             with context, ir.Location.unknown():
                 return gen(self._options)
         else:
-            raise ValueError(f"Unsupported transform file type: {self._filename}")
+            raise ValueError(f"Unsupported transform type: {self._filename}")
 
     def __str__(self) -> str:
         """serialize name + filename for debugging purposes"""
@@ -286,7 +286,9 @@ class Driver:
         # The context is shared across the entire pipeline, and is used to create the PassManager and Transform Schedules.
         # The module is owned by the Driver to encapsulate its use through the pipeline.
         # It is returned at the end of run() after being transformed by the stages in the pipeline.
-        self.context = ir.Context()
+        self.context = (
+            payload.context if isinstance(payload, ir.Module) else ir.Context()
+        )
         self.module = None
         if payload is not None:
             self.import_payload(payload)

@@ -120,7 +120,7 @@ class ElementwiseSum(Workload):
 
         return mod
 
-    def schedule_modules(
+    def pipeline(
         self, stop_at_stage: Optional[str] = None, parameters: Optional[dict] = None
     ) -> ir.Module:
         schedule_module = ir.Module.create()

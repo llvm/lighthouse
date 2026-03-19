@@ -194,7 +194,7 @@ class XeGPUMatMul(XeGPUWorkload):
         )
         return mod
 
-    def schedule_modules(
+    def pipeline(
         self, stop_at_stage: Optional[str] = None, parameters: Optional[dict] = None
     ) -> list[ir.Module]:
         assert parameters is not None, "Schedule parameters must be provided"
