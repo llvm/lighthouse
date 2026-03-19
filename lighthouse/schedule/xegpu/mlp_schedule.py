@@ -50,8 +50,8 @@ def match_and_split(*args, nhandles=1, **kwargs):
 
 
 @KnobValue.ast_rewrite(in_exprs=True)
-def checked_params_or_knobs(
-    params: dict[str, int | None], layer_id=""
+def params_with_constraints_imposed(
+    params: dict[str, int | None], knob_name_prefix=""
 ) -> dict[str, int | KnobValue]:
     """Check the parameters for validity and replace `None`s with knobs with asserted ranges.
 
@@ -60,19 +60,19 @@ def checked_params_or_knobs(
     m, n, k = params["m"], params["n"], params["k"]
     assert isinstance(m, int) and isinstance(n, int) and isinstance(k, int)
     assert m > 0 and n > 0 and k > 0
-    wg_m = params["wg_m"] or knob(layer_id + "wg_m")
-    wg_n = params["wg_n"] or knob(layer_id + "wg_n")
-    sg_m = params["sg_m"] or knob(layer_id + "sg_m")
-    sg_n = params["sg_n"] or knob(layer_id + "sg_n")
-    k_tile = params["k_tile"] or knob(layer_id + "k_tile")
-    load_a_m = params["load_a_m"] or knob(layer_id + "load_a_m")
-    load_a_k = params["load_a_k"] or knob(layer_id + "load_a_k")
-    load_b_k = params["load_b_k"] or knob(layer_id + "load_b_k")
-    load_b_n = params["load_b_n"] or knob(layer_id + "load_b_n")
-    prefetch_a_m = params["prefetch_a_m"] or knob(layer_id + "prefetch_a_m")
-    prefetch_a_k = params["prefetch_a_k"] or knob(layer_id + "prefetch_a_k")
-    prefetch_b_k = params["prefetch_b_k"] or knob(layer_id + "prefetch_b_k")
-    prefetch_b_n = params["prefetch_b_n"] or knob(layer_id + "prefetch_b_n")
+    wg_m = params["wg_m"] or knob(knob_name_prefix + "wg_m")
+    wg_n = params["wg_n"] or knob(knob_name_prefix + "wg_n")
+    sg_m = params["sg_m"] or knob(knob_name_prefix + "sg_m")
+    sg_n = params["sg_n"] or knob(knob_name_prefix + "sg_n")
+    k_tile = params["k_tile"] or knob(knob_name_prefix + "k_tile")
+    load_a_m = params["load_a_m"] or knob(knob_name_prefix + "load_a_m")
+    load_a_k = params["load_a_k"] or knob(knob_name_prefix + "load_a_k")
+    load_b_k = params["load_b_k"] or knob(knob_name_prefix + "load_b_k")
+    load_b_n = params["load_b_n"] or knob(knob_name_prefix + "load_b_n")
+    prefetch_a_m = params["prefetch_a_m"] or knob(knob_name_prefix + "prefetch_a_m")
+    prefetch_a_k = params["prefetch_a_k"] or knob(knob_name_prefix + "prefetch_a_k")
+    prefetch_b_k = params["prefetch_b_k"] or knob(knob_name_prefix + "prefetch_b_k")
+    prefetch_b_n = params["prefetch_b_n"] or knob(knob_name_prefix + "prefetch_b_n")
 
     # NB: Constraints on knobs will be added as attributes on the KnobOps, while
     #     constraints on concrete values will be checked immediately.
@@ -143,8 +143,8 @@ def get_schedule_module(
                 deduplicate=True,
             )
             for i, layer_params in enumerate(params):
-                layer_params |= checked_params_or_knobs(
-                    layer_params, layer_id=f"layer_{i}_"
+                layer_params |= params_with_constraints_imposed(
+                    layer_params, knob_name_prefix=f"layer_{i}_"
                 )
 
             xegpu_mlp_transform_schedule(
@@ -335,9 +335,7 @@ def bundle_xegpu_mlp_schedule(
             sg_n_threads = WG_N // SG_N
             sg_threads = sg_m_threads * sg_n_threads
             smt_ext.assert_(sg_threads <= MAX_NB_SG_THREADS, "too many SG threads")
-            if isinstance(sg_threads, smt_ext.SMTIntValue):
-                # NB: Constraint only enabled during tuning.
-                smt_ext.assert_(sg_threads >= MIN_NB_THREADS, "too few SG threads")
+            smt_ext.assert_(sg_threads >= MIN_NB_THREADS, "too few SG threads")
 
             # number of threads collapsed to 1d layout
             return sg_threads * NB_WORKITEMS
@@ -372,9 +370,9 @@ def bundle_xegpu_mlp_schedule(
     if stop_at_stage == "xegpu-initial":
         raise PipelineInterrupt()
 
-    assert len(gpu_mod_ops) == nlayers, (
-        "Expected one gpu.module per MLP layer after outlining"
-    )
+    assert (
+        len(gpu_mod_ops) == nlayers
+    ), "Expected one gpu.module per MLP layer after outlining"
     for gpu_mod, layer_params in zip(gpu_mod_ops, params):
         gpu_func = match(gpu_mod, ops={"gpu.func"})
         xegpu_wg_annotation_for_mlp_layer(gpu_func, **layer_params, has_bias=has_bias)
@@ -484,9 +482,7 @@ def xegpu_wg_annotation_for_mlp_layer(
         prefetch_nb_a_k = K_TILE // PFA_K
         prefetch_nb_a = prefetch_nb_a_m * prefetch_nb_a_k
         smt_ext.assert_(prefetch_nb_a <= MAX_NB_SG_THREADS)
-        if isinstance(prefetch_nb_a, smt_ext.SMTIntValue):
-            # NB: Constraint only enabled during tuning.
-            smt_ext.assert_(prefetch_nb_a_m * prefetch_nb_a_k >= MIN_NB_THREADS)
+        smt_ext.assert_(prefetch_nb_a_m * prefetch_nb_a_k >= MIN_NB_THREADS)
 
         # prefetch B layout
         prefetch_nb_b_k = K_TILE // PFB_K
@@ -607,7 +603,7 @@ def xegpu_wg_annotation_for_mlp_layer(
 
 
 def bundle_xegpu_to_binary(
-    mod, stop_at_stage: str = ""
+    mod: ir.Value, stop_at_stage: str = ""
 ) -> ir.Value[transform.AnyOpType]:
     """Schedule for lowering xegpu wg level to binary."""
     # upstream xegpu/xevm pipeline is payload independent.

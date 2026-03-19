@@ -12,7 +12,7 @@ def all_satisfying_assignments(
     for tuneable_values in product(
         *(tuneable.possibilities() for tuneable in tuneables)
     ):
-        environment = dict(zip((tunable for tunable in tuneables), tuneable_values))
+        environment = dict(zip(tuneables, tuneable_values))
         for pred in predicates:
             if not pred.evaluate(environment):
                 break
