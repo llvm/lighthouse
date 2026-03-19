@@ -135,7 +135,10 @@ class ReplaceOp(TransformExtensionDialect.Operation, name="replace"):
 
     If `new_operands` are provided, they are used as operands for the new
     operation(s); otherwise, the operands of the `target` operation(s) are
-    reused. The result types of the new operation are the same as those of the `target`
+    reused. The new op's result types are the same as those of the `target` op.
+
+    NB: This op is mostly an escape hatch for testing and prototyping purposes.
+    No attempt is made to guarantee that the rewrite is semantics perserving.
     """
 
     new_op: ext.Result[transform.AnyOpType[()]]

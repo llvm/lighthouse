@@ -100,7 +100,7 @@ def test_replace_op(payload_handle):
     new_attrs = ir.DictAttr.get({"value": c123_attr})
     _new_op = transform_ext.replace(
         arith_constant,
-        new_name="index.constant",
+        op_kind="index.constant",
         new_result_types=[ir.IndexType.get()],
         new_attrs=new_attrs,
     )
@@ -108,7 +108,7 @@ def test_replace_op(payload_handle):
     arith_addi = transform_structured.structured_match(
         transform.AnyOpType.get(), payload_handle, ops={"arith.addi"}
     )
-    index_add = transform_ext.replace(arith_addi, new_name="index.add")
+    index_add = transform_ext.replace(arith_addi, op_kind="index.add")
 
     # Case 3: replace with explicitly supplied new operands.
     arith_subi = transform_structured.structured_match(
