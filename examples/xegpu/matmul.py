@@ -245,7 +245,7 @@ def parse_cli():
     parser.add_argument(
         "--k-tile",
         type=int,
-        default=128,
+        default=64,
         help="Inner reduction dimension tile size K.",
     )
     parser.add_argument(
@@ -266,14 +266,14 @@ def parse_cli():
         "--prefetch-tile-a",
         type=int,
         nargs=2,
-        default=[8, 16],
+        default=[8, 32],
         help="Tile size for cooperative prefetching of subgroup A matrix",
     )
     parser.add_argument(
         "--prefetch-tile-b",
         type=int,
         nargs=2,
-        default=[16, 16],
+        default=[16, 32],
         help="Tile size for cooperative prefetching of subgroup B matrix",
     )
     parser.add_argument(
