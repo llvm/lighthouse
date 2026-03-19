@@ -1,6 +1,5 @@
 from abc import abstractmethod
 import importlib
-from enum import Enum
 from pathlib import Path
 import os
 import re
@@ -144,40 +143,62 @@ class Transform:
     to be easily passed to a TransformStage.
 
     Arguments:
-      * filename: the file that will be imported into a schedule (mlir or python)
+      * source: either a filename (str) for a file that will be imported into
+                a schedule (mlir or python), or a ready ir.Module.
 
-    In the filename, the arguments ([...]) will define:
+    When source is a filename, the arguments ([...]) will define:
       * gen: function name in case of a python file,
              what name to look for to get the MLIR module
-      * seq: the named sequence to look for. FIXME: This is not implemented yet.
-             Empty will pick the first.
 
-    In the filename, the options ({...}) will be stored as a dict
+    When source is a filename, the options ({...}) will be stored as a dict
     and can be passed to the gen function
     """
 
-    class Type(Enum):
-        MLIR = 1
-        Python = 2
-
-    def __init__(self, filename: str):
+    def __init__(self, source: str | ir.Module):
+        self._module = None
+        if isinstance(source, ir.Module):
+            self._module = source
+            self._filename = None
+            self._options = None
+            return
         # First, eliminate arguments and options
-        filename, args, self.options = parse_args_and_opts(filename)
-        if filename.endswith(".mlir"):
-            self.type = Transform.Type.MLIR
-        elif filename.endswith(".py"):
-            self.type = Transform.Type.Python
+        self._filename, args, self._options = parse_args_and_opts(source)
+        if not self._filename.endswith(".mlir") and not self._filename.endswith(".py"):
+            raise ValueError(f"Unsupported transform file type: {self._filename}")
+        self._generator = args.get("gen", "create_schedule")
+
+    def module(self, context: ir.Context) -> ir.Module:
+        """Create and return the MLIR module for this transform."""
+        if self._module is not None:
+            if self._module.context != context:
+                raise ValueError("Module context does not match the provided context.")
+            return self._module
+        if self._filename.endswith(".mlir"):
+            return import_mlir_module(self._filename, context)
+        elif self._filename.endswith(".py"):
+            module_name = Path(os.path.basename(self._filename)).stem
+            spec = importlib.util.spec_from_file_location(module_name, self._filename)
+            py_module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(py_module)
+            if not hasattr(py_module, self._generator):
+                raise ValueError(
+                    f"Transform module '{self._filename}' does not define a '{self._generator}' generator function."
+                )
+            gen = getattr(py_module, self._generator)
+            with context, ir.Location.unknown():
+                return gen(self._options)
         else:
-            raise ValueError(f"Unsupported transform file type: {filename}")
-        self.filename = filename
-        self.generator = args["gen"] if "gen" in args else "create_schedule"
-        self.sequence = args["seq"] if "seq" in args else ""
+            raise ValueError(f"Unsupported transform file type: {self._filename}")
 
     def __str__(self) -> str:
         """serialize name + filename for debugging purposes"""
-        if not self.options:
-            return self.name
-        return f"{self.filename}{{{self.options}}}"
+        if self._filename is None:
+            return (
+                str(self._module.body.operations[0].name) if self._module else "<empty>"
+            )
+        if not self._options:
+            return self._filename
+        return f"{self._filename}{{{self._options}}}"
 
 
 class Stage:
@@ -230,35 +251,12 @@ class TransformStage(Stage):
     MLIR_ATTRIBUTE = "transform.with_named_sequence"
 
     def __init__(self, transform: Transform, context: ir.Context):
-        if transform.type == Transform.Type.MLIR:
-            # For MLIR transforms, we expect the file to define an MLIR transform sequence
-            # that we can import and apply to the module. This will be checked below.
-            self.module = import_mlir_module(transform.filename, context)
-        elif transform.type == Transform.Type.Python:
-            # For Python transforms, we expect the file to define a function
-            # that takes an MLIR module and returns a transformed MLIR module.
-            module_name = Path(os.path.basename(transform.filename)).stem
-            spec = importlib.util.spec_from_file_location(
-                module_name, transform.filename
-            )
-            transform_module = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(transform_module)
-            if not hasattr(transform_module, transform.generator):
-                raise ValueError(
-                    f"Transform module '{transform.filename}' does not define a '{transform.generator}' generator function."
-                )
-            self.generator = getattr(transform_module, transform.generator)
-
-            # Run the function with the dictionary as the options that will create the named sequence.
-            with context, ir.Location.unknown():
-                self.module = self.generator(transform.options)
-        else:
-            raise ValueError(f"Unsupported transform type: {transform.type}")
+        self.module = transform.module(context)
 
         # Check if the imported module contains at least one schedule
         if TransformStage.MLIR_ATTRIBUTE not in self.module.operation.attributes:
             raise ValueError(
-                f"Transform module {transform.filename} does not define a {TransformStage.MLIR_ATTRIBUTE} attribute."
+                f"Transform module {transform} does not define a {TransformStage.MLIR_ATTRIBUTE} attribute."
             )
 
         # Assume the first (or only) sequence.
@@ -304,37 +302,41 @@ class Driver:
             raise ValueError("Module already imported. Reset to start again.")
         self.module = import_mlir_module(path, self.context)
 
-    def add_stage(self, stage_name: str) -> None:
+    def add_stage(self, stage: str | Stage) -> None:
+        """Add a stage to the pipeline. Accepts a ready Stage object or a string (pass name, bundle name, or file path)."""
         if self.pipeline_fixed:
             raise ValueError("Pipeline is fixed. Reset to start again.")
 
-        # Stages can contain arguments and options, clean up for os checks
-        filename = remove_args_and_opts(stage_name)
+        if isinstance(stage, Stage):
+            self.pipeline.append(stage)
+            return
 
-        if stage_name in self.bundles:
+        # Stages can contain arguments and options, clean up for os checks
+        filename = remove_args_and_opts(stage)
+
+        if stage in self.bundles:
             # Pass Bundle
-            self.pipeline.append(PassStage(self.bundles[stage_name], self.context))
+            self.pipeline.append(PassStage(self.bundles[stage], self.context))
 
         elif os.path.exists(filename):
             # Transform or YAML
             if filename.endswith(".mlir") or filename.endswith(".py"):
-                self.pipeline.append(
-                    TransformStage(Transform(stage_name), self.context)
-                )
+                self.pipeline.append(TransformStage(Transform(stage), self.context))
             elif filename.endswith(".yaml"):
-                desc = PipelineDescriptor(stage_name)
+                desc = PipelineDescriptor(stage)
                 for s in desc.get_stages():
                     self.add_stage(s)
             else:
                 _, ext = os.path.splitext(filename)
-                raise ValueError(f"Unknown file type '{ext}' for stage '{stage_name}'.")
+                raise ValueError(f"Unknown file type '{ext}' for stage '{stage}'.")
 
         else:
             # Assume random strings represent a single pass
             # Will crash later if the pass name is not registered.
-            self.pipeline.append(PassStage([Pass(stage_name)], self.context))
+            self.pipeline.append(PassStage([Pass(stage)], self.context))
 
-    def add_stages(self, stages: list[str]) -> None:
+    def add_stages(self, stages: list[str | Stage]) -> None:
+        """Add multiple stages to the pipeline. Each element can be a ready Stage object or a string."""
         for s in stages:
             self.add_stage(s)
 
