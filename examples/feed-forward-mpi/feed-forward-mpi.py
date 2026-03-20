@@ -290,19 +290,18 @@ class DistFF(Workload):
 
         return mod
 
-    def get_shard_pipeline(self):
-        return [
-            "func.func(sharding-propagation{traversal=forward-backward})",
-            "func.func(shard-partition)",
-            "func.func(shard-simplify)",
-            "func.func(convert-shard-to-mpi)",
-            "canonicalize",
-            "func.func(tosa-to-linalg)",
-        ]
+    def pipeline(
+        self, stop_at_stage: Optional[str] = None, parameters: Optional[dict] = None
+    ) -> list[ir.Module | str]:
+        """Generate schedules:
+        - sharding propagation, partition, and MPI
+        - tosa-to-linalg
+        - adding benchmark wrapper
+        - tile_and_vector
+        - all the rest"""
 
-    def get_bufferize_pipeline(self):
+        # Create passes to inject deallocations. Don't do this for dealloc_2d, though.
         with schedule_boilerplate() as (schedule, named_sequence):
-            # Run passes to inject deallocations. Don't do this for dealloc_2d, though.
             for fname in [
                 self.benchmark_function_name,
                 self.payload_function_name,
@@ -319,17 +318,23 @@ class DistFF(Workload):
                     op_attrs={"sym_name": ir.StringAttr.get(fname)},
                 )
                 func = apply_registered_pass(func, "buffer-deallocation-pipeline")
+                transform.PrintOp(target=func)
             transform.YieldOp()
 
         return [
+            "func.func(sharding-propagation{traversal=forward-backward})",
+            "func.func(shard-partition)",
+            "func.func(shard-simplify)",
+            "func.func(convert-shard-to-mpi)",
+            "canonicalize",
+            "func.func(tosa-to-linalg)",
+            get_bench_wrapper_schedule(self),
+            tile_and_vector_matmul.create(self.tile_size),
             "linalg-generalize-named-ops",
             "eliminate-empty-tensors",
             "one-shot-bufferize{bufferize-function-boundaries function-boundary-type-conversion=identity-layout-map}",
             "drop-equivalent-buffer-results{modify-public-functions=1}",
-        ] + [schedule]
-
-    def get_lower_pipeline(self):
-        return [
+            schedule,
             "convert-linalg-to-parallel-loops",
             "scf-parallel-loop-fusion",
             "canonicalize",
@@ -344,24 +349,6 @@ class DistFF(Workload):
             "reconcile-unrealized-casts",
             "cse",
         ]
-
-    def pipeline(
-        self, stop_at_stage: Optional[str] = None, parameters: Optional[dict] = None
-    ) -> list[ir.Module | str]:
-        """Generate schedules:
-        - sharding propagation, partition, and MPI, tosa-to-linalg
-        - adding benchmark wrapper
-        - tile_and_vector
-        - all the rest"""
-        return (
-            self.get_shard_pipeline()
-            + [
-                get_bench_wrapper_schedule(self),
-                tile_and_vector_matmul.create(self.tile_size),
-            ]
-            + self.get_bufferize_pipeline()
-            + self.get_lower_pipeline()
-        )
 
 
 if __name__ == "__main__":

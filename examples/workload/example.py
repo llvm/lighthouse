@@ -15,7 +15,6 @@ import numpy as np
 from mlir import ir
 from mlir.runtime.np_to_memref import get_ranked_memref_descriptor
 from mlir.dialects import func, linalg, bufferization
-from mlir.dialects import transform
 from mlir.execution_engine import ExecutionEngine
 
 from lighthouse import dialects as lh_dialects
@@ -122,39 +121,16 @@ class ElementwiseSum(Workload):
 
     def pipeline(
         self, stop_at_stage: Optional[str] = None, parameters: Optional[dict] = None
-    ) -> ir.Module:
-        schedule_module = ir.Module.create()
-        schedule_module.operation.attributes["transform.with_named_sequence"] = (
-            ir.UnitAttr.get()
-        )
-        with ir.InsertionPoint(schedule_module.body):
-            named_sequence = transform.named_sequence(
-                "__transform_main",
-                [transform.AnyOpType.get()],
-                [],
-                arg_attrs=[{"transform.readonly": ir.UnitAttr.get()}],
-            )
-            with ir.InsertionPoint(named_sequence.body):
-                anytype = transform.AnyOpType.get()
-                func = match(named_sequence.bodyTarget, ops={"func.func"})
-                mod = transform.get_parent_op(
-                    anytype,
-                    func,
-                    op_name="builtin.module",
-                    deduplicate=True,
-                )
-                mod = apply_bundle(mod, PassBundles["BufferizationBundle"])
-                mod = apply_bundle(mod, PassBundles["MLIRLoweringBundle"])
-                mod = apply_bundle(mod, PassBundles["CleanupBundle"])
-
-                if stop_at_stage == "bufferized":
-                    transform.YieldOp()
-                    return [schedule_module]
-
-                mod = apply_bundle(mod, PassBundles["LLVMLoweringBundle"])
-                transform.YieldOp()
-
-        return [get_bench_wrapper_schedule(self), schedule_module]
+    ) -> list[str]:
+        pline = [
+            get_bench_wrapper_schedule(self),
+            "BufferizationBundle",
+            "MLIRLoweringBundle",
+            "CleanupBundle",
+        ]
+        if stop_at_stage == "bufferized":
+            return pline
+        return pline + ["LLVMLoweringBundle"]
 
 
 if __name__ == "__main__":

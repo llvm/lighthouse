@@ -40,7 +40,6 @@ def parse_csv(line: str, separator: str = ",") -> dict:
 
 
 def remove_args_and_opts(line: str) -> str:
-    print(line)
     if m := re.search(r"^([^[{]*)", line):
         line = m.group(0)
     return line
@@ -101,7 +100,7 @@ PassBundles = {
             },
         ),
         Pass("drop-equivalent-buffer-results"),
-        # This last pass only works with the pass manager, not schedules.
+        # This last pass fails if the payload contains explicit deallocs, which is the case for some of our examples.
         # Pass("buffer-deallocation-pipeline"),
     ],
     # Lowers most dialects to basic control flow.
