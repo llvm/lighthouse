@@ -70,7 +70,10 @@ def execute(
 
 
 def get_bench_wrapper_schedule(workload: Workload):
-    with schedule_boilerplate() as (schedule, named_seq):
+    with schedule_boilerplate(result_types=[transform.any_op_t()]) as (
+        schedule,
+        named_seq,
+    ):
         named_func = structured.structured_match(
             transform.AnyOpType.get(),
             target=named_seq.bodyTarget,

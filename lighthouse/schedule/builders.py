@@ -31,7 +31,7 @@ def create_named_sequence(
     Args:
         sym_name: Sequence name
         input_types: Input types (default: a single arg)
-        result_types: Result types (default: a single return)
+        result_types: Result types (default: no returns)
         is_readonly: Mark inputs as readonly
 
     Returns:
@@ -40,8 +40,6 @@ def create_named_sequence(
 
     if not input_types:
         input_types = [transform.any_op_t()]
-    if not result_types:
-        result_types = [transform.any_op_t()]
 
     arg_attrs = [{"transform.consumed": ir.UnitAttr.get()}]
     if is_readonly:
