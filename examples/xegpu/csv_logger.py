@@ -5,11 +5,19 @@ import os
 
 class CSVLogger:
     def __init__(self, filename: str = None):
-        self.filename = filename
+        def gen_unique(path):
+            base, ext = os.path.splitext(path)
+            i = 1
+            while os.path.exists(path):
+                path = f"{base}_{i}{ext}"
+                i += 1
+            return path
+
+        self.filename = gen_unique(filename) if filename is not None else None
         self.header_written = False
         self.fieldnames = None
         self.logger = logging.getLogger(
-            "csv_logger_" + (filename if filename else "stdout")
+            "csv_logger_" + (self.filename if self.filename else "stdout")
         )
         self.logger.setLevel(logging.INFO)
         if not self.logger.hasHandlers():
