@@ -27,7 +27,6 @@ from mlir.dialects.transform import tensor
 from lighthouse import dialects as lh_dialects
 from lighthouse.workload import benchmark, get_bench_wrapper_schedule
 from lighthouse.utils.numpy import numpy_to_mlir_type
-from lighthouse.pipeline.helper import apply_registered_pass
 import lighthouse.utils as lh_utils
 from lighthouse import schedule as lh_schedule
 import lighthouse.schedule.x86 as lh_schedule_x86
@@ -267,24 +266,19 @@ class Matmul(Workload):
             return scheds
 
         # Lower to LLVM.
-        with lh_schedule.schedule_boilerplate() as (sched, named_seq):
-            target = named_seq.bodyTarget
-            target = apply_registered_pass(target, "convert-linalg-to-loops")
-            target = apply_registered_pass(target, "fold-memref-alias-ops")
-            target = apply_registered_pass(target, "expand-strided-metadata")
-            target = apply_registered_pass(target, "canonicalize")
-            target = apply_registered_pass(target, "convert-vector-to-scf")
-            target = apply_registered_pass(target, "lower-affine")
-            target = apply_registered_pass(target, "convert-scf-to-cf")
-            target = apply_registered_pass(target, "convert-vector-to-llvm")
-            target = apply_registered_pass(target, "convert-to-llvm")
-            target = apply_registered_pass(target, "reconcile-unrealized-casts")
-            lh_transform.cleanup(target)
-
-            transform.yield_()
-        scheds.append(sched)
-
-        return scheds
+        return scheds + [
+            "convert-linalg-to-loops",
+            "fold-memref-alias-ops",
+            "expand-strided-metadata",
+            "canonicalize",
+            "convert-vector-to-scf",
+            "lower-affine",
+            "convert-scf-to-cf",
+            "convert-vector-to-llvm",
+            "convert-to-llvm",
+            "reconcile-unrealized-casts",
+            "CleanupBundle",
+        ]
 
 
 def parse_cli():
