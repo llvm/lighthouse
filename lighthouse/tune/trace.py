@@ -11,7 +11,7 @@ from mlir import ir
 from mlir.dialects import transform, smt
 from mlir.dialects.transform import tune as transform_tune
 
-from lighthouse.dialects import transform_smt_ext
+from lighthouse.dialects.transform import smt_ext
 
 
 class Node(ABC):
@@ -275,7 +275,7 @@ def trace_tune_and_smt_ops(op: ir.Operation, env: Optional[dict] = None) -> dict
                     region_idx_to_result=result_idx_region_idx_to_node[res_idx],
                 )
 
-        case transform_smt_ext.ConstrainParamsOp():
+        case smt_ext.ConstrainParamsOp():
             # Map the block args in the op's region to the nodes already
             # associated to the corresponding arguments on the op itself.
             for operand, block_arg in zip(op.operands, op.body.arguments):

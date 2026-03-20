@@ -6,7 +6,7 @@ from mlir import ir
 from mlir.dialects import transform, func, arith, index
 from mlir.dialects.transform import structured as transform_structured
 import lighthouse.dialects as lh_dialects
-from lighthouse.dialects import transform_ext
+from lighthouse.dialects.transform import transform_ext
 
 
 def run(f):
@@ -70,13 +70,13 @@ def test_param_cmp_eq_op(payload_handle):
     c42_attr = ir.IntegerAttr.get(ir.IndexType.get(), 42)
     c42_as_param = transform.param_constant(transform.AnyParamType.get(), c42_attr)
 
-    transform_ext.ParamCmpEqOp(constant_value_param, c42_as_param)
+    transform_ext.param_cmp_eq(constant_value_param, c42_as_param)
     c0_attr = ir.IntegerAttr.get(ir.IndexType.get(), 0)
     # CHECK: got here
     transform.print_(name="got here")
     # Comparing 42 against 0 — should fail and abort the sequence.
     c0_as_param = transform.param_constant(transform.AnyParamType.get(), c0_attr)
-    transform_ext.ParamCmpEqOp(constant_value_param, c0_as_param)
+    transform_ext.param_cmp_eq(constant_value_param, c0_as_param)
     # CHECK-NOT: but not here
     # CHECK: Caught exception: Failed to apply named transform sequence
     transform.print_(name="but not here")

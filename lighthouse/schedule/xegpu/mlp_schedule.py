@@ -18,8 +18,8 @@ from lighthouse.pipeline.helper import (
 )
 from lighthouse.schedule.xegpu.helper import bundle_xegpu_to_binary
 
-from lighthouse.dialects import smt_ext, transform_smt_ext as td_smt_ext
-from lighthouse.dialects.transform_tune_ext import knob, KnobValue
+from lighthouse.dialects.transform import smt_ext
+from lighthouse.dialects.transform.tune_ext import knob, KnobValue
 
 # hardware constraints
 DPAS = namedtuple("DPAS", ["M", "N", "K", "A_TILE", "B_TILE", "C_TILE"])(
@@ -271,7 +271,7 @@ def bundle_xegpu_mlp_schedule(
         wg_m, wg_n = layer_params["wg_m"], layer_params["wg_n"]
         sg_m, sg_n = layer_params["sg_m"], layer_params["sg_n"]
 
-        @td_smt_ext.constrain_params(wg_m, wg_n, sg_m, sg_n)
+        @smt_ext.constrain_params(wg_m, wg_n, sg_m, sg_n)
         def constrain_wg_sg_and_calc_nb_threads(
             WG_M: int | smt_ext.SMTIntValue,
             WG_N: int | smt_ext.SMTIntValue,
@@ -365,7 +365,7 @@ def xegpu_wg_annotation_for_mlp_layer(
     anyvalue = transform.AnyValueType.get()
 
     # Calculate with SMT ops in case of symbolic values, normal ints in case of concrete values.
-    @td_smt_ext.constrain_params(wg_m, wg_n, sg_m, sg_n)
+    @smt_ext.constrain_params(wg_m, wg_n, sg_m, sg_n)
     def calc_sg_layout(WG_M, WG_N, SG_M, SG_N):
         # NB: Constraint on overall num SG threads already dealt with elsewhere.
         return WG_M // SG_M, WG_N // SG_N
@@ -377,7 +377,7 @@ def xegpu_wg_annotation_for_mlp_layer(
     prefetch_tile_a = [prefetch_a_m, prefetch_a_k]
     prefetch_tile_b = [prefetch_b_k, prefetch_b_n]
 
-    @td_smt_ext.constrain_params(
+    @smt_ext.constrain_params(
         wg_m,
         wg_n,
         sg_m,

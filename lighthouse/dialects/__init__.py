@@ -1,10 +1,8 @@
 def register_and_load(**kwargs):
-    from . import smt_ext
-    from . import transform_ext
-    from . import transform_smt_ext
-    from . import transform_tune_ext
+    from .transform import transform_ext
+    from .transform import smt_ext
+    from .transform import tune_ext
 
-    smt_ext.register_and_load(**kwargs)
     transform_ext.register_and_load(**kwargs)
-    transform_smt_ext.register_and_load(**kwargs)
-    transform_tune_ext.register_and_load(**kwargs)
+    smt_ext.register_and_load(**kwargs)
+    tune_ext.register_and_load(**kwargs)
