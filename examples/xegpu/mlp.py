@@ -275,7 +275,7 @@ class XeGPUMLP(XeGPUWorkload):
 
 def parse_cli():
     parser = argparse.ArgumentParser(
-        description="MLP workload using MLIR",
+        description="XeGPU MLP example with tunable parameters.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument(
@@ -393,7 +393,7 @@ if __name__ == "__main__":
         ab_type = wload.ab_type
         acc_type = wload.acc_type
 
-        params = parameter_selector.get_matmul_parameters(wload)
+        params = parameter_selector.get_parameters_for_layers(matmuls)
 
         if args.dump_kernel or args.dump_schedule:
             wload.lower_payload(
