@@ -21,7 +21,6 @@ import numpy as np
 from mlir import ir
 from mlir.dialects import linalg, transform
 from mlir.execution_engine import ExecutionEngine
-from mlir.dialects.transform import vector
 from mlir.dialects.transform import tensor
 
 from lighthouse import dialects as lh_dialects
@@ -254,11 +253,7 @@ class Matmul(Workload):
 
         # Cleanup vector ops.
         with lh_schedule.schedule_boilerplate() as (sched, named_seq):
-            with ir.InsertionPoint(
-                transform.ApplyPatternsOp(named_seq.bodyTarget).patterns
-            ):
-                vector.apply_patterns_vector_flatten_vector_transfer_ops()
-                transform.apply_patterns_canonicalization()
+            lh_transform.simplify_vector_ops(named_seq.bodyTarget)
             lh_transform.cleanup(named_seq.bodyTarget)
             transform.yield_()
         scheds.append(sched)

@@ -11,7 +11,7 @@ def tile_ops(
     tile_interchange: list[int] | None = None,
     peel_loops: list[int] = [],
     unroll_factors: list[int] = [],
-):
+) -> ir.Value:
     """
     Apply tiling to the target.
 
@@ -31,7 +31,8 @@ def tile_ops(
         peel_loops: List of loops to peel.
             Loops are peeled in the given order.
             Skipped if None. Exclusive with unrolling.
-        unroll_factors: Unroll factors for each loop.
+        unroll_factors: Unroll factors for each loop (same order as loops).
+            Zero factor means no unrolling is performed.
             Unrolling is applied from the innermost loop.
             Skipped if None. Exclusive with peeling.
     """
@@ -62,5 +63,7 @@ def tile_ops(
                 fail_if_already_divisible=False,
             )
         for idx, factor in enumerate(reversed(unroll_factors)):
+            if factor == 0:
+                continue
             loop.loop_unroll(loops[-1 - idx], factor)
         transform.yield_()
