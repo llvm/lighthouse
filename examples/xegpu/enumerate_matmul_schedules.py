@@ -1,6 +1,6 @@
 # RUN: %PYTHON %s | lh-tune - -n 1 | FileCheck %s
 # RUN: %PYTHON %s | lh-tune - -n 2147483647 --count-only | FileCheck %s --check-prefix=ENUM-CHECK
-# ENUM-CHECK: count: 174
+# ENUM-CHECK: count: 192
 
 """Enumerate concrete schedules given a schedule with tunable parameters."""
 
