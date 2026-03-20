@@ -324,7 +324,7 @@ class DistFF(Workload):
         return [
             "linalg-generalize-named-ops",
             "eliminate-empty-tensors",
-            "one-shot-bufferize{bufferize-function-boundaries,function-boundary-type-conversion=identity-layout-map}",
+            "one-shot-bufferize{bufferize-function-boundaries function-boundary-type-conversion=identity-layout-map}",
             "drop-equivalent-buffer-results{modify-public-functions=1}",
         ] + [schedule]
 
