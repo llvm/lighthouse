@@ -30,7 +30,7 @@ class Node(ABC):
 
 @dataclass(frozen=True)
 class Constant(Node):
-    """Trivial base case `Node` which evaluates to a constant irrespective of env.
+    """Leaf `Node` which evaluates to a constant irrespective of the environment.
 
     Intended to represent `Value`s which are constants in IR."""
 
@@ -41,7 +41,7 @@ class Constant(Node):
 
 
 @dataclass(frozen=True)
-class NonDeterministic(Node, ABC):
+class Tuneable(Node, ABC):
     """Abstract `Node` which evaluates via looking up its name in the environment."""
 
     name: str
@@ -55,8 +55,8 @@ class NonDeterministic(Node, ABC):
 
 
 @dataclass(frozen=True)
-class Knob(NonDeterministic):
-    """Base case `Node` which evals per name in env and knows its possible values.
+class Knob(Tuneable):
+    """Leaf `Node` which evals per its name in the environment and knows its possible values.
 
     Intended to represent the `Value` associated with a tuneable knob in IR."""
 
@@ -67,12 +67,12 @@ class Knob(NonDeterministic):
     divides: Optional[int] = None
 
     def __post_init__(self):
-        assert self.options or (None not in (self.lower_bound, self.upper_bound)), (
-            "Options attribute not finitely specified"
-        )
-        assert self.divisible_by is None or self.divisible_by > 0, (
-            "divisible_by must be positive"
-        )
+        assert self.options or (
+            None not in (self.lower_bound, self.upper_bound)
+        ), "Options attribute not finitely specified"
+        assert (
+            self.divisible_by is None or self.divisible_by > 0
+        ), "divisible_by must be positive"
         assert self.divides is None or self.divides > 0, "divides must be positive"
 
     def __repr__(self):
@@ -105,7 +105,7 @@ class Knob(NonDeterministic):
 
 @dataclass(frozen=True)
 class Apply(Node):
-    """Recursive case `Node` which calculates a function from other eval-ables.
+    """Recursive case `Node` which calculates a function from the evaluation of other nodes.
 
     Intended to represent `Value`s in IR dependent on other `Value`s."""
 
@@ -118,7 +118,7 @@ class Apply(Node):
 
 @dataclass(frozen=True)
 class Predicate(Node):
-    """Recursive case `Node` which applies a predicate to other eval-ables.
+    """Recursive case `Node` which applies a predicate to the evaluation of other nodes.
 
     Intended to represent the condition that must hold for execution to be able
     to succesfully proceed beyond a specified op."""
@@ -131,7 +131,7 @@ class Predicate(Node):
 
 
 @dataclass(frozen=True)
-class Alternatives(NonDeterministic):
+class Alternatives(Tuneable):
     """Recursive case `Node` which acts as its selected child predicate, per its env.
 
     Intended to represent selection among a fixed number of regions in IR."""
@@ -192,9 +192,9 @@ def trace_smt_op(op: ir.Operation, env: dict) -> dict:
 
         case smt.AssertOp():
             pred = env[op.input]
-            assert isinstance(pred, Predicate), (
-                "SMT assert expected argument to map to a Predicate node"
-            )
+            assert isinstance(
+                pred, Predicate
+            ), "SMT assert expected argument to map to a Predicate node"
             env[op] = pred
 
         case _:

@@ -38,11 +38,11 @@ with ir.Context() as ctx, ir.Location.unknown():
     # of all the predicates in seq's body, (at most) one for each operation.
     overall_predicate = op_or_value_to_node[named_seq]
     assert isinstance(overall_predicate, lh_tune.trace.Predicate)
-    tunables = list(
+    tuneables = list(
         set(
             node
             for node in op_or_value_to_node.values()
-            if isinstance(node, lh_tune.trace.NonDeterministic)
+            if isinstance(node, lh_tune.trace.Tuneable)
         )
     )
 
@@ -50,7 +50,7 @@ with ir.Context() as ctx, ir.Location.unknown():
     count = 0
     for count, node_to_int in zip(
         range(1, args.n + 1),
-        lh_tune.enumerate.all_satisfying_assignments(tunables, [overall_predicate]),
+        lh_tune.enumerate.all_satisfying_assignments(tuneables, [overall_predicate]),
     ):
         if args.count_only:
             if count >= args.n:

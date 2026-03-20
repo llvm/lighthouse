@@ -7,7 +7,7 @@ from lighthouse.tune import trace
 
 __all__ = [
     "ConstrainParamsOp",
-    "TransformSMTDialectExtension",
+    "TransformSMTExtensionDialect",
     "constrain_params",
     "register_and_load",
 ]
@@ -16,10 +16,10 @@ __all__ = [
 def register_and_load(**kwargs):
     """Register and load the TransformSMTDialectExtension and its operations."""
 
-    TransformSMTDialectExtension.load(**kwargs)
+    TransformSMTExtensionDialect.load(**kwargs)
 
 
-class TransformSMTDialectExtension(ext.Dialect, name="transform_smt_ext"):
+class TransformSMTExtensionDialect(ext.Dialect, name="transform_smt_ext"):
     """A Transform Dialect extension for SMT-related operations."""
 
     @classmethod
@@ -33,7 +33,7 @@ class TransformSMTDialectExtension(ext.Dialect, name="transform_smt_ext"):
 
 
 class ConstrainParamsOp(
-    TransformSMTDialectExtension.Operation, name="constrain_params"
+    TransformSMTExtensionDialect.Operation, name="constrain_params"
 ):
     """Constrain transform params by SMT ops while also producing new params.
 

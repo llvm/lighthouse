@@ -1,11 +1,11 @@
 from itertools import product
 from typing import Sequence
 
-from .trace import NonDeterministic, Predicate
+from .trace import Tuneable, Predicate
 
 
 def all_satisfying_assignments(
-    tuneables: Sequence[NonDeterministic], predicates: Sequence[Predicate]
+    tuneables: Sequence[Tuneable], predicates: Sequence[Predicate]
 ):
     """Generate all assignments of values to the tuneables that satisfy the predicates."""
 
