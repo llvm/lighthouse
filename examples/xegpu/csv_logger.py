@@ -8,11 +8,13 @@ class CSVLogger:
         self.filename = filename
         self.header_written = False
         self.fieldnames = None
-        self.logger = logging.getLogger("csv_logger")
+        self.logger = logging.getLogger(
+            "csv_logger_" + (filename if filename else "stdout")
+        )
         self.logger.setLevel(logging.INFO)
-        handler = logging.StreamHandler()
-        handler.setFormatter(logging.Formatter("%(message)s"))
         if not self.logger.hasHandlers():
+            handler = logging.StreamHandler()
+            handler.setFormatter(logging.Formatter("%(message)s"))
             self.logger.addHandler(handler)
         if self.filename is not None:
             assert not os.path.exists(self.filename), (
@@ -22,15 +24,13 @@ class CSVLogger:
     def log(self, data: dict):
         if self.fieldnames is None:
             self.fieldnames = list(data.keys())
-        write_header = not os.path.exists(self.filename) or not self.header_written
-        if write_header:
+        if not self.header_written:
             self.logger.info(",".join(self.fieldnames))
         self.logger.info(",".join(str(data[k]) for k in self.fieldnames))
-        if self.filename is None:
-            return
-        with open(self.filename, mode="a", newline="") as csvfile:
-            writer = csv.DictWriter(csvfile, fieldnames=self.fieldnames)
-            if write_header:
-                writer.writeheader()
-                self.header_written = True
-            writer.writerow(data)
+        if self.filename is not None:
+            with open(self.filename, mode="a", newline="") as csvfile:
+                writer = csv.DictWriter(csvfile, fieldnames=self.fieldnames)
+                if not self.header_written:
+                    writer.writeheader()
+                writer.writerow(data)
+        self.header_written = True

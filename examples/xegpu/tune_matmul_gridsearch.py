@@ -128,6 +128,8 @@ def execute_and_log(
     accumulate_c: bool = True,
     timeout: int = 20,
 ) -> tuple[float, float]:
+    entry = params.copy()
+    elapsed, gflops = 0, 0
     try:
         tic = perf_counter()
         elapsed, gflops = run_with_timeout(
@@ -143,12 +145,10 @@ def execute_and_log(
             **params,
         )
         duration = perf_counter() - tic
-        entry = params.copy()
         entry["time (us)"] = elapsed
         entry["GFLOPS/s"] = gflops
         csv_logger.log(entry)
-        duration_str = f"Duration: {duration:.3f} s"
-        print(duration_str)
+        print(f"Duration: {duration:.3f} s")
     except Exception as e:
         print("FAILED")
         print(entry)
@@ -491,4 +491,4 @@ if __name__ == "__main__":
         prefix = (
             f"matmul_params_{sizes_str}_{ab_type}-{c_type}{bias_str}{relu_str}{acc_str}"
         )
-        dump_configs_json([params for _, params in best_configs])
+        dump_configs_json([p for _, p in best_configs], filename_prefix=prefix)

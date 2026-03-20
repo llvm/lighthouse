@@ -40,6 +40,8 @@ class VariableSet:
         return total
 
     def is_valid(self, sample: list) -> bool:
+        if self.is_valid_fn is None:
+            return True
         return self.is_valid_fn(self.sample_to_dict(sample))
 
     def sample_to_dict(self, sample: list) -> dict:
@@ -183,6 +185,8 @@ class GeneticAlgorithm:
         scores = np.array(self.population.fitness_scores)
         default = scores.min() / 20
         scores[scores == 0] = default
+        if all(s == 0 for s in scores):
+            scores = None  # uniform if all scores are zero
         parents = random.choices(
             population=self.population.individuals,
             k=nb_parents,

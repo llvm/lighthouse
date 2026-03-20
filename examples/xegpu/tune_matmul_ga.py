@@ -34,7 +34,7 @@ def optimize_kernel(
     dump_json: int = 0,
     random_seed: Optional[int] = None,
 ):
-    if random_seed:
+    if random_seed is not None:
         # set random seed for reproducibility
         random.seed(random_seed)
 

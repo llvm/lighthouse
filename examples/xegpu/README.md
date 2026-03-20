@@ -65,7 +65,7 @@ export PYTHONPATH=${LLVM_BUILD_DIR}/tools/mlir/python_packages/mlir_core/
 
 ## Matrix multiplication benchmark
 
-Run the default 4k (float16, float16) -> float32 matrix-multipy-accumulate benchmark with correctness test:
+Run the default 4k (float16, float16) -> float32 matrix-multiply-accumulate benchmark with correctness test:
 
 ```bash
 python matmul.py --check-result
@@ -149,7 +149,7 @@ python tune_matmul_gridsearch.py --sizes 1024 2048 4096 --bias --relu --no-accum
 The executed parameter combinations are stored in `out_gridsearch.csv` file along with the obtained performance metrics:
 
 ```txt
-M,N,K,wg_m,wg_n,sg_m,sg_n,k,load_a_m,load_a_k,load_b_k,load_b_n,pf_a_m,pf_a_k,pf_b_k,pf_b_n,pf_nb,time (us),GFLOPS/s
+m,n,k,wg_m,wg_n,sg_m,sg_n,k_tile,load_a_m,load_a_k,load_b_k,load_b_n,prefetch_a_m,prefetch_a_k,prefetch_b_k,prefetch_b_n,prefetch_nb,time (us),GFLOPS/s
 4096,4096,4096,64,256,32,32,64,8,16,16,16,8,16,8,16,1,???,???
 ...
 ```
@@ -163,6 +163,7 @@ python tune_matmul_gridsearch.py --dry-run
 Example output:
 
 ```txt
+Matmul problem size: [4096, 4096, 4096]
 ab_type='f16'
 c_type='f32'
 has_bias=False
@@ -173,18 +174,18 @@ wg_m=[64, 128, 256]
 wg_n=[64, 128, 256]
 sg_m=[32, 64, 128]
 sg_n=[32, 64, 128]
-k=[16, 32, 64, 128, 256]
+k_tile=[16, 32, 64, 128, 256]
 load_a_m=[8, 16, 32]
 load_a_k=[8, 16, 32]
 load_b_k=[8, 16, 32]
 load_b_n=[8, 16, 32]
-pf_a_m=[8, 16, 32]
-pf_a_k=[8, 16, 32]
-pf_b_k=[8, 16, 32]
-pf_b_n=[8, 16, 32]
-pf_nb=[1]
+prefetch_a_m=[8, 16, 32]
+prefetch_a_k=[8, 16, 32]
+prefetch_b_k=[8, 16, 32]
+prefetch_b_n=[8, 16, 32]
+prefetch_nb=[1]
 Total complexity: 2657205 configurations
-Number of executed configurations: 3588
+Number of executed configurations: 5292
 ```
 
 Total complexity is the number of parameter combinations without any filtering. The number of executed configurations shows the number of valid combinations, i.e. ones that satisfy appropriate (e.g., hardware) constraints.

@@ -419,15 +419,15 @@ if __name__ == "__main__":
                 return ",".join(map(str, a))
 
             print(
-                f"sizes={list2str(args.sizes)} "
+                f"sizes={list2str([params['m'], params['n'], params['k']])} "
                 f"dt={ab_type},{c_type} "
-                f"wg-tile={list2str(args.wg_tile)} "
-                f"sg-tile={list2str(args.sg_tile)} "
-                f"k-tile={args.k_tile} "
-                f"load-a-tile={list2str(args.load_tile_a)} "
-                f"load-b-tile={list2str(args.load_tile_b)} "
-                f"pf-a-tile={list2str(args.prefetch_tile_a)} "
-                f"pf-b-tile={list2str(args.prefetch_tile_b)} "
+                f"wg-tile={list2str([params['wg_m'], params['wg_n']])} "
+                f"sg-tile={list2str([params['sg_m'], params['sg_n']])} "
+                f"k-tile={params['k_tile']} "
+                f"load-a-tile={list2str([params['load_a_m'], params['load_a_k']])} "
+                f"load-b-tile={list2str([params['load_b_k'], params['load_b_n']])} "
+                f"pf-a-tile={list2str([params['prefetch_a_m'], params['prefetch_a_k']])} "
+                f"pf-b-tile={list2str([params['prefetch_b_k'], params['prefetch_b_n']])} "
                 f"time(us): {elapsed:.2f} "
                 f"GFLOPS: {gflops:.2f}"
             )
