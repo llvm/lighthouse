@@ -2,29 +2,30 @@
 Genetic algorithm-based optimization of kernel parameters.
 """
 
+from dataclasses import dataclass, field
 import numpy as np
 import random
 import time
 from types import FunctionType
 
 
+@dataclass
 class Variable:
     """Represents a single tunable parameter with list of valid choices."""
 
-    def __init__(self, name: str, choices: list):
-        self.name = name
-        self.choices = choices
+    name: str
+    choices: list
 
     def random_sample(self) -> int:
         return random.choice(self.choices)
 
 
+@dataclass
 class VariableSet:
     """A tunable variable set forming the search space."""
 
-    def __init__(self, variables: list[Variable], is_valid_fn: FunctionType = None):
-        self.variables = variables
-        self.is_valid_fn = is_valid_fn
+    variables: list[Variable]
+    is_valid_fn: FunctionType = None
 
     def random_sample(self) -> list:
         return [var.random_sample() for var in self.variables]
@@ -58,14 +59,14 @@ class VariableSet:
         print(f"Total complexity: {self.complexity()} configurations")
 
 
+@dataclass
 class Population:
     """A population of individuals drawn from the variable set."""
 
-    def __init__(self, variable_set: VariableSet, individuals: list = None):
-        self.variable_set = variable_set
-        self.individuals = individuals if individuals is not None else []
-        self.fitness_scores = []
-        self.generation = 0
+    variable_set: VariableSet
+    individuals: list = field(default_factory=list)
+    fitness_scores: list = field(default_factory=list)
+    generation: int = 0
 
     def increment_generation(self):
         self.generation += 1
@@ -122,24 +123,20 @@ def init_random_population(pop_size: int, variable_set: VariableSet) -> Populati
     return population
 
 
+@dataclass
 class GeneticAlgorithm:
-    def __init__(
-        self,
-        population: Population,
-        recombination_rate: float = 0.5,
-        mutation_rate: float = 0.001,
-        fertility_rate: float = 1.0,
-        evaluate_fitness: FunctionType = None,
-    ):
-        self.fixed_population_size = population.size()
-        self.population = population
-        self.recombination_rate = recombination_rate
-        self.mutation_rate = mutation_rate
-        self.fertility_rate = fertility_rate
-        self.evaluate_fitness = evaluate_fitness
-        self.ntrials = 50
-        self.population_history = []
-        self.fitness_history = []
+    population: Population
+    recombination_rate: float = 0.5
+    mutation_rate: float = 0.001
+    fertility_rate: float = 1.0
+    evaluate_fitness: FunctionType = None
+    ntrials: int = 50
+    population_history: list = field(default_factory=list)
+    fitness_history: list = field(default_factory=list)
+    fixed_population_size: int = field(init=False)
+
+    def __post_init__(self):
+        self.fixed_population_size = self.population.size()
 
     def recombine_and_mutate(self, individuals: list) -> list:
         variable_set = self.population.variable_set
