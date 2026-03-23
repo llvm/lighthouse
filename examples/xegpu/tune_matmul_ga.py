@@ -8,11 +8,9 @@ import os
 from typing import Optional
 import random
 from matmul import cli_parser
-from tune_matmul_gridsearch import (
-    construct_search_space,
-    execute_and_log,
-    dump_configs_json,
-)
+from tune_matmul_gridsearch import construct_search_space, run_experiment
+from tune_utils import dump_configs_json, execute_and_log
+
 from genetic_algorithm import (
     init_random_population,
     GeneticAlgorithm,
@@ -64,6 +62,7 @@ def optimize_kernel(
     @cache
     def evaluate_fitness(*parameters) -> float:
         elapsed, gflops = execute_and_log(
+            run_experiment,
             csv_logger,
             nruns,
             nwarmup,
