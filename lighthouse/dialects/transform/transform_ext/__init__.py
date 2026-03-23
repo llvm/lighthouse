@@ -1,7 +1,7 @@
 from .dialect import register_and_load
 from .dialect import TransformExtensionDialect
 
-from .ops.wrap_in_benching import wrap_in_benching_func
+from .ops.wrap_in_benching_func import wrap_in_benching_func
 from .ops.get_named_attribute import get_named_attribute
 from .ops.param_cmp_eq import param_cmp_eq
 from .ops.replace import replace
