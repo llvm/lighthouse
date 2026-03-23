@@ -117,6 +117,18 @@ if __name__ == "__main__":
         help="Number of generations for the genetic algorithm.",
     )
     parser.add_argument(
+        "--population-size",
+        type=int,
+        default=11,
+        help="Number of individuals in the population for the genetic algorithm.",
+    )
+    parser.add_argument(
+        "--mutation-rate",
+        type=float,
+        default=0.01,
+        help="Mutation rate for the genetic algorithm.",
+    )
+    parser.add_argument(
         "--dump-json",
         dest="n_dump_json",
         type=int,
@@ -138,6 +150,8 @@ if __name__ == "__main__":
         not args.no_accumulate_c,
         check_result=not args.no_check_result,
         ngenerations=args.generations,
+        mutation_rate=args.mutation_rate,
+        npopulation=args.population_size,
         dump_json=args.n_dump_json,
         random_seed=2,
     )
