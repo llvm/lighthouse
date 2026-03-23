@@ -1,3 +1,5 @@
+from dataclasses import dataclass
+
 from lighthouse.workload import Workload
 import ctypes
 from contextlib import contextmanager
@@ -34,6 +36,7 @@ def matmul_complexity(
     return flop_count, memory_reads, memory_writes
 
 
+@dataclass
 class XeGPUWorkload(Workload, ABC):
     """
     Base class for XeGPU workloads.
@@ -41,9 +44,8 @@ class XeGPUWorkload(Workload, ABC):
     Handles device buffer allocation/deallocation.
     """
 
-    def __init__(self):
-        self.memory_manager_class: type[MemoryManager] = GPUMemoryManager
-        self.memory_manager: GPUMemoryManager | None = None
+    memory_manager_class: type[MemoryManager] = GPUMemoryManager
+    memory_manager: MemoryManager | None = None
 
     @contextmanager
     def allocate_inputs(self, execution_engine: ExecutionEngine):

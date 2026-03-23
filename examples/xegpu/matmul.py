@@ -12,6 +12,7 @@ XeGPU matrix multiplication example.
 
 import argparse
 import json
+from dataclasses import dataclass
 from typing import Optional
 from functools import cached_property
 
@@ -25,13 +26,13 @@ from lighthouse.schedule.xegpu.mlp_schedule import get_schedule_module
 from lighthouse.utils.numpy import mlir_to_numpy_dtype
 from lighthouse.ingress.mlir_gen import (
     generate_gpu_matmul_payload,
-    get_mlir_elem_type,
 )
 
 from xegpu_workload import XeGPUWorkload, matmul_complexity
 import parameter_selector
 
 
+@dataclass
 class XeGPUMatMul(XeGPUWorkload):
     """
     Matrix multiplication workload on XeGPU.
@@ -42,34 +43,30 @@ class XeGPUMatMul(XeGPUWorkload):
     Optionally adds a bias term to C (not implemented yet).
     """
 
-    def __init__(
-        self,
-        M: int,
-        N: int,
-        K: int,
-        ab_type: str = "f16",
-        c_type: str = "f32",
-        has_bias: bool = False,
-        has_relu: bool = False,
-        accumulate_c: bool = True,
-    ):
-        super().__init__()
-        self.M = M
-        self.N = N
-        self.K = K
-        self.a_shape = (M, K)
-        self.b_shape = (K, N)
-        self.c_shape = (M, N)
-        self.bias_shape = (N,)
-        assert ab_type == "f16", "Only f16 type is supported for A and B"
-        assert c_type == "f32", "Only f32 type is supported for C"
-        self.ab_type = get_mlir_elem_type(ab_type)
-        self.c_type = get_mlir_elem_type(c_type)
+    M: int = 1024
+    N: int = 1024
+    K: int = 1024
+    ab_type: ir.Type | None = None
+    c_type: ir.Type | None = None
+    has_bias: bool = False
+    has_relu: bool = False
+    accumulate_c: bool = True
+
+    def __post_init__(self):
+        if self.ab_type is None:
+            self.ab_type = ir.F16Type.get()
+        if self.c_type is None:
+            self.c_type = ir.F32Type.get()
+        assert isinstance(self.ab_type, ir.F16Type), (
+            "Only f16 type is supported for A and B"
+        )
+        assert isinstance(self.c_type, ir.F32Type), "Only f32 type is supported for C"
         self.ab_dtype = mlir_to_numpy_dtype(self.ab_type)
         self.c_dtype = mlir_to_numpy_dtype(self.c_type)
-        self.has_bias = has_bias
-        self.has_relu = has_relu
-        self.accumulate_c = accumulate_c
+        self.a_shape = (self.M, self.K)
+        self.b_shape = (self.K, self.N)
+        self.c_shape = (self.M, self.N)
+        self.bias_shape = (self.N,)
 
     @cached_property
     def _initial_host_arrays(self) -> list[np.ndarray]:
@@ -321,9 +318,6 @@ enabled via CLI arguments.
 """
     args = parse_cli_args(description=description)
 
-    ab_type = "f16"
-    c_type = "f32"
-
     # Problem size
     m, n, k = args.sizes if args.sizes else (4096, 4096, 4096)
     # Get default parameters from the database
@@ -387,8 +381,6 @@ enabled via CLI arguments.
             M=params["m"],
             N=params["n"],
             K=params["k"],
-            ab_type=ab_type,
-            c_type=c_type,
             has_bias=args.bias,
             has_relu=args.relu,
             accumulate_c=not args.no_accumulate_c,
@@ -417,6 +409,8 @@ enabled via CLI arguments.
             def list2str(a):
                 return ",".join(map(str, a))
 
+            ab_type = str(wload.ab_type)
+            c_type = str(wload.c_type)
             print(
                 f"sizes={list2str([params['m'], params['n'], params['k']])} "
                 f"dt={ab_type},{c_type} "

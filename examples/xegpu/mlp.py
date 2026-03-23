@@ -15,6 +15,7 @@ lowered and executed.
 """
 
 import argparse
+from dataclasses import dataclass
 from typing import Optional
 from functools import cached_property
 import warnings
@@ -29,13 +30,13 @@ from lighthouse.utils.numpy import mlir_to_numpy_dtype
 from lighthouse.schedule.xegpu.mlp_schedule import get_schedule_module
 from lighthouse.ingress.mlir_gen import (
     generate_gpu_mlp_payload,
-    get_mlir_elem_type,
 )
 
 from xegpu_workload import XeGPUWorkload, matmul_complexity
 import parameter_selector
 
 
+@dataclass
 class XeGPUMLP(XeGPUWorkload):
     """
     Multi-layer perceptron (MLP) workload on XeGPU.
@@ -44,41 +45,37 @@ class XeGPUMLP(XeGPUWorkload):
     Optionally adds a bias term in each layer (not implemented yet).
     """
 
-    def __init__(
-        self,
-        batch_size: int,
-        input_size: int,
-        output_size: int,
-        hidden_layer_sizes: Optional[list[int]] = None,
-        ab_type: str = "f16",
-        acc_type: str = "f32",
-        has_bias: bool = False,
-        has_relu: bool = False,
-        accumulate_c: bool = False,
-        identity_weights: bool = False,
-    ):
-        super().__init__()
-        self.batch_size = batch_size
-        self.input_size = input_size
-        self.output_size = output_size
-        self.hidden_layer_sizes = hidden_layer_sizes or []
+    batch_size: int = 1024
+    input_size: int = 1024
+    output_size: int = 1024
+    hidden_layer_sizes: Optional[list[int]] = None
+    ab_type: ir.Type | None = None
+    acc_type: ir.Type | None = None
+    has_bias: bool = False
+    has_relu: bool = False
+    accumulate_c: bool = False
+    identity_weights: bool = False
+
+    def __post_init__(self):
+        if self.ab_type is None:
+            self.ab_type = ir.F16Type.get()
+        if self.acc_type is None:
+            self.acc_type = ir.F32Type.get()
+        assert isinstance(self.ab_type, ir.F16Type), (
+            "Only f16 type is supported for A and B"
+        )
+        assert isinstance(self.acc_type, ir.F32Type), (
+            "Only f32 type is supported for accumulator"
+        )
+        self.ab_dtype = mlir_to_numpy_dtype(self.ab_type)
+        self.acc_dtype = mlir_to_numpy_dtype(self.acc_type)
+
         self.input_shape = (self.batch_size, self.input_size)
         self.output_shape = (self.batch_size, self.output_size)
         layer_sizes = [self.input_size] + self.hidden_layer_sizes + [self.output_size]
         self.weight_shapes = list(zip(layer_sizes[:-1], layer_sizes[1:]))
         self.matmul_layers = [(self.batch_size, o, i) for i, o in self.weight_shapes]
-        self.identity_weights = identity_weights
-        self.bias_shapes = [(o,) for o in layer_sizes[1:]] if has_bias else []
-
-        assert ab_type == "f16", "Only f16 type is supported for A and B"
-        assert acc_type == "f32", "Only f32 type is supported for accumulator"
-        self.ab_type = get_mlir_elem_type(ab_type)
-        self.acc_type = get_mlir_elem_type(acc_type)
-        self.ab_dtype = mlir_to_numpy_dtype(self.ab_type)
-        self.acc_dtype = mlir_to_numpy_dtype(self.acc_type)
-        self.has_bias = has_bias
-        self.has_relu = has_relu
-        self.accumulate_c = accumulate_c
+        self.bias_shapes = [(o,) for o in layer_sizes[1:]] if self.has_bias else []
 
         if len(self.matmul_layers) == 1 and self.has_relu:
             warnings.warn("Using ReLU on a single layer model has no effect.")
