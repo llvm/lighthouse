@@ -20,27 +20,23 @@ def create_schedule() -> ir.Module:
 
 def create_named_sequence(
     schedule: ir.Module,
+    input_types: Sequence[ir.Type],
+    result_types: Sequence[ir.Type],
     sym_name: str = "__transform_main",
-    input_types: Sequence[ir.Type] = [],
-    result_types: Sequence[ir.Type] = [],
     is_readonly: bool = False,
 ) -> transform.NamedSequenceOp:
     """
     Create a named sequence inside a schedule module.
 
     Args:
+        input_types: Input types
+        result_types: Result types
         sym_name: Sequence name
-        input_types: Input types (default: a single arg)
-        result_types: Result types (default: no returns)
         is_readonly: Mark inputs as readonly
 
     Returns:
         Named transform sequence
     """
-
-    if not input_types:
-        input_types = [transform.any_op_t()]
-
     arg_attrs = [{"transform.consumed": ir.UnitAttr.get()}]
     if is_readonly:
         arg_attrs = [{"transform.readonly": ir.UnitAttr.get()}]
@@ -57,9 +53,9 @@ def create_named_sequence(
 
 @contextmanager
 def schedule_boilerplate(
+    input_types: Sequence[ir.Type] | None = None,
+    result_types: Sequence[ir.Type] | None = None,
     sym_name: str = "__transform_main",
-    input_types: Sequence[ir.Type] = [],
-    result_types: Sequence[ir.Type] = [],
     is_readonly: bool = False,
 ) -> Iterator[tuple[ir.Module, transform.NamedSequenceOp]]:
     """
@@ -69,21 +65,25 @@ def schedule_boilerplate(
     The insertion point is automatically placed within the sequence.
 
     Args:
-        sym_name: Sequence name
         input_types: Input types (default: a single arg)
-        result_types: Result types (default: a single return)
+        result_types: Result types (default: no returns)
+        sym_name: Sequence name
         is_readonly: Mark inputs as readonly
 
     Returns:
         Schedule and named transform sequence
     """
+    if input_types is None:
+        input_types = [transform.any_op_t()]
+    if result_types is None:
+        result_types = []
 
     schedule = create_schedule()
     named_sequence = create_named_sequence(
         schedule,
-        sym_name=sym_name,
         input_types=input_types,
         result_types=result_types,
+        sym_name=sym_name,
         is_readonly=is_readonly,
     )
     with ir.InsertionPoint(schedule.body):
