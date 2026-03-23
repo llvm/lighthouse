@@ -47,7 +47,7 @@ with ir.Context(), ir.Location.unknown():
 
     # Check that at least one constraint was reified into the schedule.
     # CHECK: constrain_params
-    schedules = wload.schedule_modules(parameters=parameters)
+    schedules = wload.pipeline(parameters=parameters)
     assert len(schedules) == 2, "Expected two schedule modules to be returned"
 
     print(schedules[1])
