@@ -1,7 +1,7 @@
 from mlir import ir
 from mlir.dialects import linalg, gpu, bufferization, arith, tensor
 
-from .gpu_utils import emit_gpu_util_funcs, emit_buf_to_tensor
+from .gpu_utils import emit_buf_to_tensor
 from .named import add_bias, relu, times_weights
 from .generic import convert_float_type
 from lighthouse.utils.mlir import func_cif
@@ -98,12 +98,6 @@ def generate_gpu_mlp_payload(
                     # deallocate after next layer
                     to_dealloc = c_memref
                 layer_input_tensor = layer_output
-
-        emit_gpu_util_funcs(ab_type, rank=2)
-        if result_type != ab_type:
-            emit_gpu_util_funcs(result_type, rank=2)
-        if has_bias:
-            emit_gpu_util_funcs(bias_type, rank=1)
 
     return mod
 

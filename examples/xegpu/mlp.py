@@ -15,7 +15,6 @@ lowered and executed.
 """
 
 import argparse
-import ctypes
 from typing import Optional
 from functools import cached_property
 import warnings
@@ -26,8 +25,7 @@ from mlir.execution_engine import ExecutionEngine
 
 from lighthouse import dialects as lh_dialects
 from lighthouse.workload import benchmark, get_bench_wrapper_schedule
-from lighthouse.utils.memref import to_ctype as memref_to_ctype
-from lighthouse.utils.numpy import numpy_to_ctype
+from lighthouse.utils.numpy import mlir_to_numpy_dtype
 from lighthouse.schedule.xegpu.mlp_schedule import get_schedule_module
 from lighthouse.ingress.mlir_gen import (
     generate_gpu_mlp_payload,
@@ -74,13 +72,10 @@ class XeGPUMLP(XeGPUWorkload):
 
         assert ab_type == "f16", "Only f16 type is supported for A and B"
         assert acc_type == "f32", "Only f32 type is supported for accumulator"
-        self.ab_type = ab_type
-        self.acc_type = acc_type
-        type_str_to_numpy = {
-            "f16": np.float16,
-            "f32": np.float32,
-        }
-        self.ab_dtype = type_str_to_numpy[ab_type]
+        self.ab_type = get_mlir_elem_type(ab_type)
+        self.acc_type = get_mlir_elem_type(acc_type)
+        self.ab_dtype = mlir_to_numpy_dtype(self.ab_type)
+        self.acc_dtype = mlir_to_numpy_dtype(self.acc_type)
         self.has_bias = has_bias
         self.has_relu = has_relu
         self.accumulate_c = accumulate_c
@@ -123,13 +118,17 @@ class XeGPUMLP(XeGPUWorkload):
                 b = gen_random(o, self.ab_dtype)
                 biases.append(b)
 
-        return output_array, input_array, weights, biases
+        return output_array, input_array, *weights, *biases
 
     @cached_property
     def _reference_solution(self) -> np.ndarray:
         """Compute reference solution on host with numpy."""
         # NOTE for large problems the solution can overflow float16 range
-        output_array, input_array, weights, biases = self._initial_host_arrays
+        output_array, input_array, *weights = self._initial_host_arrays
+        biases = []
+        if self.has_bias:
+            weights = weights[: len(self.weight_shapes)]
+            biases = weights[len(self.weight_shapes) :]
         # use float32 data type for efficiency
         output_array = output_array.astype(np.float32)
         input_array = input_array.astype(np.float32)
@@ -148,60 +147,13 @@ class XeGPUMLP(XeGPUWorkload):
         C_ref += output_array
         return C_ref.astype(self.ab_dtype)
 
-    def _get_input_arrays(
-        self, execution_engine: ExecutionEngine
-    ) -> list[ctypes.Structure]:
-        # Allocate device memory for inputs and outputs.
-        input_gpu = self._allocate_array(
-            "input", self.input_shape, self.ab_type, execution_engine
-        )
-        output_gpu = self._allocate_array(
-            "output", self.output_shape, self.ab_type, execution_engine
-        )
-        gpu_arrays_2d = [output_gpu, input_gpu]
-        for i, (in_size, out_size) in enumerate(self.weight_shapes):
-            W_gpu = self._allocate_array(
-                f"weight_{i}", (in_size, out_size), self.ab_type, execution_engine
-            )
-            gpu_arrays_2d.append(W_gpu)
-        gpu_arrays_1d = []
-        if self.has_bias:
-            for i, (out_size,) in enumerate(self.bias_shapes):
-                b_gpu = self._allocate_array(
-                    f"bias_{i}", (out_size,), self.ab_type, execution_engine
-                )
-                gpu_arrays_1d.append(b_gpu)
-
-        # Copy initial values to device.
-        input_arr, output_arr, weights, biases = self._initial_host_arrays
-        for host_arr, gpu_arr in zip([input_arr, output_arr] + weights, gpu_arrays_2d):
-            execution_engine.invoke(
-                "gpu_copy_2d_" + self.ab_type,
-                numpy_to_ctype(host_arr),
-                memref_to_ctype(gpu_arr),
-            )
-        if self.has_bias:
-            for host_arr, gpu_arr in zip(biases, gpu_arrays_1d):
-                execution_engine.invoke(
-                    "gpu_copy_1d_" + self.ab_type,
-                    numpy_to_ctype(host_arr),
-                    memref_to_ctype(gpu_arr),
-                )
-
-        # Return memrefs for the payload function.
-        return gpu_arrays_2d + gpu_arrays_1d
-
     def check_correctness(
         self, execution_engine: ExecutionEngine, verbose: int = 0
     ) -> bool:
         # copy result from device to host
-        res_gpu = self.gpu_memrefs[("output", self.ab_type)]
+        res_gpu = self.memory_manager.get("buffer_0")
         res_host_copy = np.zeros(self.output_shape, dtype=self.ab_dtype)
-        execution_engine.invoke(
-            "gpu_copy_2d_" + self.ab_type,
-            memref_to_ctype(res_gpu),
-            numpy_to_ctype(res_host_copy),
-        )
+        self.memory_manager.copy(res_gpu, res_host_copy)
 
         res_host_ref = self._reference_solution
         res_host = res_host_copy
@@ -245,13 +197,19 @@ class XeGPUMLP(XeGPUWorkload):
             input_size=self.input_size,
             output_size=self.output_size,
             hidden_layer_sizes=self.hidden_layer_sizes,
-            ab_type=get_mlir_elem_type(self.ab_type),
-            acc_type=get_mlir_elem_type(self.acc_type),
-            bias_type=get_mlir_elem_type(self.ab_type),
-            result_type=get_mlir_elem_type(self.ab_type),
+            ab_type=self.ab_type,
+            acc_type=self.acc_type,
+            bias_type=self.ab_type,
+            result_type=self.ab_type,
             has_bias=self.has_bias,
             has_relu=self.has_relu,
             accumulate_c=self.accumulate_c,
+        )
+        ranks_and_types = [(2, self.ab_type), (2, self.acc_type)]
+        if self.has_bias:
+            ranks_and_types.append((1, self.ab_type))
+        self.memory_manager_class.emit_memory_management_funcs(
+            mod, ranks_and_types=ranks_and_types
         )
         return mod
 

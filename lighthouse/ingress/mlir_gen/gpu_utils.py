@@ -1,6 +1,5 @@
 from mlir import ir
 from mlir.dialects import gpu, bufferization, arith
-from .utils import get_elem_type_str
 from lighthouse.utils.mlir import func_cif
 
 
@@ -47,7 +46,7 @@ def emit_gpu_copy(suffix: str, element_type: ir.Type, rank: int = 2):
 
 def emit_gpu_util_funcs(element_type: ir.Type, rank: int = 2):
     """Emit GPU utility functions for allocation, deallocation and copy."""
-    type_str = get_elem_type_str(type(element_type))
+    type_str = str(element_type)
     suffix = f"{rank}d_{type_str}"
     emit_gpu_alloc(suffix, element_type, rank)
     emit_gpu_dealloc(suffix, element_type, rank)

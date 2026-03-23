@@ -1,3 +1,4 @@
+from .memory_manager import MemoryManager, GPUMemoryManager
 from .workload import Workload
 from .runner import (
     execute,
@@ -6,6 +7,8 @@ from .runner import (
 )
 
 __all__ = [
+    "GPUMemoryManager",
+    "MemoryManager",
     "Workload",
     "benchmark",
     "execute",

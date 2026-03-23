@@ -3,14 +3,9 @@ import ctypes
 from contextlib import contextmanager
 from abc import ABC, abstractmethod
 
-import numpy as np
-from mlir.runtime.np_to_memref import (
-    make_nd_memref_descriptor,
-    as_ctype,
-)
 from mlir.execution_engine import ExecutionEngine
 
-from lighthouse.utils.memref import to_ctype as memref_to_ctype
+from lighthouse.workload.memory_manager import MemoryManager, GPUMemoryManager
 
 
 def matmul_complexity(
@@ -47,50 +42,17 @@ class XeGPUWorkload(Workload, ABC):
     """
 
     def __init__(self):
-        # cache allocated memrefs
-        self.gpu_memrefs = {}
-
-    def _allocate_array(
-        self,
-        name: str,
-        shape: tuple[int, ...],
-        dtype_str: str,
-        execution_engine: ExecutionEngine,
-    ) -> ctypes.Structure:
-        key = (name, dtype_str)
-        if key in self.gpu_memrefs:
-            return self.gpu_memrefs[key]
-        dtype = {
-            "f16": np.float16,
-            "f32": np.float32,
-        }[dtype_str]
-        mref = make_nd_memref_descriptor(len(shape), as_ctype(dtype))()
-        ptr_mref = memref_to_ctype(mref)
-        ptr_dims = [ctypes.pointer(ctypes.c_int32(d)) for d in shape]
-        rank = len(shape)
-        assert rank in (1, 2), "Only 1d or 2d arrays are supported."
-        suffix = f"{rank}d_{dtype_str}"
-        execution_engine.invoke("gpu_alloc_" + suffix, ptr_mref, *ptr_dims)
-        self.gpu_memrefs[key] = mref
-        return mref
-
-    def _deallocate_all(self, execution_engine: ExecutionEngine):
-        for (_, dtype_str), mref in self.gpu_memrefs.items():
-            ptr_mref = ctypes.pointer(ctypes.pointer(mref))
-            rank = len(mref.shape)
-            suffix = f"{rank}d_{dtype_str}"
-            execution_engine.invoke("gpu_dealloc_" + suffix, ptr_mref)
-        self.gpu_memrefs = {}
+        self.memory_manager_class: type[MemoryManager] = GPUMemoryManager
+        self.memory_manager: GPUMemoryManager | None = None
 
     @contextmanager
     def allocate_inputs(self, execution_engine: ExecutionEngine):
-        try:
-            yield self._get_input_arrays(execution_engine)
-        finally:
-            self._deallocate_all(execution_engine)
+        if self.memory_manager is None:
+            self.memory_manager = self.memory_manager_class(execution_engine)
+        host_arrays = [a for a in self._initial_host_arrays if a is not None]
+        with self.memory_manager.clone_host_buffers(host_arrays) as device_buffers:
+            yield device_buffers
 
     @abstractmethod
-    def _get_input_arrays(
-        self, execution_engine: ExecutionEngine
-    ) -> list[ctypes.Structure]:
+    def _initial_host_arrays(self) -> list[ctypes.Structure]:
         pass

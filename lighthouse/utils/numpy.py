@@ -45,3 +45,36 @@ def numpy_to_mlir_type(dtype: np.dtype, ctx: ir.Context | None = None) -> ir.Typ
             return ir.IntegerType.get(1)
 
     raise ValueError(f"Unsupported numpy dtype: {dtype}")
+
+
+def mlir_to_numpy_dtype(mlir_type: ir.Type) -> np.dtype:
+    """
+    Convert an MLIR type into a numpy dtype.
+
+    Args:
+        mlir_type: MLIR type
+    Returns:
+        numpy dtype
+    """
+    if isinstance(mlir_type, ir.F64Type):
+        return np.float64
+    if isinstance(mlir_type, ir.F32Type):
+        return np.float32
+    if isinstance(mlir_type, ir.F16Type):
+        return np.float16
+    if isinstance(mlir_type, ir.BF16Type):
+        return ml_dtypes.bfloat16
+    if isinstance(mlir_type, ir.IntegerType):
+        width = mlir_type.width
+        if width == 64:
+            return np.int64
+        if width == 32:
+            return np.int32
+        if width == 16:
+            return np.int16
+        if width == 8:
+            return np.int8
+        if width == 1:
+            return np.bool
+
+    raise ValueError(f"Unsupported MLIR type: {mlir_type}")

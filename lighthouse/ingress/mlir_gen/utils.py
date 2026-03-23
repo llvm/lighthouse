@@ -10,23 +10,25 @@ from mlir.dialects import arith, linalg, tensor
 
 
 def get_mlir_elem_type(type_str: str):
+    if type_str == "f64":
+        return ir.F64Type.get()
+    if type_str == "f32":
+        return ir.F32Type.get()
     if type_str == "f16":
         return ir.F16Type.get()
     if type_str == "bf16":
         return ir.BF16Type.get()
-    if type_str == "f32":
-        return ir.F32Type.get()
+    if type_str == "i64":
+        return ir.IntegerType.get(64)
+    if type_str == "i32":
+        return ir.IntegerType.get(32)
+    if type_str == "i16":
+        return ir.IntegerType.get(16)
+    if type_str == "i8":
+        return ir.IntegerType.get(8)
+    if type_str == "i1":
+        return ir.IntegerType.get(1)
     raise ValueError(f"Unsupported element type string '{type_str}'")
-
-
-def get_elem_type_str(elem_type: type):
-    if elem_type == ir.F16Type:
-        return "f16"
-    if elem_type == ir.BF16Type:
-        return "bf16"
-    if elem_type == ir.F32Type:
-        return "f32"
-    raise ValueError(f"Unsupported element type '{elem_type}'")
 
 
 class ConstantInitKind(Enum):
