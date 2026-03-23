@@ -24,10 +24,6 @@ class CSVLogger:
             handler = logging.StreamHandler()
             handler.setFormatter(logging.Formatter("%(message)s"))
             self.logger.addHandler(handler)
-        if self.filename is not None:
-            assert not os.path.exists(self.filename), (
-                f"CSV file '{self.filename}' already exists"
-            )
 
     def log(self, data: dict):
         if self.fieldnames is None:
