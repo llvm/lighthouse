@@ -1,3 +1,8 @@
+from .dialect_base import DialectExtension
+
+__all__ = ["DialectExtension"]
+
+
 def register_and_load(**kwargs):
     from . import smt_ext
     from .transform import transform_ext

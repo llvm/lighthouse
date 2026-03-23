@@ -26,7 +26,7 @@ class ConstrainParamsOp(
         return self.body_.blocks[0]
 
     @classmethod
-    def attach_interfaces(cls, ctx=None):
+    def attach_interface_impls(cls, ctx=None):
         if not hasattr(cls, "_interfaces_attached"):
             cls.ConstrainParamsTransformOpInterfaceModel.attach(
                 cls.OPERATION_NAME, context=ctx
