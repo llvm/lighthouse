@@ -130,12 +130,15 @@ class GeneticAlgorithm:
     mutation_rate: float = 0.001
     fertility_rate: float = 1.0
     evaluate_fitness: FunctionType = None
-    ntrials: int = 50
     population_history: list = field(default_factory=list)
     fitness_history: list = field(default_factory=list)
     fixed_population_size: int = field(init=False)
+    _ntrials: int = 50
 
     def __post_init__(self):
+        assert self.recombination_rate >= 0 and self.recombination_rate <= 1
+        assert self.mutation_rate >= 0 and self.mutation_rate <= 1
+        assert self.fertility_rate > 0 and self.fertility_rate <= 1
         self.fixed_population_size = self.population.size()
 
     def recombine_and_mutate(self, individuals: list) -> list:
@@ -147,7 +150,7 @@ class GeneticAlgorithm:
             parent = individuals[i]
             donor_idx = random.choice([j for j in range(npopulation) if j != i])
             donor = individuals[donor_idx]
-            for _ in range(self.ntrials):
+            for _ in range(self._ntrials):
                 child = parent.copy()
                 # perform recombination
                 # one gene is always copied from donor
