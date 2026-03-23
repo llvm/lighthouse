@@ -5,8 +5,6 @@ from mlir.dialects import smt
 
 
 def register_and_load(**kwargs):
-    """Register and load the SMTIntValue caster."""
-
     SMTIntValue.register_value_caster()
 
 

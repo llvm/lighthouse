@@ -2,8 +2,6 @@ from lighthouse.dialects import DialectExtension
 
 
 def register_and_load(**kwargs):
-    """Register and load the SMTIntValue caster."""
-
     TransformSMTExtensionDialect.load(**kwargs)
 
 

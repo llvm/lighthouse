@@ -4,6 +4,7 @@ __all__ = ["DialectExtension"]
 
 
 def register_and_load(**kwargs):
+    """Register and load custom extensions."""
     from . import smt_ext
     from .transform import transform_ext
     from .transform import smt_ext as td_smt_ext
