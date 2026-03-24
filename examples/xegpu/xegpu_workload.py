@@ -51,7 +51,7 @@ class XeGPUWorkload(Workload, ABC):
     def allocate_inputs(self, execution_engine: ExecutionEngine):
         if self.memory_manager is None:
             self.memory_manager = self.memory_manager_class(execution_engine)
-        host_arrays = [a for a in self._initial_host_arrays if a is not None]
+        host_arrays = self._initial_host_arrays
         with self.memory_manager.clone_host_buffers(host_arrays) as device_buffers:
             yield device_buffers
 

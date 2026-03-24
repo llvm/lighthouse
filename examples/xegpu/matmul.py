@@ -11,6 +11,7 @@ XeGPU matrix multiplication example.
 """
 
 import argparse
+import ctypes
 import json
 from dataclasses import dataclass
 from typing import Optional
@@ -21,13 +22,53 @@ from mlir import ir
 from mlir.execution_engine import ExecutionEngine
 
 from lighthouse import dialects as lh_dialects
-from lighthouse.workload import benchmark, get_bench_wrapper_schedule
+from lighthouse.workload import benchmark, execute, get_bench_wrapper_schedule
 from lighthouse.schedule.xegpu.mlp_schedule import get_schedule_module
 from lighthouse.utils.numpy import mlir_to_numpy_dtype
 from lighthouse.ingress.mlir_gen import generate_gpu_matmul_payload, get_mlir_elem_type
 
 from xegpu_workload import XeGPUWorkload, matmul_complexity
 import parameter_selector
+
+
+def check_correctness(
+    A: np.ndarray,
+    B: np.ndarray,
+    C: np.ndarray,
+    D: np.ndarray,
+    bias: Optional[np.ndarray] = None,
+    has_bias: bool = False,
+    has_relu: bool = False,
+    accumulate_c: bool = True,
+    verbose: int = 0,
+) -> bool:
+    """
+    Compares matrix multiplication result D against a reference solution D_ref.
+    """
+    # use float32 data type for efficiency
+    f32 = np.float32
+    D_ref = A.astype(f32) @ B.astype(f32)
+    if accumulate_c:
+        D_ref += C.astype(f32)
+    if has_bias:
+        D_ref += bias.astype(f32)
+    if has_relu:
+        D_ref = np.maximum(D_ref, 0)
+
+    D_host = D.astype(np.float32)
+    if verbose > 1:
+        print("Reference solution:")
+        print(D_ref)
+        print("Computed solution:")
+        print(D_host)
+    success = np.allclose(D_host, D_ref)
+
+    if verbose:
+        if success:
+            print("PASSED")
+        else:
+            print("FAILED Result mismatch!")
+    return success
 
 
 @dataclass
@@ -84,49 +125,10 @@ class XeGPUMatMul(XeGPUWorkload):
         A = gen_random(self.a_shape, self.ab_dtype)
         B = gen_random(self.b_shape, self.ab_dtype)
         C = gen_random(self.c_shape, self.c_dtype)
-        bias = None
         if self.has_bias:
             bias = gen_random(self.bias_shape, self.c_dtype)
-        return C, A, B, bias
-
-    @cached_property
-    def _reference_solution(self) -> np.ndarray:
-        """Compute reference solution on host with numpy."""
-        C, A, B, bias = self._initial_host_arrays
-        # use float32 data type for efficiency
-        f32 = np.float32
-        C_ref = A.astype(f32) @ B.astype(f32)
-        if self.accumulate_c:
-            C_ref += C.astype(f32)
-        if self.has_bias:
-            C_ref += bias.astype(f32)
-        if self.has_relu:
-            C_ref = np.maximum(C_ref, 0)
-        return C_ref
-
-    def check_correctness(
-        self, execution_engine: ExecutionEngine, verbose: int = 0
-    ) -> bool:
-        # Copy result from device to host.
-        C_gpu = self.memory_manager.get("buffer_0")
-        C_host_copy = np.zeros((self.M, self.N), dtype=self.c_dtype)
-        self.memory_manager.copy(C_gpu, C_host_copy)
-
-        C_host_ref = self._reference_solution
-        C_host = C_host_copy.astype(np.float32)
-        if verbose > 1:
-            print("Reference solution:")
-            print(C_host_ref)
-            print("Computed solution:")
-            print(C_host)
-        success = np.allclose(C_host, C_host_ref)
-
-        if verbose:
-            if success:
-                print("PASSED")
-            else:
-                print("FAILED Result mismatch!")
-        return success
+            return C, A, B, bias
+        return C, A, B
 
     def get_complexity(self) -> tuple[int, int, int]:
         nbytes_ab = np.dtype(self.ab_dtype).itemsize
@@ -304,6 +306,13 @@ def parse_cli_args(description):
         "--json",
         help="Read problem sizes and tile parameters from a JSON file.",
     )
+    parser.add_argument(
+        "--verbose",
+        "-v",
+        action="count",
+        default=0,
+        help="Increase output verbosity (e.g. print reference and computed solutions).",
+    )
     args = parser.parse_args()
 
     return args
@@ -395,13 +404,46 @@ enabled via CLI arguments.
                 schedule_parameters=params,
             )
         else:
+            if args.check_result:
+                # Setup callback function to copy result from device to host.
+                D_host_copy = np.zeros((wload.M, wload.N), dtype=wload.c_dtype)
+
+                def callback(eng: ExecutionEngine, inputs: list[ctypes.Structure]):
+                    wload.memory_manager.copy(inputs[0], D_host_copy)
+
+                # Execute kernel once.
+                execute(
+                    wload,
+                    schedule_parameters=params,
+                    callback=callback,
+                )
+
+                # Compute reference solution on host.
+                host_inputs = wload._initial_host_arrays
+                if wload.has_bias:
+                    C, A, B, bias = host_inputs
+                else:
+                    C, A, B = host_inputs
+                    bias = None
+                success = check_correctness(
+                    A,
+                    B,
+                    C,
+                    D_host_copy,
+                    bias=bias,
+                    has_bias=wload.has_bias,
+                    has_relu=wload.has_relu,
+                    accumulate_c=wload.accumulate_c,
+                    verbose=args.verbose,
+                )
+                if not success:
+                    raise ValueError("Result mismatch!")
             times = benchmark(
                 wload,
                 nruns=args.nruns,
                 nwarmup=args.nwarmup,
                 schedule_parameters=params,
-                check_correctness=args.check_result,
-                verbose=1,
+                callback=None,
             )
             times *= 1e6  # convert to microseconds
             elapsed = np.mean(times)

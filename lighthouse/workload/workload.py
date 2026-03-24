@@ -103,13 +103,6 @@ class Workload(ABC):
         pass
 
     @abstractmethod
-    def check_correctness(
-        self, execution_engine: ExecutionEngine, verbose: int = 0
-    ) -> bool:
-        """Verify the correctness of the computation."""
-        pass
-
-    @abstractmethod
     def get_complexity(self) -> tuple[int, int, int]:
         """
         Return the computational complexity of the workload.

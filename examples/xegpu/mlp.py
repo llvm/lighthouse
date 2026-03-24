@@ -16,6 +16,7 @@ lowered and executed.
 
 import argparse
 from dataclasses import dataclass
+import ctypes
 from typing import Optional
 from functools import cached_property
 import warnings
@@ -25,7 +26,7 @@ from mlir import ir
 from mlir.execution_engine import ExecutionEngine
 
 from lighthouse import dialects as lh_dialects
-from lighthouse.workload import benchmark, get_bench_wrapper_schedule
+from lighthouse.workload import benchmark, execute, get_bench_wrapper_schedule
 from lighthouse.utils.numpy import mlir_to_numpy_dtype
 from lighthouse.schedule.xegpu.mlp_schedule import get_schedule_module
 from lighthouse.ingress.mlir_gen import (
@@ -35,6 +36,57 @@ from lighthouse.ingress.mlir_gen import (
 
 from xegpu_workload import XeGPUWorkload, matmul_complexity
 import parameter_selector
+
+
+def check_correctness(
+    initial_host_arrays: list[np.ndarray],
+    result: np.ndarray,
+    ab_dtype: np.dtype,
+    has_bias: bool = False,
+    has_relu: bool = False,
+    verbose: int = 0,
+) -> bool:
+    output_array, input_array, *rest = initial_host_arrays
+    if has_bias:
+        n = len(rest) // 2
+        weights = rest[:n]
+        biases = rest[n:]
+    else:
+        weights = rest
+        biases = []
+    # use float32 data type for efficiency
+    output_array = output_array.astype(np.float32)
+    input_array = input_array.astype(np.float32)
+    weights = [w.astype(np.float32) for w in weights]
+    biases = [b.astype(np.float32) for b in biases]
+
+    a_array = input_array
+    for i, W in enumerate(weights):
+        D_ref = a_array @ W
+        if has_bias:
+            D_ref += biases[i]
+        if has_relu and i < len(weights) - 1:
+            D_ref = np.maximum(D_ref, 0)
+        a_array = D_ref.astype(ab_dtype).astype(np.float32)
+
+    D_ref = a_array.astype(ab_dtype)
+    D = result
+    if verbose > 1:
+        print("Reference solution:")
+        print(D_ref)
+        print("Computed solution:")
+        print(D)
+    success = np.allclose(D, D_ref)
+
+    if verbose:
+        if success:
+            print("PASSED")
+        else:
+            print("FAILED Result mismatch!")
+            print(f"Max absolute error: {np.max(np.abs(D - D_ref))}")
+            num_diff = np.sum(np.abs(D - D_ref) > 1e-3)
+            print(f"Number of differing elements: {num_diff}")
+    return success
 
 
 @dataclass
@@ -123,63 +175,6 @@ class XeGPUMLP(XeGPUWorkload):
                 biases.append(b)
 
         return output_array, input_array, *weights, *biases
-
-    @cached_property
-    def _reference_solution(self) -> np.ndarray:
-        """Compute reference solution on host with numpy."""
-        # NOTE for large problems the solution can overflow float16 range
-        output_array, input_array, *rest = self._initial_host_arrays
-        if self.has_bias:
-            n = len(self.weight_shapes)
-            weights = rest[:n]
-            biases = rest[n:]
-        else:
-            weights = rest
-            biases = []
-        # use float32 data type for efficiency
-        output_array = output_array.astype(np.float32)
-        input_array = input_array.astype(np.float32)
-        weights = [w.astype(np.float32) for w in weights]
-        biases = [b.astype(np.float32) for b in biases]
-
-        a_array = input_array
-        for i, W in enumerate(weights):
-            C_ref = a_array @ W
-            if self.has_bias:
-                C_ref += biases[i]
-            if self.has_relu and i < len(weights) - 1:
-                C_ref = np.maximum(C_ref, 0)
-            a_array = C_ref.astype(self.ab_dtype).astype(np.float32)
-
-        C_ref += output_array
-        return C_ref.astype(self.ab_dtype)
-
-    def check_correctness(
-        self, execution_engine: ExecutionEngine, verbose: int = 0
-    ) -> bool:
-        # copy result from device to host
-        res_gpu = self.memory_manager.get("buffer_0")
-        res_host_copy = np.zeros(self.output_shape, dtype=self.ab_dtype)
-        self.memory_manager.copy(res_gpu, res_host_copy)
-
-        res_host_ref = self._reference_solution
-        res_host = res_host_copy
-        if verbose > 1:
-            print("Reference solution:")
-            print(res_host_ref)
-            print("Computed solution:")
-            print(res_host)
-        success = np.allclose(res_host, res_host_ref)
-
-        if verbose:
-            if success:
-                print("PASSED")
-            else:
-                print("FAILED Result mismatch!")
-                print(f"Max absolute error: {np.max(np.abs(res_host - res_host_ref))}")
-                num_diff = np.sum(np.abs(res_host - res_host_ref) > 1e-3)
-                print(f"Number of differing elements: {num_diff}")
-        return success
 
     def get_complexity(self) -> tuple[int, int, int]:
         nbytes_ab = np.dtype(self.ab_dtype).itemsize
@@ -326,6 +321,13 @@ def parse_cli():
         action="store_true",
         help="Dump transform schedule.",
     )
+    parser.add_argument(
+        "--verbose",
+        "-v",
+        action="count",
+        default=0,
+        help="Increase output verbosity (e.g. print reference and computed solutions).",
+    )
     args = parser.parse_args()
 
     return args
@@ -367,13 +369,37 @@ if __name__ == "__main__":
                 schedule_parameters=params,
             )
         else:
+            if args.check_result:
+                # Setup callback function to copy result from device to host.
+                result_host_copy = np.zeros(wload.output_shape, dtype=wload.ab_dtype)
+
+                def callback(eng: ExecutionEngine, inputs: list[ctypes.Structure]):
+                    wload.memory_manager.copy(inputs[0], result_host_copy)
+
+                # Execute kernel once.
+                execute(
+                    wload,
+                    schedule_parameters=params,
+                    callback=callback,
+                )
+
+                # Compute reference solution on host.
+                success = check_correctness(
+                    wload._initial_host_arrays,
+                    result_host_copy,
+                    wload.ab_dtype,
+                    has_bias=wload.has_bias,
+                    has_relu=wload.has_relu,
+                    verbose=args.verbose,
+                )
+                if not success:
+                    raise ValueError("Result mismatch!")
+
             times = benchmark(
                 wload,
                 nruns=args.nruns,
                 nwarmup=args.nwarmup,
                 schedule_parameters=params,
-                check_correctness=args.check_result,
-                verbose=2,
             )
             times *= 1e6  # convert to microseconds
             elapsed = np.mean(times)

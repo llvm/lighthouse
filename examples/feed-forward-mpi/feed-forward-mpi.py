@@ -23,7 +23,7 @@ from mlir.runtime.np_to_memref import ranked_memref_to_numpy
 
 from lighthouse import dialects as lh_dialects
 from lighthouse.pipeline.helper import apply_registered_pass, match
-from lighthouse.workload import Workload, benchmark, get_bench_wrapper_schedule
+from lighthouse.workload import Workload, benchmark, execute, get_bench_wrapper_schedule
 from lighthouse.schedule import schedule_boilerplate
 from lighthouse.schedule.x86 import tile_and_vector_matmul
 from lighthouse.utils.numpy import numpy_to_mlir_type
@@ -109,6 +109,30 @@ def parse_cla():
     return args
 
 
+def check_correctness(
+    A: np.ndarray, B: np.ndarray, C: np.ndarray, R: np.ndarray, verbose: int = 0
+) -> bool:
+    def sigmoid(z):
+        return 1 / (1 + np.exp(-z))
+
+    R_ref = sigmoid(A @ B) @ C
+
+    if verbose > 1:
+        rprint("Reference solution:")
+        rprint(R_ref)
+        rprint("Computed solution:")
+        rprint(R)
+        diff = R - R_ref
+        rprint(f"Difference: min={diff.min()}, max={diff.max()}")
+    success = np.allclose(R, R_ref, atol=1e-5)
+    success = MPI.COMM_WORLD.allreduce(success, op=MPI.LAND)
+    if success:
+        rprint("PASSED")
+    else:
+        rprint("FAILED Result mismatch!")
+    return success
+
+
 class DistFF(Workload):
     """
     A single feed-forward layer that can run on multiple MPI ranks.
@@ -154,42 +178,6 @@ class DistFF(Workload):
             init_func=init,
         ) as inputs:
             yield inputs
-
-    def _reference_solution(self, execution_engine: ExecutionEngine) -> np.ndarray:
-        rprint(" * Gathering input data...")
-        gathered = [
-            self.memory_manager.gather(name, numpy_to_mlir_type(self.dtype))
-            for name in ["A", "B", "C"]
-        ]
-
-        def sigmoid(z):
-            return 1 / (1 + np.exp(-z))
-
-        rprint(" * Computing reference solution...")
-        A, B, C = [ranked_memref_to_numpy([m]) for m in gathered]
-        result = sigmoid(A @ B) @ C
-        return result
-
-    def check_correctness(
-        self, execution_engine: ExecutionEngine, verbose: int = 0
-    ) -> bool:
-        R_ref = self._reference_solution(execution_engine)
-        gathered = self.memory_manager.gather("D", numpy_to_mlir_type(self.dtype))
-        R = ranked_memref_to_numpy([gathered])
-        if verbose > 1:
-            rprint("Reference solution:")
-            rprint(R_ref)
-            rprint("Computed solution:")
-            rprint(R)
-            diff = R - R_ref
-            rprint(f"Difference: min={diff.min()}, max={diff.max()}")
-        success = np.allclose(R, R_ref, atol=1e-5)
-        success = MPI.COMM_WORLD.allreduce(success, op=MPI.LAND)
-        if success:
-            rprint("PASSED")
-        else:
-            rprint("FAILED Result mismatch!")
-        return success
 
     def shared_libs(self) -> list[str]:
         return self.mpilibs + ["libmlir_c_runner_utils.so", "libmlir_runner_utils.so"]
@@ -405,14 +393,32 @@ if __name__ == "__main__":
 
         wload = DistFF(args, P, R)
 
-        # execute(wload, verbose=args.verbose)
-        rprint(" Benchmark".center(60, "-"))
+        rprint(" Correctness Check ".center(60, "-"))
+        # set up callback for gathering sharded arrays after execution
+        host_arrays = []
+        elem_type = numpy_to_mlir_type(wload.dtype)
+
+        def callback(engine, inputs):
+            gathered = [
+                wload.memory_manager.gather(n, elem_type) for n in ["A", "B", "C", "D"]
+            ]
+            for a in gathered:
+                host_arrays.append(ranked_memref_to_numpy([a]).copy())
+
+        # execute once for correctness check
+        execute(
+            wload,
+            callback=callback,
+        )
+
+        # check_correctness
+        check_correctness(*host_arrays, verbose=args.verbose)
+
+        rprint(" Benchmark ".center(60, "-"))
         times = benchmark(
             wload,
             nruns=args.nruns,
             nwarmup=args.nwarmup,
-            check_correctness=True,
-            verbose=args.verbose,
         )
         # compute statistics
         times *= 1e6

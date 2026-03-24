@@ -49,12 +49,6 @@ class ElementwiseSum(Workload):
         C = np.zeros((self.M, self.N), dtype=self.dtype)
         return [A, B, C]
 
-    @cached_property
-    def _reference_solution(self) -> np.ndarray:
-        print(" * Computing reference solution...")
-        A, B, _ = self._input_arrays
-        return A + B
-
     def _get_input_arrays(self) -> list[ctypes.Structure]:
         return [get_ranked_memref_descriptor(a) for a in self._input_arrays]
 
@@ -65,24 +59,6 @@ class ElementwiseSum(Workload):
         finally:
             # cached numpy arrays are deallocated automatically
             pass
-
-    def check_correctness(
-        self, execution_engine: ExecutionEngine, verbose: int = 0
-    ) -> bool:
-        C = self._input_arrays[2]
-        C_ref = self._reference_solution
-        if verbose > 1:
-            print("Reference solution:")
-            print(C_ref)
-            print("Computed solution:")
-            print(C)
-        success = np.allclose(C, C_ref)
-        if verbose:
-            if success:
-                print("PASSED")
-            else:
-                print("FAILED Result mismatch!")
-        return success
 
     def shared_libs(self) -> list[str]:
         return []
@@ -167,10 +143,23 @@ if __name__ == "__main__":
         wload.lower_payload(dump_payload="bufferized", dump_schedule=True)
 
         print(" Execute 1 ".center(60, "-"))
-        execute(wload, verbose=2)
+        execute(wload)
 
         print(" Execute 2 ".center(60, "-"))
-        execute(wload, verbose=1)
+        execute(wload)
+
+        print(" Correctness test ".center(60, "-"))
+        A, B, C = wload._input_arrays
+        C_ref = A + B
+        print("Reference solution:")
+        print(C_ref)
+        print("Computed solution:")
+        print(C)
+        success = np.allclose(C, C_ref)
+        if success:
+            print("PASSED")
+        else:
+            print("FAILED Result mismatch!")
 
         print(" Benchmark ".center(60, "-"))
         times = benchmark(wload)

@@ -24,7 +24,7 @@ from mlir.execution_engine import ExecutionEngine
 from mlir.dialects.transform import tensor
 
 from lighthouse import dialects as lh_dialects
-from lighthouse.workload import benchmark, get_bench_wrapper_schedule
+from lighthouse.workload import benchmark, execute, get_bench_wrapper_schedule
 from lighthouse.utils.numpy import numpy_to_mlir_type
 from lighthouse.pipeline.helper import apply_registered_pass
 import lighthouse.utils as lh_utils
@@ -64,13 +64,6 @@ class Matmul(Workload):
         self.K = K
         self.dtype = dtype
         self.tile_size = tile_size
-
-    def check_correctness(
-        self, execution_engine: ExecutionEngine, verbose: int = 0
-    ) -> bool:
-        A, B, C = self._input_arrays
-        out_ref = np.matmul(A, B, dtype=np.float32)
-        return np.allclose(C, out_ref)
 
     @cached_property
     def _input_arrays(self) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -374,9 +367,16 @@ if __name__ == "__main__":
             )
             sys.exit(0)
 
-        times = benchmark(
-            wload, check_correctness=True, nruns=args.nruns, nwarmup=args.nwarmup
-        )
+        # check correctness
+        execute(wload)
+        A, B, C = wload._input_arrays
+        C_ref = np.matmul(A, B, dtype=np.float32)
+        success = np.allclose(C, C_ref)
+        if not success:
+            print("FAILED Result mismatch.")
+            sys.exit(1)
+
+        times = benchmark(wload, nruns=args.nruns, nwarmup=args.nwarmup)
         times *= 1e6  # convert to microseconds
 
         print(f"MxNxK: {args.sizes}")

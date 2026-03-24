@@ -38,9 +38,8 @@ def get_engine(
 
 def execute(
     workload: Workload,
-    check_correctness: bool = True,
     schedule_parameters: Optional[dict] = None,
-    verbose: int = 0,
+    callback: Optional[callable] = None,
 ):
     # lower payload with schedule
     payload_module = workload.lower_payload(schedule_parameters=schedule_parameters)
@@ -61,12 +60,8 @@ def execute(
         # call function
         payload_func(packed_args)
 
-        if check_correctness:
-            success = workload.check_correctness(
-                execution_engine=engine, verbose=verbose
-            )
-            if not success:
-                raise ValueError("Benchmark verification failed.")
+        if callback is not None:
+            callback(engine, inputs)
 
 
 def get_bench_wrapper_schedule(workload: Workload):
@@ -94,8 +89,7 @@ def benchmark(
     nruns: int = 100,
     nwarmup: int = 10,
     schedule_parameters: Optional[dict] = None,
-    check_correctness: bool = True,
-    verbose: int = 0,
+    callback: Optional[callable] = None,
 ) -> np.ndarray:
     # get original payload module
     payload_module = workload.payload_module()
@@ -113,19 +107,6 @@ def benchmark(
     engine = get_engine(payload_module, shared_libs=libs)
 
     with workload.allocate_inputs(execution_engine=engine) as inputs:
-        if check_correctness:
-            # call payload once to verify correctness
-            # prepare function arguments
-            packed_args = to_packed_args(inputs)
-
-            payload_func = engine.lookup(workload.payload_function_name)
-            payload_func(packed_args)
-            success = workload.check_correctness(
-                execution_engine=engine, verbose=verbose
-            )
-            if not success:
-                raise ValueError("Benchmark verification failed.")
-
         # allocate buffer for timings and prepare arguments
         time_array = np.zeros((nruns,), dtype=np.float64)
         time_memref = get_ranked_memref_descriptor(time_array)
@@ -134,5 +115,8 @@ def benchmark(
         # call benchmark function
         benchmark_func = engine.lookup(workload.benchmark_function_name)
         benchmark_func(packed_args_with_time)
+
+        if callback is not None:
+            callback(engine, inputs)
 
     return time_array
