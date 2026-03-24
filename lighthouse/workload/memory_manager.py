@@ -46,7 +46,7 @@ class MemoryManager(abc.ABC):
 
 @dataclass
 class DeviceMemoryManager(MemoryManager, abc.ABC):
-    """Abstract base class for memory managers that handle device memory."""
+    """Abstract base class for handling memory on accelerator devices."""
 
     @abc.abstractmethod
     def copy(
@@ -67,8 +67,9 @@ class DeviceMemoryManager(MemoryManager, abc.ABC):
 class GPUMemoryManager(DeviceMemoryManager):
     """GPU memory manager that uses MLIR gpu.alloc/dealloc/memcpy ops."""
 
-    allocated_buffers: dict[str, ctypes.Structure] = field(default_factory=dict)
-    buffer_elem_types: dict[str, type] = field(default_factory=dict)
+    allocated_buffers: dict[str, tuple[ctypes.Structure, type]] = field(
+        default_factory=dict
+    )
     buf_counter: int = 0
 
     def alloc(
@@ -90,23 +91,20 @@ class GPUMemoryManager(DeviceMemoryManager):
         self.execution_engine.invoke("gpu_alloc_" + suffix, ptr_mref, *ptr_dims)
 
         # NOTE need to track datatype as MemRefDescriptor does not include element type
-        self.allocated_buffers[name] = mref
-        self.buffer_elem_types[name] = elem_type
+        self.allocated_buffers[name] = mref, elem_type
         return mref
 
     def get(self, name: str) -> ctypes.Structure:
         assert name in self.allocated_buffers, f"No buffer found with name '{name}'."
-        return self.allocated_buffers[name]
+        return self.allocated_buffers[name][0]
 
     def deallocate_all(self):
-        for name, mref in self.allocated_buffers.items():
-            type_str = str(self.buffer_elem_types[name])
+        for mref, elem_type in self.allocated_buffers.values():
             ptr_mref = memref_to_ctype(mref)
             rank = len(mref.shape)
-            suffix = f"{rank}d_{type_str}"
+            suffix = f"{rank}d_{elem_type}"
             self.execution_engine.invoke("gpu_dealloc_" + suffix, ptr_mref)
         self.allocated_buffers.clear()
-        self.buffer_elem_types.clear()
         self.buf_counter = 0
 
     def copy(
@@ -173,9 +171,9 @@ class GPUMemoryManager(DeviceMemoryManager):
 class ShardMemoryManager(MemoryManager):
     """Memory manager that handles memory allocations for shard dialect."""
 
-    allocated_buffers: dict[str, ctypes.Structure] = field(default_factory=dict)
-    buffer_kinds: dict[str] = field(default_factory=dict)
-    buffer_elem_types: dict[str, type] = field(default_factory=dict)
+    allocated_buffers: dict[str, tuple[ctypes.Structure, type, str]] = field(
+        default_factory=dict
+    )
     buf_counter: int = 0
 
     def alloc(
@@ -196,15 +194,14 @@ class ShardMemoryManager(MemoryManager):
         self.execution_engine.invoke("alloc_" + kind, ptr_mref)
 
         # NOTE need to track datatype as MemRefDescriptor does not include element type
-        self.allocated_buffers[name] = mref
-        self.buffer_elem_types[name] = elem_type
-        self.buffer_kinds[name] = kind
+        self.allocated_buffers[name] = (mref, elem_type, kind)
         return mref
 
     def gather(self, name: str, elem_type: type) -> ctypes.Structure:
         assert name in self.allocated_buffers, f"No buffer found with name '{name}'."
-        assert self.buffer_elem_types[name] == elem_type, (
-            f"Element type mismatch: {self.buffer_elem_types[name]} != {elem_type}."
+        _, stored_elem_type, kind = self.allocated_buffers[name]
+        assert stored_elem_type == elem_type, (
+            f"Element type mismatch: {stored_elem_type} != {elem_type}."
         )
         assert "gathered_" + name not in self.allocated_buffers, (
             f"Buffer '{name}' already gathered"
@@ -214,25 +211,20 @@ class ShardMemoryManager(MemoryManager):
         mref = make_nd_memref_descriptor(2, as_ctype(np_dtype))()
         ptr_mref = memref_to_ctype(mref)
         src = memref_to_ctype(self.get(name))
-        kind = self.buffer_kinds[name]
         self.execution_engine.invoke("gather_" + kind, ptr_mref, src)
 
         # NOTE need to track datatype as MemRefDescriptor does not include element type
-        self.allocated_buffers["gathered_" + name] = mref
-        self.buffer_elem_types["gathered_" + name] = elem_type
-        self.buffer_kinds["gathered_" + name] = kind
+        self.allocated_buffers["gathered_" + name] = (mref, elem_type, kind)
         return mref
 
     def get(self, name: str) -> ctypes.Structure:
         assert name in self.allocated_buffers, f"No buffer found with name '{name}'."
-        return self.allocated_buffers[name]
+        return self.allocated_buffers[name][0]
 
     def deallocate_all(self):
-        for mref in self.allocated_buffers.values():
+        for mref, _, _ in self.allocated_buffers.values():
             self.execution_engine.invoke("dealloc_2d", memref_to_ctype(mref))
         self.allocated_buffers.clear()
-        self.buffer_elem_types.clear()
-        self.buffer_kinds.clear()
         self.buf_counter = 0
 
     @contextmanager
