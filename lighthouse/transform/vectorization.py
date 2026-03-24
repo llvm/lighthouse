@@ -20,8 +20,7 @@ def vectorize_ops(
         vector_sizes: Vector sizes
         vectorize_kwargs: Options passed to vectorization transform
     """
-    with foreach(target) as (_, targets):
-        op = targets[0]
+    with foreach(target) as op:
         structured.structured_vectorize(op, vector_sizes, **vectorize_kwargs)
         transform.yield_()
 

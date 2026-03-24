@@ -41,8 +41,7 @@ def tile_ops(
         "Both unrolling and peeling is not supported"
     )
 
-    with foreach(target) as (_, targets):
-        op = targets[0]
+    with foreach(target) as op:
         if fuse_producers:
             _, *loops = structured.FuseOp(
                 op,
