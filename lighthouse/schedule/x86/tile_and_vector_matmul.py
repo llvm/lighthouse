@@ -1,7 +1,6 @@
 from mlir import ir
 from mlir.dialects import transform
 from mlir.dialects.transform import structured
-from mlir.dialects.transform import tensor
 from mlir.dialects.transform import vector
 
 from lighthouse.schedule import schedule_boilerplate
@@ -94,24 +93,13 @@ def create_schedule(
         lh_transform.loop_hoisting(all_loops)
 
         # Vector cleanup.
-        with ir.InsertionPoint(
-            transform.ApplyPatternsOp(named_seq.bodyTarget).patterns
-        ):
-            vector.apply_patterns_vector_cast_away_vector_leading_one_dim()
-            tensor.apply_patterns_tensor_fold_tensor_subset_ops_into_vector_transfers()
-            transform.apply_patterns_canonicalization()
+        lh_transform.simplify_vector_ops(named_seq.bodyTarget)
 
         # Lower to broadcast+FMA instructions.
-        with ir.InsertionPoint(
-            transform.ApplyPatternsOp(named_seq.bodyTarget).patterns
-        ):
-            vector.apply_patterns_vector_lower_contraction(
-                lowering_strategy=vector.VectorContractLowering.OuterProduct
-            )
-            vector.apply_patterns_vector_lower_outerproduct()
+        lh_transform.vector_contract_to_fma(named_seq.bodyTarget)
 
         # Cleanup vector ops.
-        lh_transform.simplify_vector_ops(named_seq.bodyTarget)
+        lh_transform.flatten_vector_ops(named_seq.bodyTarget)
         lh_transform.cleanup(named_seq.bodyTarget)
 
         transform.yield_()

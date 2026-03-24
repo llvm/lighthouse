@@ -253,7 +253,7 @@ class Matmul(Workload):
 
         # Cleanup vector ops.
         with lh_schedule.schedule_boilerplate() as (sched, named_seq):
-            lh_transform.simplify_vector_ops(named_seq.bodyTarget)
+            lh_transform.flatten_vector_ops(named_seq.bodyTarget)
             lh_transform.cleanup(named_seq.bodyTarget)
             transform.yield_()
         scheds.append(sched)

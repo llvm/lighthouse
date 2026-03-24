@@ -1,6 +1,7 @@
 from mlir import ir
 from mlir.dialects import transform
 from mlir.dialects.transform import structured
+from mlir.dialects.transform import vector
 from mlir.dialects.transform import x86
 
 
@@ -22,6 +23,20 @@ def vectorize_ops(
         op = foreach.bodyTargets[0]
         structured.structured_vectorize(op, vector_sizes, **vectorize_kwargs)
         transform.yield_()
+
+
+def vector_contract_to_fma(target):
+    """
+    Apply vector contract to FMA lowering patterns.
+
+    Args:
+        target: Handle to target
+    """
+    with ir.InsertionPoint(transform.ApplyPatternsOp(target).patterns):
+        vector.apply_patterns_vector_lower_contraction(
+            lowering_strategy=vector.VectorContractLowering.OuterProduct
+        )
+        vector.apply_patterns_vector_lower_outerproduct()
 
 
 def x86_vector_patterns(target):
