@@ -1,27 +1,5 @@
 import ctypes
-from contextlib import contextmanager
 from typing import Sequence
-
-
-@contextmanager
-def deallocate_memrefs_on_exit(memref_descs, execution_engine, dealloc_name: str):
-    """Context manager that deallocates memref descriptors on exit.
-
-    Invokes the *dealloc_name* function for each descriptor through
-    *execution_engine* when the ``with`` block exits.
-
-    Example usage::
-
-        with deallocate_memrefs_on_exit(memrefs, engine, "dealloc_2d"):
-            # Use memrefs here
-            pass
-        # memrefs are deallocated here
-    """
-    try:
-        yield
-    finally:
-        for desc in memref_descs:
-            execution_engine.invoke(dealloc_name, to_ctype(desc))
 
 
 def to_ctype(memref_desc) -> ctypes._Pointer:

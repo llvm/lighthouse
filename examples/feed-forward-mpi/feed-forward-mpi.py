@@ -10,7 +10,6 @@ following a 1d/2d weight-stationary partition strategy
 """
 
 import argparse
-import ctypes
 from contextlib import contextmanager
 from typing import Optional
 import numpy as np
@@ -20,22 +19,16 @@ from mlir.dialects import transform
 from mlir.dialects.transform.bufferization import OneShotBufferizeOp
 from mlir.dialects.bufferization import LayoutMapOption
 from mlir.execution_engine import ExecutionEngine
-from mlir.runtime.np_to_memref import (
-    ranked_memref_to_numpy,
-    make_nd_memref_descriptor,
-    as_ctype,
-)
+from mlir.runtime.np_to_memref import ranked_memref_to_numpy
 
 from lighthouse import dialects as lh_dialects
-from lighthouse.utils.memref import (
-    to_ctype as memref_to_ctype,
-    deallocate_memrefs_on_exit,
-)
 from lighthouse.pipeline.helper import apply_registered_pass, match
 from lighthouse.workload import Workload, benchmark, get_bench_wrapper_schedule
 from lighthouse.schedule import schedule_boilerplate
 from lighthouse.schedule.x86 import tile_and_vector_matmul
+from lighthouse.utils.numpy import numpy_to_mlir_type
 from ff_weight_stationary import generate_ff_payload
+from memory_manager import ShardMemoryManager
 
 from mpi4py import MPI
 
@@ -136,84 +129,61 @@ class DistFF(Workload):
         self.grid = args.grid
         self.mpilibs = [args.mpilib]
         self.verbose = args.verbose
-
-    def _alloc_inout(self, execution_engine: ExecutionEngine) -> list[ctypes.Structure]:
-        rprint(" * Allocating input/output arrays...")
-        memrefs = [
-            make_nd_memref_descriptor(2, as_ctype(self.dtype))() for _ in range(4)
-        ]
-        # allocation functions use the same sharding annotations as the payload,
-        # so that each rank allocates only the part of the data it owns.
-        for i, v in enumerate(["act", "win", "wout", "act"]):
-            execution_engine.invoke(f"alloc_{v}", memref_to_ctype(memrefs[i]))
-            tmp = ranked_memref_to_numpy([memrefs[i]])
-            if not all(s % self.tile_size == 0 for s in tmp.shape):
-                raise ValueError(
-                    f"Memref {v}'s shape {tmp.shape} not divisible by tile_size {self.tile_size}"
-                )
-        return memrefs
-
-    def _init_inout(self, a: np.ndarray, b: np.ndarray, c: np.ndarray, r: np.ndarray):
-        rprint(" * Initializing input arrays...")
-        np.random.seed(self.comm_rank)  # different seed for each rank
-        for arr in [a, b, c, r]:
-            tmp = ranked_memref_to_numpy([arr])
-            tmp[:] = np.random.rand(*tmp.shape).astype(self.dtype)
+        self.memory_manager_class = ShardMemoryManager
+        self.memory_manager = None
 
     @contextmanager
     def allocate_inputs(self, execution_engine: ExecutionEngine):
-        self.input_memrefs = self._alloc_inout(execution_engine)
-        self._init_inout(*self.input_memrefs)
-        # Dealloc all memrefs on exit
-        with deallocate_memrefs_on_exit(
-            self.input_memrefs, execution_engine, "dealloc_2d"
-        ):
-            yield self.input_memrefs
+        rprint(" * Allocating input/output arrays...")
 
-    def _gather(
-        self,
-        memref: ctypes.Structure,
-        execution_engine: ExecutionEngine,
-        gather_func: str,
-    ) -> ctypes.Structure:
-        gathered_memref = make_nd_memref_descriptor(2, as_ctype(self.dtype))()
-        execution_engine.invoke(
-            gather_func,
-            memref_to_ctype(gathered_memref),
-            memref_to_ctype(memref),
-        )
-        return gathered_memref
+        if self.memory_manager is None:
+            self.memory_manager = self.memory_manager_class(execution_engine)
+        elem_type = numpy_to_mlir_type(self.dtype)
+        np.random.seed(self.comm_rank)  # different seed for each rank
+
+        def init(buf):
+            view = ranked_memref_to_numpy([buf])
+            view[:] = np.random.rand(*view.shape).astype(view.dtype) - 0.5
+
+        # allocation functions use the same sharding annotations as the payload,
+        # so that each rank allocates only the part of the data it owns.
+        with self.memory_manager.get_input_buffers(
+            ["act", "win", "wout", "act"],
+            names=["A", "B", "C", "D"],
+            elem_type=elem_type,
+            init_func=init,
+        ) as inputs:
+            yield inputs
 
     def _reference_solution(self, execution_engine: ExecutionEngine) -> np.ndarray:
         rprint(" * Gathering input data...")
         gathered = [
-            self._gather(self.input_memrefs[i], execution_engine, f"gather_{v}")
-            for i, v in enumerate(["act", "win", "wout"])
+            self.memory_manager.gather(name, numpy_to_mlir_type(self.dtype))
+            for name in ["A", "B", "C"]
         ]
-
-        rprint(" * Computing reference solution...")
 
         def sigmoid(z):
             return 1 / (1 + np.exp(-z))
 
-        with deallocate_memrefs_on_exit(gathered, execution_engine, "dealloc_2d"):
-            A, B, C = [ranked_memref_to_numpy([m]) for m in gathered]
-            result = sigmoid(A @ B) @ C
+        rprint(" * Computing reference solution...")
+        A, B, C = [ranked_memref_to_numpy([m]) for m in gathered]
+        result = sigmoid(A @ B) @ C
         return result
 
     def check_correctness(
         self, execution_engine: ExecutionEngine, verbose: int = 0
     ) -> bool:
-        gathered = self._gather(self.input_memrefs[-1], execution_engine, "gather_act")
-        with deallocate_memrefs_on_exit([gathered], execution_engine, "dealloc_2d"):
-            R = ranked_memref_to_numpy([gathered])
-            R_ref = self._reference_solution(execution_engine)
-            if verbose > 1:
-                rprint("Reference solution:")
-                rprint(R_ref)
-                rprint("Computed solution:")
-                rprint(R)
-            success = np.allclose(R, R_ref)
+        R_ref = self._reference_solution(execution_engine)
+        gathered = self.memory_manager.gather("D", numpy_to_mlir_type(self.dtype))
+        R = ranked_memref_to_numpy([gathered])
+        if verbose > 1:
+            rprint("Reference solution:")
+            rprint(R_ref)
+            rprint("Computed solution:")
+            rprint(R)
+            diff = R - R_ref
+            rprint(f"Difference: min={diff.min()}, max={diff.max()}")
+        success = np.allclose(R, R_ref, atol=1e-5)
         success = MPI.COMM_WORLD.allreduce(success, op=MPI.LAND)
         if success:
             rprint("PASSED")
@@ -263,25 +233,41 @@ class DistFF(Workload):
             grid=grid,
         )
         if len(self.grid) == 1:
+            split_act = [[], [0]]
+            split_win = [[], [0]]
+            split_wout = [[0], []]
             mod = generate_ff_payload(
                 **common,
-                split_act=[[], [0]],
-                split_win=[[], [0]],
-                split_wout=[[0], []],
+                split_act=split_act,
+                split_win=split_win,
+                split_wout=split_wout,
                 split_mm0a_mm1c=[[]],
                 split_mm0_c=[[], [0]],
                 split_sigmoid=[[], [0]],
             )
         else:
+            split_act = [[], [0, 1]]
+            split_win = [[0], [1]]
+            split_wout = [[1], [0]]
             mod = generate_ff_payload(
                 **common,
-                split_act=[[], [0, 1]],
-                split_win=[[0], [1]],
-                split_wout=[[1], [0]],
+                split_act=split_act,
+                split_win=split_win,
+                split_wout=split_wout,
                 split_mm0a_mm1c=[[], [0]],
                 split_mm0_c=[[], [1]],
                 split_sigmoid=[[], [1, 0]],
             )
+
+        self.memory_manager_class.emit_memory_management_funcs(
+            mod,
+            shapes=[
+                ("act", [self.M, self.K], split_act),
+                ("win", [self.K, self.N], split_win),
+                ("wout", [self.N, self.K], split_wout),
+            ],
+            elem_type=numpy_to_mlir_type(self.dtype),
+        )
 
         if self.verbose > 1:
             rprint("Payload MLIR:")

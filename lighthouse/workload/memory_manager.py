@@ -35,6 +35,16 @@ class MemoryManager(abc.ABC):
         """Look up a previously allocated device buffer by name."""
         pass
 
+    @staticmethod
+    def emit_memory_management_funcs(payload_module: ir.Module, **kwargs):
+        """Emit utility functions required by this memory manager into the payload module."""
+        pass
+
+
+@dataclass
+class DeviceMemoryManager(MemoryManager, abc.ABC):
+    """Abstract base class for memory managers that handle device memory."""
+
     @abc.abstractmethod
     def copy(
         self, src: ctypes.Structure | np.ndarray, dst: ctypes.Structure | np.ndarray
@@ -47,18 +57,9 @@ class MemoryManager(abc.ABC):
         """Context manager for allocating and freeing device buffers."""
         pass
 
-    @staticmethod
-    def emit_memory_management_funcs(
-        payload_module: ir.Module,
-        host_inputs: list[np.ndarray] = None,
-        ranks_and_types: list[tuple[int, type]] = None,
-    ):
-        """Emit utility functions required by this memory manager into the payload module."""
-        pass
-
 
 @dataclass
-class GPUMemoryManager(MemoryManager):
+class GPUMemoryManager(DeviceMemoryManager):
     """GPU memory manager that uses MLIR gpu.alloc/dealloc/memcpy ops."""
 
     allocated_buffers: dict[str, ctypes.Structure] = field(default_factory=dict)

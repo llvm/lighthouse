@@ -37,10 +37,10 @@ def _emit_gather(name: str, ty: ir.RankedTensorType, split: list[list[int]]):
         return shard.shard(s, sh_to, annotate_for_users=True)
 
 
-def _emit_dealloc_2d():
+def _emit_dealloc_2d(elem_type: type):
     """Emit a ``dealloc_2d`` function which deallocates 2d memrefs."""
     dyn = ir.ShapedType.get_dynamic_size()
-    mr_t = ir.MemRefType.get((dyn, dyn), ir.F32Type.get())
+    mr_t = ir.MemRefType.get((dyn, dyn), elem_type)
 
     @func_cif(mr_t)
     def dealloc_2d(arg):
@@ -127,18 +127,5 @@ def generate_ff_payload(
                 sd_r,
             )
             return shard.shard(res, sh_act, annotate_for_users=True)
-
-        # --- allocation helpers ---
-        _emit_alloc("act", t_mk, split_act)
-        _emit_alloc("win", t_kn, split_win)
-        _emit_alloc("wout", t_nk, split_wout)
-
-        # --- dealloc ---
-        _emit_dealloc_2d()
-
-        # --- gather helpers ---
-        _emit_gather("act", t_mk, split_act)
-        _emit_gather("win", t_kn, split_win)
-        _emit_gather("wout", t_nk, split_wout)
 
     return mod
