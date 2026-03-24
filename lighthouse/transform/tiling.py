@@ -1,7 +1,8 @@
-from mlir import ir
 from mlir.dialects import transform
 from mlir.dialects.transform import loop
 from mlir.dialects.transform import structured
+
+from lighthouse.transform import foreach
 
 
 def tile_ops(
@@ -11,7 +12,7 @@ def tile_ops(
     tile_interchange: list[int] | None = None,
     peel_loops: list[int] = [],
     unroll_factors: list[int] = [],
-) -> ir.Value:
+):
     """
     Apply tiling to the target.
 
@@ -40,9 +41,8 @@ def tile_ops(
         "Both unrolling and peeling is not supported"
     )
 
-    foreach = transform.ForeachOp([], (target,))
-    with ir.InsertionPoint(foreach.body):
-        op = foreach.bodyTargets[0]
+    with foreach(target) as (_, targets):
+        op = targets[0]
         if fuse_producers:
             _, *loops = structured.FuseOp(
                 op,

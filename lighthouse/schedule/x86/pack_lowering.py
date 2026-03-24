@@ -24,9 +24,8 @@ def lower_packs_for_vectorization(
         vector_tile_sizes: Target vector shapes
         vector_unroll_factors: Unroll factors for each vector loop.
     """
-    foreach_pack = transform.ForeachOp([], (pack_ops,))
-    with ir.InsertionPoint(foreach_pack.body):
-        pack_op = foreach_pack.bodyTargets[0]
+    with lh_transform.foreach(pack_ops) as (_, targets):
+        pack_op = targets[0]
         tiled_pack = structured.TileUsingForOp(
             pack_op, sizes=pack_tile_sizes
         ).tiled_linalg_op
@@ -59,9 +58,8 @@ def lower_unpacks_for_vectorization(
         unpack_tile_sizes: Unpack sub-tiling sizes
         vector_tile_sizes: Target vector shapes
     """
-    foreach_unpack = transform.ForeachOp([], (unpack_ops,))
-    with ir.InsertionPoint(foreach_unpack.body):
-        unpack_op = foreach_unpack.bodyTargets[0]
+    with lh_transform.foreach(unpack_ops) as (_, targets):
+        unpack_op = targets[0]
         tiled_unpack = structured.TileUsingForOp(
             unpack_op, sizes=unpack_tile_sizes
         ).tiled_linalg_op

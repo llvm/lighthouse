@@ -4,6 +4,8 @@ from mlir.dialects.transform import structured
 from mlir.dialects.transform import vector
 from mlir.dialects.transform import x86
 
+from lighthouse.transform import foreach
+
 
 def vectorize_ops(
     target,
@@ -18,9 +20,8 @@ def vectorize_ops(
         vector_sizes: Vector sizes
         vectorize_kwargs: Options passed to vectorization transform
     """
-    foreach = transform.ForeachOp([], (target,))
-    with ir.InsertionPoint(foreach.body):
-        op = foreach.bodyTargets[0]
+    with foreach(target) as (_, targets):
+        op = targets[0]
         structured.structured_vectorize(op, vector_sizes, **vectorize_kwargs)
         transform.yield_()
 
