@@ -1,50 +1,11 @@
 """Generate an MLIR module for a weight-stationary distributed feed-forward layer."""
 
 from mlir import ir
-from mlir.dialects import arith, linalg, memref, shard, tensor, tosa, bufferization
+from mlir.dialects import arith, linalg, shard, tensor, tosa, bufferization
 from lighthouse.utils.mlir import func_cif
+from lighthouse.ingress.mlir_gen.shard_utils import split_axes_to_mlir
 
 _GRID = "grid0"
-
-
-def _axes(axes: list[list[int]]) -> ir.Attribute:
-    """Convert a list of lists of axis indices to an ``#shard<axisarray …>``
-    attribute."""
-    inner = ", ".join("[" + ", ".join(str(x) for x in a) + "]" for a in axes)
-    return ir.Attribute.parse(f"#shard<axisarray[{inner}]>")
-
-
-def _emit_alloc(name: str, ty: ir.RankedTensorType, split: list[list[int]]):
-    """Emit an ``alloc_<name>`` returning a newly allocated tensor of type *ty*,
-    sharded according to *split*."""
-
-    @func_cif(name=f"alloc_{name}")
-    def _():
-        e = tensor.empty(ty.shape, ty.element_type)
-        sh = shard.sharding(_GRID, _axes(split), [], [])
-        s = shard.shard(e, sh)
-        return shard.shard(s, sh, annotate_for_users=True)
-
-
-def _emit_gather(name: str, ty: ir.RankedTensorType, split: list[list[int]]):
-    """Emit a ``gather_<name>`` function that replicates from *split*."""
-
-    @func_cif(ty, name=f"gather_{name}")
-    def _(arg):
-        sh_from = shard.sharding(_GRID, _axes(split), [], [])
-        sh_to = shard.sharding(_GRID, _axes([[]]), [], [])
-        s = shard.shard(arg, sh_from)
-        return shard.shard(s, sh_to, annotate_for_users=True)
-
-
-def _emit_dealloc_2d(elem_type: type):
-    """Emit a ``dealloc_2d`` function which deallocates 2d memrefs."""
-    dyn = ir.ShapedType.get_dynamic_size()
-    mr_t = ir.MemRefType.get((dyn, dyn), elem_type)
-
-    @func_cif(mr_t)
-    def dealloc_2d(arg):
-        memref.dealloc(arg)
 
 
 def generate_ff_payload(
@@ -92,12 +53,12 @@ def generate_ff_payload(
         def _(a, b, c, r):
             cst = arith.constant(f32, 0.0)
 
-            sh_act = shard.sharding(_GRID, _axes(split_act), [], [])
-            sh_win = shard.sharding(_GRID, _axes(split_win), [], [])
-            sh_wout = shard.sharding(_GRID, _axes(split_wout), [], [])
-            sh_ac = shard.sharding(_GRID, _axes(split_mm0a_mm1c), [], [])
-            sh_mc = shard.sharding(_GRID, _axes(split_mm0_c), [], [])
-            sh_sig = shard.sharding(_GRID, _axes(split_sigmoid), [], [])
+            sh_act = shard.sharding(_GRID, split_axes_to_mlir(split_act), [], [])
+            sh_win = shard.sharding(_GRID, split_axes_to_mlir(split_win), [], [])
+            sh_wout = shard.sharding(_GRID, split_axes_to_mlir(split_wout), [], [])
+            sh_ac = shard.sharding(_GRID, split_axes_to_mlir(split_mm0a_mm1c), [], [])
+            sh_mc = shard.sharding(_GRID, split_axes_to_mlir(split_mm0_c), [], [])
+            sh_sig = shard.sharding(_GRID, split_axes_to_mlir(split_sigmoid), [], [])
 
             sd_ai = shard.shard(a, sh_act)
             sd_bi = shard.shard(b, sh_win)
