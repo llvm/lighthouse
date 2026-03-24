@@ -24,9 +24,7 @@ class MemoryManager(abc.ABC):
     execution_engine: ExecutionEngine
 
     @abc.abstractmethod
-    def alloc(
-        self, shape: tuple[int, ...], elem_type: type, name: str = None
-    ) -> ctypes.Structure:
+    def alloc(self, name: str = None, **kwargs) -> ctypes.Structure:
         """Allocate a device buffer and return a memref descriptor."""
         pass
 
@@ -53,8 +51,10 @@ class DeviceMemoryManager(MemoryManager, abc.ABC):
         pass
 
     @abc.abstractmethod
-    def clone_host_buffers(self, shapes_and_types: list[tuple[tuple[int, ...], type]]):
-        """Context manager for allocating and freeing device buffers."""
+    def clone_host_buffers(
+        self, host_inputs: list[np.ndarray], names: list[str] = None
+    ):
+        """Context manager for creating device buffers from host inputs."""
         pass
 
 
@@ -102,6 +102,7 @@ class GPUMemoryManager(DeviceMemoryManager):
             self.execution_engine.invoke("gpu_dealloc_" + suffix, ptr_mref)
         self.allocated_buffers.clear()
         self.buffer_elem_types.clear()
+        self.buf_counter = 0
 
     def copy(
         self, src: ctypes.Structure | np.ndarray, dst: ctypes.Structure | np.ndarray
@@ -126,11 +127,16 @@ class GPUMemoryManager(DeviceMemoryManager):
         self.execution_engine.invoke(copy_func_name, src_ctype, dst_ctype)
 
     @contextmanager
-    def clone_host_buffers(self, host_inputs: list[np.ndarray]):
+    def clone_host_buffers(
+        self, host_inputs: list[np.ndarray], names: list[str] = None
+    ):
         buffers = []
         try:
-            for host_arr in host_inputs:
-                buf = self.alloc(host_arr.shape, numpy_to_mlir_type(host_arr.dtype))
+            for i, host_arr in enumerate(host_inputs):
+                name = names[i] if names is not None else None
+                buf = self.alloc(
+                    host_arr.shape, numpy_to_mlir_type(host_arr.dtype), name=name
+                )
                 self.copy(host_arr, buf)
                 buffers.append(buf)
             yield buffers
@@ -149,9 +155,9 @@ class GPUMemoryManager(DeviceMemoryManager):
         )
         if host_inputs is not None:
             ranks_and_types = set(
-                (numpy_to_mlir_type(arr.dtype), arr.ndim) for arr in host_inputs
+                (arr.ndim, numpy_to_mlir_type(arr.dtype)) for arr in host_inputs
             )
-        elif ranks_and_types is not None:
+        else:
             ranks_and_types = set(ranks_and_types)
         with ir.InsertionPoint(payload_module.body):
             for rank, elem_type in ranks_and_types:

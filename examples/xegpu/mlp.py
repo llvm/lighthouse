@@ -30,6 +30,7 @@ from lighthouse.utils.numpy import mlir_to_numpy_dtype
 from lighthouse.schedule.xegpu.mlp_schedule import get_schedule_module
 from lighthouse.ingress.mlir_gen import (
     generate_gpu_mlp_payload,
+    get_mlir_elem_type,
 )
 
 from xegpu_workload import XeGPUWorkload, matmul_complexity
@@ -49,14 +50,18 @@ class XeGPUMLP(XeGPUWorkload):
     input_size: int = 1024
     output_size: int = 1024
     hidden_layer_sizes: Optional[list[int]] = None
-    ab_type: ir.Type | None = None
-    acc_type: ir.Type | None = None
+    ab_type: ir.Type | str | None = None
+    acc_type: ir.Type | str | None = None
     has_bias: bool = False
     has_relu: bool = False
     accumulate_c: bool = False
     identity_weights: bool = False
 
     def __post_init__(self):
+        if isinstance(self.ab_type, str):
+            self.ab_type = get_mlir_elem_type(self.ab_type)
+        if isinstance(self.acc_type, str):
+            self.acc_type = get_mlir_elem_type(self.acc_type)
         if self.ab_type is None:
             self.ab_type = ir.F16Type.get()
         if self.acc_type is None:
@@ -70,6 +75,8 @@ class XeGPUMLP(XeGPUWorkload):
         self.ab_dtype = mlir_to_numpy_dtype(self.ab_type)
         self.acc_dtype = mlir_to_numpy_dtype(self.acc_type)
 
+        if self.hidden_layer_sizes is None:
+            self.hidden_layer_sizes = []
         self.input_shape = (self.batch_size, self.input_size)
         self.output_shape = (self.batch_size, self.output_size)
         layer_sizes = [self.input_size] + self.hidden_layer_sizes + [self.output_size]
@@ -121,11 +128,14 @@ class XeGPUMLP(XeGPUWorkload):
     def _reference_solution(self) -> np.ndarray:
         """Compute reference solution on host with numpy."""
         # NOTE for large problems the solution can overflow float16 range
-        output_array, input_array, *weights = self._initial_host_arrays
-        biases = []
+        output_array, input_array, *rest = self._initial_host_arrays
         if self.has_bias:
-            weights = weights[: len(self.weight_shapes)]
-            biases = weights[len(self.weight_shapes) :]
+            n = len(self.weight_shapes)
+            weights = rest[:n]
+            biases = rest[n:]
+        else:
+            weights = rest
+            biases = []
         # use float32 data type for efficiency
         output_array = output_array.astype(np.float32)
         input_array = input_array.astype(np.float32)

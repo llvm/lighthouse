@@ -41,7 +41,7 @@ def numpy_to_mlir_type(dtype: np.dtype, ctx: ir.Context | None = None) -> ir.Typ
             return ir.IntegerType.get(16)
         if dtype == np.int8:
             return ir.IntegerType.get(8)
-        if dtype == np.bool:
+        if dtype == np.bool_:
             return ir.IntegerType.get(1)
 
     raise ValueError(f"Unsupported numpy dtype: {dtype}")
@@ -75,6 +75,6 @@ def mlir_to_numpy_dtype(mlir_type: ir.Type) -> np.dtype:
         if width == 8:
             return np.int8
         if width == 1:
-            return np.bool
+            return np.bool_
 
     raise ValueError(f"Unsupported MLIR type: {mlir_type}")

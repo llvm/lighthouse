@@ -24,9 +24,7 @@ from lighthouse import dialects as lh_dialects
 from lighthouse.workload import benchmark, get_bench_wrapper_schedule
 from lighthouse.schedule.xegpu.mlp_schedule import get_schedule_module
 from lighthouse.utils.numpy import mlir_to_numpy_dtype
-from lighthouse.ingress.mlir_gen import (
-    generate_gpu_matmul_payload,
-)
+from lighthouse.ingress.mlir_gen import generate_gpu_matmul_payload, get_mlir_elem_type
 
 from xegpu_workload import XeGPUWorkload, matmul_complexity
 import parameter_selector
@@ -46,13 +44,17 @@ class XeGPUMatMul(XeGPUWorkload):
     M: int = 1024
     N: int = 1024
     K: int = 1024
-    ab_type: ir.Type | None = None
-    c_type: ir.Type | None = None
+    ab_type: ir.Type | str | None = None
+    c_type: ir.Type | str | None = None
     has_bias: bool = False
     has_relu: bool = False
     accumulate_c: bool = True
 
     def __post_init__(self):
+        if isinstance(self.ab_type, str):
+            self.ab_type = get_mlir_elem_type(self.ab_type)
+        if isinstance(self.c_type, str):
+            self.c_type = get_mlir_elem_type(self.c_type)
         if self.ab_type is None:
             self.ab_type = ir.F16Type.get()
         if self.c_type is None:

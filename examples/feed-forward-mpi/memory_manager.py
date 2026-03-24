@@ -24,7 +24,7 @@ class ShardMemoryManager(MemoryManager):
     buf_counter: int = 0
 
     def alloc(
-        self, elem_type: type, kind: str = None, name: str = None
+        self, elem_type: type, name: str = None, kind: str = None
     ) -> ctypes.Structure:
         if kind is None:
             raise ValueError(
@@ -77,6 +77,8 @@ class ShardMemoryManager(MemoryManager):
             self.execution_engine.invoke("dealloc_2d", memref_to_ctype(mref))
         self.allocated_buffers.clear()
         self.buffer_elem_types.clear()
+        self.buffer_kinds.clear()
+        self.buf_counter = 0
 
     @contextmanager
     def get_input_buffers(

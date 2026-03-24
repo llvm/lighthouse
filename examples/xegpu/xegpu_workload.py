@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 
 from lighthouse.workload import Workload
-import ctypes
+import numpy as np
 from contextlib import contextmanager
 from abc import ABC, abstractmethod
 
@@ -56,5 +56,5 @@ class XeGPUWorkload(Workload, ABC):
             yield device_buffers
 
     @abstractmethod
-    def _initial_host_arrays(self) -> list[ctypes.Structure]:
+    def _initial_host_arrays(self) -> list[np.ndarray]:
         pass

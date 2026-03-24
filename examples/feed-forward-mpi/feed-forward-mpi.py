@@ -113,9 +113,9 @@ class DistFF(Workload):
     """
     A single feed-forward layer that can run on multiple MPI ranks.
 
-    A[:] = sigmoid(A@B)@C
+    D = sigmoid(A@B)@C
 
-    where A, B, C are (M,K), (K,N), (N,K) matrices respectively.
+    where A, B, C, D are (M,K), (K,N), (N,K), (M,K) matrices respectively.
     """
 
     def __init__(self, args, P: int, R: int):
