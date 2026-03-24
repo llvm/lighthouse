@@ -9,6 +9,7 @@ from .vectorization import vectorize_linalg
 from .vectorization import vectorize_all
 from .vectorization import x86_vectorization
 from .bufferization import bufferize
+from .debug import print_ir
 
 __all__ = [
     "block_pack_matmuls",
@@ -17,6 +18,7 @@ __all__ = [
     "create_schedule",
     "hoist_loops",
     "linalg_contract_fold_unit_dims",
+    "print_ir",
     "schedule_boilerplate",
     "tile",
     "vectorize_all",
