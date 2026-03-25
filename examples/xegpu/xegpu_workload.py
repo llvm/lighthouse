@@ -7,7 +7,7 @@ from abc import ABC, abstractmethod
 
 from mlir.execution_engine import ExecutionEngine
 
-from lighthouse.workload.memory_manager import MemoryManager, GPUMemoryManager
+from lighthouse.workload import MemoryManager, GPUMemoryManager
 
 
 def matmul_complexity(

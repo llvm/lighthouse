@@ -28,7 +28,7 @@ from lighthouse.schedule import schedule_boilerplate
 from lighthouse.schedule.x86 import tile_and_vector_matmul
 from lighthouse.utils.numpy import numpy_to_mlir_type
 from ff_weight_stationary import generate_ff_payload
-from lighthouse.workload.memory_manager import ShardMemoryManager
+from lighthouse.workload import ShardMemoryManager
 
 from mpi4py import MPI
 
