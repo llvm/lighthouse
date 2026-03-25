@@ -19,11 +19,10 @@ def test_insertion_points():
             transform.apply_dce(func)
 
         # Create another complete foreach loop with results.
-        with (
-            foreach_with_res := lh_transform.foreach(
-                [funcs, loops], result_types=[transform.any_op_t()]
-            )
-        ) as (func, loop):
+        foreach_with_res = lh_transform.foreach(
+            funcs, loops, result_types=[transform.any_op_t()]
+        )
+        with foreach_with_res as (func, loop):
             transform.apply_cse(func)
             transform.apply_licm(loop)
             transform.yield_([func])

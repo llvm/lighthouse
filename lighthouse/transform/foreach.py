@@ -1,11 +1,7 @@
 from collections.abc import Sequence
-from typing import TypeVar
 
 from mlir import ir
 from mlir.dialects import transform
-
-
-_Target = TypeVar("_Target", bound=ir.Operation | ir.Value | ir.OpView)
 
 
 class foreach(transform.ForeachOp):
@@ -31,17 +27,16 @@ class foreach(transform.ForeachOp):
 
     With results:
 
-        with (
-            foreach_op := lh_transform.foreach(
-                [linalg_ops, vec_ops], result_types=[type]
-            )
-        ) as (linalg_op, vec_op):
+        foreach_op = lh_transform.foreach(
+            linalg_ops, vec_ops, result_types=[type]
+        )
+        with foreach_op as (linalg_op, vec_op):
             ...
             transform.yield_([val])
         res = foreach_op.results[0]
 
     Args:
-        targets: Handle to targets or sequence of handles
+        targets: Handles to targets
         result_types: Result types (default: no returns)
         with_zip_shortest: limit iterations to the shortest target
         kwargs: Additional arguments for the foreach operation
@@ -49,14 +44,11 @@ class foreach(transform.ForeachOp):
 
     def __init__(
         self,
-        targets: _Target | Sequence[_Target],
+        *targets,
         result_types: Sequence[ir.Type] | None = None,
-        *,
         with_zip_shortest: bool = False,
         **kwargs,
     ):
-        if not isinstance(targets, Sequence):
-            targets = [targets]
         if result_types is None:
             result_types = []
 
