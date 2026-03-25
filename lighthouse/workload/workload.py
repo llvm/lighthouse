@@ -5,9 +5,7 @@ Defines the expected interface for generic workload execution methods.
 """
 
 from mlir import ir
-from mlir.execution_engine import ExecutionEngine
 from abc import ABC, abstractmethod
-from contextlib import contextmanager
 from typing import Optional
 
 
@@ -47,19 +45,6 @@ class Workload(ABC):
 
         The `stop_at_stage` argument can be used to interrupt lowering at
         a desired IR level for debugging purposes.
-        """
-        pass
-
-    @abstractmethod
-    @contextmanager
-    def allocate_inputs(self, execution_engine: ExecutionEngine):
-        """
-        Context manager that allocates and returns payload input buffers.
-
-        Returns the payload input buffers as memrefs that can be directly
-        passed to the compiled payload function.
-
-        On exit, frees any manually allocated memory (if any).
         """
         pass
 

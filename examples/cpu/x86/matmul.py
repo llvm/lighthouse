@@ -14,13 +14,11 @@ import ctypes
 import argparse
 import sys
 import warnings
-from contextlib import contextmanager
 
 import ml_dtypes
 import numpy as np
 from mlir import ir
 from mlir.dialects import linalg, transform
-from mlir.execution_engine import ExecutionEngine
 from mlir.dialects.transform import tensor
 
 from lighthouse import dialects as lh_dialects
@@ -80,14 +78,6 @@ class Matmul(Workload):
 
     def _get_input_arrays(self) -> list[ctypes.Structure]:
         return [get_ranked_memref_descriptor(a) for a in self._input_arrays]
-
-    @contextmanager
-    def allocate_inputs(self, execution_engine: ExecutionEngine):
-        try:
-            yield self._get_input_arrays()
-        finally:
-            # cached numpy arrays are deallocated automatically
-            pass
 
     def shared_libs(self) -> list[str]:
         return []
@@ -375,7 +365,14 @@ if __name__ == "__main__":
             sys.exit(0)
 
         # check correctness
-        execute(wload)
+        execute(
+            wload.payload_module(),
+            schedule_modules=wload.schedule_modules(),
+            host_input_buffers=wload._input_arrays,
+            shared_libs=wload.shared_libs(),
+            payload_function_name=wload.payload_function_name,
+        )
+
         A, B, C = wload._input_arrays
         C_ref = np.matmul(A, B, dtype=np.float32)
         success = np.allclose(C, C_ref)
@@ -383,7 +380,16 @@ if __name__ == "__main__":
             print("FAILED Result mismatch.")
             sys.exit(1)
 
-        times = benchmark(wload, nruns=args.nruns, nwarmup=args.nwarmup)
+        times = benchmark(
+            wload.payload_module(),
+            schedule_modules=wload.schedule_modules(),
+            host_input_buffers=wload._input_arrays,
+            shared_libs=wload.shared_libs(),
+            payload_function_name=wload.payload_function_name,
+            nruns=args.nruns,
+            nwarmup=args.nwarmup,
+        )
+
         times *= 1e6  # convert to microseconds
 
         print(f"MxNxK: {args.sizes}")

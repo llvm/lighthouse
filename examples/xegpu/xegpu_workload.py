@@ -2,10 +2,8 @@ from dataclasses import dataclass
 
 from lighthouse.workload import Workload
 import numpy as np
-from contextlib import contextmanager
 from abc import ABC, abstractmethod
 
-from mlir.execution_engine import ExecutionEngine
 
 from lighthouse.workload import MemoryManager, GPUMemoryManager
 
@@ -46,14 +44,6 @@ class XeGPUWorkload(Workload, ABC):
 
     memory_manager_class: type[MemoryManager] = GPUMemoryManager
     memory_manager: MemoryManager | None = None
-
-    @contextmanager
-    def allocate_inputs(self, execution_engine: ExecutionEngine):
-        if self.memory_manager is None:
-            self.memory_manager = self.memory_manager_class(execution_engine)
-        host_arrays = self._initial_host_arrays
-        with self.memory_manager.clone_host_buffers(host_arrays) as device_buffers:
-            yield device_buffers
 
     @abstractmethod
     def _initial_host_arrays(self) -> list[np.ndarray]:

@@ -10,7 +10,6 @@ following a 1d/2d weight-stationary partition strategy
 """
 
 import argparse
-from contextlib import contextmanager
 from typing import Optional
 import numpy as np
 
@@ -18,7 +17,6 @@ from mlir import ir
 from mlir.dialects import transform
 from mlir.dialects.transform.bufferization import OneShotBufferizeOp
 from mlir.dialects.bufferization import LayoutMapOption
-from mlir.execution_engine import ExecutionEngine
 from mlir.runtime.np_to_memref import ranked_memref_to_numpy
 
 from lighthouse import dialects as lh_dialects
@@ -155,29 +153,6 @@ class DistFF(Workload):
         self.verbose = args.verbose
         self.memory_manager_class = ShardMemoryManager
         self.memory_manager = None
-
-    @contextmanager
-    def allocate_inputs(self, execution_engine: ExecutionEngine):
-        rprint(" * Allocating input/output arrays...")
-
-        if self.memory_manager is None:
-            self.memory_manager = self.memory_manager_class(execution_engine)
-        elem_type = numpy_to_mlir_type(self.dtype)
-        np.random.seed(self.comm_rank)  # different seed for each rank
-
-        def init(buf):
-            view = ranked_memref_to_numpy([buf])
-            view[:] = np.random.rand(*view.shape).astype(view.dtype) - 0.5
-
-        # allocation functions use the same sharding annotations as the payload,
-        # so that each rank allocates only the part of the data it owns.
-        with self.memory_manager.get_input_buffers(
-            [("act", 2), ("win", 2), ("wout", 2), ("act", 2)],
-            names=["A", "B", "C", "D"],
-            elem_type=elem_type,
-            init_func=init,
-        ) as inputs:
-            yield inputs
 
     def shared_libs(self) -> list[str]:
         return self.mpilibs + ["libmlir_c_runner_utils.so", "libmlir_runner_utils.so"]
@@ -393,21 +368,39 @@ if __name__ == "__main__":
 
         wload = DistFF(args, P, R)
 
+        # shard memory manager arguments
+
+        def init(buf):
+            view = ranked_memref_to_numpy([buf])
+            view[:] = np.random.rand(*view.shape).astype(view.dtype) - 0.5
+
+        elem_type = numpy_to_mlir_type(wload.dtype)
+        memory_manager_kwargs = {
+            "kinds_and_ranks": [("act", 2), ("win", 2), ("wout", 2), ("act", 2)],
+            "names": ["A", "B", "C", "D"],
+            "elem_type": elem_type,
+            "init_func": init,
+        }
+
         rprint(" Correctness Check ".center(60, "-"))
         # set up callback for gathering sharded arrays after execution
         host_arrays = []
-        elem_type = numpy_to_mlir_type(wload.dtype)
 
-        def callback(engine, inputs):
+        def callback(memory_manager, inputs):
             gathered = [
-                wload.memory_manager.gather(n, elem_type) for n in ["A", "B", "C", "D"]
+                memory_manager.gather(n, elem_type) for n in ["A", "B", "C", "D"]
             ]
             for a in gathered:
                 host_arrays.append(ranked_memref_to_numpy([a]).copy())
 
         # execute once for correctness check
         execute(
-            wload,
+            wload.payload_module(),
+            schedule_modules=wload.schedule_modules(),
+            shared_libs=wload.shared_libs(),
+            mem_manager_cls=wload.memory_manager_class,
+            mem_manager_kwargs=memory_manager_kwargs,
+            payload_function_name=wload.payload_function_name,
             callback=callback,
         )
 
@@ -416,7 +409,12 @@ if __name__ == "__main__":
 
         rprint(" Benchmark ".center(60, "-"))
         times = benchmark(
-            wload,
+            wload.payload_module(),
+            schedule_modules=wload.schedule_modules(),
+            shared_libs=wload.shared_libs(),
+            mem_manager_cls=wload.memory_manager_class,
+            mem_manager_kwargs=memory_manager_kwargs,
+            payload_function_name=wload.benchmark_function_name,
             nruns=args.nruns,
             nwarmup=args.nwarmup,
         )

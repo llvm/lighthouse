@@ -7,7 +7,6 @@ Workload example: Element-wise sum of two (M, N) float32 arrays on CPU.
 """
 
 import ctypes
-from contextlib import contextmanager
 from functools import cached_property
 from typing import Optional
 
@@ -16,7 +15,6 @@ from mlir import ir
 from mlir.runtime.np_to_memref import get_ranked_memref_descriptor
 from mlir.dialects import func, linalg, bufferization
 from mlir.dialects import transform
-from mlir.execution_engine import ExecutionEngine
 
 from lighthouse import dialects as lh_dialects
 from lighthouse.pipeline.helper import match
@@ -57,14 +55,6 @@ class ElementwiseSum(Workload):
 
     def _get_input_arrays(self) -> list[ctypes.Structure]:
         return [get_ranked_memref_descriptor(a) for a in self._input_arrays]
-
-    @contextmanager
-    def allocate_inputs(self, execution_engine: ExecutionEngine):
-        try:
-            yield self._get_input_arrays()
-        finally:
-            # cached numpy arrays are deallocated automatically
-            pass
 
     def shared_libs(self) -> list[str]:
         return []
@@ -155,10 +145,22 @@ if __name__ == "__main__":
         )
 
         print(" Execute 1 ".center(60, "-"))
-        execute(wload)
+        execute(
+            wload.payload_module(),
+            schedule_modules=wload.schedule_modules(),
+            host_input_buffers=wload._input_arrays,
+            shared_libs=wload.shared_libs(),
+            payload_function_name=wload.payload_function_name,
+        )
 
         print(" Execute 2 ".center(60, "-"))
-        execute(wload)
+        execute(
+            wload.payload_module(),
+            schedule_modules=wload.schedule_modules(),
+            host_input_buffers=wload._input_arrays,
+            shared_libs=wload.shared_libs(),
+            payload_function_name=wload.payload_function_name,
+        )
 
         print(" Correctness test ".center(60, "-"))
         A, B, C = wload._input_arrays
@@ -174,7 +176,13 @@ if __name__ == "__main__":
             print("FAILED Result mismatch!")
 
         print(" Benchmark ".center(60, "-"))
-        times = benchmark(wload)
+        times = benchmark(
+            wload.payload_module(),
+            schedule_modules=wload.schedule_modules(),
+            host_input_buffers=wload._input_arrays,
+            shared_libs=wload.shared_libs(),
+            payload_function_name=wload.benchmark_function_name,
+        )
         times *= 1e6  # convert to microseconds
         # compute statistics
         mean = np.mean(times)

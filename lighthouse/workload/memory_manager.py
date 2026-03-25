@@ -235,12 +235,14 @@ class ShardMemoryManager(MemoryManager):
     @contextmanager
     def get_input_buffers(
         self,
-        kinds_and_ranks: list[tuple[str, int]],
-        elem_type: type,
+        kinds_and_ranks: list[tuple[str, int]] = None,
+        elem_type: type = None,
         names: list[str] = None,
         init_func: callable = None,
     ):
         """Context manager for looking up previously allocated buffers by name."""
+        assert kinds_and_ranks is not None, "kinds_and_ranks must be provided"
+        assert elem_type is not None, "elem_type must be provided"
         if names is None:
             names = [None] * len(kinds_and_ranks)
         buffers = []

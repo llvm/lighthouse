@@ -23,7 +23,6 @@ import warnings
 
 import numpy as np
 from mlir import ir
-from mlir.execution_engine import ExecutionEngine
 
 from lighthouse import dialects as lh_dialects
 from lighthouse.workload import (
@@ -31,6 +30,7 @@ from lighthouse.workload import (
     execute,
     lower_payload,
     get_bench_wrapper_schedule,
+    GPUMemoryManager,
 )
 from lighthouse.utils.numpy import mlir_to_numpy_dtype
 from lighthouse.schedule.xegpu.mlp_schedule import get_schedule_module
@@ -381,13 +381,19 @@ if __name__ == "__main__":
                 # Setup callback function to copy result from device to host.
                 result_host_copy = np.zeros(wload.output_shape, dtype=wload.ab_dtype)
 
-                def callback(eng: ExecutionEngine, inputs: list[ctypes.Structure]):
-                    wload.memory_manager.copy(inputs[0], result_host_copy)
+                def callback(
+                    mem_manager: GPUMemoryManager, inputs: list[ctypes.Structure]
+                ):
+                    mem_manager.copy(inputs[0], result_host_copy)
 
                 # Execute kernel once.
                 execute(
-                    wload,
-                    schedule_parameters=params,
+                    wload.payload_module(),
+                    schedule_modules=wload.schedule_modules(parameters=params),
+                    host_input_buffers=wload._initial_host_arrays,
+                    mem_manager_cls=wload.memory_manager_class,
+                    shared_libs=wload.shared_libs(),
+                    payload_function_name=wload.payload_function_name,
                     callback=callback,
                 )
 
@@ -404,10 +410,15 @@ if __name__ == "__main__":
                     raise ValueError("Result mismatch!")
 
             times = benchmark(
-                wload,
+                wload.payload_module(),
+                schedule_modules=wload.schedule_modules(parameters=params),
+                host_input_buffers=wload._initial_host_arrays,
+                mem_manager_cls=wload.memory_manager_class,
+                shared_libs=wload.shared_libs(),
+                payload_function_name=wload.benchmark_function_name,
                 nruns=args.nruns,
                 nwarmup=args.nwarmup,
-                schedule_parameters=params,
+                callback=None,
             )
             times *= 1e6  # convert to microseconds
             elapsed = np.mean(times)

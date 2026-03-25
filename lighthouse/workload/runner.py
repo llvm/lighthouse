@@ -4,6 +4,9 @@ Utility functions for running workloads.
 
 import numpy as np
 import os
+from contextlib import contextmanager
+from functools import partial
+
 from mlir import ir
 from mlir.dialects import transform
 from mlir.dialects.transform import structured
@@ -14,8 +17,13 @@ from lighthouse.dialects import transform_ext
 from lighthouse.schedule import schedule_boilerplate
 from lighthouse.utils.memref import to_packed_args
 from lighthouse.utils.mlir import get_mlir_library_path
-from lighthouse.workload import Workload
+from lighthouse.workload import Workload, GPUMemoryManager, ShardMemoryManager
 from typing import Optional
+
+
+@contextmanager
+def numpy_to_memref_manager(inputs):
+    yield [get_ranked_memref_descriptor(a) for a in inputs]
 
 
 def get_engine(
@@ -70,36 +78,6 @@ def lower_payload(
     return payload_module
 
 
-def execute(
-    workload: Workload,
-    callback: Optional[callable] = None,
-):
-    # lower payload with schedule
-    payload_module = lower_payload(
-        workload.payload_module(),
-        workload.schedule_modules(),
-    )
-    # get execution engine, rtclock requires mlir_c_runner
-    libs = workload.shared_libs()
-    c_runner_lib = "libmlir_c_runner_utils.so"
-    if c_runner_lib not in libs:
-        libs.append(c_runner_lib)
-    engine = get_engine(payload_module, shared_libs=libs)
-
-    with workload.allocate_inputs(execution_engine=engine) as inputs:
-        # prepare function arguments
-        packed_args = to_packed_args(inputs)
-
-        # handle to payload function
-        payload_func = engine.lookup(workload.payload_function_name)
-
-        # call function
-        payload_func(packed_args)
-
-        if callback is not None:
-            callback(engine, inputs)
-
-
 def get_bench_wrapper_schedule(workload: Workload):
     with schedule_boilerplate(result_types=[transform.any_op_t()]) as (
         schedule,
@@ -120,39 +98,119 @@ def get_bench_wrapper_schedule(workload: Workload):
     return schedule
 
 
-def benchmark(
-    workload: Workload,
+def _execute_kernel(
+    payload_module: ir.Module,
+    schedule_modules: list[ir.Module],
+    mem_manager_cls: type | None = None,
+    host_input_buffers: list[np.ndarray] | None = None,
+    mem_manager_kwargs: dict = None,
+    shared_libs: list[str] = None,
+    payload_function_name: str = None,
+    callback: Optional[callable] = None,
     nruns: int = 100,
     nwarmup: int = 10,
-    schedule_parameters: Optional[dict] = None,
-    callback: Optional[callable] = None,
+    benchmark: bool = True,
 ) -> np.ndarray:
-    # get original payload module
-    payload_module = workload.payload_module()
+    if payload_function_name is None:
+        raise ValueError("payload_function_name must be provided")
 
-    # Lower payload with one or more schedules
-    schedule_modules = workload.schedule_modules(parameters=schedule_parameters)
-    for schedule_module in schedule_modules:
-        schedule_module.body.operations[0].apply(payload_module)
+    # lower payload with schedule
+    payload_module = lower_payload(payload_module, schedule_modules)
 
     # get execution engine, rtclock requires mlir_c_runner
-    libs = workload.shared_libs()
+    shared_libs = shared_libs or []
     c_runner_lib = "libmlir_c_runner_utils.so"
-    if c_runner_lib not in libs:
-        libs.append(c_runner_lib)
-    engine = get_engine(payload_module, shared_libs=libs)
+    if c_runner_lib not in shared_libs:
+        shared_libs.append(c_runner_lib)
+    engine = get_engine(payload_module, shared_libs=shared_libs)
 
-    with workload.allocate_inputs(execution_engine=engine) as inputs:
-        # allocate buffer for timings and prepare arguments
+    # create memory manager (if any) and prepare input allocator
+    if mem_manager_cls is None:
+        assert host_input_buffers is not None, "host_input_buffers must be provided"
+        mem_manager = None
+        allocator = partial(numpy_to_memref_manager, host_input_buffers)
+    elif mem_manager_cls is GPUMemoryManager:
+        assert host_input_buffers is not None, "host_input_buffers must be provided"
+        mem_manager = mem_manager_cls(engine)
+        allocator = partial(mem_manager.clone_host_buffers, host_input_buffers)
+    elif mem_manager_cls is ShardMemoryManager:
+        assert mem_manager_kwargs is not None, "mem_manager_kwargs must be provided"
+        mem_manager = mem_manager_cls(engine)
+        allocator = partial(mem_manager.get_input_buffers, **mem_manager_kwargs)
+    else:
+        raise ValueError(f"Unsupported mem_manager_cls type: {mem_manager_cls}")
+
+    if benchmark:
         time_array = np.zeros((nruns,), dtype=np.float64)
-        time_memref = get_ranked_memref_descriptor(time_array)
-        packed_args_with_time = to_packed_args(inputs + [time_memref, nruns, nwarmup])
+    else:
+        time_array = None
 
-        # call benchmark function
-        benchmark_func = engine.lookup(workload.benchmark_function_name)
-        benchmark_func(packed_args_with_time)
+    def _prepare_args(inputs):
+        if benchmark:
+            # allocate buffer for timings and prepare arguments
+            time_memref = get_ranked_memref_descriptor(time_array)
+            return to_packed_args(inputs + [time_memref, nruns, nwarmup])
+        else:
+            return to_packed_args(inputs)
+
+    with allocator() as inputs:
+        args = _prepare_args(inputs)
+
+        # call function
+        func = engine.lookup(payload_function_name)
+        func(args)
 
         if callback is not None:
-            callback(engine, inputs)
+            callback(mem_manager, inputs)
 
     return time_array
+
+
+def benchmark(
+    payload_module: ir.Module,
+    schedule_modules: list[ir.Module],
+    host_input_buffers: list[np.ndarray] | None = None,
+    mem_manager_cls: type | None = None,
+    mem_manager_kwargs: dict = None,
+    shared_libs: list[str] = None,
+    payload_function_name: str = None,
+    callback: Optional[callable] = None,
+    nruns: int = 100,
+    nwarmup: int = 10,
+):
+    return _execute_kernel(
+        payload_module=payload_module,
+        schedule_modules=schedule_modules,
+        host_input_buffers=host_input_buffers,
+        mem_manager_cls=mem_manager_cls,
+        mem_manager_kwargs=mem_manager_kwargs,
+        shared_libs=shared_libs,
+        payload_function_name=payload_function_name,
+        callback=callback,
+        nruns=nruns,
+        nwarmup=nwarmup,
+        benchmark=True,
+    )
+
+
+def execute(
+    payload_module: ir.Module,
+    schedule_modules: list[ir.Module],
+    host_input_buffers: list[np.ndarray] | None = None,
+    mem_manager_cls: type | None = None,
+    mem_manager_kwargs: dict = None,
+    shared_libs: list[str] = None,
+    payload_function_name: str = None,
+    callback: Optional[callable] = None,
+):
+    _execute_kernel(
+        payload_module=payload_module,
+        schedule_modules=schedule_modules,
+        host_input_buffers=host_input_buffers,
+        mem_manager_cls=mem_manager_cls,
+        mem_manager_kwargs=mem_manager_kwargs,
+        shared_libs=shared_libs,
+        payload_function_name=payload_function_name,
+        benchmark=False,
+        callback=callback,
+    )
