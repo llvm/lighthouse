@@ -38,6 +38,11 @@ class MemoryManager(abc.ABC):
         """Look up a previously allocated device buffer by name."""
         pass
 
+    @abc.abstractmethod
+    def deallocate_all(self):
+        """Deallocate all previously allocated device buffers."""
+        pass
+
     @staticmethod
     def emit_memory_management_funcs(payload_module: ir.Module, **kwargs):
         """Emit utility functions required by this memory manager into the payload module."""
