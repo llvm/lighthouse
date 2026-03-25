@@ -107,7 +107,9 @@ def lower_packs_unpacks(tile_size: int) -> ir.Module:
             vector_tile_sizes=[1],
         )
         transposes = lh_transform.match_op(named_seq.bodyTarget, "linalg.transpose")
-        lh_transform.vectorize_ops(transposes)
+        with lh_transform.foreach(transposes) as tranpose:
+            structured.structured_vectorize(tranpose, [])
+            transform.yield_()
 
         # Cleanup.
         with ir.InsertionPoint(

@@ -4,7 +4,7 @@ from .builders import schedule_boilerplate
 from .hoisting import hoist_loops
 from .linalg import linalg_contract_fold_unit_dims
 from .packing import block_pack_matmuls
-from .tiling import tile
+from .tiling import tile_ops
 from .vectorization import vectorize_linalg
 from .vectorization import vectorize_all
 from .vectorization import x86_vectorization
@@ -20,7 +20,7 @@ __all__ = [
     "linalg_contract_fold_unit_dims",
     "print_ir",
     "schedule_boilerplate",
-    "tile",
+    "tile_ops",
     "vectorize_all",
     "vectorize_linalg",
     "x86_vectorization",

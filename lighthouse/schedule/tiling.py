@@ -6,7 +6,7 @@ from .builders import schedule_boilerplate
 import lighthouse.transform as lh_transform
 
 
-def tile(
+def tile_ops(
     target_op: str | list[str] | MatchInterfaceEnum,
     tile_sizes: list[int],
     fuse_producers: bool = False,
@@ -41,14 +41,16 @@ def tile(
     """
     with schedule_boilerplate() as (schedule, named_seq):
         ops = lh_transform.match_op(named_seq.bodyTarget, target_op)
-        lh_transform.tile_ops(
-            ops,
-            tile_sizes=tile_sizes,
-            fuse_producers=fuse_producers,
-            tile_interchange=tile_interchange,
-            peel_loops=peel_loops,
-            unroll_factors=unroll_factors,
-        )
+        with lh_transform.foreach(ops) as op:
+            lh_transform.tile(
+                op,
+                tile_sizes=tile_sizes,
+                fuse_producers=fuse_producers,
+                tile_interchange=tile_interchange,
+                peel_loops=peel_loops,
+                unroll_factors=unroll_factors,
+            )
+            transform.yield_()
         lh_transform.cleanup(named_seq.bodyTarget)
 
         transform.yield_()

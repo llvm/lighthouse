@@ -1,28 +1,7 @@
 from mlir import ir
 from mlir.dialects import transform
-from mlir.dialects.transform import structured
 from mlir.dialects.transform import vector
 from mlir.dialects.transform import x86
-
-from lighthouse.transform import foreach
-
-
-def vectorize_ops(
-    target,
-    vector_sizes: list = [],
-    vectorize_kwargs: dict = {},
-):
-    """
-    Apply vectorization to the target.
-
-    Args:
-        target: Handle to target
-        vector_sizes: Vector sizes
-        vectorize_kwargs: Options passed to vectorization transform
-    """
-    with foreach(target) as op:
-        structured.structured_vectorize(op, vector_sizes, **vectorize_kwargs)
-        transform.yield_()
 
 
 def vector_contract_to_fma(target):

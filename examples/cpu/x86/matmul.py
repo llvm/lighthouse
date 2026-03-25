@@ -174,7 +174,9 @@ class Matmul(Workload):
         # GEMM cache tiling.
         # Create memory friendly access pattern.
         gemm_op = "linalg.contract"
-        scheds.append(lh_schedule.tile(gemm_op, tile_sizes=[1, 1], fuse_producers=True))
+        scheds.append(
+            lh_schedule.tile_ops(gemm_op, tile_sizes=[1, 1], fuse_producers=True)
+        )
 
         # Fold extra parallel outer unit dims before further tiling to help later
         # vectorization rewrites to recognize ops.
@@ -193,7 +195,7 @@ class Matmul(Workload):
         if self.tile_size % reg_tile_m != 0:
             reg_peel_loops.append(0)
         scheds.append(
-            lh_schedule.tile(
+            lh_schedule.tile_ops(
                 gemm_op,
                 tile_sizes=[reg_tile_batch, reg_tile_m, reg_tile_n, reg_tile_k],
                 tile_interchange=[1, 2, 0, 3],
@@ -213,7 +215,7 @@ class Matmul(Workload):
             reg_tile_k // reg_unroll_k,
         ]
         scheds.append(
-            lh_schedule.tile(
+            lh_schedule.tile_ops(
                 gemm_op,
                 tile_sizes=[0, reg_unroll_m, reg_unroll_n, reg_unroll_k],
                 unroll_factors=reg_unroll_factors,
@@ -221,8 +223,8 @@ class Matmul(Workload):
         )
 
         # Further tiling into hardware-friendly sizes for vectorization.
-        scheds.append(lh_schedule.tile("linalg.fill", tile_sizes=[1, 1, 1]))
-        scheds.append(lh_schedule.tile("linalg.generic", tile_sizes=[1, 8]))
+        scheds.append(lh_schedule.tile_ops("linalg.fill", tile_sizes=[1, 1, 1]))
+        scheds.append(lh_schedule.tile_ops("linalg.generic", tile_sizes=[1, 8]))
 
         if stop_at_stage == "tiled":
             return scheds

@@ -39,7 +39,9 @@ def create_schedule(
     with schedule_boilerplate() as (schedule, named_seq):
         # GEMM tiling.
         matmul = lh_transform.match_op(named_seq.bodyTarget, [matmul_op])
-        lh_transform.tile_ops(matmul, tile_sizes=tile_sizes, fuse_producers=True)
+        with lh_transform.foreach(matmul) as op:
+            lh_transform.tile(op, tile_sizes=tile_sizes, fuse_producers=True)
+            transform.yield_()
 
         # Tile buffer initialization for better vectorization.
         tiled_fill = lh_transform.match_op(named_seq.bodyTarget, ["linalg.fill"]).result
@@ -52,11 +54,13 @@ def create_schedule(
         if tile_sizes[0] % register_tile[0] != 0:
             reg_peel_loops.append(0)
         matmul = lh_transform.match_op(named_seq.bodyTarget, [matmul_op])
-        lh_transform.tile_ops(
-            matmul,
-            tile_sizes=register_tile,
-            peel_loops=reg_peel_loops,
-        )
+        with lh_transform.foreach(matmul) as op:
+            lh_transform.tile(
+                op,
+                tile_sizes=register_tile,
+                peel_loops=reg_peel_loops,
+            )
+            transform.yield_()
         lh_transform.cleanup(named_seq.bodyTarget)
 
         # Register unroll.
@@ -66,19 +70,19 @@ def create_schedule(
             0,
             register_tile[2],
         ]
-        lh_transform.tile_ops(
-            matmul,
-            tile_sizes=[1, register_tile[1], 1],
-            unroll_factors=reg_unroll_factors,
-        )
+        with lh_transform.foreach(matmul) as op:
+            lh_transform.tile(
+                op,
+                tile_sizes=[1, register_tile[1], 1],
+                unroll_factors=reg_unroll_factors,
+            )
+            transform.yield_()
         lh_transform.cleanup(named_seq.bodyTarget)
 
         # Vectorize operations.
         matmul = lh_transform.match_op(named_seq.bodyTarget, [matmul_op])
-        lh_transform.vectorize_ops(
-            matmul, vectorize_kwargs=dict(create_named_contraction=True)
-        )
-        lh_transform.vectorize_ops(reg_fill)
+        structured.structured_vectorize(matmul, [], create_named_contraction=True)
+        structured.structured_vectorize(reg_fill, [])
         with ir.InsertionPoint(
             transform.ApplyPatternsOp(named_seq.bodyTarget).patterns
         ):

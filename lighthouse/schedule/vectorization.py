@@ -18,10 +18,9 @@ def vectorize_linalg() -> ir.Module:
         ops = lh_transform.match_op(
             named_seq.bodyTarget, structured.MatchInterfaceEnum.LinalgOp
         )
-        lh_transform.vectorize_ops(
-            ops,
-            vectorize_kwargs=dict(create_named_contraction=True),
-        )
+        with lh_transform.foreach(ops) as op:
+            structured.structured_vectorize(op, [], create_named_contraction=True)
+            transform.yield_()
         with ir.InsertionPoint(
             transform.ApplyPatternsOp(named_seq.bodyTarget).patterns
         ):
