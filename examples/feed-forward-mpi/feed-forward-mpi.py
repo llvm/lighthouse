@@ -148,7 +148,7 @@ class DistFF(Workload):
         # allocation functions use the same sharding annotations as the payload,
         # so that each rank allocates only the part of the data it owns.
         with self.memory_manager.get_input_buffers(
-            ["act", "win", "wout", "act"],
+            [("act", 2), ("win", 2), ("wout", 2), ("act", 2)],
             names=["A", "B", "C", "D"],
             elem_type=elem_type,
             init_func=init,

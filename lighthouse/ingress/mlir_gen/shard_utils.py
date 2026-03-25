@@ -37,11 +37,11 @@ def emit_shard_gather(
         return shard.shard(s, sh_to, annotate_for_users=True)
 
 
-def emit_dealloc_2d(elem_type: type):
-    """Emit a ``dealloc_2d`` function which deallocates 2d memrefs."""
+def emit_dealloc(elem_type: type, rank: int):
+    """Emit a ``dealloc_<rank>d`` function which deallocates <rank>d memrefs."""
     dyn = ir.ShapedType.get_dynamic_size()
-    mr_t = ir.MemRefType.get((dyn, dyn), elem_type)
+    mr_t = ir.MemRefType.get((dyn,) * rank, elem_type)
 
-    @func_cif(mr_t)
-    def dealloc_2d(arg):
+    @func_cif(mr_t, name=f"dealloc_{rank}d")
+    def _(arg):
         memref.dealloc(arg)

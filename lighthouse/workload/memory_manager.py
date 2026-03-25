@@ -9,9 +9,9 @@ from lighthouse.utils.memref import to_ctype as memref_to_ctype
 from lighthouse.utils.numpy import numpy_to_mlir_type, mlir_to_numpy_dtype
 from lighthouse.utils.numpy import numpy_to_ctype
 from lighthouse.ingress.mlir_gen.shard_utils import (
+    emit_dealloc,
     emit_shard_alloc,
     emit_shard_gather,
-    emit_dealloc_2d,
 )
 
 from mlir import ir
@@ -171,35 +171,35 @@ class GPUMemoryManager(DeviceMemoryManager):
 class ShardMemoryManager(MemoryManager):
     """Memory manager that handles memory allocations for shard dialect."""
 
-    allocated_buffers: dict[str, tuple[ctypes.Structure, type, str]] = field(
+    allocated_buffers: dict[str, tuple[ctypes.Structure, type, str, int]] = field(
         default_factory=dict
     )
     buf_counter: int = 0
 
     def alloc(
-        self, elem_type: type, name: str = None, kind: str = None
+        self, elem_type: type, name: str = None, kind: str = None, rank: int = None
     ) -> ctypes.Structure:
         if kind is None:
-            raise ValueError(
-                "kind must be provided for ShardMemoryManager allocations."
-            )
+            raise ValueError("kind must be provided")
+        if rank is None:
+            raise ValueError("rank must be provided")
         if name is None:
             name = f"buffer_{self.buf_counter}"
             self.buf_counter += 1
         assert name not in self.allocated_buffers, f"Buffer '{name}' already exists"
 
         np_dtype = mlir_to_numpy_dtype(elem_type)
-        mref = make_nd_memref_descriptor(2, as_ctype(np_dtype))()
+        mref = make_nd_memref_descriptor(rank, as_ctype(np_dtype))()
         ptr_mref = memref_to_ctype(mref)
         self.execution_engine.invoke("alloc_" + kind, ptr_mref)
 
         # NOTE need to track datatype as MemRefDescriptor does not include element type
-        self.allocated_buffers[name] = (mref, elem_type, kind)
+        self.allocated_buffers[name] = (mref, elem_type, kind, rank)
         return mref
 
     def gather(self, name: str, elem_type: type) -> ctypes.Structure:
         assert name in self.allocated_buffers, f"No buffer found with name '{name}'."
-        _, stored_elem_type, kind = self.allocated_buffers[name]
+        _, stored_elem_type, kind, rank = self.allocated_buffers[name]
         assert stored_elem_type == elem_type, (
             f"Element type mismatch: {stored_elem_type} != {elem_type}."
         )
@@ -208,13 +208,13 @@ class ShardMemoryManager(MemoryManager):
         )
 
         np_dtype = mlir_to_numpy_dtype(elem_type)
-        mref = make_nd_memref_descriptor(2, as_ctype(np_dtype))()
+        mref = make_nd_memref_descriptor(rank, as_ctype(np_dtype))()
         ptr_mref = memref_to_ctype(mref)
         src = memref_to_ctype(self.get(name))
         self.execution_engine.invoke("gather_" + kind, ptr_mref, src)
 
         # NOTE need to track datatype as MemRefDescriptor does not include element type
-        self.allocated_buffers["gathered_" + name] = (mref, elem_type, kind)
+        self.allocated_buffers["gathered_" + name] = (mref, elem_type, kind, rank)
         return mref
 
     def get(self, name: str) -> ctypes.Structure:
@@ -222,26 +222,26 @@ class ShardMemoryManager(MemoryManager):
         return self.allocated_buffers[name][0]
 
     def deallocate_all(self):
-        for mref, _, _ in self.allocated_buffers.values():
-            self.execution_engine.invoke("dealloc_2d", memref_to_ctype(mref))
+        for mref, _, _, rank in self.allocated_buffers.values():
+            self.execution_engine.invoke(f"dealloc_{rank}d", memref_to_ctype(mref))
         self.allocated_buffers.clear()
         self.buf_counter = 0
 
     @contextmanager
     def get_input_buffers(
         self,
-        kinds: list[str],
+        kinds_and_ranks: list[tuple[str, int]],
         elem_type: type,
         names: list[str] = None,
         init_func: callable = None,
     ):
         """Context manager for looking up previously allocated buffers by name."""
         if names is None:
-            names = [None] * len(kinds)
+            names = [None] * len(kinds_and_ranks)
         buffers = []
         try:
-            for kind, name in zip(kinds, names):
-                buf = self.alloc(elem_type, kind=kind, name=name)
+            for (kind, rank), name in zip(kinds_and_ranks, names):
+                buf = self.alloc(elem_type, kind=kind, name=name, rank=rank)
                 if init_func is not None:
                     init_func(buf)
                 buffers.append(buf)
@@ -258,10 +258,12 @@ class ShardMemoryManager(MemoryManager):
     ):
         """Emit utility functions required by this class into the payload module."""
 
+        ranks = set(len(shape) for _, shape, _ in shapes)
         with ir.InsertionPoint(payload_module.body):
             for name, shape, split in shapes:
+                rank = len(shape)
                 tensor_type = ir.RankedTensorType.get(shape, elem_type)
                 emit_shard_alloc(name, grid, tensor_type, split)
                 emit_shard_gather(name, grid, tensor_type, split)
-
-            emit_dealloc_2d(elem_type)
+            for rank in ranks:
+                emit_dealloc(elem_type, rank)
