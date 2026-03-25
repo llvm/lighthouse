@@ -17,7 +17,7 @@ from lighthouse.dialects import transform_ext
 from lighthouse.schedule import schedule_boilerplate
 from lighthouse.utils.memref import to_packed_args
 from lighthouse.utils.mlir import get_mlir_library_path
-from lighthouse.workload import Workload, GPUMemoryManager, ShardMemoryManager
+from lighthouse.workload import GPUMemoryManager, ShardMemoryManager
 from typing import Optional
 
 
@@ -78,7 +78,7 @@ def lower_payload(
     return payload_module
 
 
-def get_bench_wrapper_schedule(workload: Workload):
+def get_bench_wrapper_schedule(payload_func: str, benchmark_func: str) -> ir.Module:
     with schedule_boilerplate(result_types=[transform.any_op_t()]) as (
         schedule,
         named_seq,
@@ -87,10 +87,10 @@ def get_bench_wrapper_schedule(workload: Workload):
             transform.AnyOpType.get(),
             target=named_seq.bodyTarget,
             ops={"func.func"},
-            op_attrs={"sym_name": ir.StringAttr.get(workload.payload_function_name)},
+            op_attrs={"sym_name": ir.StringAttr.get(payload_func)},
         )
         bench_func = transform_ext.wrap_in_benching_func(
-            named_func, bench_name=workload.benchmark_function_name
+            named_func, bench_name=benchmark_func
         )
         transform.yield_([bench_func])
 

@@ -346,7 +346,9 @@ class DistFF(Workload):
         - all the rest"""
         return [
             self.get_shard_schedule(),
-            get_bench_wrapper_schedule(self),
+            get_bench_wrapper_schedule(
+                self.payload_function_name, self.benchmark_function_name
+            ),
             tile_and_vector_matmul.create_schedule(
                 tile_sizes=[self.tile_size, self.tile_size]
             ),

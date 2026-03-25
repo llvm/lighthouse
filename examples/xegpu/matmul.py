@@ -174,7 +174,9 @@ class XeGPUMatMul(XeGPUWorkload):
     ) -> list[ir.Module]:
         assert parameters is not None, "Schedule parameters must be provided"
         return [
-            get_bench_wrapper_schedule(self),
+            get_bench_wrapper_schedule(
+                self.payload_function_name, self.benchmark_function_name
+            ),
             get_schedule_module(
                 has_bias=self.has_bias,
                 has_relu=self.has_relu,

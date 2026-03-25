@@ -224,7 +224,9 @@ class XeGPUMLP(XeGPUWorkload):
         self, stop_at_stage: Optional[str] = None, parameters: Optional[dict] = None
     ) -> list[ir.Module]:
         return [
-            get_bench_wrapper_schedule(self),
+            get_bench_wrapper_schedule(
+                self.payload_function_name, self.benchmark_function_name
+            ),
             get_schedule_module(
                 has_bias=self.has_bias,
                 has_relu=self.has_relu,

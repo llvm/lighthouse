@@ -126,7 +126,12 @@ class ElementwiseSum(Workload):
                 mod = apply_bundle(mod, PassBundles["LLVMLoweringBundle"])
                 transform.YieldOp()
 
-        return [get_bench_wrapper_schedule(self), schedule_module]
+        return [
+            get_bench_wrapper_schedule(
+                self.payload_function_name, self.benchmark_function_name
+            ),
+            schedule_module,
+        ]
 
 
 if __name__ == "__main__":

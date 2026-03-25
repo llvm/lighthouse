@@ -130,7 +130,11 @@ class Matmul(Workload):
         scheds = []
 
         # Insert performance measurements.
-        scheds.append(get_bench_wrapper_schedule(self))
+        scheds.append(
+            get_bench_wrapper_schedule(
+                self.payload_function_name, self.benchmark_function_name
+            )
+        )
 
         # GEMM block packing.
         # Create cache-friendly access pattern across matmul tiles.
