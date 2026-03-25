@@ -65,7 +65,7 @@ def matmul_complexity(
 @dataclass
 class XeGPUMatMul:
     """
-    Matrix multiplicatio kernel on XeGPU.
+    Matrix multiplication kernel on XeGPU.
 
     Computes C = A * B for input matrices A (M x K) and B (K x N).
 

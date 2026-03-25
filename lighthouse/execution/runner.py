@@ -3,9 +3,11 @@ Utility functions for running kernels.
 """
 
 import numpy as np
+import ctypes
 import os
 from contextlib import contextmanager
 from functools import partial
+from typing import Optional, Callable
 
 from mlir import ir
 from mlir.dialects import transform
@@ -17,8 +19,7 @@ from lighthouse.dialects import transform_ext
 from lighthouse.schedule import schedule_boilerplate
 from lighthouse.utils.memref import to_packed_args
 from lighthouse.utils.mlir import get_mlir_library_path
-from lighthouse.execution import GPUMemoryManager, ShardMemoryManager
-from typing import Optional
+from .memory_manager import GPUMemoryManager, ShardMemoryManager, MemoryManager
 
 
 @contextmanager
@@ -65,11 +66,10 @@ def lower_payload(
         )
     if not schedule_modules:
         raise ValueError("schedule_modules() must return at least one schedule module.")
-    if not dump_payload or dump_payload != "initial":
-        for schedule_module in schedule_modules:
-            # apply schedule on payload module
-            named_seq = schedule_module.body.operations[0]
-            named_seq.apply(payload_module)
+    for schedule_module in schedule_modules:
+        # apply schedule on payload module
+        named_seq = schedule_module.body.operations[0]
+        named_seq.apply(payload_module)
     if dump_payload:
         print(payload_module)
     if dump_schedule:
@@ -106,11 +106,13 @@ def _execute_kernel(
     mem_manager_kwargs: dict = None,
     shared_libs: list[str] = None,
     payload_function_name: str = None,
-    callback: Optional[callable] = None,
+    callback: Optional[
+        Callable[[MemoryManager | None, list[ctypes.Structure]], None]
+    ] = None,
     nruns: int = 100,
     nwarmup: int = 10,
     benchmark: bool = True,
-) -> np.ndarray:
+) -> np.ndarray | None:
     if payload_function_name is None:
         raise ValueError("payload_function_name must be provided")
 
@@ -124,17 +126,18 @@ def _execute_kernel(
         shared_libs.append(c_runner_lib)
     engine = get_engine(payload_module, shared_libs=shared_libs)
 
-    # create memory manager (if any) and prepare input allocator
+    if mem_manager_cls in [None, GPUMemoryManager] and host_input_buffers is None:
+        raise ValueError("host_input_buffers must be provided")
+
     if mem_manager_cls is None:
-        assert host_input_buffers is not None, "host_input_buffers must be provided"
         mem_manager = None
         allocator = partial(numpy_to_memref_manager, host_input_buffers)
     elif mem_manager_cls is GPUMemoryManager:
-        assert host_input_buffers is not None, "host_input_buffers must be provided"
         mem_manager = mem_manager_cls(engine)
         allocator = partial(mem_manager.clone_host_buffers, host_input_buffers)
     elif mem_manager_cls is ShardMemoryManager:
-        assert mem_manager_kwargs is not None, "mem_manager_kwargs must be provided"
+        if mem_manager_kwargs is None:
+            raise ValueError("mem_manager_kwargs must be provided")
         mem_manager = mem_manager_cls(engine)
         allocator = partial(mem_manager.get_input_buffers, **mem_manager_kwargs)
     else:
@@ -174,10 +177,12 @@ def benchmark(
     mem_manager_kwargs: dict = None,
     shared_libs: list[str] = None,
     payload_function_name: str = None,
-    callback: Optional[callable] = None,
+    callback: Optional[
+        Callable[[MemoryManager | None, list[ctypes.Structure]], None]
+    ] = None,
     nruns: int = 100,
     nwarmup: int = 10,
-):
+) -> np.ndarray:
     return _execute_kernel(
         payload_module=payload_module,
         schedule_modules=schedule_modules,
@@ -201,8 +206,10 @@ def execute(
     mem_manager_kwargs: dict = None,
     shared_libs: list[str] = None,
     payload_function_name: str = None,
-    callback: Optional[callable] = None,
-):
+    callback: Optional[
+        Callable[[MemoryManager | None, list[ctypes.Structure]], None]
+    ] = None,
+) -> None:
     _execute_kernel(
         payload_module=payload_module,
         schedule_modules=schedule_modules,
