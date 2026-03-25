@@ -50,45 +50,6 @@ class Workload(ABC):
         """
         pass
 
-    def lower_payload(
-        self,
-        dump_payload: Optional[str] = None,
-        dump_schedule: bool = False,
-        schedule_parameters: Optional[dict] = None,
-    ) -> ir.Module:
-        """
-        Apply transform schedules to the payload module.
-
-        Optionally dumps the payload IR at the desired level and/or the
-        transform schedules to stdout.
-
-        Returns the lowered payload module.
-        """
-        payload_module = self.payload_module()
-        schedule_modules = self.schedule_modules(
-            stop_at_stage=dump_payload, parameters=schedule_parameters
-        )
-        if not isinstance(schedule_modules, list):
-            raise TypeError(
-                f"schedule_modules() must return a list of ir.Module instances, "
-                f"got {type(schedule_modules).__name__}"
-            )
-        if not schedule_modules:
-            raise ValueError(
-                "schedule_modules() must return at least one schedule module."
-            )
-        if not dump_payload or dump_payload != "initial":
-            for schedule_module in schedule_modules:
-                # apply schedule on payload module
-                named_seq = schedule_module.body.operations[0]
-                named_seq.apply(payload_module)
-        if dump_payload:
-            print(payload_module)
-        if dump_schedule:
-            for schedule_module in schedule_modules:
-                print(schedule_module)
-        return payload_module
-
     @abstractmethod
     @contextmanager
     def allocate_inputs(self, execution_engine: ExecutionEngine):

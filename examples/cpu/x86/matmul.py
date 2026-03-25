@@ -24,7 +24,12 @@ from mlir.execution_engine import ExecutionEngine
 from mlir.dialects.transform import tensor
 
 from lighthouse import dialects as lh_dialects
-from lighthouse.workload import benchmark, execute, get_bench_wrapper_schedule
+from lighthouse.workload import (
+    benchmark,
+    execute,
+    lower_payload,
+    get_bench_wrapper_schedule,
+)
 from lighthouse.utils.numpy import numpy_to_mlir_type
 from lighthouse.pipeline.helper import apply_registered_pass
 import lighthouse.utils as lh_utils
@@ -361,7 +366,9 @@ if __name__ == "__main__":
         wload = Matmul(*args.sizes, dtype=in_dtype, tile_size=args.tile_size)
 
         if args.dump_kernel or args.dump_schedule:
-            wload.lower_payload(
+            lower_payload(
+                wload.payload_module(),
+                wload.schedule_modules(stop_at_stage=args.dump_kernel),
                 dump_payload=args.dump_kernel,
                 dump_schedule=args.dump_schedule,
             )

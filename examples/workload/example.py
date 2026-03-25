@@ -21,7 +21,13 @@ from mlir.execution_engine import ExecutionEngine
 from lighthouse import dialects as lh_dialects
 from lighthouse.pipeline.helper import match
 from lighthouse.pipeline.stage import PassBundles, apply_bundle
-from lighthouse.workload import Workload, execute, benchmark, get_bench_wrapper_schedule
+from lighthouse.workload import (
+    Workload,
+    execute,
+    benchmark,
+    lower_payload,
+    get_bench_wrapper_schedule,
+)
 
 
 class ElementwiseSum(Workload):
@@ -140,7 +146,13 @@ if __name__ == "__main__":
         wload = ElementwiseSum(400, 400)
 
         print(" Dump kernel ".center(60, "-"))
-        wload.lower_payload(dump_payload="bufferized", dump_schedule=True)
+        stop_at_stage = "bufferized"
+        lower_payload(
+            wload.payload_module(),
+            wload.schedule_modules(stop_at_stage=stop_at_stage),
+            dump_payload=True,
+            dump_schedule=True,
+        )
 
         print(" Execute 1 ".center(60, "-"))
         execute(wload)

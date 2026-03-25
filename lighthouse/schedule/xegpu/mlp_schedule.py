@@ -110,6 +110,7 @@ def get_schedule_module(
     stop_at_stage: str = "",
 ) -> ir.Module:
     """Generate transform schedule module."""
+    assert params is not None and len(params) > 0, "params must be provided."
     mod = ir.Module.create()
     mod.operation.attributes["transform.with_named_sequence"] = ir.UnitAttr.get()
     with ir.InsertionPoint(mod.body):
