@@ -17,7 +17,7 @@ lowered and executed.
 import argparse
 from dataclasses import dataclass
 import ctypes
-from typing import Optional
+from typing import Optional, ClassVar
 from functools import cached_property
 import warnings
 
@@ -25,11 +25,12 @@ import numpy as np
 from mlir import ir
 
 from lighthouse import dialects as lh_dialects
-from lighthouse.workload import (
+from lighthouse.execution import (
     benchmark,
     execute,
     lower_payload,
     get_bench_wrapper_schedule,
+    MemoryManager,
     GPUMemoryManager,
 )
 from lighthouse.utils.numpy import mlir_to_numpy_dtype
@@ -39,8 +40,8 @@ from lighthouse.ingress.mlir_gen import (
     get_mlir_elem_type,
 )
 
-from xegpu_workload import XeGPUWorkload, matmul_complexity
 import parameter_selector
+from matmul import matmul_complexity
 
 
 def check_correctness(
@@ -95,13 +96,17 @@ def check_correctness(
 
 
 @dataclass
-class XeGPUMLP(XeGPUWorkload):
+class XeGPUMLP:
     """
-    Multi-layer perceptron (MLP) workload on XeGPU.
+    Multi-layer perceptron (MLP) kernel on XeGPU.
 
     Optionally adds a ReLU operation after each layer.
     Optionally adds a bias term in each layer (not implemented yet).
     """
+
+    payload_function_name: ClassVar[str] = "payload"
+    benchmark_function_name: ClassVar[str] = "benchmark"
+    memory_manager_class: ClassVar[type[MemoryManager]] = GPUMemoryManager
 
     batch_size: int = 1024
     input_size: int = 1024

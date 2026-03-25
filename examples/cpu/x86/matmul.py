@@ -22,7 +22,7 @@ from mlir.dialects import linalg, transform
 from mlir.dialects.transform import tensor
 
 from lighthouse import dialects as lh_dialects
-from lighthouse.workload import (
+from lighthouse.execution import (
     benchmark,
     execute,
     lower_payload,
@@ -41,13 +41,14 @@ from typing import Optional
 from mlir.runtime.np_to_memref import get_ranked_memref_descriptor
 from mlir.dialects import bufferization
 
-from lighthouse.workload import Workload
 
-
-class Matmul(Workload):
+class Matmul:
     """
     Computes GEMM: C = A * B on CPU.
     """
+
+    payload_function_name: str = "payload"
+    benchmark_function_name: str = "benchmark"
 
     def __init__(self, M: int, N: int, K: int, dtype=np.float32, tile_size: int = 32):
         if dtype not in [np.float32, ml_dtypes.bfloat16]:

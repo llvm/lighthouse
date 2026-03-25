@@ -1,5 +1,5 @@
 """
-Utility functions for running workloads.
+Utility functions for running kernels.
 """
 
 import numpy as np
@@ -17,7 +17,7 @@ from lighthouse.dialects import transform_ext
 from lighthouse.schedule import schedule_boilerplate
 from lighthouse.utils.memref import to_packed_args
 from lighthouse.utils.mlir import get_mlir_library_path
-from lighthouse.workload import GPUMemoryManager, ShardMemoryManager
+from lighthouse.execution import GPUMemoryManager, ShardMemoryManager
 from typing import Optional
 
 

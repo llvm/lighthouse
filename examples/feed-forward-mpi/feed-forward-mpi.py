@@ -21,12 +21,17 @@ from mlir.runtime.np_to_memref import ranked_memref_to_numpy
 
 from lighthouse import dialects as lh_dialects
 from lighthouse.pipeline.helper import apply_registered_pass, match
-from lighthouse.workload import Workload, benchmark, execute, get_bench_wrapper_schedule
+from lighthouse.execution import (
+    benchmark,
+    execute,
+    get_bench_wrapper_schedule,
+    ShardMemoryManager,
+    MemoryManager,
+)
 from lighthouse.schedule import schedule_boilerplate
 from lighthouse.schedule.x86 import tile_and_vector_matmul
 from lighthouse.utils.numpy import numpy_to_mlir_type
 from ff_weight_stationary import generate_ff_payload
-from lighthouse.workload import ShardMemoryManager
 
 from mpi4py import MPI
 
@@ -131,7 +136,7 @@ def check_correctness(
     return success
 
 
-class DistFF(Workload):
+class DistFF:
     """
     A single feed-forward layer that can run on multiple MPI ranks.
 
@@ -139,6 +144,10 @@ class DistFF(Workload):
 
     where A, B, C, D are (M,K), (K,N), (N,K), (M,K) matrices respectively.
     """
+
+    payload_function_name: str = "payload"
+    benchmark_function_name: str = "benchmark"
+    memory_manager_class: type[MemoryManager] = ShardMemoryManager
 
     def __init__(self, args, P: int, R: int):
         self.M = args.sizes[0]
@@ -151,8 +160,6 @@ class DistFF(Workload):
         self.grid = args.grid
         self.mpilibs = [args.mpilib]
         self.verbose = args.verbose
-        self.memory_manager_class = ShardMemoryManager
-        self.memory_manager = None
 
     def shared_libs(self) -> list[str]:
         return self.mpilibs + ["libmlir_c_runner_utils.so", "libmlir_runner_utils.so"]
@@ -368,14 +375,13 @@ if __name__ == "__main__":
     with ir.Context(), ir.Location.unknown():
         lh_dialects.register_and_load()
 
-        wload = DistFF(args, P, R)
-
-        # shard memory manager arguments
-
         def init(buf):
             view = ranked_memref_to_numpy([buf])
             view[:] = np.random.rand(*view.shape).astype(view.dtype) - 0.5
 
+        wload = DistFF(args, P, R)
+
+        # shard memory manager arguments
         elem_type = numpy_to_mlir_type(wload.dtype)
         memory_manager_kwargs = {
             "kinds_and_ranks": [("act", 2), ("win", 2), ("wout", 2), ("act", 2)],

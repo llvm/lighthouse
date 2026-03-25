@@ -14,78 +14,68 @@ import argparse
 import ctypes
 import json
 from dataclasses import dataclass
-from typing import Optional
+from typing import Optional, ClassVar
 from functools import cached_property
 
 import numpy as np
 from mlir import ir
 
 from lighthouse import dialects as lh_dialects
-from lighthouse.workload import (
+from lighthouse.execution import (
     benchmark,
     execute,
     lower_payload,
     get_bench_wrapper_schedule,
+    MemoryManager,
     GPUMemoryManager,
 )
 from lighthouse.schedule.xegpu.mlp_schedule import get_schedule_module
 from lighthouse.utils.numpy import mlir_to_numpy_dtype
 from lighthouse.ingress.mlir_gen import generate_gpu_matmul_payload, get_mlir_elem_type
 
-from xegpu_workload import XeGPUWorkload, matmul_complexity
 import parameter_selector
 
 
-def check_correctness(
-    A: np.ndarray,
-    B: np.ndarray,
-    C: np.ndarray,
-    D: np.ndarray,
-    bias: Optional[np.ndarray] = None,
-    has_bias: bool = False,
-    has_relu: bool = False,
-    accumulate_c: bool = True,
-    verbose: int = 0,
-) -> bool:
-    """
-    Compares matrix multiplication result D against a reference solution D_ref.
-    """
-    # use float32 data type for efficiency
-    f32 = np.float32
-    D_ref = A.astype(f32) @ B.astype(f32)
+def matmul_complexity(
+    M: int,
+    N: int,
+    K: int,
+    bias: bool,
+    relu: bool,
+    accumulate_c: bool,
+    nbytes_ab: int,
+    nbytes_c: int,
+):
+    """Complexity of matmul operation with optional post-ops"""
+    flop_count = 2 * M * N * K
+    memory_reads = (M * K + K * N) * nbytes_ab  # read A and B
+    memory_writes = M * N * nbytes_c  # write C
+    # Below we assume the post-ops are tiled-and-fused and do not cause
+    # reads/writes to global memory.
+    if bias:
+        flop_count += M * N
+        memory_reads += N * nbytes_c  # read bias vector
+    if relu:
+        flop_count += M * N
     if accumulate_c:
-        D_ref += C.astype(f32)
-    if has_bias:
-        D_ref += bias.astype(f32)
-    if has_relu:
-        D_ref = np.maximum(D_ref, 0)
-
-    D_host = D.astype(np.float32)
-    if verbose > 1:
-        print("Reference solution:")
-        print(D_ref)
-        print("Computed solution:")
-        print(D_host)
-    success = np.allclose(D_host, D_ref)
-
-    if verbose:
-        if success:
-            print("PASSED")
-        else:
-            print("FAILED Result mismatch!")
-    return success
+        memory_reads += M * N * nbytes_c  # read C for accumulation
+    return flop_count, memory_reads, memory_writes
 
 
 @dataclass
-class XeGPUMatMul(XeGPUWorkload):
+class XeGPUMatMul:
     """
-    Matrix multiplication workload on XeGPU.
+    Matrix multiplicatio kernel on XeGPU.
 
     Computes C = A * B for input matrices A (M x K) and B (K x N).
 
     Optionally adds a ReLU operation on the result C.
     Optionally adds a bias term to C (not implemented yet).
     """
+
+    payload_function_name: ClassVar[str] = "payload"
+    benchmark_function_name: ClassVar[str] = "benchmark"
+    memory_manager_class: ClassVar[type[MemoryManager]] = GPUMemoryManager
 
     M: int = 1024
     N: int = 1024
@@ -188,6 +178,75 @@ class XeGPUMatMul(XeGPUWorkload):
 
     def shared_libs(self) -> list[str]:
         return ["libmlir_levelzero_runtime.so"]
+
+
+def execute_and_check(mmul: XeGPUMatMul, params: dict, verbose: int = 0) -> bool:
+    """Execute the matmul kernel and check correctness of the result."""
+
+    # Setup callback function to copy result from device to host.
+    D_host_copy = np.zeros((mmul.M, mmul.N), dtype=mmul.c_dtype)
+
+    def callback(mem_manager: GPUMemoryManager, inputs: list[ctypes.Structure]):
+        mem_manager.copy(inputs[0], D_host_copy)
+
+    # Execute kernel once.
+    execute(
+        mmul.payload_module(),
+        schedule_modules=mmul.schedule_modules(parameters=params),
+        host_input_buffers=mmul._initial_host_arrays,
+        mem_manager_cls=mmul.memory_manager_class,
+        shared_libs=mmul.shared_libs(),
+        payload_function_name=mmul.payload_function_name,
+        callback=callback,
+    )
+
+    # Compute reference solution on host.
+    host_inputs = mmul._initial_host_arrays
+    C, A, B = host_inputs[:3]
+    bias = host_inputs[3] if mmul.has_bias else None
+
+    # use float32 data type for efficiency
+    f32 = np.float32
+    D_ref = A.astype(f32) @ B.astype(f32)
+    if mmul.accumulate_c:
+        D_ref += C.astype(f32)
+    if mmul.has_bias:
+        D_ref += bias.astype(f32)
+    if mmul.has_relu:
+        D_ref = np.maximum(D_ref, 0)
+
+    D_host = D_host_copy.astype(np.float32)
+    if verbose > 1:
+        print("Reference solution:")
+        print(D_ref)
+        print("Computed solution:")
+        print(D_host)
+    success = np.allclose(D_host, D_ref)
+
+    if verbose:
+        if success:
+            print("PASSED")
+        else:
+            print("FAILED Result mismatch!")
+
+    return success
+
+
+def run_benchmark(
+    mmul: XeGPUMatMul, params: dict, nruns: int = 100, nwarmup: int = 10
+) -> np.ndarray:
+    """Benchmark the matmul kernel and return array of execution times in seconds."""
+    times = benchmark(
+        mmul.payload_module(),
+        schedule_modules=mmul.schedule_modules(parameters=params),
+        host_input_buffers=mmul._initial_host_arrays,
+        mem_manager_cls=mmul.memory_manager_class,
+        shared_libs=mmul.shared_libs(),
+        payload_function_name=mmul.benchmark_function_name,
+        nruns=nruns,
+        nwarmup=nwarmup,
+    )
+    return times
 
 
 def cli_parser(description):
@@ -415,57 +474,11 @@ enabled via CLI arguments.
             )
         else:
             if args.check_result:
-                # Setup callback function to copy result from device to host.
-                D_host_copy = np.zeros((wload.M, wload.N), dtype=wload.c_dtype)
-
-                def callback(
-                    mem_manager: GPUMemoryManager, inputs: list[ctypes.Structure]
-                ):
-                    mem_manager.copy(inputs[0], D_host_copy)
-
-                # Execute kernel once.
-                execute(
-                    wload.payload_module(),
-                    schedule_modules=wload.schedule_modules(parameters=params),
-                    host_input_buffers=wload._initial_host_arrays,
-                    mem_manager_cls=wload.memory_manager_class,
-                    shared_libs=wload.shared_libs(),
-                    payload_function_name=wload.payload_function_name,
-                    callback=callback,
-                )
-
-                # Compute reference solution on host.
-                host_inputs = wload._initial_host_arrays
-                if wload.has_bias:
-                    C, A, B, bias = host_inputs
-                else:
-                    C, A, B = host_inputs
-                    bias = None
-                success = check_correctness(
-                    A,
-                    B,
-                    C,
-                    D_host_copy,
-                    bias=bias,
-                    has_bias=wload.has_bias,
-                    has_relu=wload.has_relu,
-                    accumulate_c=wload.accumulate_c,
-                    verbose=args.verbose,
-                )
+                success = execute_and_check(wload, params, args.verbose)
                 if not success:
                     raise ValueError("Result mismatch!")
 
-            times = benchmark(
-                wload.payload_module(),
-                schedule_modules=wload.schedule_modules(parameters=params),
-                host_input_buffers=wload._initial_host_arrays,
-                mem_manager_cls=wload.memory_manager_class,
-                shared_libs=wload.shared_libs(),
-                payload_function_name=wload.benchmark_function_name,
-                nruns=args.nruns,
-                nwarmup=args.nwarmup,
-                callback=None,
-            )
+            times = run_benchmark(wload, params, nruns=args.nruns, nwarmup=args.nwarmup)
             times *= 1e6  # convert to microseconds
             elapsed = np.mean(times)
             flop_count = wload.get_complexity()[0]

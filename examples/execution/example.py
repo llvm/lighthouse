@@ -3,7 +3,7 @@
 # CHECK: PASSED
 # CHECK: Throughput:
 """
-Workload example: Element-wise sum of two (M, N) float32 arrays on CPU.
+Kernel execution example: Element-wise sum of two (M, N) float32 arrays on CPU.
 """
 
 import ctypes
@@ -19,8 +19,7 @@ from mlir.dialects import transform
 from lighthouse import dialects as lh_dialects
 from lighthouse.pipeline.helper import match
 from lighthouse.pipeline.stage import PassBundles, apply_bundle
-from lighthouse.workload import (
-    Workload,
+from lighthouse.execution import (
     execute,
     benchmark,
     lower_payload,
@@ -28,7 +27,7 @@ from lighthouse.workload import (
 )
 
 
-class ElementwiseSum(Workload):
+class ElementwiseSum:
     """
     Computes element-wise sum of (M, N) float32 arrays on CPU.
 
@@ -38,6 +37,9 @@ class ElementwiseSum(Workload):
     We use @cached_property to store the inputs and reference solution in the
     object so that they are only computed once.
     """
+
+    payload_function_name: str = "payload"
+    benchmark_function_name: str = "benchmark"
 
     def __init__(self, M: int, N: int):
         self.M = M
@@ -141,10 +143,9 @@ if __name__ == "__main__":
         wload = ElementwiseSum(400, 400)
 
         print(" Dump kernel ".center(60, "-"))
-        stop_at_stage = "bufferized"
         lower_payload(
             wload.payload_module(),
-            wload.schedule_modules(stop_at_stage=stop_at_stage),
+            wload.schedule_modules(stop_at_stage="bufferized"),
             dump_payload=True,
             dump_schedule=True,
         )
