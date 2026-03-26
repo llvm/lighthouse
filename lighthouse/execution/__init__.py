@@ -1,4 +1,4 @@
-from .memory_manager import MemoryManager, GPUMemoryManager, ShardMemoryManager
+from .memory_manager import MemoryManager, GPUMemoryManager
 from .runner import (
     execute,
     benchmark,
@@ -9,7 +9,6 @@ from .runner import (
 __all__ = [
     "GPUMemoryManager",
     "MemoryManager",
-    "ShardMemoryManager",
     "benchmark",
     "execute",
     "get_bench_wrapper_schedule",
