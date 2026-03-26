@@ -48,14 +48,9 @@ def get_engine(
 def lower_payload(
     payload_module: ir.Module,
     schedule_modules: list[ir.Module],
-    dump_payload: bool = False,
-    dump_schedule: bool = False,
 ) -> ir.Module:
     """
     Apply transform schedules to the payload module.
-
-    Optionally dumps the payload IR at the desired level and/or the
-    transform schedules to stdout.
 
     Returns the lowered payload module.
     """
@@ -70,11 +65,6 @@ def lower_payload(
         # apply schedule on payload module
         named_seq = schedule_module.body.operations[0]
         named_seq.apply(payload_module)
-    if dump_payload:
-        print(payload_module)
-    if dump_schedule:
-        for schedule_module in schedule_modules:
-            print(schedule_module)
     return payload_module
 
 

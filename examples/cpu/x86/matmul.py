@@ -137,6 +137,9 @@ class Matmul:
             )
         )
 
+        if stop_at_stage == "initial":
+            return scheds
+
         # GEMM block packing.
         # Create cache-friendly access pattern across matmul tiles.
         scheds.append(
@@ -361,12 +364,15 @@ if __name__ == "__main__":
         wload = Matmul(*args.sizes, dtype=in_dtype, tile_size=args.tile_size)
 
         if args.dump_kernel or args.dump_schedule:
-            lower_payload(
+            payload = lower_payload(
                 wload.payload_module(),
                 wload.schedule_modules(stop_at_stage=args.dump_kernel),
-                dump_payload=args.dump_kernel,
-                dump_schedule=args.dump_schedule,
             )
+            if args.dump_kernel:
+                print(payload)
+            if args.dump_schedule:
+                for schedule_module in wload.schedule_modules():
+                    print(schedule_module)
             sys.exit(0)
 
         # check correctness

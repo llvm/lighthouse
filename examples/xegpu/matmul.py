@@ -464,14 +464,17 @@ enabled via CLI arguments.
         )
 
         if args.dump_kernel or args.dump_schedule:
-            lower_payload(
+            payload = lower_payload(
                 wload.payload_module(),
                 wload.schedule_modules(
                     stop_at_stage=args.dump_kernel, parameters=params
                 ),
-                dump_payload=args.dump_kernel,
-                dump_schedule=args.dump_schedule,
             )
+            if args.dump_kernel:
+                print(payload)
+            if args.dump_schedule:
+                for schedule_module in wload.schedule_modules():
+                    print(schedule_module)
         else:
             if args.check_result:
                 success = execute_and_check(wload, params, args.verbose)

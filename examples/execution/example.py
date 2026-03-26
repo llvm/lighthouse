@@ -143,12 +143,13 @@ if __name__ == "__main__":
         wload = ElementwiseSum(400, 400)
 
         print(" Dump kernel ".center(60, "-"))
-        lower_payload(
+        payload = lower_payload(
             wload.payload_module(),
             wload.schedule_modules(stop_at_stage="bufferized"),
-            dump_payload=True,
-            dump_schedule=True,
         )
+        print(payload)
+        for schedule_module in wload.schedule_modules():
+            print(schedule_module)
 
         print(" Execute 1 ".center(60, "-"))
         execute(
