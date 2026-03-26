@@ -105,7 +105,6 @@ class XeGPUMLP:
     """
 
     payload_function_name: ClassVar[str] = "payload"
-    benchmark_function_name: ClassVar[str] = "benchmark"
     memory_manager_class: ClassVar[type[MemoryManager]] = GPUMemoryManager
 
     batch_size: int = 1024
@@ -229,9 +228,7 @@ class XeGPUMLP:
         self, stop_at_stage: Optional[str] = None, parameters: Optional[dict] = None
     ) -> list[ir.Module]:
         return [
-            get_bench_wrapper_schedule(
-                self.payload_function_name, self.benchmark_function_name
-            ),
+            get_bench_wrapper_schedule(self.payload_function_name),
             get_schedule_module(
                 has_bias=self.has_bias,
                 has_relu=self.has_relu,
@@ -425,7 +422,6 @@ if __name__ == "__main__":
                 host_input_buffers=wload._initial_host_arrays,
                 mem_manager_cls=wload.memory_manager_class,
                 shared_libs=wload.shared_libs(),
-                payload_function_name=wload.benchmark_function_name,
                 nruns=args.nruns,
                 nwarmup=args.nwarmup,
                 callback=None,

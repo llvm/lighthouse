@@ -422,7 +422,7 @@ if __name__ == "__main__":
             shared_libs=wload.shared_libs(),
             mem_manager_cls=wload.memory_manager_class,
             mem_manager_kwargs=memory_manager_kwargs,
-            payload_function_name=wload.benchmark_function_name,
+            benchmark_function_name=wload.benchmark_function_name,
             nruns=args.nruns,
             nwarmup=args.nwarmup,
         )

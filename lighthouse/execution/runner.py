@@ -68,7 +68,9 @@ def lower_payload(
     return payload_module
 
 
-def get_bench_wrapper_schedule(payload_func: str, benchmark_func: str) -> ir.Module:
+def get_bench_wrapper_schedule(
+    payload_func: str, benchmark_func: str = "benchmark"
+) -> ir.Module:
     with schedule_boilerplate(result_types=[transform.any_op_t()]) as (
         schedule,
         named_seq,
@@ -166,7 +168,7 @@ def benchmark(
     mem_manager_cls: type | None = None,
     mem_manager_kwargs: dict = None,
     shared_libs: list[str] = None,
-    payload_function_name: str = None,
+    benchmark_function_name: str = "benchmark",
     callback: Optional[
         Callable[[MemoryManager | None, list[ctypes.Structure]], None]
     ] = None,
@@ -180,7 +182,7 @@ def benchmark(
         mem_manager_cls=mem_manager_cls,
         mem_manager_kwargs=mem_manager_kwargs,
         shared_libs=shared_libs,
-        payload_function_name=payload_function_name,
+        payload_function_name=benchmark_function_name,
         callback=callback,
         nruns=nruns,
         nwarmup=nwarmup,

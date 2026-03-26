@@ -74,7 +74,6 @@ class XeGPUMatMul:
     """
 
     payload_function_name: ClassVar[str] = "payload"
-    benchmark_function_name: ClassVar[str] = "benchmark"
     memory_manager_class: ClassVar[type[MemoryManager]] = GPUMemoryManager
 
     M: int = 1024
@@ -164,9 +163,7 @@ class XeGPUMatMul:
     ) -> list[ir.Module]:
         assert parameters is not None, "Schedule parameters must be provided"
         return [
-            get_bench_wrapper_schedule(
-                self.payload_function_name, self.benchmark_function_name
-            ),
+            get_bench_wrapper_schedule(self.payload_function_name),
             get_schedule_module(
                 has_bias=self.has_bias,
                 has_relu=self.has_relu,
@@ -242,7 +239,6 @@ def run_benchmark(
         host_input_buffers=mmul._initial_host_arrays,
         mem_manager_cls=mmul.memory_manager_class,
         shared_libs=mmul.shared_libs(),
-        payload_function_name=mmul.benchmark_function_name,
         nruns=nruns,
         nwarmup=nwarmup,
     )

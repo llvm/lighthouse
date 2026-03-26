@@ -48,7 +48,6 @@ class Matmul:
     """
 
     payload_function_name: str = "payload"
-    benchmark_function_name: str = "benchmark"
 
     def __init__(self, M: int, N: int, K: int, dtype=np.float32, tile_size: int = 32):
         if dtype not in [np.float32, ml_dtypes.bfloat16]:
@@ -131,11 +130,7 @@ class Matmul:
         scheds = []
 
         # Insert performance measurements.
-        scheds.append(
-            get_bench_wrapper_schedule(
-                self.payload_function_name, self.benchmark_function_name
-            )
-        )
+        scheds.append(get_bench_wrapper_schedule(self.payload_function_name))
 
         if stop_at_stage == "initial":
             return scheds

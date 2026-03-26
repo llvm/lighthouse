@@ -39,7 +39,6 @@ class ElementwiseSum:
     """
 
     payload_function_name: str = "payload"
-    benchmark_function_name: str = "benchmark"
 
     def __init__(self, M: int, N: int):
         self.M = M
@@ -129,9 +128,7 @@ class ElementwiseSum:
                 transform.YieldOp()
 
         return [
-            get_bench_wrapper_schedule(
-                self.payload_function_name, self.benchmark_function_name
-            ),
+            get_bench_wrapper_schedule(self.payload_function_name),
             schedule_module,
         ]
 
@@ -188,7 +185,6 @@ if __name__ == "__main__":
             schedule_modules=wload.schedule_modules(),
             host_input_buffers=wload._input_arrays,
             shared_libs=wload.shared_libs(),
-            payload_function_name=wload.benchmark_function_name,
         )
         times *= 1e6  # convert to microseconds
         # compute statistics
