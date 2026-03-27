@@ -183,8 +183,10 @@ def execute_and_check(mmul: XeGPUMatMul, params: dict, verbose: int = 0) -> bool
     # Setup callback function to copy result from device to host.
     D_host_copy = np.zeros((mmul.M, mmul.N), dtype=mmul.c_dtype)
 
-    def callback(mem_manager: GPUMemoryManager, inputs: list[ctypes.Structure]):
-        mem_manager.copy(inputs[0], D_host_copy)
+    def callback(
+        inputs: list[ctypes.Structure], memory_manager: GPUMemoryManager, **kwargs
+    ):
+        memory_manager.copy(inputs[0], D_host_copy)
 
     # Execute kernel once.
     execute(

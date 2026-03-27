@@ -2,6 +2,7 @@
 Utility functions for running kernels.
 """
 
+import typing
 import numpy as np
 import ctypes
 import os
@@ -20,6 +21,15 @@ from lighthouse.schedule import schedule_boilerplate
 from lighthouse.utils.memref import to_packed_args
 from lighthouse.utils.mlir import get_mlir_library_path
 from .memory_manager import GPUMemoryManager, MemoryManager
+
+
+class RunnerCallable(typing.Protocol):
+    def __call__(
+        self,
+        inputs: list[ctypes.Structure],
+        execution_engine: ExecutionEngine,
+        memory_manager: Optional[MemoryManager],
+    ) -> None: ...
 
 
 @contextmanager
@@ -98,7 +108,7 @@ def _execute_kernel(
     mem_manager_cls: type | None = None,
     shared_libs: list[str] = None,
     callback: Optional[
-        Callable[[MemoryManager | ExecutionEngine, list[ctypes.Structure]], None]
+        Callable[[list[ctypes.Structure], ExecutionEngine, MemoryManager], None]
     ] = None,
     nruns: int = 100,
     nwarmup: int = 10,
@@ -147,7 +157,7 @@ def _execute_kernel(
         func(args)
 
         if callback is not None:
-            callback(mem_manager if mem_manager is not None else engine, inputs)
+            callback(inputs, execution_engine=engine, memory_manager=mem_manager)
 
     return time_array
 
@@ -159,26 +169,24 @@ def benchmark(
     mem_manager_cls: type | None = None,
     shared_libs: list[str] = None,
     benchmark_function_name: str = "benchmark",
-    callback: Optional[
-        Callable[[MemoryManager | ExecutionEngine, list[ctypes.Structure]], None]
-    ] = None,
+    callback: RunnerCallable = None,
     nruns: int = 100,
     nwarmup: int = 10,
 ) -> np.ndarray:
     """
-    Execute and time the payload module with the given pipeline and input buffers.
+    Lower and execute the payload module with the given pipeline and input buffers.
 
     If `mem_manager_cls` is provided, it will be used to allocate device buffers
     and copy data from host input buffers.
 
-    The `callback` function can be used to access the buffers after execution. The
-    callback signature is
+    The `callback` function can be used to (read/write) access the buffers
+    after execution. The callback signature is
 
-    `callback(mem_manager, inputs)`
+    `callback(inputs, execution_engine=..., memory_manager=...)`
 
-    where `mem_manager` is the memory manager instance (or execution engine if no
-    memory manager is used) and `inputs` is the list of memref descriptors for the
-    input buffers.
+    where `inputs` is the list of memref descriptors for the input buffers,
+    `execution_engine` is the execution engine instance, and `memory_manager`
+    is the memory manager instance (or `None` if no memory manager is used).
     """
     return _execute_kernel(
         payload_module=payload_module,
@@ -201,9 +209,7 @@ def execute(
     host_input_buffers: list[np.ndarray],
     mem_manager_cls: type | None = None,
     shared_libs: list[str] = None,
-    callback: Optional[
-        Callable[[MemoryManager | ExecutionEngine, list[ctypes.Structure]], None]
-    ] = None,
+    callback: RunnerCallable = None,
 ) -> None:
     """
     Lower and execute the payload module with the given pipeline and input buffers.
@@ -211,14 +217,14 @@ def execute(
     If `mem_manager_cls` is provided, it will be used to allocate device buffers
     and copy data from host input buffers.
 
-    The `callback` function can be used to access the buffers after execution. The
-    callback signature is
+    The `callback` function can be used to (read/write) access the buffers
+    after execution. The callback signature is
 
-    `callback(mem_manager, inputs)`
+    `callback(inputs, execution_engine=..., memory_manager=...)`
 
-    where `mem_manager` is the memory manager instance (or execution engine if no
-    memory manager is used) and `inputs` is the list of memref descriptors for the
-    input buffers.
+    where `inputs` is the list of memref descriptors for the input buffers,
+    `execution_engine` is the execution engine instance, and `memory_manager`
+    is the memory manager instance (or `None` if no memory manager is used).
     """
     _execute_kernel(
         payload_module=payload_module,

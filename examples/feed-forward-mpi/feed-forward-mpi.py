@@ -10,6 +10,7 @@ following a 1d/2d weight-stationary partition strategy
 """
 
 import argparse
+import ctypes
 import numpy as np
 
 from mlir import ir
@@ -22,6 +23,7 @@ from mlir.runtime.np_to_memref import (
     make_nd_memref_descriptor,
     as_ctype,
 )
+from mlir.execution_engine import ExecutionEngine
 
 from lighthouse import dialects as lh_dialects
 from lighthouse.pipeline.helper import apply_registered_pass, match
@@ -453,7 +455,9 @@ if __name__ == "__main__":
         kinds = ["act", "win", "wout", "act"]
         elem_type = numpy_to_mlir_type(wload.dtype)
 
-        def callback(execution_engine, inputs):
+        def callback(
+            inputs: list[ctypes.Structure], execution_engine: ExecutionEngine, **kwargs
+        ):
             for buf, kind in zip(inputs, kinds):
                 rank = len(buf.shape)
                 np_dtype = mlir_to_numpy_dtype(elem_type)

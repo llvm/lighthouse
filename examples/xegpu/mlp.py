@@ -389,9 +389,11 @@ if __name__ == "__main__":
                 result_host_copy = np.zeros(wload.output_shape, dtype=wload.ab_dtype)
 
                 def callback(
-                    mem_manager: GPUMemoryManager, inputs: list[ctypes.Structure]
+                    inputs: list[ctypes.Structure],
+                    memory_manager: GPUMemoryManager,
+                    **kwargs,
                 ):
-                    mem_manager.copy(inputs[0], result_host_copy)
+                    memory_manager.copy(inputs[0], result_host_copy)
 
                 # Execute kernel once.
                 execute(
