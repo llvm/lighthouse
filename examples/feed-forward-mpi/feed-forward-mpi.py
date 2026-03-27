@@ -389,12 +389,10 @@ class DistFF:
 
     def schedule_modules(self) -> list[ir.Module]:
         """Generate schedules:
-        - sharding propagation, partition, and MPI, tosa-to-linalg
         - adding benchmark wrapper
         - tile_and_vector
         - all the rest"""
         return [
-            self.get_shard_schedule(),
             get_bench_wrapper_schedule(
                 self.payload_function_name, self.benchmark_function_name
             ),
