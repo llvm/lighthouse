@@ -20,12 +20,7 @@ from mlir.runtime.np_to_memref import (
 class MemoryManager(abc.ABC):
     """Abstract base class for memory management."""
 
-    execution_engine: ExecutionEngine | None = field(default=None, init=False)
-
-    def set_execution_engine(self, execution_engine: ExecutionEngine):
-        if self.execution_engine is not None:
-            raise RuntimeError("execution_engine is already set")
-        self.execution_engine = execution_engine
+    execution_engine: ExecutionEngine
 
     @abc.abstractmethod
     def alloc(self, name: str = None, **kwargs) -> ctypes.Structure:
@@ -79,8 +74,6 @@ class GPUMemoryManager(DeviceMemoryManager):
     def alloc(
         self, shape: tuple[int, ...], elem_type: type, name: str = None
     ) -> ctypes.Structure:
-        if self.execution_engine is None:
-            raise RuntimeError("Execution engine must be set.")
         if name is None:
             name = f"buffer_{self.buf_counter}"
             self.buf_counter += 1
@@ -105,8 +98,6 @@ class GPUMemoryManager(DeviceMemoryManager):
         return self.allocated_buffers[name][0]
 
     def deallocate_all(self):
-        if self.execution_engine is None:
-            raise RuntimeError("Execution engine must be set.")
         for mref, elem_type in self.allocated_buffers.values():
             ptr_mref = memref_to_ctype(mref)
             rank = len(mref.shape)
@@ -119,8 +110,6 @@ class GPUMemoryManager(DeviceMemoryManager):
         self, src: ctypes.Structure | np.ndarray, dst: ctypes.Structure | np.ndarray
     ):
         """Copy data between host and device buffers. Host buffer must be a numpy array."""
-        if self.execution_engine is None:
-            raise RuntimeError("Execution engine must be set.")
         if not isinstance(src, np.ndarray) and not isinstance(dst, np.ndarray):
             raise ValueError("At least one of src or dst must be a numpy array.")
         rank = type_str = None
