@@ -105,7 +105,7 @@ def _execute_kernel(
     schedule_modules: list[ir.Module],
     host_input_buffers: list[np.ndarray],
     payload_function_name: str,
-    mem_manager_cls: type | None = None,
+    memory_manager: MemoryManager | None = None,
     shared_libs: list[str] = None,
     callback: Optional[
         Callable[[list[ctypes.Structure], ExecutionEngine, MemoryManager], None]
@@ -127,14 +127,15 @@ def _execute_kernel(
     if host_input_buffers is None:
         raise ValueError("host_input_buffers must be provided")
 
-    if mem_manager_cls is None:
-        mem_manager = None
+    if memory_manager is None:
         allocator = partial(numpy_to_memref_manager, host_input_buffers)
-    elif mem_manager_cls is GPUMemoryManager:
-        mem_manager = mem_manager_cls(engine)
-        allocator = partial(mem_manager.clone_host_buffers, host_input_buffers)
+    elif isinstance(memory_manager, GPUMemoryManager):
+        memory_manager.set_execution_engine(engine)
+        allocator = partial(memory_manager.clone_host_buffers, host_input_buffers)
     else:
-        raise ValueError(f"Unsupported mem_manager_cls type: {mem_manager_cls}")
+        raise ValueError(
+            f"Unsupported memory_manager type: {type(memory_manager).__name__}"
+        )
 
     if benchmark:
         time_array = np.zeros((nruns,), dtype=np.float64)
@@ -157,7 +158,7 @@ def _execute_kernel(
         func(args)
 
         if callback is not None:
-            callback(inputs, execution_engine=engine, memory_manager=mem_manager)
+            callback(inputs, execution_engine=engine, memory_manager=memory_manager)
 
     return time_array
 
@@ -166,7 +167,7 @@ def benchmark(
     payload_module: ir.Module,
     schedule_modules: list[ir.Module],
     host_input_buffers: list[np.ndarray],
-    mem_manager_cls: type | None = None,
+    memory_manager: MemoryManager | None = None,
     shared_libs: list[str] = None,
     benchmark_function_name: str = "benchmark",
     callback: RunnerCallable = None,
@@ -176,7 +177,7 @@ def benchmark(
     """
     Lower and execute the payload module with the given pipeline and input buffers.
 
-    If `mem_manager_cls` is provided, it will be used to allocate device buffers
+    If `memory_manager` is provided, it will be used to allocate device buffers
     and copy data from host input buffers.
 
     The `callback` function can be used to (read/write) access the buffers
@@ -192,7 +193,7 @@ def benchmark(
         payload_module=payload_module,
         schedule_modules=schedule_modules,
         host_input_buffers=host_input_buffers,
-        mem_manager_cls=mem_manager_cls,
+        memory_manager=memory_manager,
         shared_libs=shared_libs,
         payload_function_name=benchmark_function_name,
         callback=callback,
@@ -207,14 +208,14 @@ def execute(
     schedule_modules: list[ir.Module],
     payload_function_name: str,
     host_input_buffers: list[np.ndarray],
-    mem_manager_cls: type | None = None,
+    memory_manager: MemoryManager | None = None,
     shared_libs: list[str] = None,
     callback: RunnerCallable = None,
 ) -> None:
     """
     Lower and execute the payload module with the given pipeline and input buffers.
 
-    If `mem_manager_cls` is provided, it will be used to allocate device buffers
+    If `memory_manager` is provided, it will be used to allocate device buffers
     and copy data from host input buffers.
 
     The `callback` function can be used to (read/write) access the buffers
@@ -230,7 +231,7 @@ def execute(
         payload_module=payload_module,
         schedule_modules=schedule_modules,
         host_input_buffers=host_input_buffers,
-        mem_manager_cls=mem_manager_cls,
+        memory_manager=memory_manager,
         shared_libs=shared_libs,
         payload_function_name=payload_function_name,
         benchmark=False,
