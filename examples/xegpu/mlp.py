@@ -230,9 +230,6 @@ class XeGPUMLP:
         return [
             get_bench_wrapper_schedule(self.payload_function_name),
             get_schedule_module(
-                has_bias=self.has_bias,
-                has_relu=self.has_relu,
-                skip_final_layer_relu=True,
                 stop_at_stage=stop_at_stage,
                 params=parameters,
             ),

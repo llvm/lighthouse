@@ -7,6 +7,8 @@ from mlir.dialects.transform import xegpu
 from mlir.dialects.bufferization import LayoutMapOption
 from mlir.dialects import transform
 from mlir.dialects.transform import structured
+import lighthouse.transform as lh_transform
+from lighthouse.dialects import transform_ext
 from lighthouse.pipeline.helper import (
     apply_registered_pass,
     canonicalize,
@@ -103,10 +105,6 @@ def params_with_constraints_imposed(
 
 def get_schedule_module(
     params: list[dict[str, int | None]],
-    has_bias: bool = False,
-    has_relu: bool = False,
-    has_convert_c: bool = True,
-    skip_final_layer_relu: bool = False,
     stop_at_stage: str = "",
 ) -> ir.Module:
     """Generate transform schedule module."""
@@ -138,10 +136,6 @@ def get_schedule_module(
             xegpu_mlp_transform_schedule(
                 payload_mod,
                 params=params,
-                has_bias=has_bias,
-                has_relu=has_relu,
-                has_convert_c=has_convert_c,
-                skip_final_layer_relu=skip_final_layer_relu,
                 stop_at_stage=stop_at_stage,
             )
 
@@ -151,10 +145,6 @@ def get_schedule_module(
 def xegpu_mlp_transform_schedule(
     mod: ir.Value[transform.AnyOpType],
     params: list[dict[str, int | KnobValue]],
-    has_bias: bool = False,
-    has_relu: bool = False,
-    has_convert_c: bool = True,
-    skip_final_layer_relu: bool = False,
     stop_at_stage: str = "",
 ):
     """Transform schedule for MLP-like payload."""
@@ -162,10 +152,6 @@ def xegpu_mlp_transform_schedule(
         mod = bundle_xegpu_mlp_schedule(
             mod,
             params=params,
-            has_bias=has_bias,
-            has_relu=has_relu,
-            has_convert_c=has_convert_c,
-            skip_final_layer_relu=skip_final_layer_relu,
             stop_at_stage=stop_at_stage,
         )
 
@@ -182,10 +168,6 @@ def xegpu_mlp_transform_schedule(
 def bundle_xegpu_mlp_schedule(
     mod: ir.Value[transform.AnyOpType],
     params: list[dict[str, int | KnobValue]],
-    has_bias: bool = False,
-    has_relu: bool = False,
-    skip_final_layer_relu: bool = False,
-    has_convert_c: bool = True,
     stop_at_stage: str = "",
 ) -> ir.Value[transform.AnyOpType]:
     """Schedule for lowering MLP-like payload to xegpu wg level."""
@@ -196,44 +178,26 @@ def bundle_xegpu_mlp_schedule(
 
     anytype = transform.AnyOpType.get()
 
-    # wg tiling
-    if has_convert_c:
-        trunc_op = match(mod, ops={"arith.truncf"})
-        terminal = transform.get_parent_op(anytype, trunc_op)
-        # split handle for each layer
-        terminal_ops = transform.split_handle((anytype,) * nlayers, terminal)
-        if nlayers == 1:
-            terminal_ops = [terminal_ops]
-    elif has_bias:
-        terminal_ops = match_and_split(mod, ops={"linalg.add"}, nhandles=nlayers)
-    else:
-        terminal_ops = match_and_split(mod, ops={"linalg.matmul"}, nhandles=nlayers)
-    if has_relu:
-        if not skip_final_layer_relu:
-            # relu on all layers
-            terminal_ops = match_and_split(mod, ops={"linalg.max"}, nhandles=nlayers)
-        elif nlayers > 1:
-            # intermediate layers have relu activation function
-            relu_ops = match_and_split(mod, ops={"linalg.max"}, nhandles=nlayers - 1)
-            # the final layer does not have relu
-            terminal_ops = list(relu_ops) + [terminal_ops[-1]]
+    matmul_ops = match_and_split(mod, ops={"linalg.matmul"}, nhandles=nlayers)
 
     # tile each layer separately
-    for terminal_op, layer_params in zip(terminal_ops, params):
+    for matmul_op, layer_params in zip(matmul_ops, params):
+        # find the last tileable consumer of the matmul
+        consumers = transform_ext.get_tileable_consumers(matmul_op)
+        leaf_consumer_op = transform_ext.get_last_handle(consumers)
+
         # tunable parameters: wg level tiling
         wg_tile = [layer_params["wg_m"], layer_params["wg_n"]]
         k_tile = layer_params["k_tile"]
 
-        # FIXME: use structured.structured_fuse
         _, wg_loop = structured.FuseOp(
-            terminal_op, tile_sizes=wg_tile, use_forall=True
+            leaf_consumer_op, tile_sizes=wg_tile, use_forall=True
         ).results
         transform.apply_cse(mod)
         canonicalize(mod)
 
         # k loop tiling
         wg_matmul = match(wg_loop, ops={"linalg.matmul"})
-        # FIXME use structured.structured_tile_using_for
         wgk_matmul, k_loop = structured.TileUsingForOp(
             wg_matmul, sizes=[0, 0, k_tile]
         ).results
@@ -363,7 +327,7 @@ def bundle_xegpu_mlp_schedule(
     )
     for gpu_mod, layer_params in zip(gpu_mod_ops, params):
         gpu_func = match(gpu_mod, ops={"gpu.func"})
-        xegpu_wg_annotation_for_mlp_layer(gpu_func, **layer_params, has_bias=has_bias)
+        xegpu_wg_annotation_for_mlp_layer(gpu_func, **layer_params)
 
     if stop_at_stage == "xegpu-wg":
         raise PipelineInterrupt()
@@ -388,7 +352,6 @@ def xegpu_wg_annotation_for_mlp_layer(
     prefetch_b_k: int | KnobValue,
     prefetch_b_n: int | KnobValue,
     prefetch_nb: int,
-    has_bias: bool,
     **_catch_all,
 ):
     """
@@ -583,13 +546,15 @@ def xegpu_wg_annotation_for_mlp_layer(
     store_op_c = match(gpu_func, ops={"xegpu.store_nd"})
     xegpu.set_anchor_layout(store_op_c, **output_layout)
 
-    if has_bias:
-        # annotate the 1d load of the bias with a slice layout
-        bias_add_op = match(gpu_func, ops={"arith.addf"})
+    # annotate the 1d load of the broadcast op with a slice layout
+    # FIXME assert that we only match one add op
+    add_ops = match(gpu_func, ops={"arith.addf"})
+    with lh_transform.foreach(add_ops) as bias_add_op:
         bcast_load = xegpu.get_load_op(
             transform.get_operand(anyvalue, bias_add_op, [0])
         )
         xegpu.set_anchor_layout(bcast_load, index=0, **output_layout, slice_dims=[0])
+        transform.yield_()
 
     transform.apply_cse(gpu_func)
     canonicalize(gpu_func)
