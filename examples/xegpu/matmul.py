@@ -184,7 +184,7 @@ def execute_and_check(mmul: XeGPUMatMul, params: dict, verbose: int = 0) -> bool
     D_host_copy = np.zeros((mmul.M, mmul.N), dtype=mmul.c_dtype)
 
     def callback(
-        inputs: list[ctypes.Structure], memory_manager: GPUMemoryManager, **kwargs
+        inputs: list[ctypes.Structure], *, memory_manager: GPUMemoryManager, **kwargs
     ):
         memory_manager.copy(inputs[0], D_host_copy)
 

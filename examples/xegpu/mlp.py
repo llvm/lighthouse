@@ -390,6 +390,7 @@ if __name__ == "__main__":
 
                 def callback(
                     inputs: list[ctypes.Structure],
+                    *,
                     memory_manager: GPUMemoryManager,
                     **kwargs,
                 ):

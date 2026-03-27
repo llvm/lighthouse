@@ -456,7 +456,10 @@ if __name__ == "__main__":
         elem_type = numpy_to_mlir_type(wload.dtype)
 
         def callback(
-            inputs: list[ctypes.Structure], execution_engine: ExecutionEngine, **kwargs
+            inputs: list[ctypes.Structure],
+            *,
+            execution_engine: ExecutionEngine,
+            **kwargs,
         ):
             for buf, kind in zip(inputs, kinds):
                 rank = len(buf.shape)
