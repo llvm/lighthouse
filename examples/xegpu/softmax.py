@@ -256,7 +256,7 @@ if __name__ == "__main__":
             if args.dump_kernel:
                 print(payload)
             if args.dump_schedule:
-                for schedule_module in wload.schedule_modules():
+                for schedule_module in wload.schedule_modules(parameters=params):
                     print(schedule_module)
         else:
             if args.check_result:
