@@ -401,7 +401,6 @@ if __name__ == "__main__":
             schedule_modules=wload.schedule_modules(),
             host_input_buffers=wload._input_arrays,
             shared_libs=wload.shared_libs(),
-            payload_function_name=wload.benchmark_function_name,
             nruns=args.nruns,
             nwarmup=args.nwarmup,
         )

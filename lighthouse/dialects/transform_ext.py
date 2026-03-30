@@ -389,7 +389,9 @@ class GetTilingSizesOp(TransformExtensionDialect.Operation, name="get_tiling_siz
 
     target: ext.Operand[transform.AnyOpType]
     tile_dim: Optional[ext.Operand[transform.AnyParamType]] = None
-    tile_sizes_param: ext.Result[transform.AnyParamType[()]]
+    tile_sizes_param: ext.Result[transform.AnyParamType[()]] = ext.result(
+        infer_type=True
+    )
 
     @classmethod
     def attach_interface_impls(cls, ctx=None):
