@@ -34,9 +34,9 @@ class GetNamedAttributeOp(
     with the name `attr_name`, the operation fails.
     """
 
-    param: ext.Result[transform.AnyParamType[()]]
     target: ext.Operand[transform.AnyOpType]
     attr_name: ir.StringAttr
+    param: ext.Result[transform.AnyParamType[()]] = ext.result(infer_type=True)
 
     @classmethod
     def attach_interface_impls(cls, context=None):
@@ -141,10 +141,10 @@ class ReplaceOp(TransformExtensionDialect.Operation, name="replace"):
     No attempt is made to guarantee that the rewrite is semantics perserving.
     """
 
-    new_op: ext.Result[transform.AnyOpType[()]]
     target: ext.Operand[transform.AnyOpType]
     op_kind: ir.StringAttr
     new_operands: Sequence[ext.Operand[transform.AnyValueType]]
+    new_op: ext.Result[transform.AnyOpType[()]] = ext.result(infer_type=True)
 
     @classmethod
     def attach_interface_impls(cls, ctx=None):
@@ -267,7 +267,7 @@ class WrapInBenchingFuncOp(
     """
 
     target: ext.Operand[transform.AnyOpType]
-    bench_func: ext.Result[transform.AnyOpType[()]]
+    bench_func: ext.Result[transform.AnyOpType[()]] = ext.result(infer_type=True)
 
     @classmethod
     def attach_interface_impls(cls, context=None):
