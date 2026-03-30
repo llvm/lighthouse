@@ -2,7 +2,7 @@
 
 import argparse
 
-from lighthouse.pipeline.driver import Driver
+from lighthouse.pipeline.driver import CompilerDriver
 
 
 if __name__ == "__main__":
@@ -31,7 +31,7 @@ if __name__ == "__main__":
     args = Parser.parse_args()
 
     # Create the driver and run the pipeline.
-    driver = Driver(args.payload_module, args.stage)
+    driver = CompilerDriver(args.payload_module, args.stage)
     optimized_module = driver.run()
 
     # Output the optimized module.

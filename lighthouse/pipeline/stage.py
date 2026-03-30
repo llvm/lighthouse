@@ -174,8 +174,11 @@ class TransformStage(Stage):
 
     MLIR_ATTRIBUTE = "transform.with_named_sequence"
 
-    def __init__(self, transform: Transform, context: ir.Context):
-        if transform.type == Transform.Type.MLIR:
+    def __init__(self, transform: Transform | ir.Module, context: ir.Context):
+        if isinstance(transform, ir.Module):
+            # If the module is passed directly, we expect it to be already loaded and validated.
+            self.module = transform
+        elif transform.type == Transform.Type.MLIR:
             # For MLIR transforms, we expect the file to define an MLIR transform sequence
             # that we can import and apply to the module. This will be checked below.
             self.module = import_mlir_module(transform.filename, context)

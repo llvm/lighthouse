@@ -6,7 +6,59 @@ from lighthouse.pipeline.helper import import_mlir_module, remove_args_and_opts
 from lighthouse.pipeline.descriptor import PipelineDescriptor
 
 
-class Driver:
+class PipelineDriver:
+    """
+    A simple driver that runs the optimization pipeline on a given workload.
+    Helps create a list of Stages (passes, transforms, bundles) to apply to the module, and runs them in sequence.
+    """
+
+    stages: list[lhs.Stage]
+    context: ir.Context
+
+    def __init__(self, context: ir.Context):
+        self.context = context
+        self.stages = []
+
+    def add_pass(self, name: str) -> None:
+        # Assume the pass name exists, will crash later if it does not.
+        self.stages.append(lhs.PassStage([lhs.Pass(name)], self.context))
+
+    def add_transform(self, filename: str) -> None:
+        # Transform will figure out if this is MLIR of Python, and will handle it accordingly.
+        self.stages.append(lhs.TransformStage(lhs.Transform(filename), self.context))
+
+    def add_module(self, module: ir.Module) -> None:
+        # This is a transform already in module form. Assume it has been verified already.
+        if module.context != self.context:
+            raise ValueError("Module context does not match driver context.")
+        self.stages.append(lhs.TransformStage(module, self.context))
+
+    def add_bundle(self, name: str) -> None:
+        # A bundle name that must exist.
+        if name not in lhs.PassBundles:
+            raise ValueError(f"Unknown pass bundle: {name}")
+        self.stages.append(lhs.PassStage(lhs.PassBundles[name], self.context))
+
+    def add_stage(self, stage: lhs.Stage) -> None:
+        # A generit stage that isn't covered by the existing infrastructure.
+        # Users can derive their own classes from Stage and add them to the pipeline with this method.
+        self.stages.append(stage)
+
+    def apply(self, module: ir.Module) -> ir.Module:
+        if module.context != self.context:
+            raise ValueError("Module context does not match driver context.")
+        for stage in self.stages:
+            module = stage.apply(module)
+        return module
+
+    def __len__(self):
+        return len(self.stages)
+
+    def reset(self):
+        self.stages = []
+
+
+class CompilerDriver:
     """
     A simple driver that runs the optimization pipeline on a given workload.
     This is a high-level interface that abstracts away the details of the optimization pipeline,
@@ -26,7 +78,7 @@ class Driver:
         self.module = None
         if filename:
             self.import_payload(filename)
-        self.pipeline: list[lhs.Stage] = []
+        self.pipeline = PipelineDriver(self.context)
         self.pipeline_fixed = False
         self.bundles = lhs.PassBundles
         if stages:
@@ -47,14 +99,12 @@ class Driver:
 
         if stage_name in self.bundles:
             # Pass Bundle
-            self.pipeline.append(lhs.PassStage(self.bundles[stage_name], self.context))
+            self.pipeline.add_bundle(stage_name)
 
         elif os.path.exists(filename):
             # Transform or YAML
             if filename.endswith(".mlir") or filename.endswith(".py"):
-                self.pipeline.append(
-                    lhs.TransformStage(lhs.Transform(stage_name), self.context)
-                )
+                self.pipeline.add_transform(stage_name)
             elif filename.endswith(".yaml"):
                 desc = PipelineDescriptor(stage_name)
                 for s in desc.get_stages():
@@ -66,7 +116,7 @@ class Driver:
         else:
             # Assume random strings represent a single pass
             # Will crash later if the pass name is not registered.
-            self.pipeline.append(lhs.PassStage([lhs.Pass(stage_name)], self.context))
+            self.pipeline.add_pass(stage_name)
 
     def add_stages(self, stages: list[str]) -> None:
         for s in stages:
@@ -74,7 +124,7 @@ class Driver:
 
     def reset(self) -> None:
         """Reset the pipeline to an empty state, allowing for new stages to be added."""
-        self.pipeline = list[lhs.Stage]()
+        self.pipeline.reset()
         self.module = None
         self.pipeline_fixed = False
 
@@ -83,8 +133,9 @@ class Driver:
             raise ValueError("Module must not be empty.")
         if len(self.pipeline) == 0:
             raise ValueError("Pipeline must have at least one stage.")
-        for stage in self.pipeline:
-            self.module = stage.apply(self.module)
+
+        # Apply the whole pipeline.
+        self.pipeline.apply(self.module)
 
         # The pipeline is now fixed and cannot be modified until reset is called.
         # This is to prevent accidental modifications to the pipeline after it has been run,
