@@ -60,6 +60,23 @@ class PipelineDriver:
         self.stages = []
 
 
+class TransformDriver(PipelineDriver):
+    """
+    A simple driver that runs a sequence of transform modules on a given workload.
+    This is a thin wrapper around PipelineDriver that is used to run a sequence of transform modules on a given workload.
+    """
+
+    def __init__(self, schedules: list[ir.Module]):
+        if not isinstance(schedules, list) or not all(
+            isinstance(s, ir.Module) for s in schedules
+        ):
+            raise ValueError("Schedules must be a list of ir.Module")
+        super().__init__(schedules[0].context)
+
+        for s in schedules:
+            self.add_transform(s)
+
+
 class CompilerDriver:
     """
     A simple driver that runs the optimization pipeline on a given workload.

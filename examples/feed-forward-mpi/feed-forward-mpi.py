@@ -27,7 +27,7 @@ from mlir.execution_engine import ExecutionEngine
 
 from lighthouse import dialects as lh_dialects
 from lighthouse.pipeline.helper import apply_registered_pass, match
-from lighthouse.pipeline.driver import PipelineDriver
+from lighthouse.pipeline.driver import TransformDriver
 from lighthouse.execution import (
     benchmark,
     execute,
@@ -428,9 +428,7 @@ if __name__ == "__main__":
             rprint(f"  {i}: {ttype}")
 
         # apply sharding
-        pipeline = PipelineDriver(payload.context)
-        for schedule_module in wload.shard_schedule_modules():
-            pipeline.add_transform(schedule_module)
+        pipeline = TransformDriver(wload.shard_schedule_modules())
         payload = pipeline.apply(payload)
 
         # inspect sharded payload function signature
@@ -475,9 +473,7 @@ if __name__ == "__main__":
                 execution_engine.invoke("dealloc_2d", ptr_alloc)
 
         # execute once for correctness check
-        pipeline = PipelineDriver(payload.context)
-        for schedule_module in wload.schedule_modules():
-            pipeline.add_transform(schedule_module)
+        pipeline = pipeline = TransformDriver(wload.schedule_modules())
         payload = pipeline.apply(payload)
         execute(
             payload,

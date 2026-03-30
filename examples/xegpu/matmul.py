@@ -21,7 +21,7 @@ import numpy as np
 from mlir import ir
 
 from lighthouse import dialects as lh_dialects
-from lighthouse.pipeline.driver import PipelineDriver
+from lighthouse.pipeline.driver import TransformDriver
 from lighthouse.execution import (
     benchmark,
     execute,
@@ -462,14 +462,12 @@ enabled via CLI arguments.
         )
 
         if args.dump_kernel or args.dump_schedule:
-            _payload_module = wload.payload_module()
-            _schedule_modules = wload.schedule_modules(
-                stop_at_stage=args.dump_kernel, parameters=params
+            pipeline = TransformDriver(
+                wload.schedule_modules(
+                    stop_at_stage=args.dump_kernel, parameters=params
+                )
             )
-            pipeline = PipelineDriver(_payload_module.context)
-            for schedule_module in _schedule_modules:
-                pipeline.add_transform(schedule_module)
-            payload = pipeline.apply(_payload_module)
+            payload = pipeline.apply(wload.payload_module())
             if args.dump_kernel:
                 print(payload)
             if args.dump_schedule:

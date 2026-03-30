@@ -19,7 +19,7 @@ from mlir.dialects import transform
 from lighthouse import dialects as lh_dialects
 from lighthouse.pipeline.helper import match
 from lighthouse.pipeline.stage import PassBundles, apply_bundle
-from lighthouse.pipeline.driver import PipelineDriver
+from lighthouse.pipeline.driver import TransformDriver
 from lighthouse.execution import (
     execute,
     benchmark,
@@ -140,22 +140,14 @@ if __name__ == "__main__":
         wload = ElementwiseSum(400, 400)
 
         print(" Dump kernel ".center(60, "-"))
-        _payload_module = wload.payload_module()
-        _schedule_modules = wload.schedule_modules(stop_at_stage="bufferized")
-        pipeline = PipelineDriver(_payload_module.context)
-        for schedule_module in _schedule_modules:
-            pipeline.add_transform(schedule_module)
-        payload = pipeline.apply(_payload_module)
+        pipeline = TransformDriver(wload.schedule_modules(stop_at_stage="bufferized"))
+        payload = pipeline.apply(wload.payload_module())
         print(payload)
         for schedule_module in wload.schedule_modules():
             print(schedule_module)
 
-        _payload_module = wload.payload_module()
-        _schedule_modules = wload.schedule_modules()
-        pipeline = PipelineDriver(_payload_module.context)
-        for schedule_module in _schedule_modules:
-            pipeline.add_transform(schedule_module)
-        payload = pipeline.apply(_payload_module)
+        pipeline = TransformDriver(wload.schedule_modules())
+        payload = pipeline.apply(wload.payload_module())
 
         print(" Execute 1 ".center(60, "-"))
         execute(
