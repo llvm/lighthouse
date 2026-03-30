@@ -23,15 +23,17 @@ class PipelineDriver:
         # Assume the pass name exists, will crash later if it does not.
         self.stages.append(lhs.PassStage([lhs.Pass(name)], self.context))
 
-    def add_transform(self, filename: str) -> None:
-        # Transform will figure out if this is MLIR of Python, and will handle it accordingly.
-        self.stages.append(lhs.TransformStage(lhs.Transform(filename), self.context))
-
-    def add_module(self, module: ir.Module) -> None:
-        # This is a transform already in module form. Assume it has been verified already.
-        if module.context != self.context:
-            raise ValueError("Module context does not match driver context.")
-        self.stages.append(lhs.TransformStage(module, self.context))
+    def add_transform(self, stage: str | ir.Module) -> None:
+        # Transform will figure out if this is MLIR, Python or Module, and will handle it accordingly.
+        if isinstance(stage, ir.Module):
+            # This is a transform already in module form. Assume it has been verified already.
+            if stage.context != self.context:
+                raise ValueError("Module context does not match driver context.")
+            self.stages.append(lhs.TransformStage(stage, self.context))
+        elif isinstance(stage, str):
+            self.stages.append(lhs.TransformStage(lhs.Transform(stage), self.context))
+        else:
+            raise ValueError(f"Unsupported stage type: {type(stage)}")
 
     def add_bundle(self, name: str) -> None:
         # A bundle name that must exist.
