@@ -27,10 +27,10 @@ from mlir.execution_engine import ExecutionEngine
 
 from lighthouse import dialects as lh_dialects
 from lighthouse.pipeline.helper import apply_registered_pass, match
+from lighthouse.pipeline.driver import PipelineDriver
 from lighthouse.execution import (
     benchmark,
     execute,
-    lower_payload,
     get_bench_wrapper_schedule,
 )
 from lighthouse.schedule import schedule_boilerplate
@@ -428,10 +428,10 @@ if __name__ == "__main__":
             rprint(f"  {i}: {ttype}")
 
         # apply sharding
-        payload = lower_payload(
-            payload,
-            wload.shard_schedule_modules(),
-        )
+        pipeline = PipelineDriver(payload.context)
+        for schedule_module in wload.shard_schedule_modules():
+            pipeline.add_transform(schedule_module)
+        payload = pipeline.apply(payload)
 
         # inspect sharded payload function signature
         payload_metadata = inspect_payload(payload)
@@ -475,10 +475,10 @@ if __name__ == "__main__":
                 execution_engine.invoke("dealloc_2d", ptr_alloc)
 
         # execute once for correctness check
-        payload = lower_payload(
-            payload,
-            wload.schedule_modules(),
-        )
+        pipeline = PipelineDriver(payload.context)
+        for schedule_module in wload.schedule_modules():
+            pipeline.add_transform(schedule_module)
+        payload = pipeline.apply(payload)
         execute(
             payload,
             shared_libs=wload.shared_libs(),

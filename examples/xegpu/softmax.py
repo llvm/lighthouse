@@ -14,10 +14,10 @@ import numpy as np
 from mlir import ir
 
 from lighthouse import dialects as lh_dialects
+from lighthouse.pipeline.driver import PipelineDriver
 from lighthouse.execution import (
     benchmark,
     execute,
-    lower_payload,
     get_bench_wrapper_schedule,
     GPUMemoryManager,
 )
@@ -247,12 +247,14 @@ if __name__ == "__main__":
         wload = XeGPUSoftmax(M=M, N=N, dtype=dtype)
 
         if args.dump_kernel or args.dump_schedule:
-            payload = lower_payload(
-                wload.payload_module(),
-                wload.schedule_modules(
-                    stop_at_stage=args.dump_kernel, parameters=params
-                ),
+            _payload_module = wload.payload_module()
+            _schedule_modules = wload.schedule_modules(
+                stop_at_stage=args.dump_kernel, parameters=params
             )
+            pipeline = PipelineDriver(_payload_module.context)
+            for schedule_module in _schedule_modules:
+                pipeline.add_transform(schedule_module)
+            payload = pipeline.apply(_payload_module)
             if args.dump_kernel:
                 print(payload)
             if args.dump_schedule:

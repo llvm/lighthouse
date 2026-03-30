@@ -17,7 +17,6 @@ from mlir.execution_engine import ExecutionEngine
 from mlir.runtime.np_to_memref import get_ranked_memref_descriptor
 
 from lighthouse.dialects import transform_ext
-from lighthouse.pipeline.driver import PipelineDriver
 from lighthouse.schedule import schedule_boilerplate
 from lighthouse.utils.memref import to_packed_args
 from lighthouse.utils.mlir import get_mlir_library_path
@@ -54,29 +53,6 @@ def get_engine(
     )
     execution_engine.initialize()
     return execution_engine
-
-
-def lower_payload(
-    payload_module: ir.Module,
-    schedule_modules: list[ir.Module],
-) -> ir.Module:
-    """
-    Apply transform schedules to the payload module.
-    Returns the lowered payload module.
-    FIXME: This should be removed and replaced with just using the PipelineDriver directly.
-    """
-    if not isinstance(schedule_modules, list):
-        raise TypeError(
-            f"schedule_modules() must return a list of ir.Module instances, "
-            f"got {type(schedule_modules).__name__}"
-        )
-    if not schedule_modules:
-        raise ValueError("schedule_modules() must return at least one schedule module.")
-
-    pipeline = PipelineDriver(payload_module.context)
-    for schedule_module in schedule_modules:
-        pipeline.add_transform(schedule_module)
-    return pipeline.apply(payload_module)
 
 
 def get_bench_wrapper_schedule(

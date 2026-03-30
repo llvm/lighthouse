@@ -22,10 +22,10 @@ from mlir.dialects import linalg, transform
 from mlir.dialects.transform import tensor
 
 from lighthouse import dialects as lh_dialects
+from lighthouse.pipeline.driver import PipelineDriver
 from lighthouse.execution import (
     benchmark,
     execute,
-    lower_payload,
     get_bench_wrapper_schedule,
 )
 from lighthouse.utils.numpy import numpy_to_mlir_type
@@ -359,10 +359,12 @@ if __name__ == "__main__":
         wload = Matmul(*args.sizes, dtype=in_dtype, tile_size=args.tile_size)
 
         if args.dump_kernel or args.dump_schedule:
-            payload = lower_payload(
-                wload.payload_module(),
-                wload.schedule_modules(stop_at_stage=args.dump_kernel),
-            )
+            _payload_module = wload.payload_module()
+            _schedule_modules = wload.schedule_modules(stop_at_stage=args.dump_kernel)
+            pipeline = PipelineDriver(_payload_module.context)
+            for schedule_module in _schedule_modules:
+                pipeline.add_transform(schedule_module)
+            payload = pipeline.apply(_payload_module)
             if args.dump_kernel:
                 print(payload)
             if args.dump_schedule:
