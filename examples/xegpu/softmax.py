@@ -263,7 +263,7 @@ if __name__ == "__main__":
                 # Setup callback function to copy result from device to host.
                 result_host_copy = np.zeros(wload.shape, dtype=wload.dtype)
 
-                def callback(
+                def argument_access_callback(
                     inputs: list[ctypes.Structure],
                     *,
                     memory_manager: GPUMemoryManager,
@@ -279,7 +279,7 @@ if __name__ == "__main__":
                     mem_manager_cls=wload.memory_manager_class,
                     shared_libs=wload.shared_libs(),
                     payload_function_name=wload.payload_function_name,
-                    callback=callback,
+                    argument_access_callback=argument_access_callback,
                 )
 
                 # Compute reference solution on host.

@@ -455,7 +455,7 @@ if __name__ == "__main__":
         kinds = ["act", "win", "wout", "act"]
         elem_type = numpy_to_mlir_type(wload.dtype)
 
-        def callback(
+        def argument_access_callback(
             inputs: list[ctypes.Structure],
             *,
             execution_engine: ExecutionEngine,
@@ -475,22 +475,23 @@ if __name__ == "__main__":
                 execution_engine.invoke("dealloc_2d", ptr_alloc)
 
         # execute once for correctness check
+        payload = lower_payload(
+            payload,
+            wload.schedule_modules(),
+        )
         execute(
             payload,
-            schedule_modules=wload.schedule_modules(),
             shared_libs=wload.shared_libs(),
             host_input_buffers=input_arrays,
             payload_function_name=wload.payload_function_name,
-            callback=callback,
+            argument_access_callback=argument_access_callback,
         )
         # check_correctness
         check_correctness(*host_arrays, verbose=args.verbose)
 
         rprint(" Benchmark ".center(60, "-"))
-        all_schedules = wload.shard_schedule_modules() + wload.schedule_modules()
         times = benchmark(
-            wload.payload_module(),
-            schedule_modules=all_schedules,
+            payload,
             shared_libs=wload.shared_libs(),
             host_input_buffers=input_arrays,
             benchmark_function_name=wload.benchmark_function_name,

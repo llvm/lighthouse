@@ -148,10 +148,14 @@ if __name__ == "__main__":
         for schedule_module in wload.schedule_modules():
             print(schedule_module)
 
+        payload = lower_payload(
+            wload.payload_module(),
+            wload.schedule_modules(),
+        )
+
         print(" Execute 1 ".center(60, "-"))
         execute(
-            wload.payload_module(),
-            schedule_modules=wload.schedule_modules(),
+            payload,
             host_input_buffers=wload._input_arrays,
             shared_libs=wload.shared_libs(),
             payload_function_name=wload.payload_function_name,
@@ -159,8 +163,7 @@ if __name__ == "__main__":
 
         print(" Execute 2 ".center(60, "-"))
         execute(
-            wload.payload_module(),
-            schedule_modules=wload.schedule_modules(),
+            payload,
             host_input_buffers=wload._input_arrays,
             shared_libs=wload.shared_libs(),
             payload_function_name=wload.payload_function_name,
@@ -181,8 +184,7 @@ if __name__ == "__main__":
 
         print(" Benchmark ".center(60, "-"))
         times = benchmark(
-            wload.payload_module(),
-            schedule_modules=wload.schedule_modules(),
+            payload,
             host_input_buffers=wload._input_arrays,
             shared_libs=wload.shared_libs(),
         )

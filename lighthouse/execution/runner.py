@@ -17,6 +17,7 @@ from mlir.execution_engine import ExecutionEngine
 from mlir.runtime.np_to_memref import get_ranked_memref_descriptor
 
 from lighthouse.dialects import transform_ext
+from lighthouse.pipeline.driver import PipelineDriver
 from lighthouse.schedule import schedule_boilerplate
 from lighthouse.utils.memref import to_packed_args
 from lighthouse.utils.mlir import get_mlir_library_path
@@ -61,8 +62,8 @@ def lower_payload(
 ) -> ir.Module:
     """
     Apply transform schedules to the payload module.
-
     Returns the lowered payload module.
+    FIXME: This should be removed and replaced with just using the PipelineDriver directly.
     """
     if not isinstance(schedule_modules, list):
         raise TypeError(
@@ -71,11 +72,11 @@ def lower_payload(
         )
     if not schedule_modules:
         raise ValueError("schedule_modules() must return at least one schedule module.")
+
+    pipeline = PipelineDriver(payload_module.context)
     for schedule_module in schedule_modules:
-        # apply schedule on payload module
-        named_seq = schedule_module.body.operations[0]
-        named_seq.apply(payload_module)
-    return payload_module
+        pipeline.add_transform(schedule_module)
+    return pipeline.apply(payload_module)
 
 
 def get_bench_wrapper_schedule(
@@ -102,21 +103,32 @@ def get_bench_wrapper_schedule(
 
 def _execute_kernel(
     payload_module: ir.Module,
-    schedule_modules: list[ir.Module],
     host_input_buffers: list[np.ndarray],
     payload_function_name: str,
     mem_manager_cls: type | None = None,
     shared_libs: list[str] = None,
-    callback: Optional[
+    argument_access_callback: Optional[
         Callable[[list[ctypes.Structure], ExecutionEngine, MemoryManager], None]
     ] = None,
     nruns: int = 100,
     nwarmup: int = 10,
     benchmark: bool = True,
 ) -> np.ndarray | None:
-    # lower payload with schedule
-    payload_module = lower_payload(payload_module, schedule_modules)
+    """
+    Execute the payload module with the given pipeline and input buffers.
 
+    If `mem_manager_cls` is provided, it will be used to allocate device buffers
+    and copy data from host input buffers.
+
+    The `argument_access_callback` function can be used to (read/write) access the buffers
+    after execution. The callback signature is
+
+    `argument_access_callback(inputs, execution_engine=..., memory_manager=...)`
+
+    where `inputs` is the list of memref descriptors for the input buffers,
+    `execution_engine` is the execution engine instance, and `memory_manager`
+    is the memory manager instance (or `None` if no memory manager is used).
+    """
     # get execution engine, rtclock requires mlir_c_runner
     shared_libs = shared_libs or []
     c_runner_lib = "libmlir_c_runner_utils.so"
@@ -156,46 +168,34 @@ def _execute_kernel(
         func = engine.lookup(payload_function_name)
         func(args)
 
-        if callback is not None:
-            callback(inputs, execution_engine=engine, memory_manager=mem_manager)
+        if argument_access_callback is not None:
+            argument_access_callback(
+                inputs, execution_engine=engine, memory_manager=mem_manager
+            )
 
     return time_array
 
 
 def benchmark(
     payload_module: ir.Module,
-    schedule_modules: list[ir.Module],
     host_input_buffers: list[np.ndarray],
     mem_manager_cls: type | None = None,
     shared_libs: list[str] = None,
     benchmark_function_name: str = "benchmark",
-    callback: RunnerCallable = None,
+    argument_access_callback: RunnerCallable = None,
     nruns: int = 100,
     nwarmup: int = 10,
 ) -> np.ndarray:
     """
-    Lower and execute the payload module with the given pipeline and input buffers.
-
-    If `mem_manager_cls` is provided, it will be used to allocate device buffers
-    and copy data from host input buffers.
-
-    The `callback` function can be used to (read/write) access the buffers
-    after execution. The callback signature is
-
-    `callback(inputs, execution_engine=..., memory_manager=...)`
-
-    where `inputs` is the list of memref descriptors for the input buffers,
-    `execution_engine` is the execution engine instance, and `memory_manager`
-    is the memory manager instance (or `None` if no memory manager is used).
+    Benchmark the payload module with the given pipeline and input buffers.
     """
     return _execute_kernel(
         payload_module=payload_module,
-        schedule_modules=schedule_modules,
         host_input_buffers=host_input_buffers,
         mem_manager_cls=mem_manager_cls,
         shared_libs=shared_libs,
         payload_function_name=benchmark_function_name,
-        callback=callback,
+        argument_access_callback=argument_access_callback,
         nruns=nruns,
         nwarmup=nwarmup,
         benchmark=True,
@@ -204,35 +204,21 @@ def benchmark(
 
 def execute(
     payload_module: ir.Module,
-    schedule_modules: list[ir.Module],
     payload_function_name: str,
     host_input_buffers: list[np.ndarray],
     mem_manager_cls: type | None = None,
     shared_libs: list[str] = None,
-    callback: RunnerCallable = None,
+    argument_access_callback: RunnerCallable = None,
 ) -> None:
     """
-    Lower and execute the payload module with the given pipeline and input buffers.
-
-    If `mem_manager_cls` is provided, it will be used to allocate device buffers
-    and copy data from host input buffers.
-
-    The `callback` function can be used to (read/write) access the buffers
-    after execution. The callback signature is
-
-    `callback(inputs, execution_engine=..., memory_manager=...)`
-
-    where `inputs` is the list of memref descriptors for the input buffers,
-    `execution_engine` is the execution engine instance, and `memory_manager`
-    is the memory manager instance (or `None` if no memory manager is used).
+    Execute the payload module with the given pipeline and input buffers.
     """
     _execute_kernel(
         payload_module=payload_module,
-        schedule_modules=schedule_modules,
         host_input_buffers=host_input_buffers,
         mem_manager_cls=mem_manager_cls,
         shared_libs=shared_libs,
         payload_function_name=payload_function_name,
+        argument_access_callback=argument_access_callback,
         benchmark=False,
-        callback=callback,
     )
