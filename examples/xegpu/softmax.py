@@ -12,17 +12,19 @@ from functools import cached_property
 
 import numpy as np
 from mlir import ir
-from mlir.execution_engine import ExecutionEngine
 
 from lighthouse import dialects as lh_dialects
-from lighthouse.workload import benchmark, get_bench_wrapper_schedule
-from lighthouse.utils.memref import to_ctype as memref_to_ctype
-from lighthouse.utils.numpy import numpy_to_ctype
+from lighthouse.execution import (
+    benchmark,
+    execute,
+    lower_payload,
+    get_bench_wrapper_schedule,
+    GPUMemoryManager,
+)
+from lighthouse.utils.numpy import mlir_to_numpy_dtype
 from lighthouse.ingress.mlir_gen import get_mlir_elem_type
 from lighthouse.ingress.mlir_gen.gpu_softmax_payload import generate_gpu_softmax_payload
 from lighthouse.schedule.xegpu.softmax_schedule import get_softmax_schedule_module
-
-from xegpu_workload import XeGPUWorkload
 
 
 def softmax_complexity(M: int, N: int, nbytes: int):
@@ -42,7 +44,51 @@ def softmax_complexity(M: int, N: int, nbytes: int):
     return flop_count, memory_reads, memory_writes
 
 
-class XeGPUSoftmax(XeGPUWorkload):
+def check_correctness(
+    input_arr: np.ndarray, output_arr: np.ndarray, verbose: int = 0
+) -> bool:
+    # Use float32 for computation
+    x = input_arr.astype(np.float32)
+    # Compute softmax along axis 1 (each row independently)
+    # Numerically stable version: subtract max before exp
+    max_vals = np.max(x, axis=1, keepdims=True)
+    exp_vals = np.exp(x - max_vals)
+    sum_vals = np.sum(exp_vals, axis=1, keepdims=True)
+    output_ref = exp_vals / sum_vals
+
+    output = output_arr.astype(np.float32)
+
+    if verbose > 1:
+        print("Reference solution (first 5 rows):")
+        print(output_ref[:5])
+        print("Computed solution (first 5 rows):")
+        print(output[:5])
+
+    # Check row sums are close to 1.0
+    row_sums = np.sum(output, axis=1)
+    sums_ok = np.allclose(row_sums, 1.0, rtol=1e-5, atol=1e-6)
+
+    # Check values match reference
+    values_ok = np.allclose(output, output_ref, rtol=1e-4, atol=1e-6)
+
+    success = sums_ok and values_ok
+
+    if verbose:
+        if success:
+            print("PASSED")
+        else:
+            print("FAILED!")
+            if not sums_ok:
+                print(
+                    f"  Row sums check failed. Min: {row_sums.min():.6f}, Max: {row_sums.max():.6f}"
+                )
+            if not values_ok:
+                max_diff = np.abs(output - output_ref).max()
+                print(f"  Values mismatch. Max abs diff: {max_diff:.6e}")
+    return success
+
+
+class XeGPUSoftmax:
     """
     Softmax workload on XeGPU.
 
@@ -58,17 +104,14 @@ class XeGPUSoftmax(XeGPUWorkload):
         N: int,
         dtype: str = "f32",
     ):
-        super().__init__()
         self.M = M
         self.N = N
         self.shape = (M, N)
         assert dtype == "f32", "Only f32 type is supported for softmax"
-        self.dtype_str = dtype
-        type_str_to_numpy = {
-            "f16": np.float16,
-            "f32": np.float32,
-        }
-        self.dtype = type_str_to_numpy[dtype]
+        self.elem_type = get_mlir_elem_type(dtype)
+        self.dtype = mlir_to_numpy_dtype(self.elem_type)
+        self.memory_manager_class = GPUMemoryManager
+        self.payload_function_name = "payload"
 
     @cached_property
     def _initial_host_arrays(self) -> tuple[np.ndarray]:
@@ -76,86 +119,8 @@ class XeGPUSoftmax(XeGPUWorkload):
         np.random.seed(42)
         # Use values in range [-0.5, 0.5] to avoid numerical issues
         input_arr = np.random.uniform(-0.5, 0.5, self.shape).astype(self.dtype)
-        return (input_arr,)
-
-    @cached_property
-    def _reference_solution(self) -> np.ndarray:
-        """Compute reference solution on host with numpy."""
-        (input_arr,) = self._initial_host_arrays
-        # Use float32 for computation
-        x = input_arr.astype(np.float32)
-        # Compute softmax along axis 1 (each row independently)
-        # Numerically stable version: subtract max before exp
-        max_vals = np.max(x, axis=1, keepdims=True)
-        exp_vals = np.exp(x - max_vals)
-        sum_vals = np.sum(exp_vals, axis=1, keepdims=True)
-        output = exp_vals / sum_vals
-        return output.astype(self.dtype)
-
-    def _get_input_arrays(
-        self, execution_engine: ExecutionEngine
-    ) -> list[ctypes.Structure]:
-        # Allocate device memory for input and output
-        input_gpu = self._allocate_array(
-            "input", self.shape, self.dtype_str, execution_engine
-        )
-        output_gpu = self._allocate_array(
-            "output", self.shape, self.dtype_str, execution_engine
-        )
-
-        # Copy input to device
-        (input_host,) = self._initial_host_arrays
-        copy_fn = f"gpu_copy_2d_{self.dtype_str}"
-        execution_engine.invoke(
-            copy_fn, numpy_to_ctype(input_host), memref_to_ctype(input_gpu)
-        )
-
-        # Return memrefs: [output, input]
-        return [output_gpu, input_gpu]
-
-    def check_correctness(
-        self, execution_engine: ExecutionEngine, verbose: int = 0
-    ) -> bool:
-        # Copy result from device to host
-        output_gpu = self.gpu_memrefs[("output", self.dtype_str)]
-        output_host = np.zeros(self.shape, dtype=self.dtype)
-        execution_engine.invoke(
-            f"gpu_copy_2d_{self.dtype_str}",
-            memref_to_ctype(output_gpu),
-            numpy_to_ctype(output_host),
-        )
-
-        output_ref = self._reference_solution
-        output_computed = output_host.astype(np.float32)
-
-        if verbose > 1:
-            print("Reference solution (first 5 rows):")
-            print(output_ref[:5])
-            print("Computed solution (first 5 rows):")
-            print(output_computed[:5])
-
-        # Check row sums are close to 1.0
-        row_sums = np.sum(output_computed, axis=1)
-        sums_ok = np.allclose(row_sums, 1.0, rtol=1e-5, atol=1e-6)
-
-        # Check values match reference
-        values_ok = np.allclose(output_computed, output_ref, rtol=1e-4, atol=1e-6)
-
-        success = sums_ok and values_ok
-
-        if verbose:
-            if success:
-                print("PASSED")
-            else:
-                print("FAILED!")
-                if not sums_ok:
-                    print(
-                        f"  Row sums check failed. Min: {row_sums.min():.6f}, Max: {row_sums.max():.6f}"
-                    )
-                if not values_ok:
-                    max_diff = np.abs(output_computed - output_ref).max()
-                    print(f"  Values mismatch. Max abs diff: {max_diff:.6e}")
-        return success
+        output_arr = np.zeros(self.shape, dtype=self.dtype)
+        return (output_arr, input_arr)
 
     def get_complexity(self) -> tuple[int, int, int]:
         nbytes = np.dtype(self.dtype).itemsize
@@ -163,12 +128,11 @@ class XeGPUSoftmax(XeGPUWorkload):
 
     def payload_module(self) -> ir.Module:
         """Generate MLIR module for softmax payload."""
-        dtype = get_mlir_elem_type(self.dtype_str)
         return generate_gpu_softmax_payload(
             func_name=self.payload_function_name,
             M=self.M,
             N=self.N,
-            dtype=dtype,
+            dtype=self.elem_type,
         )
 
     def schedule_modules(
@@ -176,7 +140,7 @@ class XeGPUSoftmax(XeGPUWorkload):
     ) -> list[ir.Module]:
         """Generate transform schedule for softmax."""
         return [
-            get_bench_wrapper_schedule(self),
+            get_bench_wrapper_schedule(self.payload_function_name),
             get_softmax_schedule_module(
                 stop_at_stage=stop_at_stage,
                 parameters=parameters,
@@ -254,6 +218,13 @@ def parse_cli():
         action="store_true",
         help="Dump transform schedule.",
     )
+    parser.add_argument(
+        "--verbose",
+        "-v",
+        action="count",
+        default=0,
+        help="Increase output verbosity (e.g. print reference and computed solutions).",
+    )
     args = parser.parse_args()
     return args
 
@@ -276,19 +247,58 @@ if __name__ == "__main__":
         wload = XeGPUSoftmax(M=M, N=N, dtype=dtype)
 
         if args.dump_kernel or args.dump_schedule:
-            wload.lower_payload(
-                dump_payload=args.dump_kernel,
-                dump_schedule=args.dump_schedule,
-                schedule_parameters=params,
+            payload = lower_payload(
+                wload.payload_module(),
+                wload.schedule_modules(
+                    stop_at_stage=args.dump_kernel, parameters=params
+                ),
             )
+            if args.dump_kernel:
+                print(payload)
+            if args.dump_schedule:
+                for schedule_module in wload.schedule_modules():
+                    print(schedule_module)
         else:
+            if args.check_result:
+                # Setup callback function to copy result from device to host.
+                result_host_copy = np.zeros(wload.shape, dtype=wload.dtype)
+
+                def callback(
+                    inputs: list[ctypes.Structure],
+                    *,
+                    memory_manager: GPUMemoryManager,
+                    **kwargs,
+                ):
+                    memory_manager.copy(inputs[0], result_host_copy)
+
+                # Execute kernel once.
+                execute(
+                    wload.payload_module(),
+                    schedule_modules=wload.schedule_modules(parameters=params),
+                    host_input_buffers=wload._initial_host_arrays,
+                    mem_manager_cls=wload.memory_manager_class,
+                    shared_libs=wload.shared_libs(),
+                    payload_function_name=wload.payload_function_name,
+                    callback=callback,
+                )
+
+                # Compute reference solution on host.
+                success = check_correctness(
+                    wload._initial_host_arrays[1],
+                    result_host_copy,
+                    verbose=args.verbose,
+                )
+                if not success:
+                    raise ValueError("Result mismatch!")
+
             times = benchmark(
-                wload,
+                wload.payload_module(),
+                schedule_modules=wload.schedule_modules(parameters=params),
+                host_input_buffers=wload._initial_host_arrays,
+                mem_manager_cls=wload.memory_manager_class,
+                shared_libs=wload.shared_libs(),
                 nruns=args.nruns,
                 nwarmup=args.nwarmup,
-                schedule_parameters=params,
-                check_correctness=args.check_result,
-                verbose=1,
             )
             times *= 1e6  # convert to microseconds
             elapsed = np.mean(times)
@@ -298,13 +308,12 @@ if __name__ == "__main__":
             def list2str(a):
                 return ",".join(map(str, a))
 
-            parts = [
-                f"sizes={list2str(args.sizes)}",
-                f"dt={dtype}",
-                f"wg-rows={args.wg_rows}",
-                f"sg-rows={args.sg_rows}",
-                f"subgroup-size={args.subgroup_size}",
-                f"time(us): {elapsed:.2f}",
-                f"GFLOPS: {gflops:.2f}",
-            ]
-            print(" ".join(parts))
+            print(
+                f"sizes={list2str(args.sizes)} "
+                f"dt={dtype} "
+                f"wg-rows={args.wg_rows} "
+                f"sg-rows={args.sg_rows} "
+                f"subgroup-size={args.subgroup_size} "
+                f"time(us): {elapsed:.2f} "
+                f"GFLOPS: {gflops:.2f} "
+            )
