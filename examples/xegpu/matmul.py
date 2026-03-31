@@ -177,7 +177,7 @@ class XeGPUMatMul:
         return ["libmlir_levelzero_runtime.so"]
 
 
-def execute_and_check(mmul: XeGPUMatMul, params: dict, verbose: int = 0) -> bool:
+def execute_and_check(mmul: XeGPUMatMul, payload: ir.Module, verbose: int = 0) -> bool:
     """Execute the matmul kernel and check correctness of the result."""
 
     # Setup callback function to copy result from device to host.
@@ -190,8 +190,7 @@ def execute_and_check(mmul: XeGPUMatMul, params: dict, verbose: int = 0) -> bool
 
     # Execute kernel once.
     execute(
-        mmul.payload_module(),
-        schedule_modules=mmul.schedule_modules(parameters=params),
+        payload,
         host_input_buffers=mmul._initial_host_arrays,
         mem_manager_cls=mmul.memory_manager_class,
         shared_libs=mmul.shared_libs(),
@@ -232,12 +231,11 @@ def execute_and_check(mmul: XeGPUMatMul, params: dict, verbose: int = 0) -> bool
 
 
 def run_benchmark(
-    mmul: XeGPUMatMul, params: dict, nruns: int = 100, nwarmup: int = 10
+    mmul: XeGPUMatMul, payload_module: ir.Module, nruns: int = 100, nwarmup: int = 10
 ) -> np.ndarray:
     """Benchmark the matmul kernel and return array of execution times in seconds."""
     times = benchmark(
-        mmul.payload_module(),
-        schedule_modules=mmul.schedule_modules(parameters=params),
+        payload_module,
         host_input_buffers=mmul._initial_host_arrays,
         mem_manager_cls=mmul.memory_manager_class,
         shared_libs=mmul.shared_libs(),
@@ -462,24 +460,28 @@ enabled via CLI arguments.
         )
 
         if args.dump_kernel or args.dump_schedule:
-            pipeline = TransformDriver(
-                wload.schedule_modules(
-                    stop_at_stage=args.dump_kernel, parameters=params
-                )
-            )
-            payload = pipeline.apply(wload.payload_module())
             if args.dump_kernel:
+                pipeline = TransformDriver(
+                    wload.schedule_modules(
+                        stop_at_stage=args.dump_kernel, parameters=params
+                    )
+                )
+                payload = pipeline.apply(wload.payload_module())
                 print(payload)
             if args.dump_schedule:
                 for schedule_module in wload.schedule_modules(parameters=params):
                     print(schedule_module)
         else:
+            pipeline = TransformDriver(wload.schedule_modules(parameters=params))
+            payload = pipeline.apply(wload.payload_module())
             if args.check_result:
-                success = execute_and_check(wload, params, args.verbose)
+                success = execute_and_check(wload, payload, args.verbose)
                 if not success:
                     raise ValueError("Result mismatch!")
 
-            times = run_benchmark(wload, params, nruns=args.nruns, nwarmup=args.nwarmup)
+            times = run_benchmark(
+                wload, payload, nruns=args.nruns, nwarmup=args.nwarmup
+            )
             times *= 1e6  # convert to microseconds
             elapsed = np.mean(times)
             flop_count = wload.get_complexity()[0]

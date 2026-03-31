@@ -384,6 +384,8 @@ if __name__ == "__main__":
                 for schedule_module in wload.schedule_modules(parameters=params):
                     print(schedule_module)
         else:
+            pipeline = TransformDriver(wload.schedule_modules(parameters=params))
+            payload = pipeline.apply(wload.payload_module())
             if args.check_result:
                 # Setup callback function to copy result from device to host.
                 result_host_copy = np.zeros(wload.output_shape, dtype=wload.ab_dtype)
@@ -397,8 +399,6 @@ if __name__ == "__main__":
                     memory_manager.copy(inputs[0], result_host_copy)
 
                 # Execute kernel once.
-                pipeline = TransformDriver(wload.schedule_modules(parameters=params))
-                payload = pipeline.apply(wload.payload_module())
                 execute(
                     payload,
                     host_input_buffers=wload._initial_host_arrays,
