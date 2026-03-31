@@ -226,3 +226,16 @@ def get_bench_wrapper_schedule(payload_func: str) -> ir.Module:
 
     schedule.body.operations[0].verify()
     return schedule
+
+
+def get_gpu_argument_access_callback(
+    output_shape: tuple[int, int], dtype: np.dtype
+) -> tuple[np.ndarray, RunnerCallable]:
+    D_host_copy = np.zeros(output_shape, dtype=dtype)
+
+    def argument_access_callback(
+        inputs: list[ctypes.Structure], *, memory_manager: GPUMemoryManager, **kwargs
+    ):
+        memory_manager.copy(inputs[0], D_host_copy)
+
+    return D_host_copy, argument_access_callback

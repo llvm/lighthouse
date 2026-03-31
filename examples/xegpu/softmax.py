@@ -6,7 +6,6 @@ XeGPU softmax benchmark.
 """
 
 import argparse
-import ctypes
 from typing import Optional
 from functools import cached_property
 
@@ -14,7 +13,7 @@ import numpy as np
 from mlir import ir
 
 from lighthouse import dialects as lh_dialects
-from lighthouse.execution.runner import Runner
+from lighthouse.execution.runner import Runner, get_gpu_argument_access_callback
 from lighthouse.pipeline.driver import TransformDriver
 from lighthouse.execution import (
     get_bench_wrapper_schedule,
@@ -263,15 +262,9 @@ if __name__ == "__main__":
             runner = Runner(shared_libs=wload.shared_libs())
             if args.check_result:
                 # Setup callback function to copy result from device to host.
-                result_host_copy = np.zeros(wload.shape, dtype=wload.dtype)
-
-                def argument_access_callback(
-                    inputs: list[ctypes.Structure],
-                    *,
-                    memory_manager: GPUMemoryManager,
-                    **kwargs,
-                ):
-                    memory_manager.copy(inputs[0], result_host_copy)
+                result_host_copy, argument_access_callback = (
+                    get_gpu_argument_access_callback(wload.shape, wload.dtype)
+                )
 
                 # Execute kernel once.
                 runner.execute(

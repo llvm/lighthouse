@@ -11,7 +11,6 @@ XeGPU matrix multiplication example.
 """
 
 import argparse
-import ctypes
 import json
 from dataclasses import dataclass
 from typing import Optional, ClassVar
@@ -21,7 +20,7 @@ import numpy as np
 from mlir import ir
 
 from lighthouse import dialects as lh_dialects
-from lighthouse.execution.runner import Runner
+from lighthouse.execution.runner import Runner, get_gpu_argument_access_callback
 from lighthouse.pipeline.driver import TransformDriver
 from lighthouse.execution import (
     get_bench_wrapper_schedule,
@@ -177,15 +176,15 @@ class XeGPUMatMul:
 
 
 def execute_and_check(mmul: XeGPUMatMul, payload: ir.Module, verbose: int = 0) -> bool:
-    """Execute the matmul kernel and check correctness of the result."""
+    """
+    Execute the matmul kernel and check correctness of the result.
+    TODO: Move the execution part to just use Runner.execute().
+    """
 
     # Setup callback function to copy result from device to host.
-    D_host_copy = np.zeros((mmul.M, mmul.N), dtype=mmul.c_dtype)
-
-    def argument_access_callback(
-        inputs: list[ctypes.Structure], *, memory_manager: GPUMemoryManager, **kwargs
-    ):
-        memory_manager.copy(inputs[0], D_host_copy)
+    D_host_copy, argument_access_callback = get_gpu_argument_access_callback(
+        mmul.c_shape, mmul.c_dtype
+    )
 
     # Execute kernel once.
     runner = Runner(shared_libs=mmul.shared_libs())
@@ -232,7 +231,10 @@ def execute_and_check(mmul: XeGPUMatMul, payload: ir.Module, verbose: int = 0) -
 def run_benchmark(
     mmul: XeGPUMatMul, payload_module: ir.Module, nruns: int = 100, nwarmup: int = 10
 ) -> np.ndarray:
-    """Benchmark the matmul kernel and return array of execution times in seconds."""
+    """
+    Benchmark the matmul kernel and return array of execution times in seconds.
+    TODO: Remove this function and just use Runner.benchmark() directly.
+    """
     runner = Runner(shared_libs=mmul.shared_libs())
     times = runner.benchmark(
         payload_module,
