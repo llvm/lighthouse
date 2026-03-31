@@ -14,6 +14,7 @@ from mlir import ir
 
 from lighthouse import dialects as lh_dialects
 from lighthouse.schedule.xegpu.mlp_schedule import DPAS
+from lighthouse.pipeline.driver import TransformDriver
 
 from matmul import XeGPUMatMul, run_benchmark, execute_and_check, cli_parser
 from genetic_algorithm import (
@@ -47,13 +48,16 @@ def run_experiment(
             has_relu=has_relu,
             accumulate_c=accumulate_c,
         )
+        pipeline = TransformDriver(wload.schedule_modules(parameters=params))
+        payload = pipeline.apply(wload.payload_module())
+
         if check_result:
-            success = execute_and_check(wload, params, verbose=1)
+            success = execute_and_check(wload, payload, verbose=1)
             if not success:
                 raise ValueError("Result mismatch!")
         if nruns is None and nwarmup is None:
             # first run to estimate cost
-            times = run_benchmark(wload, params=params, nruns=10, nwarmup=10)
+            times = run_benchmark(wload, payload, nruns=10, nwarmup=10)
             # estimate number of runs
             cost = times.mean()
             warmup_target = 0.25
@@ -61,7 +65,7 @@ def run_experiment(
             nruns = 3 * nwarmup
             print(f"{nwarmup=} {nruns=}")
         # benchmark
-        times = run_benchmark(wload, params=params, nruns=nruns, nwarmup=nwarmup)
+        times = run_benchmark(wload, payload, nruns=nruns, nwarmup=nwarmup)
 
     times *= 1e6  # convert to microseconds
     elapsed = np.mean(times)
