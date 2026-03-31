@@ -178,7 +178,6 @@ class XeGPUMatMul:
 def execute_and_check(mmul: XeGPUMatMul, payload: ir.Module, verbose: int = 0) -> bool:
     """
     Execute the matmul kernel and check correctness of the result.
-    TODO: Move the execution part to just use Runner.execute().
     """
 
     # Setup callback function to copy result from device to host.
@@ -226,24 +225,6 @@ def execute_and_check(mmul: XeGPUMatMul, payload: ir.Module, verbose: int = 0) -
             print("FAILED Result mismatch!")
 
     return success
-
-
-def run_benchmark(
-    mmul: XeGPUMatMul, payload_module: ir.Module, nruns: int = 100, nwarmup: int = 10
-) -> np.ndarray:
-    """
-    Benchmark the matmul kernel and return array of execution times in seconds.
-    TODO: Remove this function and just use Runner.benchmark() directly.
-    """
-    runner = Runner(shared_libs=mmul.shared_libs())
-    times = runner.benchmark(
-        payload_module,
-        host_input_buffers=mmul._initial_host_arrays,
-        mem_manager_cls=mmul.memory_manager_class,
-        nruns=nruns,
-        nwarmup=nwarmup,
-    )
-    return times
 
 
 def cli_parser(description):
@@ -480,8 +461,13 @@ enabled via CLI arguments.
                 if not success:
                     raise ValueError("Result mismatch!")
 
-            times = run_benchmark(
-                wload, payload, nruns=args.nruns, nwarmup=args.nwarmup
+            runner = Runner(shared_libs=wload.shared_libs())
+            times = runner.benchmark(
+                payload,
+                host_input_buffers=wload._initial_host_arrays,
+                mem_manager_cls=wload.memory_manager_class,
+                nruns=args.nruns,
+                nwarmup=args.nwarmup,
             )
             times *= 1e6  # convert to microseconds
             elapsed = np.mean(times)

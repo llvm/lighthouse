@@ -13,10 +13,11 @@ from csv_logger import CSVLogger
 from mlir import ir
 
 from lighthouse import dialects as lh_dialects
+from lighthouse.execution.runner import Runner
 from lighthouse.schedule.xegpu.mlp_schedule import DPAS
 from lighthouse.pipeline.driver import TransformDriver
 
-from matmul import XeGPUMatMul, run_benchmark, execute_and_check, cli_parser
+from matmul import XeGPUMatMul, execute_and_check, cli_parser
 from genetic_algorithm import (
     Variable,
     VariableSet,
@@ -55,9 +56,16 @@ def run_experiment(
             success = execute_and_check(wload, payload, verbose=1)
             if not success:
                 raise ValueError("Result mismatch!")
+        runner = Runner(shared_libs=wload.shared_libs())
         if nruns is None and nwarmup is None:
             # first run to estimate cost
-            times = run_benchmark(wload, payload, nruns=10, nwarmup=10)
+            times = runner.benchmark(
+                payload,
+                host_input_buffers=wload._initial_host_arrays,
+                mem_manager_cls=wload.memory_manager_class,
+                nruns=10,
+                nwarmup=10,
+            )
             # estimate number of runs
             cost = times.mean()
             warmup_target = 0.25
@@ -65,7 +73,13 @@ def run_experiment(
             nruns = 3 * nwarmup
             print(f"{nwarmup=} {nruns=}")
         # benchmark
-        times = run_benchmark(wload, payload, nruns=nruns, nwarmup=nwarmup)
+        times = runner.benchmark(
+            payload,
+            host_input_buffers=wload._initial_host_arrays,
+            mem_manager_cls=wload.memory_manager_class,
+            nruns=nruns,
+            nwarmup=nwarmup,
+        )
 
     times *= 1e6  # convert to microseconds
     elapsed = np.mean(times)
