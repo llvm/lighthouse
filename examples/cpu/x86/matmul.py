@@ -378,9 +378,8 @@ if __name__ == "__main__":
             sys.exit(0)
 
         # First, execution for correctness
-        runner = Runner(shared_libs=wload.shared_libs())
+        runner = Runner(payload, shared_libs=wload.shared_libs())
         runner.execute(
-            payload,
             host_input_buffers=wload._input_arrays,
             payload_function_name=wload.payload_function_name,
         )
@@ -395,7 +394,6 @@ if __name__ == "__main__":
 
         # Now, benchmark
         times = runner.benchmark(
-            payload,
             host_input_buffers=wload._input_arrays,
             nruns=args.nruns,
             nwarmup=args.nwarmup,

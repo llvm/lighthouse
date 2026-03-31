@@ -186,11 +186,13 @@ def execute_and_check(mmul: XeGPUMatMul, payload: ir.Module, verbose: int = 0) -
     )
 
     # Execute kernel once.
-    runner = Runner(shared_libs=mmul.shared_libs())
-    runner.execute(
+    runner = Runner(
         payload,
-        host_input_buffers=mmul._initial_host_arrays,
         mem_manager_cls=mmul.memory_manager_class,
+        shared_libs=mmul.shared_libs(),
+    )
+    runner.execute(
+        host_input_buffers=mmul._initial_host_arrays,
         payload_function_name=mmul.payload_function_name,
         argument_access_callback=argument_access_callback,
     )
@@ -461,11 +463,13 @@ enabled via CLI arguments.
                 if not success:
                     raise ValueError("Result mismatch!")
 
-            runner = Runner(shared_libs=wload.shared_libs())
-            times = runner.benchmark(
+            runner = Runner(
                 payload,
-                host_input_buffers=wload._initial_host_arrays,
                 mem_manager_cls=wload.memory_manager_class,
+                shared_libs=wload.shared_libs(),
+            )
+            times = runner.benchmark(
+                host_input_buffers=wload._initial_host_arrays,
                 nruns=args.nruns,
                 nwarmup=args.nwarmup,
             )

@@ -259,7 +259,11 @@ if __name__ == "__main__":
         else:
             pipeline = TransformDriver(wload.schedule_modules(parameters=params))
             payload = pipeline.apply(wload.payload_module())
-            runner = Runner(shared_libs=wload.shared_libs())
+            runner = Runner(
+                payload,
+                mem_manager_cls=wload.memory_manager_class,
+                shared_libs=wload.shared_libs(),
+            )
             if args.check_result:
                 # Setup callback function to copy result from device to host.
                 result_host_copy, argument_access_callback = (
@@ -268,9 +272,7 @@ if __name__ == "__main__":
 
                 # Execute kernel once.
                 runner.execute(
-                    payload,
                     host_input_buffers=wload._initial_host_arrays,
-                    mem_manager_cls=wload.memory_manager_class,
                     payload_function_name=wload.payload_function_name,
                     argument_access_callback=argument_access_callback,
                 )
@@ -285,9 +287,7 @@ if __name__ == "__main__":
                     raise ValueError("Result mismatch!")
 
             times = runner.benchmark(
-                payload,
                 host_input_buffers=wload._initial_host_arrays,
-                mem_manager_cls=wload.memory_manager_class,
                 nruns=args.nruns,
                 nwarmup=args.nwarmup,
             )

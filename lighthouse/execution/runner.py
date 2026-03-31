@@ -43,7 +43,15 @@ class Runner:
 
     payload_benchmark_function_name: str = "__benchmark"
 
-    def __init__(self, shared_libs: list[str] = None, opt_level: int = 3):
+    def __init__(
+        self,
+        module: ir.Module,
+        mem_manager_cls: type = None,
+        shared_libs: list[str] = None,
+        opt_level: int = 3,
+    ):
+        self.payload = module
+        self.mem_manager_cls = mem_manager_cls
         if shared_libs is None:
             shared_libs = []
         # get execution engine, rtclock requires mlir_c_runner
@@ -53,6 +61,7 @@ class Runner:
         self.lib_dir = get_mlir_library_path()
         self.shared_libs = self._find_shared_libs(shared_libs)
         self.opt_level = opt_level
+        self.engine = self._get_engine()
 
     def _find_shared_libs(self, shared_libs: list[str]) -> list[str]:
         """
@@ -71,12 +80,12 @@ class Runner:
             found_libs.append(so_path)
         return found_libs
 
-    def _get_engine(self, payload_module: ir.Module) -> ExecutionEngine:
+    def _get_engine(self) -> ExecutionEngine:
         """
         Get an execution engine for the given payload module, loading the necessary shared libraries.
         """
         execution_engine = ExecutionEngine(
-            payload_module, opt_level=self.opt_level, shared_libs=self.shared_libs
+            self.payload, opt_level=self.opt_level, shared_libs=self.shared_libs
         )
         execution_engine.initialize()
         return execution_engine
@@ -90,10 +99,8 @@ class Runner:
 
     def _execute_kernel(
         self,
-        payload_module: ir.Module,
         host_input_buffers: list[np.ndarray],
         payload_function_name: str = "",
-        mem_manager_cls: type | None = None,
         argument_access_callback: Optional[
             Callable[[list[ctypes.Structure], ExecutionEngine, MemoryManager], None]
         ] = None,
@@ -116,19 +123,20 @@ class Runner:
         `execution_engine` is the execution engine instance, and `memory_manager`
         is the memory manager instance (or `None` if no memory manager is used).
         """
-        engine = self._get_engine(payload_module)
 
         if host_input_buffers is None:
             raise ValueError("host_input_buffers must be provided")
 
-        if mem_manager_cls is None:
+        if self.mem_manager_cls is None:
             mem_manager = None
             allocator = partial(self._numpy_to_memref_manager, host_input_buffers)
-        elif mem_manager_cls is GPUMemoryManager:
-            mem_manager = mem_manager_cls(engine)
+        elif self.mem_manager_cls is GPUMemoryManager:
+            mem_manager = self.mem_manager_cls(self.engine)
             allocator = partial(mem_manager.clone_host_buffers, host_input_buffers)
         else:
-            raise ValueError(f"Unsupported mem_manager_cls type: {mem_manager_cls}")
+            raise ValueError(
+                f"Unsupported mem_manager_cls type: {self.mem_manager_cls}"
+            )
 
         if benchmark:
             time_array = np.zeros((nruns,), dtype=np.float64)
@@ -151,21 +159,19 @@ class Runner:
                 function_name = self.payload_benchmark_function_name
             else:
                 function_name = payload_function_name
-            func = engine.lookup(function_name)
+            func = self.engine.lookup(function_name)
             func(args)
 
             if argument_access_callback is not None:
                 argument_access_callback(
-                    inputs, execution_engine=engine, memory_manager=mem_manager
+                    inputs, execution_engine=self.engine, memory_manager=mem_manager
                 )
 
         return time_array
 
     def benchmark(
         self,
-        payload_module: ir.Module,
         host_input_buffers: list[np.ndarray],
-        mem_manager_cls: type | None = None,
         argument_access_callback: RunnerCallable = None,
         nruns: int = 100,
         nwarmup: int = 10,
@@ -174,9 +180,7 @@ class Runner:
         Benchmark the payload module with the given pipeline and input buffers.
         """
         return self._execute_kernel(
-            payload_module=payload_module,
             host_input_buffers=host_input_buffers,
-            mem_manager_cls=mem_manager_cls,
             argument_access_callback=argument_access_callback,
             nruns=nruns,
             nwarmup=nwarmup,
@@ -185,19 +189,15 @@ class Runner:
 
     def execute(
         self,
-        payload_module: ir.Module,
         payload_function_name: str,
         host_input_buffers: list[np.ndarray],
-        mem_manager_cls: type | None = None,
         argument_access_callback: RunnerCallable = None,
     ) -> None:
         """
         Execute the payload module with the given pipeline and input buffers.
         """
         self._execute_kernel(
-            payload_module=payload_module,
             host_input_buffers=host_input_buffers,
-            mem_manager_cls=mem_manager_cls,
             payload_function_name=payload_function_name,
             argument_access_callback=argument_access_callback,
             benchmark=False,

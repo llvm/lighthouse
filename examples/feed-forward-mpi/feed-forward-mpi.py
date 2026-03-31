@@ -468,9 +468,8 @@ if __name__ == "__main__":
         # execute once for correctness check
         pipeline = pipeline = TransformDriver(wload.schedule_modules())
         payload = pipeline.apply(payload)
-        runner = Runner(shared_libs=wload.shared_libs())
+        runner = Runner(payload, shared_libs=wload.shared_libs())
         runner.execute(
-            payload,
             host_input_buffers=input_arrays,
             payload_function_name=wload.payload_function_name,
             argument_access_callback=argument_access_callback,
@@ -480,7 +479,6 @@ if __name__ == "__main__":
 
         rprint(" Benchmark ".center(60, "-"))
         times = runner.benchmark(
-            payload,
             host_input_buffers=input_arrays,
             nruns=args.nruns,
             nwarmup=args.nwarmup,

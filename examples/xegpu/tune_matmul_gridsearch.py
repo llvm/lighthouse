@@ -56,13 +56,15 @@ def run_experiment(
             success = execute_and_check(wload, payload, verbose=1)
             if not success:
                 raise ValueError("Result mismatch!")
-        runner = Runner(shared_libs=wload.shared_libs())
+        runner = Runner(
+            payload,
+            mem_manager_cls=wload.memory_manager_class,
+            shared_libs=wload.shared_libs(),
+        )
         if nruns is None and nwarmup is None:
             # first run to estimate cost
             times = runner.benchmark(
-                payload,
                 host_input_buffers=wload._initial_host_arrays,
-                mem_manager_cls=wload.memory_manager_class,
                 nruns=10,
                 nwarmup=10,
             )
@@ -74,9 +76,7 @@ def run_experiment(
             print(f"{nwarmup=} {nruns=}")
         # benchmark
         times = runner.benchmark(
-            payload,
             host_input_buffers=wload._initial_host_arrays,
-            mem_manager_cls=wload.memory_manager_class,
             nruns=nruns,
             nwarmup=nwarmup,
         )

@@ -145,18 +145,16 @@ if __name__ == "__main__":
 
         pipeline = TransformDriver(wload.schedule_modules())
         payload = pipeline.apply(wload.payload_module())
-        runner = Runner(shared_libs=wload.shared_libs())
+        runner = Runner(payload, shared_libs=wload.shared_libs())
 
         print(" Execute 1 ".center(60, "-"))
         runner.execute(
-            payload,
             host_input_buffers=wload._input_arrays,
             payload_function_name=wload.payload_function_name,
         )
 
         print(" Execute 2 ".center(60, "-"))
         runner.execute(
-            payload,
             host_input_buffers=wload._input_arrays,
             payload_function_name=wload.payload_function_name,
         )
@@ -176,7 +174,6 @@ if __name__ == "__main__":
 
         print(" Benchmark ".center(60, "-"))
         times = runner.benchmark(
-            payload,
             host_input_buffers=wload._input_arrays,
         )
         times *= 1e6  # convert to microseconds
