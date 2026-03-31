@@ -380,8 +380,8 @@ class GetTilingSizesOp(TransformExtensionDialect.Operation, name="get_tiling_siz
 
     Args:
         target: Handle to target.
-        tile_dim: Optional size used for tile dimensions.
-            If left unspecified, the size is chosen automatically.
+        tile_dim: Optional size used for tile dimensions (default: 32).
+            TODO: Allow more fine-grained control.
     Return:
         Handle holding tile size values.
         Returns empty handle if no analysis is available for the given op.
@@ -399,11 +399,24 @@ class GetTilingSizesOp(TransformExtensionDialect.Operation, name="get_tiling_siz
         cls.MemoryEffectsOpInterfaceModel.attach(cls.OPERATION_NAME, context=ctx)
 
     @classmethod
-    def _get_tile_param(cls, value: int):
+    def tile_param_attr(cls, value: int):
+        """Get attribute suitable for use as a tiling size."""
         return ir.IntegerAttr.get(ir.IntegerType.get_signless(64), value)
 
     @classmethod
-    def _named_op_matmul_tiles(cls, named_op: linalg.MatmulOp, tile_size: int = 32):
+    def named_op_matmul_tiles(
+        cls, named_op: ir.OpView, tile_size: int
+    ) -> Sequence[int]:
+        """
+        Get tiling sizes for Linalg matmul named ops variants.
+
+        Args:
+            named_op: Target named op.
+            tile_size: Size of all tile dimensions.
+        Returns:
+            List of tile sizes for all op's iterators.
+            Empty if the op is not supported.
+        """
         c_type: ir.ShapedType = named_op.outputs[0].type
         if any(
             ir.ShapedType.is_static_size(dim) and dim < tile_size
@@ -424,9 +437,18 @@ class GetTilingSizesOp(TransformExtensionDialect.Operation, name="get_tiling_siz
                 return []
 
     @classmethod
-    def _contract_tiles(
-        cls, contract: linalg.ContractOp, tile_size: int = 32
+    def contract_tiles(
+        cls, contract: linalg.ContractOp, tile_size: int
     ) -> Sequence[int]:
+        """
+        Get tiling sizes for Linalg contraction op.
+
+        Args:
+            contract: Target contract op.
+            tile_size: Size of all tile dimensions.
+        Returns:
+            List of tile sizes for all op's iterators.
+        """
         c_map: ir.AffineMap = contract.indexing_maps[2].value
         c_type: ir.ShapedType = contract.outputs[0].type
         num_tile_dims = min(2, c_type.rank)
@@ -473,13 +495,13 @@ class GetTilingSizesOp(TransformExtensionDialect.Operation, name="get_tiling_siz
                     | linalg.BatchMatmulOp()
                     | linalg.BatchReduceMatmulOp()
                 ):
-                    tile_sizes = op._named_op_matmul_tiles(target, tile_size=tile_size)
+                    tile_sizes = op.named_op_matmul_tiles(target, tile_size=tile_size)
                 case linalg.ContractOp():
-                    tile_sizes = op._contract_tiles(target, tile_size=tile_size)
+                    tile_sizes = op.contract_tiles(target, tile_size=tile_size)
                 case _:
                     tile_sizes = []
 
-            tile_params = [op._get_tile_param(tile) for tile in tile_sizes]
+            tile_params = [op.tile_param_attr(tile) for tile in tile_sizes]
             results.set_params(op.tile_sizes_param, tile_params)
 
             return DiagnosedSilenceableFailure.Success
@@ -498,19 +520,19 @@ class GetTilingSizesOp(TransformExtensionDialect.Operation, name="get_tiling_siz
 
 def get_tiling_sizes(
     target: ir.Value[transform.AnyOpType],
-    tile_dim: int | ir.Value = 32,
+    tile_dim: int | ir.Value | None = None,
 ) -> ir.Value:
     """
     snake_case wrapper to create a GetTilingSizesOp.
 
     Args:
         target: Handle to target op
-        tile_dim: Size used for tile dimensions
+        tile_dim: Optional size used for tile dimensions (default: 32)
     Returns:
         Created op
     """
     if isinstance(tile_dim, int):
-        tile_attr = ir.IntegerAttr.get(ir.IntegerType.get_signless(64), tile_dim)
-        tile_dim = transform.ParamConstantOp(transform.AnyParamType.get(), tile_attr)
+        param_attr = GetTilingSizesOp.tile_param_attr(tile_dim)
+        tile_dim = transform.ParamConstantOp(transform.AnyParamType.get(), param_attr)
 
     return GetTilingSizesOp(target=target, tile_dim=tile_dim)

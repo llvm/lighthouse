@@ -367,12 +367,12 @@ if __name__ == "__main__":
             sys.exit(1)
 
         wload = Matmul(*args.sizes, dtype=in_dtype, tile_size=args.tile_size)
+        pipeline = TransformDriver(
+            wload.schedule_modules(stop_at_stage=args.dump_kernel)
+        )
+        payload = pipeline.apply(wload.payload_module())
 
         if args.dump_kernel or args.dump_schedule:
-            pipeline = TransformDriver(
-                wload.schedule_modules(stop_at_stage=args.dump_kernel)
-            )
-            payload = pipeline.apply(wload.payload_module())
             if args.dump_kernel:
                 print(payload)
             if args.dump_schedule:
@@ -382,8 +382,7 @@ if __name__ == "__main__":
 
         # check correctness
         execute(
-            wload.payload_module(),
-            schedule_modules=wload.schedule_modules(),
+            payload,
             host_input_buffers=wload._input_arrays,
             shared_libs=wload.shared_libs(),
             payload_function_name=wload.payload_function_name,
@@ -397,8 +396,7 @@ if __name__ == "__main__":
             sys.exit(1)
 
         times = benchmark(
-            wload.payload_module(),
-            schedule_modules=wload.schedule_modules(),
+            payload,
             host_input_buffers=wload._input_arrays,
             shared_libs=wload.shared_libs(),
             nruns=args.nruns,
