@@ -21,10 +21,9 @@ import numpy as np
 from mlir import ir
 
 from lighthouse import dialects as lh_dialects
+from lighthouse.execution.runner import Runner
 from lighthouse.pipeline.driver import TransformDriver
 from lighthouse.execution import (
-    benchmark,
-    execute,
     get_bench_wrapper_schedule,
     MemoryManager,
     GPUMemoryManager,
@@ -189,11 +188,11 @@ def execute_and_check(mmul: XeGPUMatMul, payload: ir.Module, verbose: int = 0) -
         memory_manager.copy(inputs[0], D_host_copy)
 
     # Execute kernel once.
-    execute(
+    runner = Runner(shared_libs=mmul.shared_libs())
+    runner.execute(
         payload,
         host_input_buffers=mmul._initial_host_arrays,
         mem_manager_cls=mmul.memory_manager_class,
-        shared_libs=mmul.shared_libs(),
         payload_function_name=mmul.payload_function_name,
         argument_access_callback=argument_access_callback,
     )
@@ -234,11 +233,11 @@ def run_benchmark(
     mmul: XeGPUMatMul, payload_module: ir.Module, nruns: int = 100, nwarmup: int = 10
 ) -> np.ndarray:
     """Benchmark the matmul kernel and return array of execution times in seconds."""
-    times = benchmark(
+    runner = Runner(shared_libs=mmul.shared_libs())
+    times = runner.benchmark(
         payload_module,
         host_input_buffers=mmul._initial_host_arrays,
         mem_manager_cls=mmul.memory_manager_class,
-        shared_libs=mmul.shared_libs(),
         nruns=nruns,
         nwarmup=nwarmup,
     )

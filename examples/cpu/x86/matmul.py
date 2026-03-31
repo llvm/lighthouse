@@ -23,12 +23,9 @@ from mlir.dialects import linalg, transform
 from mlir.dialects.transform import tensor
 
 from lighthouse import dialects as lh_dialects
+from lighthouse.execution.runner import Runner
 from lighthouse.pipeline.driver import TransformDriver
-from lighthouse.execution import (
-    benchmark,
-    execute,
-    get_bench_wrapper_schedule,
-)
+from lighthouse.execution import get_bench_wrapper_schedule
 from lighthouse.utils.numpy import numpy_to_mlir_type
 from lighthouse.pipeline.helper import apply_registered_pass
 import lighthouse.utils as lh_utils
@@ -380,14 +377,15 @@ if __name__ == "__main__":
                     print(schedule_module)
             sys.exit(0)
 
-        # check correctness
-        execute(
+        # First, execution for correctness
+        runner = Runner(shared_libs=wload.shared_libs())
+        runner.execute(
             payload,
             host_input_buffers=wload._input_arrays,
-            shared_libs=wload.shared_libs(),
             payload_function_name=wload.payload_function_name,
         )
 
+        # check correctness
         A, B, C = wload._input_arrays
         C_ref = np.matmul(A, B, dtype=np.float32)
         success = np.allclose(C, C_ref)
@@ -395,10 +393,10 @@ if __name__ == "__main__":
             print("FAILED Result mismatch.")
             sys.exit(1)
 
-        times = benchmark(
+        # Now, benchmark
+        times = runner.benchmark(
             payload,
             host_input_buffers=wload._input_arrays,
-            shared_libs=wload.shared_libs(),
             nruns=args.nruns,
             nwarmup=args.nwarmup,
         )

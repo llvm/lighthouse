@@ -18,6 +18,7 @@ from mlir.dialects import transform, func
 from mlir.dialects.transform.bufferization import OneShotBufferizeOp
 from mlir.dialects.bufferization import LayoutMapOption
 from mlir.runtime.np_to_memref import ranked_memref_to_numpy
+from lighthouse.execution.runner import Runner
 from lighthouse.utils.memref import to_ctype as memref_to_ctype
 from mlir.runtime.np_to_memref import (
     make_nd_memref_descriptor,
@@ -28,11 +29,7 @@ from mlir.execution_engine import ExecutionEngine
 from lighthouse import dialects as lh_dialects
 from lighthouse.pipeline.helper import apply_registered_pass, match
 from lighthouse.pipeline.driver import TransformDriver
-from lighthouse.execution import (
-    benchmark,
-    execute,
-    get_bench_wrapper_schedule,
-)
+from lighthouse.execution import get_bench_wrapper_schedule
 from lighthouse.schedule import schedule_boilerplate
 from lighthouse.schedule.x86 import tile_and_vector_matmul
 from lighthouse.utils.numpy import numpy_to_mlir_type, mlir_to_numpy_dtype
@@ -186,7 +183,6 @@ class DistFF:
     """
 
     payload_function_name: str = "payload"
-    benchmark_function_name: str = "benchmark"
 
     def __init__(self, args, P: int, R: int):
         self.M = args.sizes[0]
@@ -342,7 +338,6 @@ class DistFF:
 
             # Run passes to inject deallocations. Don't do this for dealloc_2d, though.
             for fname in [
-                self.benchmark_function_name,
                 self.payload_function_name,
                 "gather_act",
                 "gather_win",
@@ -395,9 +390,7 @@ class DistFF:
         - tile_and_vector
         - all the rest"""
         return [
-            get_bench_wrapper_schedule(
-                self.payload_function_name, self.benchmark_function_name
-            ),
+            get_bench_wrapper_schedule(self.payload_function_name),
             tile_and_vector_matmul.create_schedule(
                 tile_sizes=[self.tile_size, self.tile_size]
             ),
@@ -475,9 +468,9 @@ if __name__ == "__main__":
         # execute once for correctness check
         pipeline = pipeline = TransformDriver(wload.schedule_modules())
         payload = pipeline.apply(payload)
-        execute(
+        runner = Runner(shared_libs=wload.shared_libs())
+        runner.execute(
             payload,
-            shared_libs=wload.shared_libs(),
             host_input_buffers=input_arrays,
             payload_function_name=wload.payload_function_name,
             argument_access_callback=argument_access_callback,
@@ -486,11 +479,9 @@ if __name__ == "__main__":
         check_correctness(*host_arrays, verbose=args.verbose)
 
         rprint(" Benchmark ".center(60, "-"))
-        times = benchmark(
+        times = runner.benchmark(
             payload,
-            shared_libs=wload.shared_libs(),
             host_input_buffers=input_arrays,
-            benchmark_function_name=wload.benchmark_function_name,
             nruns=args.nruns,
             nwarmup=args.nwarmup,
         )
