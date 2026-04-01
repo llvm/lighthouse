@@ -29,7 +29,6 @@ from mlir.execution_engine import ExecutionEngine
 from lighthouse import dialects as lh_dialects
 from lighthouse.pipeline.helper import apply_registered_pass, match
 from lighthouse.pipeline.driver import TransformDriver
-from lighthouse.execution import get_bench_wrapper_schedule
 from lighthouse.schedule import schedule_boilerplate
 from lighthouse.schedule.x86 import tile_and_vector_matmul
 from lighthouse.utils.numpy import numpy_to_mlir_type, mlir_to_numpy_dtype
@@ -390,7 +389,7 @@ class DistFF:
         - tile_and_vector
         - all the rest"""
         return [
-            get_bench_wrapper_schedule(self.payload_function_name),
+            Runner.get_bench_wrapper_schedule(self.payload_function_name),
             tile_and_vector_matmul.create_schedule(
                 tile_sizes=[self.tile_size, self.tile_size]
             ),

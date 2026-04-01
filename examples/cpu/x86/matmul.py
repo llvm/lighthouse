@@ -25,7 +25,6 @@ from mlir.dialects.transform import tensor
 from lighthouse import dialects as lh_dialects
 from lighthouse.execution.runner import Runner
 from lighthouse.pipeline.driver import TransformDriver
-from lighthouse.execution import get_bench_wrapper_schedule
 from lighthouse.utils.numpy import numpy_to_mlir_type
 from lighthouse.pipeline.helper import apply_registered_pass
 import lighthouse.utils as lh_utils
@@ -129,7 +128,7 @@ class Matmul:
         scheds = []
 
         # Insert performance measurements.
-        scheds.append(get_bench_wrapper_schedule(self.payload_function_name))
+        scheds.append(Runner.get_bench_wrapper_schedule(self.payload_function_name))
 
         if stop_at_stage == "initial":
             return scheds

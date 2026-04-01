@@ -203,39 +203,42 @@ class Runner:
             benchmark=False,
         )
 
+    @staticmethod
+    def get_bench_wrapper_schedule(payload_func: str) -> ir.Module:
+        """
+        Get a schedule that wraps the payload function in a benchmarking function.
+        The function name is defined in Runner and will be used by the runner benchmark method.
+        """
+        with schedule_boilerplate(result_types=[transform.any_op_t()]) as (
+            schedule,
+            named_seq,
+        ):
+            named_func = structured.structured_match(
+                transform.AnyOpType.get(),
+                target=named_seq.bodyTarget,
+                ops={"func.func"},
+                op_attrs={"sym_name": ir.StringAttr.get(payload_func)},
+            )
+            bench_func = transform_ext.wrap_in_benching_func(
+                named_func, bench_name=Runner.payload_benchmark_function_name
+            )
+            transform.yield_([bench_func])
 
-def get_bench_wrapper_schedule(payload_func: str) -> ir.Module:
-    """
-    Get a schedule that wraps the payload function in a benchmarking function.
-    The function name is defined in Runner and will be used by the runner benchmark method.
-    """
-    with schedule_boilerplate(result_types=[transform.any_op_t()]) as (
-        schedule,
-        named_seq,
-    ):
-        named_func = structured.structured_match(
-            transform.AnyOpType.get(),
-            target=named_seq.bodyTarget,
-            ops={"func.func"},
-            op_attrs={"sym_name": ir.StringAttr.get(payload_func)},
-        )
-        bench_func = transform_ext.wrap_in_benching_func(
-            named_func, bench_name=Runner.payload_benchmark_function_name
-        )
-        transform.yield_([bench_func])
+        schedule.body.operations[0].verify()
+        return schedule
 
-    schedule.body.operations[0].verify()
-    return schedule
+    @staticmethod
+    def get_gpu_argument_access_callback(
+        output_shape: tuple[int, int], dtype: np.dtype
+    ) -> tuple[np.ndarray, RunnerCallable]:
+        D_host_copy = np.zeros(output_shape, dtype=dtype)
 
+        def argument_access_callback(
+            inputs: list[ctypes.Structure],
+            *,
+            memory_manager: GPUMemoryManager,
+            **kwargs,
+        ):
+            memory_manager.copy(inputs[0], D_host_copy)
 
-def get_gpu_argument_access_callback(
-    output_shape: tuple[int, int], dtype: np.dtype
-) -> tuple[np.ndarray, RunnerCallable]:
-    D_host_copy = np.zeros(output_shape, dtype=dtype)
-
-    def argument_access_callback(
-        inputs: list[ctypes.Structure], *, memory_manager: GPUMemoryManager, **kwargs
-    ):
-        memory_manager.copy(inputs[0], D_host_copy)
-
-    return D_host_copy, argument_access_callback
+        return D_host_copy, argument_access_callback

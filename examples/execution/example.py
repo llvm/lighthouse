@@ -21,7 +21,6 @@ from lighthouse.execution.runner import Runner
 from lighthouse.pipeline.helper import match
 from lighthouse.pipeline.stage import PassBundles, apply_bundle
 from lighthouse.pipeline.driver import TransformDriver
-from lighthouse.execution import get_bench_wrapper_schedule
 
 
 class ElementwiseSum:
@@ -125,7 +124,7 @@ class ElementwiseSum:
                 transform.YieldOp()
 
         return [
-            get_bench_wrapper_schedule(self.payload_function_name),
+            Runner.get_bench_wrapper_schedule(self.payload_function_name),
             schedule_module,
         ]
 

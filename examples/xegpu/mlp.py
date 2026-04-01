@@ -24,10 +24,9 @@ import numpy as np
 from mlir import ir
 
 from lighthouse import dialects as lh_dialects
-from lighthouse.execution.runner import Runner, get_gpu_argument_access_callback
+from lighthouse.execution.runner import Runner
 from lighthouse.pipeline.driver import TransformDriver
 from lighthouse.execution import (
-    get_bench_wrapper_schedule,
     MemoryManager,
     GPUMemoryManager,
 )
@@ -226,7 +225,7 @@ class XeGPUMLP:
         self, stop_at_stage: Optional[str] = None, parameters: Optional[dict] = None
     ) -> list[ir.Module]:
         return [
-            get_bench_wrapper_schedule(self.payload_function_name),
+            Runner.get_bench_wrapper_schedule(self.payload_function_name),
             get_schedule_module(
                 has_bias=self.has_bias,
                 has_relu=self.has_relu,
@@ -392,7 +391,9 @@ if __name__ == "__main__":
             if args.check_result:
                 # Setup callback function to copy result from device to host.
                 result_host_copy, argument_access_callback = (
-                    get_gpu_argument_access_callback(wload.output_shape, wload.ab_dtype)
+                    Runner.get_gpu_argument_access_callback(
+                        wload.output_shape, wload.ab_dtype
+                    )
                 )
 
                 # Execute kernel once.
