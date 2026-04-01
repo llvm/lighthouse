@@ -479,7 +479,7 @@ class GetTilingSizesOp(TransformExtensionDialect.Operation, name="get_tiling_siz
         ) -> DiagnosedSilenceableFailure:
             target_ops = state.get_payload_ops(op.target)
             if len(target_ops) != 1:
-                return DiagnosedSilenceableFailure.Failure
+                return DiagnosedSilenceableFailure.SilenceableFailure
 
             tile_size = 32
             if op.tile_dim is not None:
@@ -598,7 +598,7 @@ class GetTileableConsumersOp(
             target_ops = state.get_payload_ops(op.target)
 
             if len(target_ops) != 1:
-                return DiagnosedSilenceableFailure.Failure
+                return DiagnosedSilenceableFailure.SilenceableFailure
 
             new_ops = []
             target: ir.Operation = target_ops[0]
@@ -677,16 +677,15 @@ class ExtractHandleOp(TransformExtensionDialect.Operation, name="extract_handle"
             if len(index_attr) == 1 and isinstance(index_attr[0], ir.IntegerAttr):
                 index = index_attr[0].value
             else:
-                return DiagnosedSilenceableFailure.Failure
+                return DiagnosedSilenceableFailure.SilenceableFailure
 
-            try:
-                target = target_ops[index]
-            except IndexError:
+            n = len(target_ops)
+            if index >= n or index < -n:
                 raise IndexError(
-                    f"Invalid index={index} for target of length {len(target_ops)}"
+                    f"extract_handle: Invalid index {index} for target of length {len(target_ops)}"
                 )
-
-            results.set_ops(op.ops, [target])
+            handle = target_ops[index]
+            results.set_ops(op.ops, [handle])
             return DiagnosedSilenceableFailure.Success
 
         @staticmethod
