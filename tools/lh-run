@@ -29,6 +29,21 @@ def _get_input_type(input_type_str: str):
         raise ValueError(f"Unsupported input type: {input_type_str}")
 
 
+def add_lower_to_llvm_stages(driver: CompilerDriver) -> None:
+    """
+    Adds the LLVM lowering passes to guarantee the IR can be ingested by the ExecutionEngine.
+    """
+    driver.add_stage("convert-linalg-to-loops")
+    driver.add_stage("fold-memref-alias-ops")
+    driver.add_stage("expand-strided-metadata")
+    driver.add_stage("canonicalize")
+    driver.add_stage("convert-vector-to-scf")
+    driver.add_stage("lower-affine")
+    driver.add_stage("convert-scf-to-cf")
+    driver.add_stage("convert-vector-to-llvm")
+    driver.add_stage("convert-to-llvm")
+    driver.add_stage("reconcile-unrealized-casts")
+
 if __name__ == "__main__":
     Parser = argparse.ArgumentParser(
         description="""
@@ -69,18 +84,25 @@ if __name__ == "__main__":
     )
     Parser.add_argument(
         "--benchmark",
-        action="store_false",
+        action=argparse.BooleanOptionalAction,
         help="Whether to run the benchmark. Default is False.",
+    )
+    Parser.add_argument(
+        "--print-optimized-module",
+        action=argparse.BooleanOptionalAction,
+        help="Whether to print the optimized module. Default is False.",
     )
     args = Parser.parse_args()
 
     # Create the driver and run the pipeline.
     # Empty args means no stages will be run and the module will be imported as-is.
     driver = CompilerDriver(args.payload_module, args.stage)
+    add_lower_to_llvm_stages(driver)
     optimized_module = driver.run()
+    if args.print_optimized_module:
+        print(optimized_module)
 
     # Initialize the device data
-    # TODO: Support more than one input buffer.
     buffers = []
     for shape in args.input_shape:
         for sub_shape in shape.split(","):
