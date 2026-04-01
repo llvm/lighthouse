@@ -1,4 +1,6 @@
-# Lighthouse Opt Tool
+# Lighthouse Tools
+
+## lh-opt
 
 This tool helps test and validate assumptions of the Lighthouse classes for building compilers.
 
@@ -23,3 +25,7 @@ lh-opt --stage=BufferizationBundle --stage=canonicalize --stage=my-transform.mli
 
 Note, this basic functionality is for testing purposes. For building larger pipelines a new method will need to be created.
 One idea is to use structured text files, like YAML or JSON, and then use `--stage=my-pipeline.json`.
+
+## lh-tune
+
+TODO: Write short doc and examples on how to use
