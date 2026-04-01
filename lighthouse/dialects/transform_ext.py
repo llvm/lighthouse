@@ -644,19 +644,19 @@ def get_tileable_consumers(
     return GetTileableConsumersOp(target=target)
 
 
-class GetLastHandleOp(TransformExtensionDialect.Operation, name="get_last_handle"):
+class ExtractHandleOp(TransformExtensionDialect.Operation, name="extract_handle"):
     """
-    Return the last handle in the `target`.
-
-    Raises a silenceable failure if the `target` is not associated to any payload ops.
+    Returns the handle at the specified index in `target`.
 
     Args:
         target: Handle(s) to target op(s)
+        index: Index of the handle to extract. Supports Python-style indexing.
     Returns:
-        The last handle in `target`.
+        The handle at the specified index in `target`.
     """
 
     target: ext.Operand[transform.AnyOpType]
+    index: ext.Operand[transform.AnyParamType]
     ops: ext.Result[transform.AnyOpType[()]] = ext.result(infer_type=True)
 
     @classmethod
@@ -667,22 +667,30 @@ class GetLastHandleOp(TransformExtensionDialect.Operation, name="get_last_handle
     class TransformOpInterfaceModel(transform.TransformOpInterface):
         @staticmethod
         def apply(
-            op: "GetLastHandleOp",
+            op: "ExtractHandleOp",
             _rewriter: transform.TransformRewriter,
             results: transform.TransformResults,
             state: transform.TransformState,
         ) -> DiagnosedSilenceableFailure:
             target_ops = state.get_payload_ops(op.target)
-
-            if len(target_ops) == 0:
+            index_attr = state.get_params(op.index)
+            if len(index_attr) == 1 and isinstance(index_attr[0], ir.IntegerAttr):
+                index = index_attr[0].value
+            else:
                 return DiagnosedSilenceableFailure.Failure
 
-            target = target_ops[-1]
+            try:
+                target = target_ops[index]
+            except IndexError:
+                raise IndexError(
+                    f"Invalid index={index} for target of length {len(target_ops)}"
+                )
+
             results.set_ops(op.ops, [target])
             return DiagnosedSilenceableFailure.Success
 
         @staticmethod
-        def allow_repeated_handle_operands(_op: "GetLastHandleOp") -> bool:
+        def allow_repeated_handle_operands(_op: "ExtractHandleOp") -> bool:
             return False
 
     class MemoryEffectsOpInterfaceModel(ir.MemoryEffectsOpInterface):
@@ -693,15 +701,21 @@ class GetLastHandleOp(TransformExtensionDialect.Operation, name="get_last_handle
             transform.only_reads_payload(effects)
 
 
-def get_last_handle(
+def extract_handle(
     target: ir.Value[transform.AnyOpType],
+    index: int,
 ) -> ir.Value:
     """
-    snake_case wrapper to create a GetLastHandleOp.
+    snake_case wrapper to create a ExtractHandleOp.
 
     Args:
-        target: Handle to target op
+        target: Handle(s) to target op(s)
+        index: Index of the handle to extract. Supports Python-style indexing.
     Returns:
-        The last handle in `target`.
+        The handle at the specified index in `target`.
     """
-    return GetLastHandleOp(target=target).result
+    if isinstance(index, int):
+        param_attr = GetTilingSizesOp.tile_param_attr(index)
+        index = transform.ParamConstantOp(transform.AnyParamType.get(), param_attr)
+
+    return ExtractHandleOp(target=target, index=index).result

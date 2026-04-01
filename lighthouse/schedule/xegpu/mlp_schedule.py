@@ -184,7 +184,7 @@ def bundle_xegpu_mlp_schedule(
     for matmul_op, layer_params in zip(matmul_ops, params):
         # find the last tileable consumer of the matmul
         consumers = transform_ext.get_tileable_consumers(matmul_op)
-        leaf_consumer_op = transform_ext.get_last_handle(consumers)
+        leaf_consumer_op = transform_ext.extract_handle(consumers, -1)
 
         # tunable parameters: wg level tiling
         wg_tile = [layer_params["wg_m"], layer_params["wg_n"]]
