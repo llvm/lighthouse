@@ -41,10 +41,8 @@ def remove_args_and_opts(line: str) -> str:
 
 
 def update_filename(line: str, filename: str) -> str:
-    print(f"Updating stage name '{line}' with filename '{filename}'...")
     if m := re.search(r"^([^[{]+)(.*)$", line):
         line = filename + m.group(2)
-    print(f"Resulting in '{line}'")
     return line
 
 
