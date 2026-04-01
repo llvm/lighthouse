@@ -299,7 +299,7 @@ def trace_tune_and_smt_ops(op: ir.Operation, env: Optional[dict] = None) -> dict
             for yield_operand, op_res in zip(smt_yield.operands, op.results):
                 env[op_res] = env[yield_operand]
 
-        case transform.NamedSequenceOp():
+        case transform.NamedSequenceOp() | transform.ForeachOp():
             # Recursively trace the child ops and construct an overall
             # predicate representing the block/region successfully terminating.
             child_predicates = []
