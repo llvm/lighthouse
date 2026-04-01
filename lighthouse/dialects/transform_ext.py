@@ -571,12 +571,18 @@ class GetTileableConsumersOp(
 
     @classmethod
     def is_tileable_op(cls, op: ir.Operation) -> bool:
+        # TODO expand list as needed and/or check traits/interfaces
         linalg_ops = [
             linalg.ElementwiseOp,
             linalg.AddOp,
+            linalg.SubOp,
             linalg.MulOp,
+            linalg.DivOp,
+            linalg.ExpOp,
             linalg.MaxOp,
             linalg.MinOp,
+            linalg.FillOp,
+            linalg.MatmulOp,
             linalg.GenericOp,
         ]
         return isinstance(op.opview, tuple(linalg_ops))
