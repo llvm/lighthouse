@@ -1,0 +1,107 @@
+#!/usr/bin/env python
+
+import argparse
+import numpy as np
+
+from lighthouse.execution.runner import Runner
+from lighthouse.pipeline.driver import CompilerDriver
+
+
+def _get_input_type(input_type_str: str):
+    if input_type_str == "f16":
+        return np.float16
+    elif input_type_str == "bf16":
+        return np.bfloat16
+    elif input_type_str == "f32":
+        return np.float32
+    elif input_type_str == "f64":
+        return np.float64
+
+    elif input_type_str == "i8":
+        return np.int8
+    elif input_type_str == "i16":
+        return np.int16
+    elif input_type_str == "i32":
+        return np.int32
+    elif input_type_str == "i64":
+        return np.int64
+    else:
+        raise ValueError(f"Unsupported input type: {input_type_str}")
+
+
+if __name__ == "__main__":
+    Parser = argparse.ArgumentParser(
+        description="""
+    Lighthouse Optimization Runner: Optionally applies a series of transformations to an input MLIR module,
+    and executes it on a device.
+    """
+    )
+    Parser.add_argument(
+        "payload_module", type=str, help="Path to the payload MLIR module to optimize."
+    )
+    Parser.add_argument(
+        "--entry-point",
+        type=str,
+        required=True,
+        help="Name of the entrypoint function in the payload MLIR module.",
+    )
+    Parser.add_argument(
+        "--input-shape",
+        action="append",
+        required=True,
+        help="Shape of the input tensors in format M,N;N,K;...",
+    )
+    Parser.add_argument(
+        "--input-type",
+        required=True,
+        help="Type of the input tensor for the entrypoint function.",
+    )
+    Parser.add_argument(
+        "--stage",
+        action="append",
+        required=True,
+        help="List of transformations to apply to the input module.",
+    )
+    Parser.add_argument(
+        "-O",
+        default=3,
+        help="Optimization level. Default is 3.",
+    )
+    Parser.add_argument(
+        "--benchmark",
+        action="store_false",
+        help="Whether to run the benchmark. Default is False.",
+    )
+    args = Parser.parse_args()
+
+    # Create the driver and run the pipeline.
+    # Empty args means no stages will be run and the module will be imported as-is.
+    driver = CompilerDriver(args.payload_module, args.stage)
+    optimized_module = driver.run()
+
+    # Initialize the device data
+    # TODO: Support more than one input buffer.
+    buffers = []
+    for shape in args.input_shape:
+        for sub_shape in shape.split(","):
+            shape = tuple(map(int, sub_shape.split("x")))
+            buffers.append(
+                np.random.rand(*shape).astype(_get_input_type(args.input_type))
+            )
+
+    # Create the runner and execute the module.
+    runner = Runner(optimized_module, opt_level=args.O)
+
+    if args.benchmark:
+        time_array = runner.benchmark(
+            host_input_buffers=buffers,
+        )
+        print(
+            f"Average execution time over {len(time_array)} runs: {np.mean(time_array)} seconds"
+        )
+    else:
+        runner.execute(
+            payload_function_name=args.entry_point,
+            host_input_buffers=buffers,
+        )
+        print(f"Output: {buffers}")
