@@ -18,7 +18,7 @@ pip install pybind11 nanobind PyYAML numpy
 
 Lighthouse requires a recent LLVM version. The default version, also tested by
 our CI system, can be found in the [pyproject.toml](../../pyproject.toml) file.
-For example, the following `mlir-python-bindings` entry indicates LLVM SHA
+For example, the following `mlir-python-bindings` entry indicates LLVM commit
 `b6d7afe53`.
 
 ```toml
@@ -31,11 +31,11 @@ Set `LLVM_INSTALL_DIR` and use the below script to checkout and compile LLVM loc
 
 ```bash
 export LLVM_INSTALL_DIR=<...>
-export LLVM_SHA=<...>
+export LLVM_COMMIT=<...>
 
 git clone https://github.com/llvm/llvm-project.git
 cd llvm-project
-git checkout $LLVM_SHA
+git checkout $LLVM_COMMIT
 mkdir -p build
 cd build
 

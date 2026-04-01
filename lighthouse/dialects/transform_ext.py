@@ -402,10 +402,8 @@ class GetTilingSizesOp(TransformExtensionDialect.Operation, name="get_tiling_siz
         """Get attribute suitable for use as a tiling size."""
         return ir.IntegerAttr.get(ir.IntegerType.get_signless(64), value)
 
-    @classmethod
-    def named_op_matmul_tiles(
-        cls, named_op: ir.OpView, tile_size: int
-    ) -> Sequence[int]:
+    @staticmethod
+    def named_op_matmul_tiles(named_op: ir.OpView, tile_size: int) -> Sequence[int]:
         """
         Get tiling sizes for Linalg matmul named ops variants.
 
@@ -435,10 +433,8 @@ class GetTilingSizesOp(TransformExtensionDialect.Operation, name="get_tiling_siz
             case _:
                 return []
 
-    @classmethod
-    def contract_tiles(
-        cls, contract: linalg.ContractOp, tile_size: int
-    ) -> Sequence[int]:
+    @staticmethod
+    def contract_tiles(contract: linalg.ContractOp, tile_size: int) -> Sequence[int]:
         """
         Get tiling sizes for Linalg contraction op.
 
@@ -559,8 +555,8 @@ class GetTileableConsumersOp(
         cls.TransformOpInterfaceModel.attach(cls.OPERATION_NAME, context=ctx)
         cls.MemoryEffectsOpInterfaceModel.attach(cls.OPERATION_NAME, context=ctx)
 
-    @classmethod
-    def get_op_users(cls, val: ir.Value) -> list[ir.Operation]:
+    @staticmethod
+    def get_op_users(val: ir.Value) -> list[ir.Operation]:
         op_users = []
         for use in val.uses:
             user = use.owner
@@ -569,8 +565,8 @@ class GetTileableConsumersOp(
             op_users.append(user.operation)
         return op_users
 
-    @classmethod
-    def is_tileable_op(cls, op: ir.Operation) -> bool:
+    @staticmethod
+    def is_tileable_op(op: ir.Operation) -> bool:
         # TODO expand list as needed and/or check traits/interfaces
         linalg_ops = [
             linalg.ElementwiseOp,
@@ -641,7 +637,7 @@ def get_tileable_consumers(
     Returns:
         List of tileable consumer ops, or the target op itself.
     """
-    return GetTileableConsumersOp(target=target)
+    return GetTileableConsumersOp(target=target).ops
 
 
 class ExtractHandleOp(TransformExtensionDialect.Operation, name="extract_handle"):
@@ -702,7 +698,7 @@ class ExtractHandleOp(TransformExtensionDialect.Operation, name="extract_handle"
 
 def extract_handle(
     target: ir.Value[transform.AnyOpType],
-    index: int,
+    index: int | ir.Value[transform.AnyParamType],
 ) -> ir.Value:
     """
     snake_case wrapper to create a ExtractHandleOp.
