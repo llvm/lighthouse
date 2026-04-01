@@ -16,15 +16,26 @@ Set up a Python environment and install Python packages:
 pip install pybind11 nanobind PyYAML numpy
 ```
 
+Lighthouse requires a recent LLVM version. The default version, also tested by
+our CI system, can be found in the [pyproject.toml](../../pyproject.toml) file.
+For example, the following `mlir-python-bindings` entry indicates LLVM SHA
+`b6d7afe53`.
+
+```toml
+dependencies = [
+    "mlir-python-bindings==20260330+b6d7afe53",
+    ...
+```
+
 Set `LLVM_INSTALL_DIR` and use the below script to checkout and compile LLVM locally.
 
 ```bash
 export LLVM_INSTALL_DIR=<...>
-export LLVM_VERSION=45bee6efe9d6
+export LLVM_SHA=<...>
 
 git clone https://github.com/llvm/llvm-project.git
 cd llvm-project
-git checkout $LLVM_VERSION
+git checkout $LLVM_SHA
 mkdir -p build
 cd build
 
