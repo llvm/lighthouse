@@ -44,6 +44,7 @@ def add_lower_to_llvm_stages(driver: CompilerDriver) -> None:
     driver.add_stage("convert-to-llvm")
     driver.add_stage("reconcile-unrealized-casts")
 
+
 if __name__ == "__main__":
     Parser = argparse.ArgumentParser(
         description="""
