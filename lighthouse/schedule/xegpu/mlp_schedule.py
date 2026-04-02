@@ -47,19 +47,19 @@ def params_with_constraints_imposed(
     m, n, k = params["m"], params["n"], params["k"]
     assert isinstance(m, int) and isinstance(n, int) and isinstance(k, int)
     assert m > 0 and n > 0 and k > 0
-    wg_m = params["wg_m"] or knob(knob_name_prefix + "wg_m")
-    wg_n = params["wg_n"] or knob(knob_name_prefix + "wg_n")
-    sg_m = params["sg_m"] or knob(knob_name_prefix + "sg_m")
-    sg_n = params["sg_n"] or knob(knob_name_prefix + "sg_n")
-    k_tile = params["k_tile"] or knob(knob_name_prefix + "k_tile")
-    load_a_m = params["load_a_m"] or knob(knob_name_prefix + "load_a_m")
-    load_a_k = params["load_a_k"] or knob(knob_name_prefix + "load_a_k")
-    load_b_k = params["load_b_k"] or knob(knob_name_prefix + "load_b_k")
-    load_b_n = params["load_b_n"] or knob(knob_name_prefix + "load_b_n")
-    prefetch_a_m = params["prefetch_a_m"] or knob(knob_name_prefix + "prefetch_a_m")
-    prefetch_a_k = params["prefetch_a_k"] or knob(knob_name_prefix + "prefetch_a_k")
-    prefetch_b_k = params["prefetch_b_k"] or knob(knob_name_prefix + "prefetch_b_k")
-    prefetch_b_n = params["prefetch_b_n"] or knob(knob_name_prefix + "prefetch_b_n")
+    wg_m = params.get("wg_m") or knob(knob_name_prefix + "wg_m")
+    wg_n = params.get("wg_n") or knob(knob_name_prefix + "wg_n")
+    sg_m = params.get("sg_m") or knob(knob_name_prefix + "sg_m")
+    sg_n = params.get("sg_n") or knob(knob_name_prefix + "sg_n")
+    k_tile = params.get("k_tile") or knob(knob_name_prefix + "k_tile")
+    load_a_m = params.get("load_a_m") or knob(knob_name_prefix + "load_a_m")
+    load_a_k = params.get("load_a_k") or knob(knob_name_prefix + "load_a_k")
+    load_b_k = params.get("load_b_k") or knob(knob_name_prefix + "load_b_k")
+    load_b_n = params.get("load_b_n") or knob(knob_name_prefix + "load_b_n")
+    prefetch_a_m = params.get("prefetch_a_m") or knob(knob_name_prefix + "prefetch_a_m")
+    prefetch_a_k = params.get("prefetch_a_k") or knob(knob_name_prefix + "prefetch_a_k")
+    prefetch_b_k = params.get("prefetch_b_k") or knob(knob_name_prefix + "prefetch_b_k")
+    prefetch_b_n = params.get("prefetch_b_n") or knob(knob_name_prefix + "prefetch_b_n")
 
     # NB: Constraints on knobs will be added as attributes on the KnobOps, while
     #     constraints on concrete values will be checked immediately.

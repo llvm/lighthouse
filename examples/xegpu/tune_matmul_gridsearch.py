@@ -11,6 +11,7 @@ import sys
 from csv_logger import CSVLogger
 
 from mlir import ir
+from mlir.dialects import transform
 
 from lighthouse import dialects as lh_dialects
 from lighthouse.execution.runner import Runner
@@ -37,7 +38,7 @@ def run_experiment(
     **params,
 ) -> tuple[float, float]:
     with ir.Context(), ir.Location.unknown():
-        lh_dialects.register_and_load()
+        lh_dialects.register_and_load(reload=True)
 
         wload = XeGPUMatMul(
             M=params["m"],
@@ -98,7 +99,7 @@ def run_experiment(
     return elapsed, gflops
 
 
-def check_constraints(params: dict, verbose: bool = False) -> bool:
+def check_hardcoded_constraints(params: dict, verbose: bool = False) -> bool:
     def print_reason(msg):
         if verbose:
             print(f"  Invalid: {msg}")
@@ -279,7 +280,7 @@ def divisible_by(a_list: list, b: int) -> list:
     return [a for a in a_list if a % b == 0]
 
 
-def construct_search_space(M: int, N: int, K: int):
+def construct_search_space_from_hardcoded_constraints(M: int, N: int, K: int):
     wg_tile_lim_m = min(max(M // 4, 16), 64), min(M, 256)
     wg_tile_lim_n = min(max(N // 4, 16), 64), min(N, 256)
     sg_tile_lim_m = min(max(M // 8, 16), 32), min(M, 128)
@@ -296,7 +297,7 @@ def construct_search_space(M: int, N: int, K: int):
     def sample_is_valid(sample_params, verbose=False):
         params = {"m": M, "n": N, "k": K}
         params.update(sample_params)
-        return check_constraints(params, verbose=verbose)
+        return check_hardcoded_constraints(params, verbose=verbose)
 
     var_set = VariableSet(
         [
@@ -326,102 +327,156 @@ def construct_search_space(M: int, N: int, K: int):
     return var_set, sample_to_dict
 
 
+def construct_search_space_from_schedule(M: int, N: int, K: int):
+    wload = XeGPUMatMul(M, N, K)
+    parameters = {"m": M, "n": N, "k": K, "prefetch_nb": 1}
+
+    schedule_modules = wload.schedule_modules(parameters=parameters)
+    assert len(schedule_modules) == 2, "Expected two schedule modules to be returned"
+    schedule = schedule_modules[1].body.operations[0]
+    assert isinstance(schedule, transform.NamedSequenceOp)
+
+    from lighthouse.tune import trace
+
+    op_or_value_to_node = trace.trace_tune_and_smt_ops(schedule.operation)
+    predicate = op_or_value_to_node[schedule.operation]
+    assert isinstance(predicate, trace.Predicate)
+
+    tuneables = list(
+        set(
+            node
+            for node in op_or_value_to_node.values()
+            if isinstance(node, trace.Tuneable)
+        )
+    )
+    variables = [
+        Variable(tuneable.name, list(tuneable.possibilities()))
+        for tuneable in tuneables
+    ]
+
+    def sample_is_valid(sample_params, verbose=False):
+        environment = {tuneable: sample_params[tuneable.name] for tuneable in tuneables}
+        return predicate.evaluate(environment)
+
+    var_set = VariableSet(variables, sample_is_valid)
+
+    def sample_to_dict(sample: list) -> dict:
+        res = {"m": M, "n": N, "k": K}
+        res.update(var_set.sample_to_dict(sample))
+        return res
+
+    return var_set, sample_to_dict
+
+
 if __name__ == "__main__":
-    parser = cli_parser(
-        description="Optimize matmul kernel parameters using a exhaustive search."
-    )
-    parser.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="Check validity of combinations but do not execute kernels.",
-    )
-    parser.add_argument(
-        "--no-check-result",
-        action="store_true",
-        help="Skip correctness check.",
-    )
-    parser.add_argument(
-        "--dump-json",
-        dest="n_dump_json",
-        type=int,
-        default=0,
-        help="Dump the best n configurations as JSON files.",
-    )
-    args = parser.parse_args()
+    with ir.Context(), ir.Location.unknown():
+        lh_dialects.register_and_load()
 
-    sizes = args.sizes
-    has_bias = args.bias
-    has_relu = args.relu
-    accumulate_c = not args.no_accumulate_c
-    ab_type = "f16"
-    c_type = "f32"
-
-    # timeout for kernel execution in seconds
-    timeout = 50
-
-    # number of iterations in kernel timing is chosen adaptively
-    nwarmup = None
-    nruns = None
-
-    # disable IGC compiler cache
-    os.environ["NEO_CACHE_PERSISTENT"] = "0"
-
-    if not args.dry_run:
-        csv_file = "out_gridsearch.csv"
-        csv_logger = CSVLogger(csv_file)
-
-    var_set, sample_to_dict = construct_search_space(*sizes)
-    print(f"Matmul problem size: {sizes}")
-    print(f"{ab_type=}")
-    print(f"{c_type=}")
-    print(f"{has_bias=}")
-    print(f"{has_relu=}")
-    print(f"{accumulate_c=}")
-    var_set.print()
-    sys.stdout.flush()
-
-    i = 0
-    executed_configs = []
-    tic = perf_counter()
-    for sample in product(*var_set.iterables()):
-        params = sample_to_dict(sample)
-        if not check_constraints(params, verbose=False):
-            continue
-
-        i += 1
-        if args.dry_run:
-            continue
-        time, gflops = execute_and_log(
-            run_experiment,
-            csv_logger,
-            nruns,
-            nwarmup,
-            params,
-            check_result=not args.no_check_result,
-            timeout=timeout,
-            ab_type=ab_type,
-            c_type=c_type,
-            has_bias=has_bias,
-            has_relu=has_relu,
-            accumulate_c=accumulate_c,
+        parser = cli_parser(
+            description="Optimize matmul kernel parameters using a exhaustive search."
         )
-        executed_configs.append((gflops, params))
-
-    duration = perf_counter() - tic
-    print(f"Number of executed configurations: {i}")
-    print(f"Total duration: {timedelta(seconds=duration)}")
-
-    if args.n_dump_json > 0:
-        executed_configs.sort(key=lambda x: x[0], reverse=True)
-        best_configs = [c for c in executed_configs[: args.n_dump_json]]
-        print("Best configurations found:")
-        for gflops, params in best_configs:
-            print(f" GFLOPS: {gflops:.2f}: {list(params.values)}")
-        sizes_str = "-".join(str(s) for s in sizes)
-        relu_str = "_relu" if has_relu else ""
-        bias_str = "_bias" if has_bias else ""
-        acc_str = "_acc" if accumulate_c else ""
-        prefix = (
-            f"matmul_params_{sizes_str}_{ab_type}-{c_type}{bias_str}{relu_str}{acc_str}"
+        parser.add_argument(
+            "--dry-run",
+            action="store_true",
+            help="Check validity of combinations but do not execute kernels.",
         )
-        dump_configs_json([p for _, p in best_configs], filename_prefix=prefix)
+        parser.add_argument(
+            "--no-check-result",
+            action="store_true",
+            help="Skip correctness check.",
+        )
+        parser.add_argument(
+            "--dump-json",
+            dest="n_dump_json",
+            type=int,
+            default=0,
+            help="Dump the best n configurations as JSON files.",
+        )
+        parser.add_argument(
+            "--knobs-from-schedule",
+            action="store_true",
+            help="Use the knobs and constraint from the generated schedule",
+        )
+        args = parser.parse_args()
+
+        sizes = args.sizes
+        has_bias = args.bias
+        has_relu = args.relu
+        accumulate_c = not args.no_accumulate_c
+        ab_type = "f16"
+        c_type = "f32"
+
+        # timeout for kernel execution in seconds
+        timeout = 50
+
+        # number of iterations in kernel timing is chosen adaptively
+        nwarmup = None
+        nruns = None
+
+        # disable IGC compiler cache
+        os.environ["NEO_CACHE_PERSISTENT"] = "0"
+
+        if not args.dry_run:
+            csv_file = "out_gridsearch.csv"
+            csv_logger = CSVLogger(csv_file)
+
+        if args.knobs_from_schedule:
+            var_set, sample_to_dict = construct_search_space_from_schedule(*sizes)
+            check_constraints = var_set.is_valid_fn
+        else:
+            var_set, sample_to_dict = construct_search_space_from_hardcoded_constraints(
+                *sizes
+            )
+            check_constraints = check_hardcoded_constraints
+        print(f"Matmul problem size: {sizes}")
+        print(f"{ab_type=}")
+        print(f"{c_type=}")
+        print(f"{has_bias=}")
+        print(f"{has_relu=}")
+        print(f"{accumulate_c=}")
+        var_set.print()
+        sys.stdout.flush()
+
+        i = 0
+        executed_configs = []
+        tic = perf_counter()
+        for sample in product(*var_set.iterables()):
+            params = sample_to_dict(sample)
+            if not check_constraints(params, verbose=False):
+                continue
+
+            i += 1
+            if args.dry_run:
+                continue
+            time, gflops = execute_and_log(
+                run_experiment,
+                csv_logger,
+                nruns,
+                nwarmup,
+                params,
+                check_result=not args.no_check_result,
+                timeout=timeout,
+                ab_type=ab_type,
+                c_type=c_type,
+                has_bias=has_bias,
+                has_relu=has_relu,
+                accumulate_c=accumulate_c,
+            )
+            executed_configs.append((gflops, params))
+
+        duration = perf_counter() - tic
+        print(f"Number of executed configurations: {i}")
+        print(f"Total duration: {timedelta(seconds=duration)}")
+
+        if args.n_dump_json > 0:
+            executed_configs.sort(key=lambda x: x[0], reverse=True)
+            best_configs = [c for c in executed_configs[: args.n_dump_json]]
+            print("Best configurations found:")
+            for gflops, params in best_configs:
+                print(f" GFLOPS: {gflops:.2f}: {list(params.values)}")
+            sizes_str = "-".join(str(s) for s in sizes)
+            relu_str = "_relu" if has_relu else ""
+            bias_str = "_bias" if has_bias else ""
+            acc_str = "_acc" if accumulate_c else ""
+            prefix = f"matmul_params_{sizes_str}_{ab_type}-{c_type}{bias_str}{relu_str}{acc_str}"
+            dump_configs_json([p for _, p in best_configs], filename_prefix=prefix)

@@ -7,8 +7,16 @@ import sys
 import os
 from typing import Optional
 import random
+
+from mlir import ir
+from lighthouse import dialects as lh_dialects
+
 from matmul import cli_parser
-from tune_matmul_gridsearch import construct_search_space, run_experiment
+from tune_matmul_gridsearch import (
+    construct_search_space_from_schedule,
+    construct_search_space_from_hardcoded_constraints,
+    run_experiment,
+)
 from tune_utils import dump_configs_json, execute_and_log
 
 from genetic_algorithm import (
@@ -46,7 +54,13 @@ def optimize_kernel(
     # disable IGC compiler cache
     os.environ["NEO_CACHE_PERSISTENT"] = "0"
 
-    var_set, sample_to_dict = construct_search_space(*sizes)
+    if args.knobs_from_schedule:
+        var_set, sample_to_dict = construct_search_space_from_schedule(*sizes)
+    else:
+        var_set, sample_to_dict = construct_search_space_from_hardcoded_constraints(
+            *sizes
+        )
+
     print(f"Matmul problem size: {sizes}")
     print(f"{ab_type=}")
     print(f"{c_type=}")
@@ -107,51 +121,59 @@ def optimize_kernel(
 
 
 if __name__ == "__main__":
-    parser = cli_parser(
-        description="Optimize matmul kernel parameters using a genetic algorithm."
-    )
-    parser.add_argument(
-        "--generations",
-        type=int,
-        default=30,
-        help="Number of generations for the genetic algorithm.",
-    )
-    parser.add_argument(
-        "--population-size",
-        type=int,
-        default=11,
-        help="Number of individuals in the population for the genetic algorithm.",
-    )
-    parser.add_argument(
-        "--mutation-rate",
-        type=float,
-        default=0.01,
-        help="Mutation rate for the genetic algorithm.",
-    )
-    parser.add_argument(
-        "--dump-json",
-        dest="n_dump_json",
-        type=int,
-        default=0,
-        help="Dump the best n configurations as JSON files.",
-    )
-    parser.add_argument(
-        "--no-check-result",
-        action="store_true",
-        help="Skip correctness check.",
-    )
+    with ir.Context(), ir.Location.unknown():
+        lh_dialects.register_and_load()
 
-    args = parser.parse_args()
+        parser = cli_parser(
+            description="Optimize matmul kernel parameters using a genetic algorithm."
+        )
+        parser.add_argument(
+            "--generations",
+            type=int,
+            default=30,
+            help="Number of generations for the genetic algorithm.",
+        )
+        parser.add_argument(
+            "--population-size",
+            type=int,
+            default=11,
+            help="Number of individuals in the population for the genetic algorithm.",
+        )
+        parser.add_argument(
+            "--mutation-rate",
+            type=float,
+            default=0.01,
+            help="Mutation rate for the genetic algorithm.",
+        )
+        parser.add_argument(
+            "--dump-json",
+            dest="n_dump_json",
+            type=int,
+            default=0,
+            help="Dump the best n configurations as JSON files.",
+        )
+        parser.add_argument(
+            "--no-check-result",
+            action="store_true",
+            help="Skip correctness check.",
+        )
+        parser.add_argument(
+            "--knobs-from-schedule",
+            action="store_true",
+            help="Use the knobs and constraint from the generated schedule",
+        )
 
-    optimize_kernel(
-        args.sizes,
-        args.bias,
-        args.relu,
-        not args.no_accumulate_c,
-        check_result=not args.no_check_result,
-        ngenerations=args.generations,
-        mutation_rate=args.mutation_rate,
-        npopulation=args.population_size,
-        dump_json=args.n_dump_json,
-        random_seed=2,
-    )
+        args = parser.parse_args()
+
+        optimize_kernel(
+            args.sizes,
+            args.bias,
+            args.relu,
+            not args.no_accumulate_c,
+            check_result=not args.no_check_result,
+            ngenerations=args.generations,
+            mutation_rate=args.mutation_rate,
+            npopulation=args.population_size,
+            dump_json=args.n_dump_json,
+            random_seed=2,
+        )
