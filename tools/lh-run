@@ -111,6 +111,11 @@ if __name__ == "__main__":
         default=0,
         help="Print the Nth tensor. Default is 0 (no print).",
     )
+    Parser.add_argument(
+        "--print-mlir-after-all",
+        action=argparse.BooleanOptionalAction,
+        help="Whether to print the MLIR module after all stages. Default is False.",
+    )
     args = Parser.parse_args()
 
     # Initialize the random seed, for stable tests
@@ -125,6 +130,7 @@ if __name__ == "__main__":
 
     if args.benchmark:
         # Calling the benchmark wrapper, not the entry point.
+        # FIXME: Eliminate this cross-dependency between the Runner and the Driver.
         with driver.context:
             lh_dialects.register_and_load()
             bench_wrapper = Runner.get_bench_wrapper_schedule(args.entry_point)
@@ -140,7 +146,7 @@ if __name__ == "__main__":
     driver.add_stages(add_lower_to_llvm_stages())
 
     # Run the pipeline to get the optimized module.
-    optimized_module = driver.run()
+    optimized_module = driver.run(print_after_all=args.print_mlir_after_all)
     if args.print_optimized_module:
         print(optimized_module)
 

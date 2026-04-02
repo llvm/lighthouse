@@ -147,6 +147,7 @@ class PassStage(Stage):
     def __init__(self, passes: list[Pass], context: ir.Context):
         self.context = context
         self.pm = PassManager("builtin.module", self.context)
+        self.passes = passes
         add_bundle(self.pm, passes)
 
     def apply(self, module: ir.Module) -> ir.Module:
@@ -157,6 +158,8 @@ class PassStage(Stage):
         self.pm.run(module.operation)
         return module
 
+    def __str__(self) -> str:
+        return f"PassStage({[str(p) for p in self.passes]})"
 
 class TransformStage(Stage):
     """
@@ -218,3 +221,6 @@ class TransformStage(Stage):
             raise ValueError("Missing module to apply transformations to.")
         self.schedule.apply(module.operation)
         return module
+
+    def __str__(self) -> str:
+        return f"TransformStage({self.module})"

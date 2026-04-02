@@ -212,6 +212,7 @@ class Runner:
         """
         Get a schedule that wraps the payload function in a benchmarking function.
         The function name is defined in Runner and will be used by the runner benchmark method.
+        This schedule must apply to the module before any other in an optimizing pipeline.
         """
         with ir.Location.unknown():
             with schedule_boilerplate(result_types=[transform.any_op_t()]) as (
