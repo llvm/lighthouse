@@ -141,7 +141,7 @@ class CompilerDriver:
         for s in stages:
             self.add_stage(s)
 
-    def make_function_callable(self, func_name: str) -> ir.Attribute:
+    def make_function_callable(self, func_name: str) -> None:
         """
         Set the 'llvm.emit_c_interface' attribute of the given function in the module.
         This is required to make the function callable from the execution engine.
