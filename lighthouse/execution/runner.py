@@ -159,9 +159,21 @@ class Runner:
                 function_name = self.payload_benchmark_function_name
             else:
                 function_name = payload_function_name
+
+            # Make sure the required function emits the C interface, otherwise the lookup will fail.
+            with self.payload.context:
+                for func in self.payload.body.operations:
+                    print(func.sym_name.value)
+                    if func.sym_name.value == function_name:
+                        func.attributes["llvm.emit_c_interface"] = ir.UnitAttr.get()
+                        print(f"Set llvm.emit_c_interface for function {function_name}")
+                        break
+
+            # Now lookup and call the function
             func = self.engine.lookup(function_name)
             func(args)
 
+            # If an argument access callback is provided, use it to recover the output data from the device after execution.
             if argument_access_callback is not None:
                 argument_access_callback(
                     inputs, execution_engine=self.engine, memory_manager=mem_manager
