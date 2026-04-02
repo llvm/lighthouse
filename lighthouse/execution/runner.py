@@ -164,7 +164,8 @@ class Runner:
             func = self.engine.lookup(function_name)
             func(args)
 
-            # If an argument access callback is provided, use it to recover the output data from the device after execution.
+            # If an argument access callback is provided,
+            # use it to recover the output data from the device after execution.
             if argument_access_callback is not None:
                 argument_access_callback(
                     inputs, execution_engine=self.engine, memory_manager=mem_manager
