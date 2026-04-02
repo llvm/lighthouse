@@ -138,8 +138,21 @@ class CompilerDriver:
             self.pipeline.add_pass(stage_name)
 
     def add_stages(self, stages: list[str]) -> None:
+        """
+        Add multiple stages to the pipeline.
+        """
         for s in stages:
             self.add_stage(s)
+
+    def add_module_stage(self, stage_module: ir.Module) -> None:
+        """
+        Add a stage in the form of an MLIR module.
+        The first transform schedule in the module will be applied to the payload module.
+        TODO: This is required now for the benchmark wrapper. We should not need such bypass.
+        """
+        if self.pipeline_fixed:
+            raise ValueError("Pipeline is fixed. Reset to start again.")
+        self.pipeline.add_transform(stage_module)
 
     def make_function_callable(self, func_name: str) -> None:
         """

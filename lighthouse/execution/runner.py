@@ -212,20 +212,21 @@ class Runner:
         Get a schedule that wraps the payload function in a benchmarking function.
         The function name is defined in Runner and will be used by the runner benchmark method.
         """
-        with schedule_boilerplate(result_types=[transform.any_op_t()]) as (
-            schedule,
-            named_seq,
-        ):
-            named_func = structured.structured_match(
-                transform.AnyOpType.get(),
-                target=named_seq.bodyTarget,
-                ops={"func.func"},
-                op_attrs={"sym_name": ir.StringAttr.get(payload_func)},
-            )
-            bench_func = transform_ext.wrap_in_benching_func(
-                named_func, bench_name=Runner.payload_benchmark_function_name
-            )
-            transform.yield_([bench_func])
+        with ir.Location.unknown():
+            with schedule_boilerplate(result_types=[transform.any_op_t()]) as (
+                schedule,
+                named_seq,
+            ):
+                named_func = structured.structured_match(
+                    transform.AnyOpType.get(),
+                    target=named_seq.bodyTarget,
+                    ops={"func.func"},
+                    op_attrs={"sym_name": ir.StringAttr.get(payload_func)},
+                )
+                bench_func = transform_ext.wrap_in_benching_func(
+                    named_func, bench_name=Runner.payload_benchmark_function_name
+                )
+                transform.yield_([bench_func])
 
         schedule.body.operations[0].verify()
         return schedule

@@ -1,10 +1,12 @@
 #!/usr/bin/env python
 
 import argparse
+from datetime import datetime
 import numpy as np
 
 from lighthouse.execution.runner import Runner
 from lighthouse.pipeline.driver import CompilerDriver
+from lighthouse import dialects as lh_dialects
 
 
 def _get_input_type(input_type_str: str):
@@ -29,20 +31,23 @@ def _get_input_type(input_type_str: str):
         raise ValueError(f"Unsupported input type: {input_type_str}")
 
 
-def add_lower_to_llvm_stages(driver: CompilerDriver) -> None:
+def add_lower_to_llvm_stages() -> list[str]:
     """
     Adds the LLVM lowering passes to guarantee the IR can be ingested by the ExecutionEngine.
     """
-    driver.add_stage("convert-linalg-to-loops")
-    driver.add_stage("fold-memref-alias-ops")
-    driver.add_stage("expand-strided-metadata")
-    driver.add_stage("canonicalize")
-    driver.add_stage("convert-vector-to-scf")
-    driver.add_stage("lower-affine")
-    driver.add_stage("convert-scf-to-cf")
-    driver.add_stage("convert-vector-to-llvm")
-    driver.add_stage("convert-to-llvm")
-    driver.add_stage("reconcile-unrealized-casts")
+    stages = [
+        "convert-linalg-to-loops",
+        "fold-memref-alias-ops",
+        "expand-strided-metadata",
+        "canonicalize",
+        "convert-vector-to-scf",
+        "lower-affine",
+        "convert-scf-to-cf",
+        "convert-vector-to-llvm",
+        "convert-to-llvm",
+        "reconcile-unrealized-casts",
+    ]
+    return stages
 
 
 if __name__ == "__main__":
@@ -73,6 +78,12 @@ if __name__ == "__main__":
         help="Type of the input tensor for the entrypoint function.",
     )
     Parser.add_argument(
+        "--seed",
+        type=int,
+        default=0,
+        help="Random seed for initializing input tensors.",
+    )
+    Parser.add_argument(
         "--stage",
         action="append",
         required=True,
@@ -80,6 +91,7 @@ if __name__ == "__main__":
     )
     Parser.add_argument(
         "-O",
+        type=int,
         default=3,
         help="Optimization level. Default is 3.",
     )
@@ -93,17 +105,39 @@ if __name__ == "__main__":
         action=argparse.BooleanOptionalAction,
         help="Whether to print the optimized module. Default is False.",
     )
+    Parser.add_argument(
+        "--print-tensor",
+        type=int,
+        default=0,
+        help="Print the Nth tensor. Default is 0 (no print).",
+    )
     args = Parser.parse_args()
+
+    # Initialize the random seed, for stable tests
+    if args.seed:
+        np.random.seed(args.seed)
+    else:
+        np.random.seed(int(datetime.now().timestamp()))
 
     # Create the driver and run the pipeline.
     # Empty args means no stages will be run and the module will be imported as-is.
-    driver = CompilerDriver(args.payload_module, args.stage)
+    driver = CompilerDriver(args.payload_module)
 
-    # Make the entry point function callable from the execution engine by setting the llvm.emit_c_interface attribute.
-    driver.make_function_callable(args.entry_point)
+    if args.benchmark:
+        # Calling the benchmark wrapper, not the entry point.
+        with driver.context:
+            lh_dialects.register_and_load()
+            bench_wrapper = Runner.get_bench_wrapper_schedule(args.entry_point)
+            driver.add_module_stage(bench_wrapper)
+    else:
+        # Calling the entry point directly, so set the attribute on the entry point function.
+        driver.make_function_callable(args.entry_point)
+
+    # Add the remaining stages defined by the user.
+    driver.add_stages(args.stage)
 
     # Add the necessary LLVM lowering stages to ensure the module can be executed by the ExecutionEngine.
-    add_lower_to_llvm_stages(driver)
+    driver.add_stages(add_lower_to_llvm_stages())
 
     # Run the pipeline to get the optimized module.
     optimized_module = driver.run()
@@ -123,15 +157,14 @@ if __name__ == "__main__":
     runner = Runner(optimized_module, opt_level=args.O)
 
     if args.benchmark:
-        time_array = runner.benchmark(
-            host_input_buffers=buffers,
-        )
-        print(
-            f"Average execution time over {len(time_array)} runs: {np.mean(time_array)} seconds"
-        )
+        time_array = runner.benchmark(host_input_buffers=buffers)
+        print(f"{len(time_array)} runs: {np.mean(time_array)} seconds")
     else:
         runner.execute(
             payload_function_name=args.entry_point,
             host_input_buffers=buffers,
         )
-        print(f"Output: {buffers}")
+
+    if args.print_tensor > 0:
+        idx = args.print_tensor - 1
+        print(f"Output: {buffers[idx]}")
