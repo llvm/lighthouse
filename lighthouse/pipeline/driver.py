@@ -141,6 +141,19 @@ class CompilerDriver:
         for s in stages:
             self.add_stage(s)
 
+    def make_function_callable(self, func_name: str) -> ir.Attribute:
+        """
+        Set the 'llvm.emit_c_interface' attribute of the given function in the module.
+        This is required to make the function callable from the execution engine.
+        It has to be called on a @func.func (not an @llvm.func), so should be called
+        before the LLVM lowering stages are added to the pipeline.
+        """
+        with self.context:
+            for func in self.module.body.operations:
+                if func.sym_name.value == func_name:
+                    func.attributes["llvm.emit_c_interface"] = ir.UnitAttr.get()
+                    break
+
     def reset(self) -> None:
         """Reset the pipeline to an empty state, allowing for new stages to be added."""
         self.pipeline.reset()

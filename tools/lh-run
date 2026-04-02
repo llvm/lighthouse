@@ -98,7 +98,14 @@ if __name__ == "__main__":
     # Create the driver and run the pipeline.
     # Empty args means no stages will be run and the module will be imported as-is.
     driver = CompilerDriver(args.payload_module, args.stage)
+
+    # Make the entry point function callable from the execution engine by setting the llvm.emit_c_interface attribute.
+    driver.make_function_callable(args.entry_point)
+
+    # Add the necessary LLVM lowering stages to ensure the module can be executed by the ExecutionEngine.
     add_lower_to_llvm_stages(driver)
+
+    # Run the pipeline to get the optimized module.
     optimized_module = driver.run()
     if args.print_optimized_module:
         print(optimized_module)

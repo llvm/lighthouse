@@ -160,15 +160,6 @@ class Runner:
             else:
                 function_name = payload_function_name
 
-            # Make sure the required function emits the C interface, otherwise the lookup will fail.
-            with self.payload.context:
-                for func in self.payload.body.operations:
-                    print(func.sym_name.value)
-                    if func.sym_name.value == function_name:
-                        func.attributes["llvm.emit_c_interface"] = ir.UnitAttr.get()
-                        print(f"Set llvm.emit_c_interface for function {function_name}")
-                        break
-
             # Now lookup and call the function
             func = self.engine.lookup(function_name)
             func(args)
