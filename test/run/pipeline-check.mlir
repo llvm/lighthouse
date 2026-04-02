@@ -1,4 +1,4 @@
-// RUN: lh-run --stage=%TEST/opt/stages/pipeline-check.yaml %s --entry-point=entry --input-shape=16x32,32x64,64,16x64 --input-type=f32
+// RUN: lh-run --stage=%TEST/opt/stages/pipeline-check.yaml %s --entry-point=entry --input-shape=16x32,32x64,64,16x64 --input-type=f32 --print-optimized-module
 
 // BUFFERIZED-LABEL: func.func @entry
 // BUFFERIZED-SAME: memref
