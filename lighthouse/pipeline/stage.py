@@ -161,6 +161,7 @@ class PassStage(Stage):
     def __str__(self) -> str:
         return f"PassStage({[str(p) for p in self.passes]})"
 
+
 class TransformStage(Stage):
     """
     A stage that applies a predefined set of transformations to the module.

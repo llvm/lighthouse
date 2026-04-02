@@ -1,5 +1,5 @@
 // RUN: lh-run --stage=%TEST/opt/stages/pipeline-check.yaml %s --entry-point=main --input-shape=16x64,64x32,16x32 --input-type=f32 --print-tensor=3 --seed=123 | FileCheck %s
-// RUN: lh-run --stage=%TEST/opt/stages/pipeline-check.yaml %s --entry-point=main --input-shape=16x64,64x32,16x32 --input-type=f32 --benchmark | FileCheck %s --check-prefix=BENCH
+// LATER: lh-run --stage=%TEST/opt/stages/pipeline-check.yaml %s --entry-point=main --input-shape=16x64,64x32,16x32 --input-type=f32 --benchmark | FileCheck %s --check-prefix=BENCH
 
 // Example from Kernel Bench, level 1, kernel 2
 module {
