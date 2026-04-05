@@ -5,30 +5,9 @@ from datetime import datetime
 import numpy as np
 
 from lighthouse.execution.runner import Runner
+from lighthouse.execution.init import KernelArgument
 from lighthouse.pipeline.driver import CompilerDriver
 from lighthouse import dialects as lh_dialects
-
-
-def _get_input_type(input_type_str: str):
-    if input_type_str == "f16":
-        return np.float16
-    elif input_type_str == "bf16":
-        return np.bfloat16
-    elif input_type_str == "f32":
-        return np.float32
-    elif input_type_str == "f64":
-        return np.float64
-
-    elif input_type_str == "i8":
-        return np.int8
-    elif input_type_str == "i16":
-        return np.int16
-    elif input_type_str == "i32":
-        return np.int32
-    elif input_type_str == "i64":
-        return np.int64
-    else:
-        raise ValueError(f"Unsupported input type: {input_type_str}")
 
 
 def add_lower_to_llvm_stages() -> list[str]:
@@ -70,12 +49,9 @@ if __name__ == "__main__":
         "--input-shape",
         action="append",
         required=True,
-        help="Shape of the input tensors in format M,N;N,K;...",
-    )
-    Parser.add_argument(
-        "--input-type",
-        required=True,
-        help="Type of the input tensor for the entrypoint function.",
+        help="Shape of the input tensors in format: \
+              DIMS(MxNx...)xTYPE(f16/f32/f64/bf16/i8)xINIT(0/1/rnd/id). \
+              For multiple inputs, use multiple --input-shape arguments.",
     )
     Parser.add_argument(
         "--seed",
@@ -155,10 +131,7 @@ if __name__ == "__main__":
     buffers = []
     for shape in args.input_shape:
         for sub_shape in shape.split(","):
-            shape = tuple(map(int, sub_shape.split("x")))
-            buffers.append(
-                np.random.rand(*shape).astype(_get_input_type(args.input_type))
-            )
+            buffers.append(KernelArgument(sub_shape).argument)
 
     # Create the runner and execute/benchmark the module.
     runner = Runner(optimized_module, opt_level=args.O)

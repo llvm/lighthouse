@@ -1,5 +1,5 @@
 """
-Utility functions for running kernels.
+Infrastructure for running kernels.
 """
 
 import typing
