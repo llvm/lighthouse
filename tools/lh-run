@@ -5,7 +5,7 @@ from datetime import datetime
 import numpy as np
 
 from lighthouse.execution.runner import Runner
-from lighthouse.execution.init import KernelArgument
+from lighthouse.execution.init import KernelArgumentParser
 from lighthouse.pipeline.driver import CompilerDriver
 from lighthouse import dialects as lh_dialects
 
@@ -131,7 +131,7 @@ if __name__ == "__main__":
     buffers = []
     for shape in args.input_shape:
         for sub_shape in shape.split(","):
-            buffers.append(KernelArgument(sub_shape).argument)
+            buffers.append(KernelArgumentParser.parse(sub_shape).arg)
 
     # Create the runner and execute/benchmark the module.
     runner = Runner(optimized_module, opt_level=args.O)
