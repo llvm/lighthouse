@@ -47,15 +47,19 @@ def numpy_to_mlir_type(dtype: np.dtype, ctx: ir.Context | None = None) -> ir.Typ
     raise ValueError(f"Unsupported numpy dtype: {dtype}")
 
 
-def mlir_to_numpy_dtype(mlir_type: ir.Type) -> np.dtype:
+def mlir_to_numpy_dtype(mlir_type: str | ir.Type) -> np.dtype:
     """
     Convert an MLIR type into a numpy dtype.
 
     Args:
-        mlir_type: MLIR type
+        mlir_type: MLIR type (or string representation of MLIR type)
     Returns:
         numpy dtype
     """
+    if isinstance(mlir_type, str):
+        with ir.Context():
+            mlir_type = ir.Type.parse(mlir_type)
+
     if isinstance(mlir_type, ir.F64Type):
         return np.float64
     if isinstance(mlir_type, ir.F32Type):

@@ -6,6 +6,8 @@ from enum import Enum
 
 import numpy as np
 
+from lighthouse.utils.numpy import mlir_to_numpy_dtype
+
 
 class InitType(Enum):
     """Initialization type for kernel arguments.
@@ -89,40 +91,21 @@ class KernelArgumentParser:
     """
 
     @staticmethod
-    def parse(shape: str):
-        return KernelArgument(*KernelArgumentParser._parse_shape(shape))
-
-    @staticmethod
-    def _parse_shape(shape_str: str) -> list[int]:
+    def parse(shape_str: str) -> KernelArgument:
         """
         Parse a shape string in the format MxNx...xTypexInit into a list of integers.
         """
-        element_type = KernelArgumentParser._get_input_type(shape_str.split("x")[-2])
+        try:
+            element_type = mlir_to_numpy_dtype(shape_str.split("x")[-2])
+        except ValueError:
+            raise ValueError(f"Invalid element type in shape string: {shape_str}")
         try:
             dims = [int(dim) for dim in shape_str.split("x")[:-2]]
+        except ValueError:
+            raise ValueError(f"Invalid dims in shape string: {shape_str}")
+        try:
             init_type = InitType(shape_str.split("x")[-1])
         except ValueError:
-            raise ValueError(f"Invalid shape string: {shape_str}")
-        return (dims, element_type, init_type)
+            raise ValueError(f"Invalid init type in shape string: {shape_str}")
 
-    @staticmethod
-    def _get_input_type(input_type_str: str):
-        if input_type_str == "f16":
-            return np.float16
-        elif input_type_str == "bf16":
-            return np.bfloat16
-        elif input_type_str == "f32":
-            return np.float32
-        elif input_type_str == "f64":
-            return np.float64
-
-        elif input_type_str == "i8":
-            return np.int8
-        elif input_type_str == "i16":
-            return np.int16
-        elif input_type_str == "i32":
-            return np.int32
-        elif input_type_str == "i64":
-            return np.int64
-        else:
-            raise ValueError(f"Unsupported input type: {input_type_str}")
+        return KernelArgument(dims, element_type, init_type)
