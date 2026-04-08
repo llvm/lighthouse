@@ -2,6 +2,7 @@ from .builders import create_schedule
 from .builders import create_named_sequence
 from .builders import schedule_boilerplate
 from .hoisting import hoist_loops
+from .func import convert_function_results
 from .linalg import linalg_contract_fold_unit_dims
 from .packing import block_pack_matmuls
 from .tiling import tile_ops
@@ -14,6 +15,7 @@ from .debug import print_ir
 __all__ = [
     "block_pack_matmuls",
     "bufferize",
+    "convert_function_results",
     "create_named_sequence",
     "create_schedule",
     "hoist_loops",
