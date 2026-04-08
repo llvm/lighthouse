@@ -1,0 +1,221 @@
+#!/usr/bin/env python
+
+import argparse
+from datetime import datetime
+import sys
+import tempfile
+import numpy as np
+from pathlib import Path
+import torch
+
+from lighthouse.execution.runner import Runner
+from lighthouse.execution.init import KernelArgumentParser
+from lighthouse.pipeline.driver import CompilerDriver
+from lighthouse.schedule import convert_function_results
+from lighthouse import dialects as lh_dialects
+from lighthouse import ingress as lh_ingress
+
+
+def add_lower_to_llvm_stages() -> list[str]:
+    """
+    Adds the LLVM lowering passes to guarantee the IR can be ingested by the ExecutionEngine.
+    """
+    stages = [
+        "convert-linalg-to-loops",
+        "fold-memref-alias-ops",
+        "expand-strided-metadata",
+        "canonicalize",
+        "convert-vector-to-scf",
+        "lower-affine",
+        "convert-scf-to-cf",
+        "convert-vector-to-llvm",
+        "convert-to-llvm",
+        "reconcile-unrealized-casts",
+    ]
+    return stages
+
+
+def import_kb_module(
+    filepath: str | Path,
+    model_class_name: str = "Model",
+    dialect: str = "linalg-on-tensors",
+    sample_args=None,
+    model_init_args=None,
+) -> Path:
+    """
+    Imports a PyTorch model from a KernelBench file and converts it to an MLIR module in the specified dialect.
+    The MLIR module is saved into a file to be passed to the CompilerDrviver for optimization and execution.
+    The Python file must define a Kernel Bench module file.
+    Return: The path to the generated MLIR module file.
+    """
+    try:
+        mlir_module = lh_ingress.torch.import_from_file(
+            filepath=filepath,
+            model_class_name=model_class_name,
+            dialect=dialect,
+            sample_args=sample_args,
+            model_init_args=model_init_args,
+        )
+        assert isinstance(mlir_module, str)
+        temp_dir = tempfile.TemporaryDirectory(delete=False)
+        mlir_file = Path(temp_dir.name) / (Path(filepath).stem + ".mlir")
+        mlir_file.write_text(mlir_module)
+        print(f"Successfully imported {filepath} to MLIR module at {mlir_file}")
+        return mlir_file
+    except Exception as e:
+        print(
+            f"ERROR: got an error converting {filepath} to MLIR:",
+            file=sys.stderr,
+        )
+        raise e
+
+
+def define_compiler_pipeline(
+    pipeline_yaml: str | None, benchmark: bool = False
+) -> None:
+    """
+    Defines the compiler pipeline by adding stages to the driver.
+    The stages can be defined in a YAML file, or added manually in this function.
+    """
+    driver = CompilerDriver(mlir_file)
+
+    with driver.context:
+        lh_dialects.register_and_load()
+        driver.add_module_stage(convert_function_results(args.entry_point))
+
+    if benchmark:
+        # Calling the benchmark wrapper, not the entry point.
+        # FIXME: Eliminate this cross-dependency between the Runner and the Driver.
+        with driver.context:
+            lh_dialects.register_and_load()
+            bench_wrapper = Runner.get_bench_wrapper_schedule(args.entry_point)
+            driver.add_module_stage(bench_wrapper)
+    else:
+        # Calling the entry point directly, so set the attribute on the entry point function.
+        driver.make_function_callable(args.entry_point)
+
+    # Standard kernel bench passes.
+    driver.add_stage("linalg-specialize-generic-ops")
+    # Search for the yaml file in the script directory, then in the pipeline directory.
+    path = Path(__file__).parent / "bufferization.yaml"
+    driver.add_stage(str(path))
+
+    # Add the remaining stages defined by the user.
+    if pipeline_yaml:
+        driver.add_stages(pipeline_yaml)
+
+    # Add the necessary LLVM lowering stages to ensure the module can be executed by the ExecutionEngine.
+    driver.add_stages(add_lower_to_llvm_stages())
+
+    return driver
+
+
+if __name__ == "__main__":
+    Parser = argparse.ArgumentParser(
+        description="""
+    Lighthouse Optimization Runner: Optionally applies a series of transformations to an input MLIR module,
+    and executes it on a device.
+    """
+    )
+    Parser.add_argument(
+        "kernel_bench_model", type=str, help="Path to the payload module to optimize."
+    )
+    Parser.add_argument(
+        "--input-shape",
+        action="append",
+        required=True,
+        help="Shape of the input tensors in format: \
+              DIMS(MxNx...)xTYPE(f16/f32/f64/bf16/i8)xINIT(0/1/rnd/id). \
+              For multiple inputs, use multiple --input-shape arguments.",
+    )
+    Parser.add_argument(
+        "--seed",
+        type=int,
+        default=0,
+        help="Random seed for initializing input tensors.",
+    )
+    Parser.add_argument(
+        "--pipeline",
+        type=str,
+        action="append",
+        help="A descriptor file (YAML) with the pipeline stages to apply. Minimal passes always apply.",
+    )
+    Parser.add_argument(
+        "-O",
+        type=int,
+        default=3,
+        help="Optimization level for the LLVM back-end. Default is 3.",
+    )
+    Parser.add_argument(
+        "--benchmark",
+        action=argparse.BooleanOptionalAction,
+        help="Whether to run the benchmark. Default is False.",
+    )
+    Parser.add_argument(
+        "--print-optimized-module",
+        action=argparse.BooleanOptionalAction,
+        help="Whether to print the optimized module. Default is False.",
+    )
+    Parser.add_argument(
+        "--entry-point",
+        type=str,
+        default="main",
+        help="Name of the function to execute or benchmark. Default is 'main'.",
+    )
+    Parser.add_argument(
+        "--print-tensor",
+        type=int,
+        default=0,
+        help="Print the Nth tensor. Default is 0 (no print).",
+    )
+    Parser.add_argument(
+        "--print-mlir-after-all",
+        action=argparse.BooleanOptionalAction,
+        help="Whether to print the MLIR module after all stages. Default is False.",
+    )
+    args = Parser.parse_args()
+
+    # Initialize the random seed, for stable tests
+    if args.seed:
+        np.random.seed(args.seed)
+    else:
+        np.random.seed(int(datetime.now().timestamp()))
+
+    # Load the payload module.
+    # Build sample torch tensors from --input-shape to override hard-coded sizes in get_inputs().
+
+    # Initialize the device data
+    buffers = [arg.arg for arg in KernelArgumentParser.parse_all(args.input_shape)]
+    sample_tensors = [
+        torch.from_numpy(buf) for buf in buffers[:-1]
+    ]  # Exclude the output buffer
+
+    # Import the model with the custom sample inputs from the command line.
+    mlir_file = import_kb_module(args.kernel_bench_model, sample_args=sample_tensors)
+
+    # Create the driver and run the pipeline.
+    driver = define_compiler_pipeline(args.pipeline, args.benchmark)
+
+    # Run the pipeline to get the optimized module.
+    optimized_module = driver.run(print_after_all=args.print_mlir_after_all)
+    if args.print_optimized_module:
+        print(optimized_module)
+
+    # Create the runner and execute/benchmark the module.
+    runner = Runner(optimized_module, opt_level=args.O)
+
+    if args.benchmark:
+        print("Running the benchmark...")
+        time_array = runner.benchmark(host_input_buffers=buffers)
+        print(f"{len(time_array)} runs: {np.mean(time_array)} seconds")
+    else:
+        print("Executing the module...")
+        runner.execute(
+            payload_function_name=args.entry_point,
+            host_input_buffers=buffers,
+        )
+
+    # Optionally print the output tensor after execution.
+    if args.print_tensor > 0:
+        idx = args.print_tensor - 1
+        print(f"Output: {buffers[idx]}")

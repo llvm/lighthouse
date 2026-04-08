@@ -109,3 +109,12 @@ class KernelArgumentParser:
             raise ValueError(f"Invalid init type in shape string: {shape_str}")
 
         return KernelArgument(dims, element_type, init_type)
+
+    @staticmethod
+    def parse_all(shape_str: list[str]) -> list[KernelArgument]:
+        """
+        Parse a shape string in the format MxNx...xTypexInit into a list of KernelArguments.
+        """
+        return [
+            KernelArgumentParser.parse(s) for str in shape_str for s in str.split(",")
+        ]

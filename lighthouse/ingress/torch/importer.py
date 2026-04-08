@@ -107,8 +107,10 @@ def import_from_file(
     model_class_name: str = "Model",
     init_args_fn_name: str | None = "get_init_inputs",
     init_kwargs_fn_name: str | None = None,
+    model_init_args: Iterable | None = None,
     sample_args_fn_name: str = "get_inputs",
     sample_kwargs_fn_name: str | None = None,
+    sample_args: Iterable | None = None,
     state_path: str | Path | None = None,
     dialect: OutputType | str = OutputType.LINALG_ON_TENSORS,
     ir_context: ir.Context | None = None,
@@ -131,10 +133,16 @@ def import_from_file(
         init_kwargs_fn_name (str | None, optional): The name of the function in the file
             that returns the keyword arguments for initializing the model. If None, the model
             is initialized without keyword arguments.
+        model_init_args (Iterable | None, optional): If provided, these are used directly as
+            initialization arguments instead of calling ``init_args_fn_name`` from the file.
+            Useful for overriding hard-coded sizes in the model file. Defaults to None.
         sample_args_fn_name (str, optional): The name of the function in the file that
             returns the sample input arguments for the model. Defaults to "get_inputs".
         sample_kwargs_fn_name (str, optional): The name of the function in the file that
             returns the sample keyword input arguments for the model. Defaults to None.
+        sample_args (Iterable | None, optional): If provided, these are used directly as
+            sample inputs instead of calling ``sample_args_fn_name`` from the file.
+            Useful for overriding hard-coded sizes in the model file. Defaults to None.
         state_path (str | Path | None, optional): Optional path to a file containing
             the model's ``state_dict``. Defaults to None.
         dialect (torch_mlir.fx.OutputType | {"linalg-on-tensors", "torch", "tosa"}, optional):
@@ -199,11 +207,15 @@ def import_from_file(
     if model is None:
         raise ValueError(f"Model class '{model_class_name}' not found in {filepath}")
 
-    model_init_args = maybe_load_and_run_callable(
-        module,
-        init_args_fn_name,
-        default=tuple(),
-        error_msg=f"Init args function '{init_args_fn_name}' not found in {filepath}",
+    model_init_args = (
+        maybe_load_and_run_callable(
+            module,
+            init_args_fn_name,
+            default=tuple(),
+            error_msg=f"Init args function '{init_args_fn_name}' not found in {filepath}",
+        )
+        if model_init_args is None
+        else model_init_args
     )
     model_init_kwargs = maybe_load_and_run_callable(
         module,
@@ -211,10 +223,14 @@ def import_from_file(
         default={},
         error_msg=f"Init kwargs function '{init_kwargs_fn_name}' not found in {filepath}",
     )
-    sample_args = load_and_run_callable(
-        module,
-        sample_args_fn_name,
-        f"Sample args function '{sample_args_fn_name}' not found in {filepath}",
+    sample_args = (
+        load_and_run_callable(
+            module,
+            sample_args_fn_name,
+            f"Sample args function '{sample_args_fn_name}' not found in {filepath}",
+        )
+        if sample_args is None
+        else sample_args
     )
     sample_kwargs = maybe_load_and_run_callable(
         module,
