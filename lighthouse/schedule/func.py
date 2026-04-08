@@ -15,20 +15,21 @@ def convert_function_results(payload_func: str = None) -> ir.Module:
     Returns:
         Schedule
     """
-    with schedule_boilerplate(result_types=[transform.any_op_t()]) as (
-        schedule,
-        named_seq,
-    ):
-        matched_func = structured.structured_match(
-            transform.AnyOpType.get(),
-            target=named_seq.bodyTarget,
-            ops={"func.func"},
-            op_attrs={"sym_name": ir.StringAttr.get(payload_func)}
-            if payload_func
-            else None,
-        )
-        new_func = transform_ext.convert_func_results_to_args(matched_func)
-        transform.yield_([new_func])
+    with ir.Location.unknown():
+        with schedule_boilerplate(result_types=[transform.any_op_t()]) as (
+            schedule,
+            named_seq,
+        ):
+            matched_func = structured.structured_match(
+                transform.AnyOpType.get(),
+                target=named_seq.bodyTarget,
+                ops={"func.func"},
+                op_attrs={"sym_name": ir.StringAttr.get(payload_func)}
+                if payload_func
+                else None,
+            )
+            new_func = transform_ext.convert_func_results_to_args(matched_func)
+            transform.yield_([new_func])
 
     schedule.body.operations[0].verify()
     return schedule
