@@ -11,7 +11,8 @@ def convert_function_results(payload_func: str = None) -> ir.Module:
     A schedule that converts the payload function's return values to arguments.
 
     Args:
-        payload_func: The name of the payload function to convert. If None, all func.func ops will be converted.
+        payload_func: The name of the payload function to convert. If None, all
+        func.func ops will be converted.
     Returns:
         Schedule
     """

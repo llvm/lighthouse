@@ -731,9 +731,12 @@ class ConvertFuncResultsToArgsOp(
 ):
     """Converts all function return values to function arguments.
 
-    Function return values are placed in the beginning of the argument list, followed by the original function arguments.
+    Function return values are placed in the beginning of the argument list,
+    followed by the original function arguments.
 
-    Function arguments are converted to memrefs with appropriate bufferization annotations for inputs (bufferization.to_tensor with restrict=True) and outputs (bufferization.materialize_in_destination).
+    Function arguments are converted to memrefs with appropriate bufferization
+    annotations for inputs (bufferization.to_tensor with restrict=True) and
+    outputs (bufferization.materialize_in_destination).
 
     Currently supports only functions with tensor arguments and return values.
     """
