@@ -1,14 +1,6 @@
 from mlir import ir
-from mlir.dialects import gpu, bufferization, arith
+from mlir.dialects import gpu, arith
 from lighthouse.utils.mlir import func_cif
-
-
-def emit_buf_to_tensor(memref_value: ir.Value, **kwargs) -> ir.Value:
-    memref_type = memref_value.type
-    shape = memref_type.shape
-    element_type = memref_type.element_type
-    tensor_type = ir.RankedTensorType.get(shape, element_type)
-    return bufferization.to_tensor(tensor_type, memref_value, **kwargs)
 
 
 def emit_gpu_alloc(suffix: str, element_type: ir.Type, rank: int = 2):

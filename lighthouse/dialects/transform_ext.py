@@ -12,7 +12,7 @@ from mlir.dialects import (
     bufferization,
 )
 from mlir.dialects.transform import DiagnosedSilenceableFailure
-from lighthouse.ingress.mlir_gen.gpu_utils import emit_buf_to_tensor
+from lighthouse.ingress.mlir_gen.utils import emit_buf_to_tensor
 
 from lighthouse.utils.mlir import func_cif
 

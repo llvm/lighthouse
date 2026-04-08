@@ -4,10 +4,8 @@ from mlir import ir
 from mlir.dialects import linalg, bufferization, tensor
 
 from lighthouse.utils.mlir import func_cif
-from lighthouse.ingress.mlir_gen.gpu_utils import (
-    emit_gpu_util_funcs,
-    emit_buf_to_tensor,
-)
+from lighthouse.ingress.mlir_gen.gpu_utils import emit_gpu_util_funcs
+from lighthouse.ingress.mlir_gen.utils import emit_buf_to_tensor
 
 
 def generate_gpu_softmax_payload(

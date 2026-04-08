@@ -6,7 +6,7 @@ from typing import Union
 import numpy as np
 
 from mlir import ir
-from mlir.dialects import arith, linalg, tensor
+from mlir.dialects import arith, linalg, tensor, bufferization
 
 
 def get_mlir_elem_type(type_str: str):
@@ -29,6 +29,14 @@ def get_mlir_elem_type(type_str: str):
     if type_str == "i1":
         return ir.IntegerType.get(1)
     raise ValueError(f"Unsupported element type string '{type_str}'")
+
+
+def emit_buf_to_tensor(memref_value: ir.Value, **kwargs) -> ir.Value:
+    memref_type = memref_value.type
+    shape = memref_type.shape
+    element_type = memref_type.element_type
+    tensor_type = ir.RankedTensorType.get(shape, element_type)
+    return bufferization.to_tensor(tensor_type, memref_value, **kwargs)
 
 
 class ConstantInitKind(Enum):

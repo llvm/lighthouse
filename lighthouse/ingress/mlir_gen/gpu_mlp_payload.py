@@ -1,7 +1,7 @@
 from mlir import ir
 from mlir.dialects import linalg, gpu, bufferization, arith, tensor
 
-from .gpu_utils import emit_buf_to_tensor
+from .utils import emit_buf_to_tensor
 from .named import add_bias, relu, times_weights
 from .generic import convert_float_type
 from lighthouse.utils.mlir import func_cif
