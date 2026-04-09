@@ -1,7 +1,6 @@
 #!/usr/bin/env python
 
-# RUN: python %s
-#  | FileCheck %s
+# RUN: python %s | FileCheck %s
 
 import subprocess
 from pathlib import Path
@@ -24,8 +23,8 @@ if __name__ == "__main__":
     # It imports the PyTorch model, converts it to MLIR, runs the optimization pipeline, and executes the module.
     # The test passes if the output of the module matches the expected output from the PyTorch model.
 
-    kb_program = Path(__file__).parent / "kernel_bench"
     project_root = Path(__file__).parent.parent.parent.parent
+    kb_program = project_root / "tools" / "kernel_bench"
     kb_path = project_root / "third_party" / "KernelBench" / "KernelBench"
 
     for test in tests:
@@ -58,8 +57,10 @@ if __name__ == "__main__":
 # CHECK  0.37454012 0.9507143  0.7319939  ... 0.04645041 0.60754484 0.17052412
 # CHECK: 0.27214515 0.59023064 0.3609739  ... 0.297349   0.9243962  0.97105825
 
+# CHECK-NOT: Execution failed
+
 # CHECK: 2_Standard_matrix_multiplication_.mlir
-# CHECK: 1.9275348  1.8850336  2.747824   1.5414746  0.64427626 2.0864286
-# CHECK: 1.4014363  1.6915107  1.7900416  1.9984261  2.0468292  0.9830923
+# CHECK: 3.120935  3.7697    4.5365195 4.397648  4.4506536 3.2665431 3.5362916
+# CHECK: 5.036752  5.312808  5.8109508 4.810084  4.7435184 4.35573   5.311559
 
 # CHECK-NOT: Execution failed

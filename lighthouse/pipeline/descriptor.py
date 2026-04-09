@@ -24,6 +24,11 @@ class PipelineDescriptor:
       ...
     """
 
+    search_path = {
+        ".py": "../schedule",
+        ".yaml": "../pipeline/descriptors",
+    }
+
     def __init__(self, filename: str):
         self.filename = filename
         with open(filename, "r") as f:
@@ -43,8 +48,9 @@ class PipelineDescriptor:
         """
         filename = remove_args_and_opts(filename)
         descriptor_path = os.path.normpath(os.path.dirname(self.filename))
+        file_ext = os.path.splitext(filename)[1]
         schedule_module_path = os.path.normpath(
-            os.path.join(os.path.dirname(__file__), "../schedule")
+            os.path.join(os.path.dirname(__file__), self.search_path.get(file_ext, ""))
         )
 
         file = os.path.join(descriptor_path, filename)

@@ -1,0 +1,5 @@
+# This is the default pipeline for kernel_bench, producing serial code.
+# For optimized builds, pass the --pipeline to the kernel_bench program.
+Pipeline:
+  - include: bufferization.yaml
+  - include: llvm_lowering.yaml

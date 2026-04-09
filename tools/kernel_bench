@@ -16,25 +16,6 @@ from lighthouse import dialects as lh_dialects
 from lighthouse import ingress as lh_ingress
 
 
-def add_lower_to_llvm_stages() -> list[str]:
-    """
-    Adds the LLVM lowering passes to guarantee the IR can be ingested by the ExecutionEngine.
-    """
-    stages = [
-        "convert-linalg-to-loops",
-        "fold-memref-alias-ops",
-        "expand-strided-metadata",
-        "canonicalize",
-        "convert-vector-to-scf",
-        "lower-affine",
-        "convert-scf-to-cf",
-        "convert-vector-to-llvm",
-        "convert-to-llvm",
-        "reconcile-unrealized-casts",
-    ]
-    return stages
-
-
 def import_kb_module(
     filepath: str | Path,
     model_class_name: str = "Model",
@@ -94,18 +75,13 @@ def define_compiler_pipeline(
         # Calling the entry point directly, so set the attribute on the entry point function.
         driver.make_function_callable(args.entry_point)
 
-    # Standard kernel bench passes.
-    driver.add_stage("linalg-specialize-generic-ops")
-    # Search for the yaml file in the script directory, then in the pipeline directory.
-    path = Path(__file__).parent / "bufferization.yaml"
-    driver.add_stage(str(path))
-
-    # Add the remaining stages defined by the user.
     if pipeline_yaml:
+        # Add stages defined by the user.
         driver.add_stages(pipeline_yaml)
-
-    # Add the necessary LLVM lowering stages to ensure the module can be executed by the ExecutionEngine.
-    driver.add_stages(add_lower_to_llvm_stages())
+    else:
+        # Search for the yaml file in the script directory.
+        path = Path(__file__).parent / "kernel_bench.yaml"
+        driver.add_stage(str(path))
 
     return driver
 

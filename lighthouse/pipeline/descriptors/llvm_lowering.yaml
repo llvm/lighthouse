@@ -1,0 +1,11 @@
+Pipeline:
+  - pass: "convert-linalg-to-loops"
+  - pass: "fold-memref-alias-ops"
+  - pass: "expand-strided-metadata"
+  - pass: "canonicalize"
+  - pass: "convert-vector-to-scf"
+  - pass: "lower-affine"
+  - pass: "convert-scf-to-cf"
+  - pass: "convert-vector-to-llvm"
+  - pass: "convert-to-llvm"
+  - pass: "reconcile-unrealized-casts"
