@@ -52,7 +52,9 @@ def import_kb_module(
 
 
 def define_compiler_pipeline(
-    pipeline_yaml: str | None, benchmark: bool = False
+    mlir_file: Path,
+    pipeline_yaml: str | None,
+    benchmark: bool = False,
 ) -> None:
     """
     Defines the compiler pipeline by adding stages to the driver.
@@ -187,7 +189,7 @@ if __name__ == "__main__":
     mlir_file = import_kb_module(args.kernel_bench_model, sample_args=sample_tensors)
 
     # Create the driver and run the pipeline.
-    driver = define_compiler_pipeline(args.pipeline, args.benchmark)
+    driver = define_compiler_pipeline(mlir_file, args.pipeline, args.benchmark)
 
     # Run the pipeline to get the optimized module.
     optimized_module = driver.run(print_after_all=args.print_mlir_after_all)
