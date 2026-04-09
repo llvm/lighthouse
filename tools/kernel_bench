@@ -4,6 +4,7 @@ import argparse
 from datetime import datetime
 import sys
 import tempfile
+import ml_dtypes
 import numpy as np
 from pathlib import Path
 import torch
@@ -97,7 +98,18 @@ def parse_inputs_and_outputs(
     # Parse input shapes first, to create sample tensors for the inputs only
     buffers = [arg.arg for arg in KernelArgumentParser.parse_all(input_shapes_str)]
     # Build sample torch tensors from input shapes to override hard-coded sizes in get_inputs().
-    sample_tensors = [torch.from_numpy(buf) for buf in buffers]
+    # torch.from_numpy() does not support ml_dtypes.bfloat16, so reinterpret as uint16 first.
+    if any(buf.dtype == ml_dtypes.bfloat16 for buf in buffers):
+        print(
+            "Warning: bfloat16 is not natively supported by torch.from_numpy(), \
+            so we are reinterpreting the buffers as uint16. This may cause issues if the buffers are modified after creation."
+        )
+    sample_tensors = [
+        torch.from_numpy(buf.view(np.uint16)).view(torch.bfloat16)
+        if buf.dtype == ml_dtypes.bfloat16
+        else torch.from_numpy(buf)
+        for buf in buffers
+    ]
     # Now include the output shape in the buffers
     buffers = [KernelArgumentParser.parse(output_shape_str).arg, *buffers]
     return buffers, sample_tensors

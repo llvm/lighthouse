@@ -13,9 +13,19 @@ tests = [
         "output_shape": "32x32xf32x0",
     },
     {
+        "kernel": "level1/1_Square_matrix_multiplication_.py",
+        "input_shapes": "32x32xbf16xrnd,32x32xbf16xid",
+        "output_shape": "32x32xbf16x0",
+    },
+    {
         "kernel": "level1/2_Standard_matrix_multiplication_.py",
         "input_shapes": "8x16xf32xrnd,16x8xf32xrnd",
         "output_shape": "8x8xf32x0",
+    },
+    {
+        "kernel": "level1/2_Standard_matrix_multiplication_.py",
+        "input_shapes": "8x16xbf16xrnd,16x8xbf16xrnd",
+        "output_shape": "8x8xbf16x0",
     },
 ]
 
@@ -56,8 +66,20 @@ if __name__ == "__main__":
 
 # CHECK-NOT: Execution failed
 
+# CHECK: 1_Square_matrix_multiplication_.mlir
+# CHECK  0.375 0.949219 0.730469 ... 0.0463867 0.609375 0.170898
+# CHECK: 0.271484 0.589844 0.361328 ... 0.296875 0.925781 0.972656
+
+# CHECK-NOT: Execution failed
+
 # CHECK: 2_Standard_matrix_multiplication_.mlir
 # CHECK: 3.120935  3.7697    4.5365195 4.397648  4.4506536 3.2665431 3.5362916
 # CHECK: 5.036752  5.312808  5.8109508 4.810084  4.7435184 4.35573   5.311559
+
+# CHECK-NOT: Execution failed
+
+# CHECK: 2_Standard_matrix_multiplication_.mlir
+# CHECK: 3.125 3.76562 4.53125 4.40625 4.4375 3.26562 3.53125 3.9375
+# CHECK: 5.03125 5.3125 5.8125 4.8125 4.75 4.34375 5.3125 5.5625
 
 # CHECK-NOT: Execution failed
