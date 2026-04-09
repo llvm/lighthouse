@@ -110,6 +110,20 @@ def define_compiler_pipeline(
     return driver
 
 
+def parse_inputs_and_outputs(
+    input_shapes_str: str, output_shape_str: str
+) -> tuple[list, list]:
+    """
+    Parses the input and output shape strings to create sample tensors for the inputs and outputs.
+    """
+    # Parse input shapes first, to create sample tensors for the inputs only
+    buffers = [arg.arg for arg in KernelArgumentParser.parse_all(input_shapes_str)]
+    sample_tensors = [torch.from_numpy(buf) for buf in buffers]
+    # Now include the output shape in the buffers
+    buffers = [KernelArgumentParser.parse(output_shape_str).arg, *buffers]
+    return buffers, sample_tensors
+
+
 if __name__ == "__main__":
     Parser = argparse.ArgumentParser(
         description="""
@@ -121,12 +135,18 @@ if __name__ == "__main__":
         "kernel_bench_model", type=str, help="Path to the payload module to optimize."
     )
     Parser.add_argument(
-        "--input-shape",
-        action="append",
+        "--input-shapes",
         required=True,
         help="Shape of the input tensors in format: \
               DIMS(MxNx...)xTYPE(f16/f32/f64/bf16/i8)xINIT(0/1/rnd/id). \
-              For multiple inputs, use multiple --input-shape arguments.",
+              For multiple inputs, separate by comma.",
+    )
+    Parser.add_argument(
+        "--output-shape",
+        required=True,
+        help="Shape of the output tensor in format: \
+              DIMS(MxNx...)xTYPE(f16/f32/f64/bf16/i8)xINIT(0/1/rnd/id). \
+              Single output shape supported.",
     )
     Parser.add_argument(
         "--seed",
@@ -185,9 +205,9 @@ if __name__ == "__main__":
     # Build sample torch tensors from --input-shape to override hard-coded sizes in get_inputs().
 
     # Initialize the device data
-    buffers = [arg.arg for arg in KernelArgumentParser.parse_all(args.input_shape)]
-    # Exclude the output buffer
-    sample_tensors = [torch.from_numpy(buf) for buf in buffers[:-1]]
+    buffers, sample_tensors = parse_inputs_and_outputs(
+        args.input_shapes, args.output_shape
+    )
 
     # Import the model with the custom sample inputs from the command line.
     mlir_file = import_kb_module(args.kernel_bench_model, sample_args=sample_tensors)

@@ -47,11 +47,10 @@ if __name__ == "__main__":
     )
     Parser.add_argument(
         "--input-shape",
-        action="append",
         required=True,
         help="Shape of the input tensors in format: \
               DIMS(MxNx...)xTYPE(f16/f32/f64/bf16/i8)xINIT(0/1/rnd/id). \
-              For multiple inputs, use multiple --input-shape arguments.",
+              For multiple inputs, separate by comma.",
     )
     Parser.add_argument(
         "--seed",

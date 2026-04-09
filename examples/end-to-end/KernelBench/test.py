@@ -9,11 +9,13 @@ from pathlib import Path
 tests = [
     {
         "kernel": "level1/1_Square_matrix_multiplication_.py",
-        "input_shape": "32x32xf32x0,32x32xf32xrnd,32x32xf32xid",
+        "input_shapes": "32x32xf32xrnd,32x32xf32xid",
+        "output_shape": "32x32xf32x0",
     },
     {
         "kernel": "level1/2_Standard_matrix_multiplication_.py",
-        "input_shape": "8x8xf32x0,8x16xf32xrnd,16x8xf32xrnd",
+        "input_shapes": "8x16xf32xrnd,16x8xf32xrnd",
+        "output_shape": "8x8xf32x0",
     },
 ]
 
@@ -31,8 +33,10 @@ if __name__ == "__main__":
         command_line = [
             str(kb_program),
             str(kb_kernel),
-            "--input-shape",
-            test["input_shape"],
+            "--input-shapes",
+            test["input_shapes"],
+            "--output-shape",
+            test["output_shape"],
             "--print-tensor=1",
             "--seed=42",
         ]
