@@ -121,59 +121,56 @@ def optimize_kernel(
 
 
 if __name__ == "__main__":
-    with ir.Context(), ir.Location.unknown():
-        lh_dialects.register_and_load()
+    parser = cli_parser(
+        description="Optimize matmul kernel parameters using a genetic algorithm."
+    )
+    parser.add_argument(
+        "--generations",
+        type=int,
+        default=30,
+        help="Number of generations for the genetic algorithm.",
+    )
+    parser.add_argument(
+        "--population-size",
+        type=int,
+        default=11,
+        help="Number of individuals in the population for the genetic algorithm.",
+    )
+    parser.add_argument(
+        "--mutation-rate",
+        type=float,
+        default=0.01,
+        help="Mutation rate for the genetic algorithm.",
+    )
+    parser.add_argument(
+        "--dump-json",
+        dest="n_dump_json",
+        type=int,
+        default=0,
+        help="Dump the best n configurations as JSON files.",
+    )
+    parser.add_argument(
+        "--no-check-result",
+        action="store_true",
+        help="Skip correctness check.",
+    )
+    parser.add_argument(
+        "--knobs-from-schedule",
+        action="store_true",
+        help="Use the knobs and constraint from the generated schedule",
+    )
 
-        parser = cli_parser(
-            description="Optimize matmul kernel parameters using a genetic algorithm."
-        )
-        parser.add_argument(
-            "--generations",
-            type=int,
-            default=30,
-            help="Number of generations for the genetic algorithm.",
-        )
-        parser.add_argument(
-            "--population-size",
-            type=int,
-            default=11,
-            help="Number of individuals in the population for the genetic algorithm.",
-        )
-        parser.add_argument(
-            "--mutation-rate",
-            type=float,
-            default=0.01,
-            help="Mutation rate for the genetic algorithm.",
-        )
-        parser.add_argument(
-            "--dump-json",
-            dest="n_dump_json",
-            type=int,
-            default=0,
-            help="Dump the best n configurations as JSON files.",
-        )
-        parser.add_argument(
-            "--no-check-result",
-            action="store_true",
-            help="Skip correctness check.",
-        )
-        parser.add_argument(
-            "--knobs-from-schedule",
-            action="store_true",
-            help="Use the knobs and constraint from the generated schedule",
-        )
+    args = parser.parse_args()
 
-        args = parser.parse_args()
-
-        optimize_kernel(
-            args.sizes,
-            args.bias,
-            args.relu,
-            not args.no_accumulate_c,
-            check_result=not args.no_check_result,
-            ngenerations=args.generations,
-            mutation_rate=args.mutation_rate,
-            npopulation=args.population_size,
-            dump_json=args.n_dump_json,
-            random_seed=2,
-        )
+    optimize_kernel(
+        args.sizes,
+        args.bias,
+        args.relu,
+        not args.no_accumulate_c,
+        check_result=not args.no_check_result,
+        ngenerations=args.generations,
+        mutation_rate=args.mutation_rate,
+        npopulation=args.population_size,
+        dump_json=args.n_dump_json,
+        random_seed=2,
+    )
