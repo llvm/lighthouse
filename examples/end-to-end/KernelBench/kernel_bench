@@ -118,6 +118,7 @@ def parse_inputs_and_outputs(
     """
     # Parse input shapes first, to create sample tensors for the inputs only
     buffers = [arg.arg for arg in KernelArgumentParser.parse_all(input_shapes_str)]
+    # Build sample torch tensors from input shapes to override hard-coded sizes in get_inputs().
     sample_tensors = [torch.from_numpy(buf) for buf in buffers]
     # Now include the output shape in the buffers
     buffers = [KernelArgumentParser.parse(output_shape_str).arg, *buffers]
@@ -200,9 +201,6 @@ if __name__ == "__main__":
         np.random.seed(args.seed)
     else:
         np.random.seed(int(datetime.now().timestamp()))
-
-    # Load the payload module.
-    # Build sample torch tensors from --input-shape to override hard-coded sizes in get_inputs().
 
     # Initialize the device data
     buffers, sample_tensors = parse_inputs_and_outputs(
