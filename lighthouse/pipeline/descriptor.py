@@ -46,22 +46,33 @@ class PipelineDescriptor:
             * The path of the descriptor file that includes it. This allows for relative includes.
             * The path of the Lighthouse schedule module, where all the standard pipelines are located.
         """
+        # First look in the same directory as the including file, to allow for relative includes.
         filename = remove_args_and_opts(filename)
         descriptor_path = os.path.normpath(os.path.dirname(self.filename))
-        file_ext = os.path.splitext(filename)[1]
-        schedule_module_path = os.path.normpath(
-            os.path.join(os.path.dirname(__file__), self.search_path.get(file_ext, ""))
-        )
-
         file = os.path.join(descriptor_path, filename)
-        if not os.path.exists(file) and file_ext in self.search_path:
-            file = os.path.join(schedule_module_path, filename)
-            if not os.path.exists(file):
-                raise ValueError(
-                    f"Included pipeline descriptor file does not exist: {filename} \
-                        (searched in {descriptor_path} and {schedule_module_path})"
-                )
-        return file
+        if os.path.exists(file):
+            return file
+
+        # If not found, look for an include path, based on the file extension.
+        file_ext = os.path.splitext(file)[1]
+        if file_ext not in self.search_path:
+            raise ValueError(
+                f"Included pipeline descriptor file does not exist: {filename} \
+                    (searched in {descriptor_path})"
+            )
+
+        # If include path, look in the descriptor/schedule module path.
+        schedule_module_path = os.path.normpath(
+            os.path.join(os.path.dirname(__file__), self.search_path[file_ext])
+        )
+        file = os.path.join(schedule_module_path, filename)
+        if os.path.exists(file):
+            return file
+
+        raise ValueError(
+            f"Included pipeline descriptor file does not exist: {filename} \
+                (searched in {descriptor_path} and {schedule_module_path})"
+        )
 
     def _parse_stages(self) -> None:
         """
