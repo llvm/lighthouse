@@ -54,7 +54,7 @@ class PipelineDescriptor:
         )
 
         file = os.path.join(descriptor_path, filename)
-        if not os.path.exists(file):
+        if not os.path.exists(file) and file_ext in self.search_path:
             file = os.path.join(schedule_module_path, filename)
             if not os.path.exists(file):
                 raise ValueError(
