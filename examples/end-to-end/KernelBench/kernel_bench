@@ -186,9 +186,8 @@ if __name__ == "__main__":
 
     # Initialize the device data
     buffers = [arg.arg for arg in KernelArgumentParser.parse_all(args.input_shape)]
-    sample_tensors = [
-        torch.from_numpy(buf) for buf in buffers[:-1]
-    ]  # Exclude the output buffer
+    # Exclude the output buffer
+    sample_tensors = [torch.from_numpy(buf) for buf in buffers[:-1]]
 
     # Import the model with the custom sample inputs from the command line.
     mlir_file = import_kb_module(args.kernel_bench_model, sample_args=sample_tensors)
