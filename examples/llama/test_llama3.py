@@ -475,7 +475,8 @@ def get_rotary_emb(
         static_output_shape=xq_reshaped_shape,
     )
 
-    # View xq as complex: (batch, seq_len, n_heads, head_dim//2, 2) -> (batch, seq_len, n_heads, head_dim//2) complex
+    # View xq as complex: (batch, seq_len, n_heads, head_dim//2, 2)
+    # -> (batch, seq_len, n_heads, head_dim//2) complex
     xq_complex_shape = [batch, seq_len, n_heads, head_dim // 2]
     xq_complex_uninit = tensor.empty(xq_complex_shape, ir.ComplexType.get(elty))
     xq_complex = get_view_as_complex(xq_reshaped, xq_complex_uninit)
@@ -757,7 +758,8 @@ def get_attention(
 
     # Compute attention scores: matmul(xq, keys.transpose(-2, -1))
     # xq_transposed: (batch, n_heads, seq_len, head_dim)
-    # keys_transposed: (batch, n_heads, seq_len, head_dim) -> transpose to (batch, n_heads, head_dim, seq_len)
+    # keys_transposed: (batch, n_heads, seq_len, head_dim) -> transpose to
+    #   (batch, n_heads, head_dim, seq_len)
     # scores: (batch, n_heads, seq_len, seq_len)
     scores_shape = [batch, n_heads, seq_len, seq_len]
     scores_uninit = tensor.empty(scores_shape, elty)
@@ -964,8 +966,9 @@ references = {
     get_outer: torch.outer,
     get_linear: torch.nn.functional.linear,
     get_repeat_kv: repeat_kv,
-    get_l2_norm: lambda x, eps: x
-    * torch.rsqrt(torch.mean(x.pow(2), dim=-1, keepdim=True) + eps),
+    get_l2_norm: lambda x, eps: (
+        x * torch.rsqrt(torch.mean(x.pow(2), dim=-1, keepdim=True) + eps)
+    ),
     get_rotary_emb: apply_rotary_emb,
 }
 

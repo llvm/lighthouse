@@ -82,7 +82,8 @@ class KnobValue(ir.Value):
                 func_def_ast = func_ast.body[0]
 
                 # TODO: in case of multiple decorators, remove just @KnobValue.ast_rewrite
-                func_def_ast.decorator_list.clear()  # Remove the decorator to avoid infinite recursion.
+                # Remove the decorator to avoid infinite recursion.
+                func_def_ast.decorator_list.clear()
                 if in_exprs:
                     # Apply the rewriting of `in` expressions.
                     func_def_ast.body = [
@@ -97,7 +98,8 @@ class KnobValue(ir.Value):
                 mod = compile(func_ast, filename=source_file, mode="exec")
                 frame = inspect.currentframe()
                 assert frame and frame.f_back
-                # Make the original function's globals and locals available to the rewritten function.
+                # Make the original function's globals and locals available
+                # to the rewritten function.
                 temp_globals = frame.f_back.f_globals.copy()
                 temp_globals |= frame.f_back.f_locals.copy()
                 temp_locals = frame.f_back.f_locals.copy()

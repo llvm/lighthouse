@@ -27,11 +27,13 @@ class KernelArgument:
     """
     A kernel argument, initialized according to the specified type.
     The argument value is stored in the `arg` attribute, which is a numpy array.
-    It will be initialized at construction time, so that the argument value is ready to use after construction.
+    It will be initialized at construction time, so that the argument value is ready
+    to use after construction.
 
     Arguments are:
     * dims: list of dimensions of the argument > 0 (e.g., [M, N, K])
-    * element_type: NumPy data type of the argument (e.g., np.float32, np.int64, "f16", "bf16", etc.)
+    * element_type: NumPy data type of the argument
+        (e.g., np.float32, np.int64, "f16", "bf16", etc.)
     * init_type: type of initialization (InitType)
     TODO: Add support for distribution parameters on random.
     """

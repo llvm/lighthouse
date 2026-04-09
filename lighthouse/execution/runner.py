@@ -82,7 +82,8 @@ class Runner:
 
     def _get_engine(self) -> ExecutionEngine:
         """
-        Get an execution engine for the given payload module, loading the necessary shared libraries.
+        Get an execution engine for the given payload module,
+        loading the necessary shared libraries.
         """
         execution_engine = ExecutionEngine(
             self.payload, opt_level=self.opt_level, shared_libs=self.shared_libs

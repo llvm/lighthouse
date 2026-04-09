@@ -5,10 +5,11 @@ Example demonstrating how to load a PyTorch model to MLIR using Lighthouse
 without initializing the model class on the user's side.
 
 The script uses 'lighthouse.ingress.torch.import_from_file' function that
-takes a path to a Python file containing the model definition (a Python class derived from 'nn.Module'),
-along with the names of functions to get model init arguments and sample inputs. The function
-imports the model class on its own, initializes it, and passes it to torch_mlir
-to get a MLIR module in the specified dialect.
+takes a path to a Python file containing the model definition (a Python class
+derived from 'nn.Module'), along with the names of functions to get model init
+arguments and sample inputs. The function imports the model class on its own,
+initializes it, and passes it to torch_mlir to get a MLIR module in the specified
+dialect.
 
 The script uses the model from 'MLPModel/model.py' as an example.
 """
@@ -39,7 +40,7 @@ mlir_module_ir: ir.Module = import_from_file(
     model_path,                              # Path to the Python file containing the model
     model_class_name="MLPModel",             # Name of the PyTorch nn.Module class to convert
     init_args_fn_name="get_init_inputs",     # Function that returns args for model.__init__()
-    sample_args_fn_name="get_sample_inputs", # Function that returns sample inputs to pass to 'model(...)'
+    sample_args_fn_name="get_sample_inputs", # Function that returns sample inputs to pass to model
     dialect="linalg-on-tensors",             # Target MLIR dialect (linalg ops on tensor types)
     ir_context=ir_context,                   # MLIR context for the conversion
 )

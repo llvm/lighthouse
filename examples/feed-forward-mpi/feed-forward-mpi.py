@@ -108,7 +108,9 @@ def parse_cla():
         type=int,
         default=[WORLD_SIZE],
         nargs="+",
-        help="The shape of the device grid (1 or 2 dimensions). The product of the grid dimensions must match the number of MPI ranks. Use '0' if 2d grid dimensions should be inferred automatically.",
+        help="The shape of the device grid (1 or 2 dimensions). The product of the grid dimensions \
+            must match the number of MPI ranks. Use '0' if 2d grid dimensions should be inferred \
+            automatically.",
     )
     parser.add_argument(
         "--nruns",

@@ -8,8 +8,9 @@ from lighthouse.pipeline.driver import CompilerDriver
 if __name__ == "__main__":
     Parser = argparse.ArgumentParser(
         description="""
-    Lighthouse Optimization Pipeline: Applies a series of transformations to an input MLIR module,
-    and produces an optimized MLIR module as output. The transformations are applied in argument order.
+    Lighthouse Optimization Pipeline: Applies a series of transformations to
+    an input MLIR module, and produces an optimized MLIR module as output.
+    The transformations are applied in argument order.
     The names of the passes are registered by the driver.
     """
     )

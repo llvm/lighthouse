@@ -1,6 +1,7 @@
 # RUN: %PYTHON %s --dump-kernel=vectorized | FileCheck %s
 # RUN: %PYTHON %s --dump-kernel=vectorized --tile-size=64 | FileCheck %s
-# RUN: %PYTHON %s --dump-kernel=vectorized --dtype=bf16 --avx512 | FileCheck %s --check-prefix=AVX512
+# RUN: %PYTHON %s --dump-kernel=vectorized --dtype=bf16 --avx512 \
+# RUN: | FileCheck %s --check-prefix=AVX512
 
 # CHECK: vector.broadcast
 # CHECK: vector.fma

@@ -86,8 +86,12 @@ class Knob(Tuneable):
         if self.options is not None:
             if self.divides is not None or self.divisible_by is not None:
                 yield from filter(
-                    lambda val: (self.divides is None or (self.divides % val == 0))
-                    and (self.divisible_by is None or (val % self.divisible_by == 0)),
+                    lambda val: (
+                        (self.divides is None or (self.divides % val == 0))
+                        and (
+                            self.divisible_by is None or (val % self.divisible_by == 0)
+                        )
+                    ),
                     self.options,
                 )
             else:

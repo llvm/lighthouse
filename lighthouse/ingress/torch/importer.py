@@ -1,4 +1,3 @@
-import importlib
 import importlib.util
 from pathlib import Path
 from typing import Iterable, Mapping
@@ -52,10 +51,11 @@ def import_from_model(
             ``OutputType.LINALG_ON_TENSORS``.
         ir_context (ir.Context, optional): An optional MLIR context to use for parsing
             the module. If not provided, the module is returned as a string.
-        **kwargs: Additional keyword arguments passed to the ``torch_mlir.fx.export_and_import`` function.
+        **kwargs: Additional keyword arguments passed to the ``torch_mlir.fx.export_and_import``.
 
     Returns:
-        str | ir.Module: The imported MLIR module as a string or an ir.Module if `ir_context` is provided.
+        str | ir.Module: The imported MLIR module as a string or an ir.Module
+            if `ir_context` is provided.
 
     Examples:
         >>> import torch
@@ -142,10 +142,11 @@ def import_from_file(
             ``OutputType.LINALG_ON_TENSORS``.
         ir_context (ir.Context, optional): An optional MLIR context to use for parsing
             the module. If not provided, the module is returned as a string.
-        **kwargs: Additional keyword arguments passed to the ``torch_mlir.fx.export_and_import`` function.
+        **kwargs: Additional keyword arguments passed to the ``torch_mlir.fx.export_and_import``.
 
     Returns:
-        str | ir.Module: The imported MLIR module as a string or an ir.Module if `ir_context` is provided.
+        str | ir.Module: The imported MLIR module as a string or an ir.Module
+            if `ir_context` is provided.
 
     Examples:
         Given a file `path/to/model_file.py` with the following content:

@@ -32,8 +32,8 @@ def add_lower_to_llvm_stages() -> list[str]:
 if __name__ == "__main__":
     Parser = argparse.ArgumentParser(
         description="""
-    Lighthouse Optimization Runner: Optionally applies a series of transformations to an input MLIR module,
-    and executes it on a device.
+    Lighthouse Optimization Runner: Optionally applies a series of transformations
+    to an input MLIR module, and executes it on a device.
     """
     )
     Parser.add_argument(
@@ -118,7 +118,8 @@ if __name__ == "__main__":
     # Add the remaining stages defined by the user.
     driver.add_stages(args.stage)
 
-    # Add the necessary LLVM lowering stages to ensure the module can be executed by the ExecutionEngine.
+    # Add the necessary LLVM lowering stages to ensure
+    # the module can be executedby the ExecutionEngine.
     driver.add_stages(add_lower_to_llvm_stages())
 
     # Run the pipeline to get the optimized module.
@@ -127,7 +128,8 @@ if __name__ == "__main__":
         print(optimized_module)
 
     # Initialize the device data
-    # TODO: Allow automatic inspection of the payload module if the user doesn't provide input shapes.
+    # TODO: Allow automatic inspection of the payload module
+    #       if the user doesn't provide input shapes.
     buffers = []
     for shape in args.input_shape:
         for sub_shape in shape.split(","):

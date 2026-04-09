@@ -38,8 +38,10 @@ class PipelineDescriptor:
     def _normalize_include_path(self, filename) -> str:
         """
         Finds the file in some standard locations, in order:
-            * The path of the descriptor file that includes it. This allows for relative includes.
-            * The path of the Lighthouse schedule module, where all the standard pipelines are located.
+            * The path of the descriptor file that includes it.
+              This allows for relative includes.
+            * The path of the Lighthouse schedule module,
+              where all the standard pipelines are located.
         """
         filename = remove_args_and_opts(filename)
         descriptor_path = os.path.normpath(os.path.dirname(self.filename))
@@ -93,7 +95,8 @@ class PipelineDescriptor:
 
             else:
                 raise ValueError(
-                    f"Invalid stage in pipeline description: {stage}. Must be one of 'pass', 'transform', 'bundle' or 'include'."
+                    f"Invalid stage in pipeline description: {stage}. Must be one of 'pass', \
+                        'transform', 'bundle' or 'include'."
                 )
 
     def _include_pipeline(self, filename: str) -> None:

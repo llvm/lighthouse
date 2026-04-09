@@ -10,7 +10,7 @@ dependencies = [
 [dependency-groups]
 dev = [
   "lit==18.1.8",  # Tool to configure, discover and run tests
-  "ruff==0.14.5", # Python linter and formatter
+  "ruff==0.15.9", # Python linter and formatter
   "pre-commit", # Tool to manage and apply pre-commit hooks
   "pytest>=8.0.0",
   "psutil",
@@ -121,7 +121,9 @@ select = [
   "W", # Warning
 ]
 ignore = [
-    "E501", # line-too-long
     "PERF203", # try-except-in-loop
     "PERF401", # manual-list-comprehension
 ]
+
+[tool.ruff.lint.pycodestyle]
+max-line-length=100 # limit total line length covering comments, docs etc.

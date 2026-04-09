@@ -69,7 +69,8 @@ def config_from_args(args: Sequence[str]) -> Dict[str, Any]:
         "--layers",
         type=csints,
         default=(128, 256, 512),
-        help="the number of neurons in each layer - the first layer is the input layer and the last layer is the output layer",
+        help="the number of neurons in each layer - the first layer is the input layer \
+            and the last layer is the output layer",
     )
 
     parser.add_argument(

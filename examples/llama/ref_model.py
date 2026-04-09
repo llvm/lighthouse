@@ -1,9 +1,10 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates.
-# This software may be used and distributed in accordance with the terms of the Llama 3 Community License Agreement.
+# This software may be used and distributed in accordance with
+# the terms of the Llama 3 Community License Agreement.
 
 
-## This is a modified version of the LLaMA 3 model implementation.
-## It doesn't use any FairScale components
+# This is a modified version of the LLaMA 3 model implementation.
+# It doesn't use any FairScale components
 
 import math as pymath
 from dataclasses import dataclass

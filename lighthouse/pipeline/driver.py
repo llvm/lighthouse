@@ -9,7 +9,8 @@ from lighthouse.pipeline.descriptor import PipelineDescriptor
 class PipelineDriver:
     """
     A simple driver that runs the optimization pipeline on a given workload.
-    Helps create a list of Stages (passes, transforms, bundles) to apply to the module, and runs them in sequence.
+    Helps create a list of Stages (passes, transforms, bundles) to apply to the module,
+    and runs them in sequence.
     """
 
     stages: list[lhs.Stage]
@@ -24,7 +25,7 @@ class PipelineDriver:
         self.stages.append(lhs.PassStage([lhs.Pass(name)], self.context))
 
     def add_transform(self, stage: str | ir.Module) -> None:
-        # Transform will figure out if this is MLIR, Python or Module, and will handle it accordingly.
+        # Transform will figure out if it is MLIR, Python or Module, and will handle it accordingly.
         if isinstance(stage, ir.Module):
             # This is a transform already in module form. Assume it has been verified already.
             if stage.context != self.context:
@@ -43,7 +44,8 @@ class PipelineDriver:
 
     def add_stage(self, stage: lhs.Stage) -> None:
         # A generit stage that isn't covered by the existing infrastructure.
-        # Users can derive their own classes from Stage and add them to the pipeline with this method.
+        # Users can derive their own classes from Stage and add them to
+        # the pipeline with this method.
         self.stages.append(stage)
 
     def apply(self, module: ir.Module, print_after_all: bool = False) -> ir.Module:
@@ -65,7 +67,8 @@ class PipelineDriver:
 class TransformDriver(PipelineDriver):
     """
     A simple driver that runs a sequence of transform modules on a given workload.
-    This is a thin wrapper around PipelineDriver that is used to run a sequence of transform modules on a given workload.
+    This is a thin wrapper around PipelineDriver that is used to run
+    a sequence of transform modules on a given workload.
     """
 
     def __init__(self, schedules: list[ir.Module]):
@@ -85,14 +88,18 @@ class CompilerDriver:
     This is a high-level interface that abstracts away the details of the optimization pipeline,
     and provides a simple interface for running the pipeline on a given workload.
 
-    The pipeline is flexible until the first time it is run, at which point it becomes fixed and cannot be modified until reset is called.
-    This is to allow running the same pipeline on different modules, without accidentally modifying the pipeline after it has been run.
+    The pipeline is flexible until the first time it is run, at which point it becomes fixed and
+    cannot be modified until reset is called.
+    This is to allow running the same pipeline on different modules, without accidentally modifying
+    the pipeline after it has been run.
 
-    Calling reset() will clear the pipeline and the module, allowing for a new pipeline to be constructed and run on a new module.
+    Calling reset() will clear the pipeline and the module, allowing for a new pipeline
+    to be constructed and run on a new module.
     """
 
     def __init__(self, filename: str, stages: list[str] = []):
-        # The context is shared across the entire pipeline, and is used to create the PassManager and Transform Schedules.
+        # The context is shared across the entire pipeline, and is used to create the PassManager
+        # and Transform Schedules.
         # The module is owned by the Driver to encapsulate its use through the pipeline.
         # It is returned at the end of run() after being transformed by the stages in the pipeline.
         self.context = ir.Context()

@@ -32,7 +32,8 @@ class Pass:
 # Predefined pass bundles for common transformations.
 # These are not exhaustive and can be extended as needed.
 # The idea is to group together passes that are commonly used together in a pipeline,
-# so that they can be easily added to a PassManager or Transform Schedule with a single function call.
+# so that they can be easily added to a PassManager or Transform Schedule with
+# a single function call.
 # FIXME: Deprecate bundles in favor of YAML pipeline descriptors.
 PassBundles = {
     # All in one bufferization bundle.
@@ -127,21 +128,24 @@ class Transform:
 
 class Stage:
     """
-    A stage in the optimization pipeline. Each stage will apply a specific set of transformations to the module,
-    and will keep track of the current state of the module after the transformations are applied.
+    A stage in the optimization pipeline. Each stage will apply a specific
+    set of transformations to the module, and will keep track of the current
+    state of the module after the transformations are applied.
     """
 
     @abstractmethod
     def apply(self, module: ir.Module) -> ir.Module:
         """
-        Apply the transformations for this stage to the given module, and return the transformed module.
+        Apply the transformations for this stage to the given module,
+        and return the transformed module.
         """
         pass
 
 
 class PassStage(Stage):
     """
-    A stage that applies a predefined set of passes to the module. This is a simple wrapper around a PassManager.
+    A stage that applies a predefined set of passes to the module.
+    This is a simple wrapper around a PassManager.
     """
 
     def __init__(self, passes: list[Pass], context: ir.Context):
@@ -197,11 +201,13 @@ class TransformStage(Stage):
             spec.loader.exec_module(transform_module)
             if not hasattr(transform_module, transform.generator):
                 raise ValueError(
-                    f"Transform module '{transform.filename}' does not define a '{transform.generator}' generator function."
+                    f"Transform module '{transform.filename}' does not define \
+                        a '{transform.generator}' generator function."
                 )
             self.generator = getattr(transform_module, transform.generator)
 
-            # Run the function with the dictionary as the options that will create the named sequence.
+            # Run the function with the dictionary as the options
+            # that will create the named sequence.
             with context, ir.Location.unknown():
                 self.module = self.generator(transform.options)
         else:
@@ -210,7 +216,8 @@ class TransformStage(Stage):
         # Check if the imported module contains at least one schedule
         if TransformStage.MLIR_ATTRIBUTE not in self.module.operation.attributes:
             raise ValueError(
-                f"Transform module {transform.filename} does not define a {TransformStage.MLIR_ATTRIBUTE} attribute."
+                f"Transform module {transform.filename} does not define \
+                    a {TransformStage.MLIR_ATTRIBUTE} attribute."
             )
 
         # Assume the first (or only) sequence.

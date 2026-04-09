@@ -36,7 +36,7 @@ if not torch_kernels_dir.is_dir():
     )
     sys.exit(1)
 
-
+# ruff: disable[E501]
 # The following kernels won't get converted:
 level1, level2 = Path("level1"), Path("level2")
 ignore_list = [
@@ -121,6 +121,7 @@ ignore_list = [
     level2
     / "92_Conv2d_GroupNorm_Tanh_HardSwish_ResidualAdd_LogSumExp.py",  # error: failed to legalize operation 'torch.constant.int'
 ]
+# ruff: enable[E501]
 
 
 @dataclass
