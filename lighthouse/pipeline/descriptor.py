@@ -26,7 +26,7 @@ class PipelineDescriptor:
 
     search_path = {
         ".py": "../schedule",
-        ".yaml": "../pipeline/descriptors",
+        ".yaml": "./descriptors",
     }
 
     def __init__(self, filename: str):
