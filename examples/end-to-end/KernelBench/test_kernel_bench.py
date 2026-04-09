@@ -1,6 +1,7 @@
-#!/usr/bin/env python
-
 # RUN: python %s | FileCheck %s
+
+# REQUIRES: torch
+# REQUIRES: kernel_bench
 
 import subprocess
 from pathlib import Path
@@ -19,10 +20,6 @@ tests = [
 ]
 
 if __name__ == "__main__":
-    # This is a simple test to run the KernelBench example end-to-end.
-    # It imports the PyTorch model, converts it to MLIR, runs the optimization pipeline, and executes the module.
-    # The test passes if the output of the module matches the expected output from the PyTorch model.
-
     project_root = Path(__file__).parent.parent.parent.parent
     kb_program = project_root / "tools" / "kernel_bench"
     kb_path = project_root / "third_party" / "KernelBench" / "KernelBench"

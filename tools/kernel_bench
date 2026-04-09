@@ -105,13 +105,12 @@ def parse_inputs_and_outputs(
 
 if __name__ == "__main__":
     Parser = argparse.ArgumentParser(
-        description="""
-    Lighthouse Optimization Runner: Optionally applies a series of transformations to an input MLIR module,
-    and executes it on a device.
-    """
+        description="""Kernel Bench importer, optimization and runner."""
     )
     Parser.add_argument(
-        "kernel_bench_model", type=str, help="Path to the payload module to optimize."
+        "kernel_bench_model",
+        type=str,
+        help="Path to the KernelBench module to optimize.",
     )
     Parser.add_argument(
         "--input-shapes",
