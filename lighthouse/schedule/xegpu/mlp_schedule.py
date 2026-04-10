@@ -8,7 +8,7 @@ from mlir.dialects.bufferization import LayoutMapOption
 from mlir.dialects import transform
 from mlir.dialects.transform import structured
 import lighthouse.transform as lh_transform
-from lighthouse.dialects import transform_ext
+from lighthouse.dialects.transform import transform_ext
 from lighthouse.pipeline.helper import (
     apply_registered_pass,
     canonicalize,

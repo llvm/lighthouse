@@ -1,7 +1,7 @@
 from mlir import ir
 from mlir.dialects import ext, transform
 
-from ..dialect import TransformExtensionDialect
+from lighthouse.dialects.transform.transform_ext import TransformExtensionDialect
 
 
 class ParamCmpEqOp(TransformExtensionDialect.Operation, name="param_cmp_eq"):

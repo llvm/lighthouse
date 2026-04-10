@@ -4,7 +4,7 @@ from mlir import ir
 from mlir.dialects import ext, transform
 from mlir.dialects.transform import DiagnosedSilenceableFailure
 
-from ..dialect import TransformExtensionDialect
+from lighthouse.dialects.transform.transform_ext import TransformExtensionDialect
 
 
 class ReplaceOp(TransformExtensionDialect.Operation, name="replace"):
@@ -18,10 +18,10 @@ class ReplaceOp(TransformExtensionDialect.Operation, name="replace"):
     No attempt is made to guarantee that the rewrite is semantics perserving.
     """
 
-    new_op: ext.Result[transform.AnyOpType[()]]
     target: ext.Operand[transform.AnyOpType]
     op_kind: ir.StringAttr
     new_operands: Sequence[ext.Operand[transform.AnyValueType]]
+    new_op: ext.Result[transform.AnyOpType[()]] = ext.result(infer_type=True)
 
     @classmethod
     def attach_interface_impls(cls, ctx=None):

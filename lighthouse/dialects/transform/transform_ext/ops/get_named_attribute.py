@@ -2,7 +2,7 @@ from mlir import ir
 from mlir.dialects import ext, transform
 from mlir.dialects.transform import DiagnosedSilenceableFailure
 
-from ..dialect import TransformExtensionDialect
+from lighthouse.dialects.transform.transform_ext import TransformExtensionDialect
 
 
 class GetNamedAttributeOp(
@@ -16,9 +16,9 @@ class GetNamedAttributeOp(
     with the name `attr_name`, the operation fails.
     """
 
-    param: ext.Result[transform.AnyParamType[()]]
     target: ext.Operand[transform.AnyOpType]
     attr_name: ir.StringAttr
+    param: ext.Result[transform.AnyParamType[()]] = ext.result(infer_type=True)
 
     @classmethod
     def attach_interface_impls(cls, context=None):

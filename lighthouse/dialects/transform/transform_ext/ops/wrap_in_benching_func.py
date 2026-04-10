@@ -3,7 +3,7 @@ from mlir.dialects import ext, transform, func, arith, scf, memref
 from mlir.dialects.transform import DiagnosedSilenceableFailure
 
 from lighthouse.utils.mlir import func_cif
-from ..dialect import TransformExtensionDialect
+from lighthouse.dialects.transform.transform_ext import TransformExtensionDialect
 
 
 class WrapInBenchingFuncOp(
@@ -18,7 +18,7 @@ class WrapInBenchingFuncOp(
     """
 
     target: ext.Operand[transform.AnyOpType]
-    bench_func: ext.Result[transform.AnyOpType[()]]
+    bench_func: ext.Result[transform.AnyOpType[()]] = ext.result(infer_type=True)
 
     @classmethod
     def attach_interface_impls(cls, context=None):

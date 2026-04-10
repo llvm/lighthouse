@@ -4,7 +4,7 @@ from mlir import ir
 from mlir.dialects import ext, smt, transform
 
 from lighthouse.tune import trace
-from ..dialect import TransformSMTExtensionDialect
+from lighthouse.dialects.transform.smt_ext import TransformSMTExtensionDialect
 
 
 class ConstrainParamsOp(

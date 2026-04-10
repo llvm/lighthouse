@@ -1,7 +1,7 @@
 from mlir import ir
 from mlir.dialects import transform
 from mlir.dialects.transform import structured
-from lighthouse.dialects import transform_ext
+from lighthouse.dialects.transform import transform_ext
 
 from .builders import schedule_boilerplate
 
