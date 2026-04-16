@@ -5,9 +5,9 @@
 This tool helps test and validate assumptions of the Lighthouse classes for building compilers.
 
 For now, the Driver will register some passes that you can pass as command line argument.
-In the future we should enable user-registration of pases, bundles, schedules, etc.
+In the future we should enable user-registration of passes, bundles, schedules, etc.
 
-The way to use is demonstrated in the test `test/opt/pipeline-check.mlir`:
+The way to use it is demonstrated in the test `test/opt/pipeline-check.mlir`:
 
 ```
 // Runs one pass over the file
@@ -16,7 +16,7 @@ lh-opt --stage=canonicalize file.mlir
 // Runs one pass bundle over the file
 lh-opt --stage=BufferizationBundle file.mlir
 
-// Runs one trasnform over the file
+// Runs one transform over the file
 lh-opt --stage=my-transform.mlir file.mlir
 
 // Runs a whole pipeline on the file
@@ -43,7 +43,7 @@ Note, this basic functionality is for testing purposes.
 
 ## kernel-bench
 
-End-to-end tool that takes in a [KernelBench](https://github.com/ScalingIntelligence/KernelBench) program, input and output shapes and executes it. This is an example on how you would build a compiler using Lighthouse's modules.
+End-to-end tool that takes in a [KernelBench](https://github.com/ScalingIntelligence/KernelBench) program, input and output shapes, and executes it. This is an example of how you would build a compiler using Lighthouse's modules.
 
 The way to use is demonstrated in the test `examples/end-to-end/KernelBench/test_kernel_bench.py`:
 
@@ -60,7 +60,7 @@ kernel-bench level1/2_Standard_matrix_multiplication_.py --input-shapes 1024x204
 
 Uses the in-tree submodule of KernelBench.
 
-Note, input/output syntax is experimental. See the `execution/init` module for more details.
+Note: input/output syntax is experimental. See the `execution/init` module for more details.
 
 ## lh-tune
 
