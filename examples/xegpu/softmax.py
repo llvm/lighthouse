@@ -19,7 +19,7 @@ from lighthouse.execution import GPUMemoryManager
 from lighthouse.utils.numpy import mlir_to_numpy_dtype
 from lighthouse.ingress.mlir_gen import get_mlir_elem_type
 from lighthouse.ingress.mlir_gen.gpu_softmax_payload import generate_gpu_softmax_payload
-from lighthouse.schedule.xegpu.softmax_schedule import get_softmax_schedule_module
+from lighthouse.schedule.xegpu import softmax_schedule, xegpu_to_binary
 
 
 def softmax_complexity(M: int, N: int, nbytes: int):
@@ -134,13 +134,22 @@ class XeGPUSoftmax:
         self, stop_at_stage: Optional[str] = None, parameters: Optional[dict] = None
     ) -> list[ir.Module]:
         """Generate transform schedule for softmax."""
-        return [
-            Runner.get_bench_wrapper_schedule(self.payload_function_name),
-            get_softmax_schedule_module(
+        schedules = []
+        schedules.append(Runner.get_bench_wrapper_schedule(self.payload_function_name))
+
+        schedules.append(
+            softmax_schedule(
                 stop_at_stage=stop_at_stage,
                 parameters=parameters,
-            ),
-        ]
+            )
+        )
+
+        if stop_at_stage and stop_at_stage != "final":
+            return schedules
+
+        schedules.append(xegpu_to_binary())
+
+        return schedules
 
     def shared_libs(self) -> list[str]:
         return ["libmlir_levelzero_runtime.so"]

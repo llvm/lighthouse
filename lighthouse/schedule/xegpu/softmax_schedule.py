@@ -15,10 +15,9 @@ from lighthouse.pipeline.helper import (
     match_and_split,
     PipelineInterrupt,
 )
-from lighthouse.schedule.xegpu.helper import bundle_xegpu_to_binary
 
 
-def get_softmax_schedule_module(
+def softmax_schedule(
     stop_at_stage: Optional[str] = None,
     parameters: Optional[dict] = None,
 ) -> ir.Module:
@@ -68,36 +67,23 @@ def get_softmax_schedule_module(
                 deduplicate=True,
             )
 
-            xegpu_softmax_transform_schedule(
-                payload_mod,
-                parameters=parameters,
-                stop_at_stage=stop_at_stage or "",
-            )
+            try:
+                bundle_xegpu_softmax_schedule(
+                    payload_mod,
+                    parameters=parameters,
+                    stop_at_stage=stop_at_stage,
+                )
+            except PipelineInterrupt:
+                pass
+            finally:
+                transform.yield_()
+            # xegpu_softmax_transform_schedule(
+            #     payload_mod,
+            #     parameters=parameters,
+            #     stop_at_stage=stop_at_stage or "",
+            # )
 
     return mod
-
-
-def xegpu_softmax_transform_schedule(
-    mod: ir.Value[transform.AnyOpType],
-    parameters: dict,
-    stop_at_stage: str = "",
-):
-    """Transform schedule for softmax payload."""
-    try:
-        mod = bundle_xegpu_softmax_schedule(
-            mod,
-            parameters=parameters,
-            stop_at_stage=stop_at_stage,
-        )
-
-        mod = bundle_xegpu_to_binary(
-            mod,
-            stop_at_stage=stop_at_stage,
-        )
-    except PipelineInterrupt:
-        pass
-    finally:
-        transform.yield_()
 
 
 def bundle_xegpu_softmax_schedule(

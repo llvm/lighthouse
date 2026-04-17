@@ -26,7 +26,7 @@ from lighthouse.execution import (
     MemoryManager,
     GPUMemoryManager,
 )
-from lighthouse.schedule.xegpu.mlp_schedule import get_schedule_module
+from lighthouse.schedule.xegpu import mlp_schedule, xegpu_to_binary
 from lighthouse.utils.numpy import mlir_to_numpy_dtype
 from lighthouse.ingress.mlir_gen import generate_gpu_matmul_payload, get_mlir_elem_type
 
@@ -159,13 +159,22 @@ class XeGPUMatMul:
         self, stop_at_stage: Optional[str] = None, parameters: Optional[dict] = None
     ) -> list[ir.Module]:
         assert parameters is not None, "Schedule parameters must be provided"
-        return [
-            Runner.get_bench_wrapper_schedule(self.payload_function_name),
-            get_schedule_module(
+        schedules = []
+        schedules.append(Runner.get_bench_wrapper_schedule(self.payload_function_name))
+
+        schedules.append(
+            mlp_schedule(
                 stop_at_stage=stop_at_stage,
                 params=[parameters],
-            ),
-        ]
+            )
+        )
+
+        if stop_at_stage and stop_at_stage != "final":
+            return schedules
+
+        schedules.append(xegpu_to_binary())
+
+        return schedules
 
     def shared_libs(self) -> list[str]:
         return ["libmlir_levelzero_runtime.so"]

@@ -16,7 +16,6 @@ from lighthouse.pipeline.helper import (
     match_and_split,
     PipelineInterrupt,
 )
-from lighthouse.schedule.xegpu.helper import bundle_xegpu_to_binary
 
 from lighthouse.dialects import smt_ext
 from lighthouse.dialects.transform import smt_ext as td_smt_ext
@@ -104,11 +103,11 @@ def params_with_constraints_imposed(
     }
 
 
-def get_schedule_module(
+def mlp_schedule(
     params: list[dict[str, int | None]],
     stop_at_stage: str = "",
 ) -> ir.Module:
-    """Generate transform schedule module."""
+    """Generate transform schedule module for MLP payload."""
     assert params is not None and len(params) > 0, "params must be provided."
     mod = ir.Module.create()
     mod.operation.attributes["transform.with_named_sequence"] = ir.UnitAttr.get()
@@ -134,36 +133,18 @@ def get_schedule_module(
                     layer_params, knob_name_prefix=f"layer_{i}_"
                 )
 
-            xegpu_mlp_transform_schedule(
-                payload_mod,
-                params=params,
-                stop_at_stage=stop_at_stage,
-            )
+            try:
+                bundle_xegpu_mlp_schedule(
+                    payload_mod,
+                    params=params,
+                    stop_at_stage=stop_at_stage,
+                )
+            except PipelineInterrupt:
+                pass
+            finally:
+                transform.yield_()
 
     return mod
-
-
-def xegpu_mlp_transform_schedule(
-    mod: ir.Value[transform.AnyOpType],
-    params: list[dict[str, int | KnobValue]],
-    stop_at_stage: str = "",
-):
-    """Transform schedule for MLP-like payload."""
-    try:
-        mod = bundle_xegpu_mlp_schedule(
-            mod,
-            params=params,
-            stop_at_stage=stop_at_stage,
-        )
-
-        mod = bundle_xegpu_to_binary(
-            mod,
-            stop_at_stage=stop_at_stage,
-        )
-    except PipelineInterrupt:
-        pass
-    finally:
-        transform.yield_()
 
 
 def bundle_xegpu_mlp_schedule(
