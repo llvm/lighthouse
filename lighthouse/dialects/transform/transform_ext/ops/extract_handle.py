@@ -18,7 +18,7 @@ class ExtractHandleOp(TransformExtensionDialect.Operation, name="extract_handle"
 
     target: ext.Operand[transform.AnyOpType]
     index: ext.Operand[transform.AnyParamType]
-    ops: ext.Result[transform.AnyOpType[()]] = ext.result(infer_type=True)
+    ops: ext.Result[transform.AnyOpType[()]] = ext.infer_result()
 
     @classmethod
     def attach_interface_impls(cls, ctx=None):

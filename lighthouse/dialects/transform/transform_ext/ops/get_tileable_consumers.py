@@ -20,7 +20,7 @@ class GetTileableConsumersOp(
     """
 
     target: ext.Operand[transform.AnyOpType]
-    ops: ext.Result[transform.AnyOpType[()]] = ext.result(infer_type=True)
+    ops: ext.Result[transform.AnyOpType[()]] = ext.infer_result()
 
     @classmethod
     def attach_interface_impls(cls, ctx=None):

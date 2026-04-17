@@ -18,7 +18,7 @@ class GetNamedAttributeOp(
 
     target: ext.Operand[transform.AnyOpType]
     attr_name: ir.StringAttr
-    param: ext.Result[transform.AnyParamType[()]] = ext.result(infer_type=True)
+    param: ext.Result[transform.AnyParamType[()]] = ext.infer_result()
 
     @classmethod
     def attach_interface_impls(cls, context=None):

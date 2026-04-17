@@ -18,7 +18,7 @@ class WrapInBenchingFuncOp(
     """
 
     target: ext.Operand[transform.AnyOpType]
-    bench_func: ext.Result[transform.AnyOpType[()]] = ext.result(infer_type=True)
+    bench_func: ext.Result[transform.AnyOpType[()]] = ext.infer_result()
 
     @classmethod
     def attach_interface_impls(cls, context=None):

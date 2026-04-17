@@ -23,7 +23,7 @@ class ConvertFuncResultsToArgsOp(
     """
 
     target: ext.Operand[transform.AnyOpType]
-    converted_func: ext.Result[transform.AnyOpType[()]] = ext.result(infer_type=True)
+    converted_func: ext.Result[transform.AnyOpType[()]] = ext.infer_result()
 
     @classmethod
     def attach_interface_impls(cls, context=None):

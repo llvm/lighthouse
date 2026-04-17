@@ -21,7 +21,7 @@ class ReplaceOp(TransformExtensionDialect.Operation, name="replace"):
     target: ext.Operand[transform.AnyOpType]
     op_kind: ir.StringAttr
     new_operands: Sequence[ext.Operand[transform.AnyValueType]]
-    new_op: ext.Result[transform.AnyOpType[()]] = ext.result(infer_type=True)
+    new_op: ext.Result[transform.AnyOpType[()]] = ext.infer_result()
 
     @classmethod
     def attach_interface_impls(cls, ctx=None):
