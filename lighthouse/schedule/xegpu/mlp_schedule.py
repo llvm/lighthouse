@@ -183,25 +183,26 @@ def bundle_xegpu_mlp_schedule(
 
     # tile each layer separately
     for matmul_op, layer_params in zip(matmul_ops, params):
+        # tunable parameters: wg and k tiling
+        wg_tile = [layer_params["wg_m"], layer_params["wg_n"]]
+        k_tile = layer_params["k_tile"]
+
         # find the last tileable consumer of the matmul
         consumers = transform_ext.get_tileable_consumers(matmul_op)
         leaf_consumer_op = transform_ext.extract_handle(consumers, -1)
 
-        # tunable parameters: wg level tiling
-        wg_tile = [layer_params["wg_m"], layer_params["wg_n"]]
-        k_tile = layer_params["k_tile"]
-
-        _, wg_loop = structured.FuseOp(
-            leaf_consumer_op, tile_sizes=wg_tile, use_forall=True
-        ).results
-        transform.apply_cse(mod)
-        canonicalize(mod)
+        # wg tiling
+        _, [wg_loop], _ = lh_transform.tile(
+            leaf_consumer_op,
+            tile_sizes=wg_tile,
+            fuse_producers=True,
+            use_forall=True,
+            apply_cleanup=False,
+        )
 
         # k loop tiling
         wg_matmul = match(wg_loop, ops={"linalg.matmul"})
-        wgk_matmul, k_loop = structured.TileUsingForOp(
-            wg_matmul, sizes=[0, 0, k_tile]
-        ).results
+        _, [k_loop], _ = lh_transform.tile(wg_matmul, tile_sizes=[0, 0, k_tile])
 
     func = transform.get_parent_op(
         anytype,
@@ -209,25 +210,22 @@ def bundle_xegpu_mlp_schedule(
         op_name="func.func",
         deduplicate=True,
     )
-    transform.apply_cse(func)
-    canonicalize(func)
+    lh_transform.cleanup(func)
 
     if stop_at_stage == "tiled":
         raise PipelineInterrupt()
 
     # vectorize
-    # FIXME use structured.structured_vectorize_children_and_apply_patterns
-    func = structured.VectorizeChildrenAndApplyPatternsOp(
+    func = structured.structured_vectorize_children_and_apply_patterns(
+        transform.any_op_t(),
         func,
         fold_type_extensions_into_contract=True,
-    ).result
+    )
 
     # hoist loop invariant vector read/store ops
     k_loop = match(func, ops={"scf.for"})
-    loop.HoistLoopInvariantSubsetsOp(k_loop)
-
-    transform.apply_cse(func)
-    canonicalize(func)
+    lh_transform.loop_hoisting(k_loop)
+    lh_transform.cleanup(func)
 
     if stop_at_stage == "vectorized":
         raise PipelineInterrupt()

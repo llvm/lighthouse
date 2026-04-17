@@ -13,6 +13,8 @@ def tile(
     tile_interchange: list[int] | None = None,
     peel_loops: list[int] = [],
     unroll_factors: list[int] = [],
+    apply_cleanup: bool = True,
+    use_forall: bool = False,
 ) -> tuple[ir.Value, Sequence[ir.Value], Sequence[ir.Value]]:
     """
     Apply tiling to the target operation.
@@ -39,6 +41,8 @@ def tile(
             Zero factor means no unrolling is performed.
             Unrolling is applied from the innermost loop.
             Skipped if None. Exclusive with peeling.
+        apply_cleanup: Whether to apply cleanup in structured.FuseOp.
+        use_forall: Whether to use forall loops with structured.FuseOp.
     Returns:
         Handles to:
             - tiled op
@@ -55,7 +59,8 @@ def tile(
             target,
             tile_sizes=tile_sizes,
             tile_interchange=tile_interchange,
-            apply_cleanup=True,
+            apply_cleanup=apply_cleanup,
+            use_forall=use_forall,
         ).results
     else:
         tiled_op, *loops = structured.TileUsingForOp(
