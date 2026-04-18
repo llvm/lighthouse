@@ -15,6 +15,7 @@ from lighthouse.pipeline.helper import (
     match_and_split,
     PipelineInterrupt,
 )
+from lighthouse.schedule import schedule_boilerplate
 
 
 def softmax_schedule(
@@ -44,46 +45,29 @@ def softmax_schedule(
     """
     assert parameters is not None, "Schedule parameters must be provided"
 
-    mod = ir.Module.create()
-    mod.operation.attributes["transform.with_named_sequence"] = ir.UnitAttr.get()
-
-    with ir.InsertionPoint(mod.body):
-        # Create a transform sequence with proper signature
-        named_sequence = transform.named_sequence(
-            "__transform_main",
-            [transform.AnyOpType.get()],  # input: module
-            [],  # no outputs
-            arg_attrs=[{"transform.readonly": ir.UnitAttr.get()}],
+    with schedule_boilerplate() as (schedule, named_seq):
+        # match the payload module
+        anytype = transform.AnyOpType.get()
+        func = match(named_seq.bodyTarget, ops={"func.func"})
+        payload_mod = transform.get_parent_op(
+            anytype,
+            func,
+            op_name="builtin.module",
+            deduplicate=True,
         )
 
-        with ir.InsertionPoint(named_sequence.body):
-            # match the payload module
-            anytype = transform.AnyOpType.get()
-            func = match(named_sequence.bodyTarget, ops={"func.func"})
-            payload_mod = transform.get_parent_op(
-                anytype,
-                func,
-                op_name="builtin.module",
-                deduplicate=True,
+        try:
+            bundle_xegpu_softmax_schedule(
+                payload_mod,
+                parameters=parameters,
+                stop_at_stage=stop_at_stage,
             )
+        except PipelineInterrupt:
+            pass
+        finally:
+            transform.yield_()
 
-            try:
-                bundle_xegpu_softmax_schedule(
-                    payload_mod,
-                    parameters=parameters,
-                    stop_at_stage=stop_at_stage,
-                )
-            except PipelineInterrupt:
-                pass
-            finally:
-                transform.yield_()
-            # xegpu_softmax_transform_schedule(
-            #     payload_mod,
-            #     parameters=parameters,
-            #     stop_at_stage=stop_at_stage or "",
-            # )
-
-    return mod
+    return schedule
 
 
 def bundle_xegpu_softmax_schedule(

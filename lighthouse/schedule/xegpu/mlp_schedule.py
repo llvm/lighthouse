@@ -17,6 +17,7 @@ from lighthouse.pipeline.helper import (
     PipelineInterrupt,
 )
 
+from lighthouse.schedule import schedule_boilerplate
 from lighthouse.dialects import smt_ext
 from lighthouse.dialects.transform import smt_ext as td_smt_ext
 from lighthouse.dialects.transform.tune_ext import knob, KnobValue
@@ -109,42 +110,33 @@ def mlp_schedule(
 ) -> ir.Module:
     """Generate transform schedule module for MLP payload."""
     assert params is not None and len(params) > 0, "params must be provided."
-    mod = ir.Module.create()
-    mod.operation.attributes["transform.with_named_sequence"] = ir.UnitAttr.get()
-    with ir.InsertionPoint(mod.body):
-        named_sequence = transform.named_sequence(
-            "__transform_main",
-            [transform.AnyOpType.get()],  # input types
-            [],  # output types
-            arg_attrs=[{"transform.readonly": ir.UnitAttr.get()}],
+    with schedule_boilerplate() as (schedule, named_seq):
+        # match the payload module
+        anytype = transform.AnyOpType.get()
+        func = match(named_seq.bodyTarget, ops={"func.func"})
+        payload_mod = transform.get_parent_op(
+            anytype,
+            func,
+            op_name="builtin.module",
+            deduplicate=True,
         )
-        with ir.InsertionPoint(named_sequence.body):
-            # match the payload module
-            anytype = transform.AnyOpType.get()
-            func = match(named_sequence.bodyTarget, ops={"func.func"})
-            payload_mod = transform.get_parent_op(
-                anytype,
-                func,
-                op_name="builtin.module",
-                deduplicate=True,
+        for i, layer_params in enumerate(params):
+            layer_params |= params_with_constraints_imposed(
+                layer_params, knob_name_prefix=f"layer_{i}_"
             )
-            for i, layer_params in enumerate(params):
-                layer_params |= params_with_constraints_imposed(
-                    layer_params, knob_name_prefix=f"layer_{i}_"
-                )
 
-            try:
-                bundle_xegpu_mlp_schedule(
-                    payload_mod,
-                    params=params,
-                    stop_at_stage=stop_at_stage,
-                )
-            except PipelineInterrupt:
-                pass
-            finally:
-                transform.yield_()
+        try:
+            bundle_xegpu_mlp_schedule(
+                payload_mod,
+                params=params,
+                stop_at_stage=stop_at_stage,
+            )
+        except PipelineInterrupt:
+            pass
+        finally:
+            transform.yield_()
 
-    return mod
+    return schedule
 
 
 def bundle_xegpu_mlp_schedule(
