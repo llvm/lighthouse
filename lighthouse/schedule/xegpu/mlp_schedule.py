@@ -63,6 +63,8 @@ def params_with_constraints_imposed(
     prefetch_a_k = params["prefetch_a_k"] or knob(knob_name_prefix + "prefetch_a_k")
     prefetch_b_k = params["prefetch_b_k"] or knob(knob_name_prefix + "prefetch_b_k")
     prefetch_b_n = params["prefetch_b_n"] or knob(knob_name_prefix + "prefetch_b_n")
+    prefetch_a_nb = params["prefetch_a_nb"] or knob(knob_name_prefix + "prefetch_a_nb")
+    prefetch_b_nb = params["prefetch_b_nb"] or knob(knob_name_prefix + "prefetch_b_nb")
 
     # NB: Constraints on knobs will be added as attributes on the KnobOps, while
     #     constraints on concrete values will be checked immediately.
@@ -76,6 +78,8 @@ def params_with_constraints_imposed(
     assert n % sg_n == 0 and sg_n % DPAS.N == 0
     assert 16 <= k_tile <= min(k, 256)
     assert k % k_tile == 0 and k_tile % DPAS.K == 0
+    assert prefetch_a_nb > 0
+    assert prefetch_b_nb > 0
 
     LOAD_TILE_SIZES = [8, 16, 32]
     assert load_a_m in LOAD_TILE_SIZES and load_a_m % DPAS.M == 0
@@ -323,7 +327,8 @@ def xegpu_wg_annotation_for_mlp_layer(
     prefetch_a_k: int | KnobValue,
     prefetch_b_k: int | KnobValue,
     prefetch_b_n: int | KnobValue,
-    prefetch_nb: int,
+    prefetch_a_nb: int | KnobValue,
+    prefetch_b_nb: int | KnobValue,
     **_catch_all,
 ):
     """
@@ -414,23 +419,23 @@ def xegpu_wg_annotation_for_mlp_layer(
         # NOTE this can plausibly be relaxed
         smt_ext.assert_(nb_load_b_n <= 1, "invalid load_tile_b_n for VNNI")
 
-        # prefetch A layout
-        prefetch_nb_a_m = WG_M // PFA_M
-        prefetch_nb_a_k = K_TILE // PFA_K
-        prefetch_nb_a = prefetch_nb_a_m * prefetch_nb_a_k
-        smt_ext.assert_(prefetch_nb_a <= MAX_NB_SG_THREADS)
-        smt_ext.assert_(prefetch_nb_a_m * prefetch_nb_a_k >= MIN_NB_THREADS)
+        # prefetch A thread layout
+        prefetch_th_a_m = WG_M // PFA_M
+        prefetch_th_a_k = K_TILE // PFA_K
+        prefetch_th_a = prefetch_th_a_m * prefetch_th_a_k
+        smt_ext.assert_(prefetch_th_a <= MAX_NB_SG_THREADS)
+        smt_ext.assert_(prefetch_th_a_m * prefetch_th_a_k >= MIN_NB_THREADS)
 
-        # prefetch B layout
-        prefetch_nb_b_k = K_TILE // PFB_K
-        prefetch_nb_b_n = WG_N // PFB_N
-        prefetch_nb_b = prefetch_nb_b_k * prefetch_nb_b_n
-        smt_ext.assert_(prefetch_nb_b <= MAX_NB_SG_THREADS)
-        if isinstance(prefetch_nb_b, smt_ext.SMTIntValue):
+        # prefetch B thread layout
+        prefetch_th_b_k = K_TILE // PFB_K
+        prefetch_th_b_n = WG_N // PFB_N
+        prefetch_th_b = prefetch_th_b_k * prefetch_th_b_n
+        smt_ext.assert_(prefetch_th_b <= MAX_NB_SG_THREADS)
+        if isinstance(prefetch_th_b, smt_ext.SMTIntValue):
             # NB: Constraint only enabled during tuning.
-            smt_ext.assert_(prefetch_nb_b_k * prefetch_nb_b_n >= MIN_NB_THREADS)
+            smt_ext.assert_(prefetch_th_b_k * prefetch_th_b_n >= MIN_NB_THREADS)
 
-        return prefetch_nb_a_m, prefetch_nb_a_k, prefetch_nb_b_k, prefetch_nb_b_n
+        return prefetch_th_a_m, prefetch_th_a_k, prefetch_th_b_k, prefetch_th_b_n
 
     prefetch_layout_a = constrain_and_calculate_load_and_prefetch_params.results[0:2]
     prefetch_layout_b = constrain_and_calculate_load_and_prefetch_params.results[2:4]
@@ -456,14 +461,14 @@ def xegpu_wg_annotation_for_mlp_layer(
 
     add_prefetch(
         load_op_a,
-        prefetch_nb,
+        prefetch_a_nb,
         sg_layout=prefetch_layout_a,
         sg_data=prefetch_tile_a,
         inst_data=PREFETCH_INST_DATA,
     )
     add_prefetch(
         load_op_b,
-        prefetch_nb,
+        prefetch_b_nb,
         sg_layout=prefetch_layout_b,
         sg_data=prefetch_tile_b,
         inst_data=PREFETCH_INST_DATA,

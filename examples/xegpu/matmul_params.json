@@ -16,7 +16,8 @@
         "prefetch_a_k": 16,
         "prefetch_b_k": 16,
         "prefetch_b_n": 16,
-        "prefetch_nb": 1
+        "prefetch_a_nb": 1,
+        "prefetch_b_nb": 1
     },
     {
         "m": 1024,
@@ -35,7 +36,8 @@
         "prefetch_a_k": 16,
         "prefetch_b_k": 16,
         "prefetch_b_n": 16,
-        "prefetch_nb": 1
+        "prefetch_a_nb": 1,
+        "prefetch_b_nb": 1
     },
     {
         "m": 1024,
@@ -54,7 +56,8 @@
         "prefetch_a_k": 16,
         "prefetch_b_k": 32,
         "prefetch_b_n": 16,
-        "prefetch_nb": 1
+        "prefetch_a_nb": 1,
+        "prefetch_b_nb": 1
     },
     {
         "m": 128,
@@ -73,7 +76,8 @@
         "prefetch_a_k": 16,
         "prefetch_b_k": 8,
         "prefetch_b_n": 32,
-        "prefetch_nb": 1
+        "prefetch_a_nb": 1,
+        "prefetch_b_nb": 1
     },
     {
         "m": 128,
@@ -92,7 +96,8 @@
         "prefetch_a_k": 16,
         "prefetch_b_k": 8,
         "prefetch_b_n": 16,
-        "prefetch_nb": 1
+        "prefetch_a_nb": 1,
+        "prefetch_b_nb": 1
     },
     {
         "m": 128,
@@ -111,7 +116,8 @@
         "prefetch_a_k": 16,
         "prefetch_b_k": 16,
         "prefetch_b_n": 32,
-        "prefetch_nb": 1
+        "prefetch_a_nb": 1,
+        "prefetch_b_nb": 1
     },
     {
         "m": 128,
@@ -130,7 +136,8 @@
         "prefetch_a_k": 16,
         "prefetch_b_k": 8,
         "prefetch_b_n": 16,
-        "prefetch_nb": 1
+        "prefetch_a_nb": 1,
+        "prefetch_b_nb": 1
     },
     {
         "m": 128,
@@ -149,7 +156,8 @@
         "prefetch_a_k": 32,
         "prefetch_b_k": 32,
         "prefetch_b_n": 16,
-        "prefetch_nb": 1
+        "prefetch_a_nb": 1,
+        "prefetch_b_nb": 1
     },
     {
         "m": 4096,
@@ -168,6 +176,7 @@
         "prefetch_a_k": 32,
         "prefetch_b_k": 8,
         "prefetch_b_n": 32,
-        "prefetch_nb": 1
+        "prefetch_a_nb": 1,
+        "prefetch_b_nb": 1
     }
 ]

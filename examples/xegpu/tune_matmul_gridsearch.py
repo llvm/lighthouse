@@ -291,7 +291,7 @@ def construct_search_space(M: int, N: int, K: int):
     sg_tiles_n = divisible_by(get_divisors(N, *sg_tile_lim_n), DPAS.N)
     k_tiles = divisible_by(get_divisors(K, 16, min(K, 256)), DPAS.K)
     load_tiles = [8, 16, 32]
-    prefetches = [1]
+    prefetch_nb = [1, 2, 3]
 
     def sample_is_valid(sample_params, verbose=False):
         params = {"m": M, "n": N, "k": K}
@@ -313,7 +313,8 @@ def construct_search_space(M: int, N: int, K: int):
             Variable("prefetch_a_k", load_tiles),
             Variable("prefetch_b_k", load_tiles),
             Variable("prefetch_b_n", load_tiles),
-            Variable("prefetch_nb", prefetches),
+            Variable("prefetch_a_nb", prefetch_nb),
+            Variable("prefetch_b_nb", prefetch_nb),
         ],
         is_valid_fn=sample_is_valid,
     )
