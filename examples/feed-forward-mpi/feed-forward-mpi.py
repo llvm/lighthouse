@@ -14,7 +14,7 @@ import ctypes
 import numpy as np
 
 from mlir import ir
-from mlir.dialects import transform, func
+from mlir.dialects import transform
 from mlir.dialects.transform.bufferization import OneShotBufferizeOp
 from mlir.dialects.bufferization import LayoutMapOption
 from mlir.runtime.np_to_memref import ranked_memref_to_numpy
@@ -32,6 +32,7 @@ from lighthouse.pipeline.driver import TransformDriver
 from lighthouse.schedule import schedule_boilerplate
 from lighthouse.schedule.x86 import tile_and_vector_matmul
 from lighthouse.utils.numpy import numpy_to_mlir_type, mlir_to_numpy_dtype
+from lighthouse.utils.mlir import inspect_payload
 from lighthouse.ingress.mlir_gen.shard_utils import (
     emit_dealloc,
     emit_shard_gather,
@@ -50,37 +51,6 @@ WORLD_RANK = MPI.COMM_WORLD.Get_rank()
 def rprint(*args, **kwargs):
     if WORLD_RANK == 0:
         print(*args, **kwargs)
-
-
-def inspect_payload(payload_module: ir.Module) -> dict:
-    """
-    Inspect the payload module and extract metadata about the functions/ops it contains.
-
-    Returns a dictionary:
-    {
-        function_name: {
-            "inputs": [input types],
-            "results": [result types],
-        },
-        ...
-    }
-    """
-
-    functions = {}
-
-    def match_funcs(op: ir.Operation) -> ir.WalkResult:
-        op = op.opview
-        match op:
-            case func.FuncOp():
-                functions[op.sym_name.value] = {
-                    "inputs": op.type.inputs,
-                    "results": op.type.results,
-                }
-        return ir.WalkResult.ADVANCE
-
-    for op in payload_module.body.operations:
-        op.walk(match_funcs, ir.WalkOrder.PRE_ORDER)
-    return functions
 
 
 def parse_cla():
