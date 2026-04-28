@@ -3,7 +3,7 @@ MLIR utility functions.
 """
 
 from mlir import ir
-from mlir.dialects import func
+from mlir.dialects import func, linalg
 import os
 from pathlib import Path
 
@@ -44,3 +44,51 @@ def func_cif(*args, **kwargs):
         return r
 
     return wrap
+
+
+def inspect_payload(payload_module: ir.Module) -> dict:
+    """
+    Inspect the payload module and extract metadata about the functions/ops it contains.
+
+    Returns a dictionary:
+    {
+        function_name: {
+            "inputs": [input types],
+            "results": [result types],
+            "matmuls": [(m, n, k), ...]  # list of matmul shapes
+        },
+        ...
+    }
+    """
+
+    functions = {}
+
+    def match_funcs(op: ir.Operation) -> ir.WalkResult:
+        op = op.opview
+        match op:
+            case func.FuncOp():
+                matmuls = []
+
+                def match_linalg(op: ir.Operation) -> ir.WalkResult:
+                    op = op.opview
+                    match op:
+                        case linalg.MatmulOp():
+                            inputs = op.inputs
+                            outputs = op.outputs
+                            assert len(inputs) == 2 and len(outputs) == 1
+                            m, k = inputs[0].type.shape
+                            _, n = inputs[1].type.shape
+                            matmuls.append((m, n, k))
+                    return ir.WalkResult.ADVANCE
+
+                op.walk(match_linalg, ir.WalkOrder.PRE_ORDER)
+                functions[op.sym_name.value] = {
+                    "inputs": op.type.inputs,
+                    "results": op.type.results,
+                    "matmuls": matmuls,
+                }
+        return ir.WalkResult.ADVANCE
+
+    for op in payload_module.body.operations:
+        op.walk(match_funcs, ir.WalkOrder.PRE_ORDER)
+    return functions
