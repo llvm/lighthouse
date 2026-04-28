@@ -8,6 +8,8 @@ import ml_dtypes
 import numpy as np
 from pathlib import Path
 import torch
+from mlir import ir
+
 
 from lighthouse.execution.runner import Runner
 from lighthouse.execution.init import KernelArgumentParser
@@ -15,6 +17,11 @@ from lighthouse.pipeline.driver import CompilerDriver
 from lighthouse.schedule import convert_function_results
 from lighthouse import dialects as lh_dialects
 from lighthouse import ingress as lh_ingress
+from lighthouse.schedule.xegpu import xegpu_to_binary, mlp_schedule
+from lighthouse.execution import GPUMemoryManager
+from lighthouse.utils.mlir import inspect_payload
+from lighthouse.utils.numpy import numpy_to_mlir_type
+from lighthouse.schedule.xegpu import xegpu_parameter_selector
 
 
 def import_kb_module(
@@ -53,15 +60,16 @@ def import_kb_module(
 
 
 def define_compiler_pipeline(
-    mlir_file: Path,
+    driver: CompilerDriver,
     pipeline_yaml: str | None,
     benchmark: bool = False,
+    default_pipeline: str | None = None,
+    pipeline_params: list[dict[str, int | None]] | None = None,
 ) -> None:
     """
     Defines the compiler pipeline by adding stages to the driver.
     The stages can be defined in a YAML file, or added manually in this function.
     """
-    driver = CompilerDriver(mlir_file)
 
     with driver.context:
         lh_dialects.register_and_load()
@@ -81,12 +89,14 @@ def define_compiler_pipeline(
     if pipeline_yaml:
         # Add stages defined by the user.
         driver.add_stages(pipeline_yaml)
+    elif default_pipeline == "xegpu_mlp_pipeline":
+        with driver.context, ir.Location.unknown():
+            driver.add_module_stage(mlp_schedule(pipeline_params))
+            driver.add_module_stage(xegpu_to_binary())
     else:
         # Search for the yaml file in the script directory.
         path = Path(__file__).parent / "kernel_bench.yaml"
         driver.add_stage(str(path))
-
-    return driver
 
 
 def parse_inputs_and_outputs(
@@ -101,8 +111,8 @@ def parse_inputs_and_outputs(
     # torch.from_numpy() does not support ml_dtypes.bfloat16, so reinterpret as uint16 first.
     if any(buf.dtype == ml_dtypes.bfloat16 for buf in buffers):
         print(
-            "Warning: bfloat16 is not natively supported by torch.from_numpy(), \
-            so we are reinterpreting the buffers as uint16. This may cause issues if the buffers are modified after creation."
+            "Warning: bfloat16 is not natively supported by torch.from_numpy(), "
+            "so we are reinterpreting the buffers as uint16. This may cause issues if the buffers are modified after creation."
         )
     sample_tensors = [
         torch.from_numpy(buf.view(np.uint16)).view(torch.bfloat16)
@@ -116,74 +126,88 @@ def parse_inputs_and_outputs(
 
 
 if __name__ == "__main__":
-    Parser = argparse.ArgumentParser(
+    parser = argparse.ArgumentParser(
         description="""Kernel Bench importer, optimization and runner."""
     )
-    Parser.add_argument(
+    parser.add_argument(
         "kernel_bench_model",
         type=str,
         help="Path to the KernelBench module to optimize.",
     )
-    Parser.add_argument(
+    parser.add_argument(
         "--input-shapes",
         required=True,
         help="Shape of the input tensors in format: \
               DIMS(MxNx...)xTYPE(f16/f32/f64/bf16/i8)xINIT(0/1/rnd/id). \
               For multiple inputs, separate by comma.",
     )
-    Parser.add_argument(
+    parser.add_argument(
         "--output-shape",
         required=True,
         help="Shape of the output tensor in format: \
               DIMS(MxNx...)xTYPE(f16/f32/f64/bf16/i8)xINIT(0/1/rnd/id). \
               Single output shape supported.",
     )
-    Parser.add_argument(
+    parser.add_argument(
         "--seed",
         type=int,
         default=0,
         help="Random seed for initializing input tensors.",
     )
-    Parser.add_argument(
+    parser.add_argument(
         "--pipeline",
         type=str,
         action="append",
         help="A descriptor file (YAML) with the pipeline stages to apply. Minimal passes always apply.",
     )
-    Parser.add_argument(
+    parser.add_argument(
+        "--target",
+        choices=["cpu", "xegpu"],
+        default="cpu",
+        help="Target device for execution.",
+    )
+    parser.add_argument(
         "-O",
         type=int,
         default=3,
         help="Optimization level for the LLVM back-end. Default is 3.",
     )
-    Parser.add_argument(
+    parser.add_argument(
         "--benchmark",
         action=argparse.BooleanOptionalAction,
         help="Whether to run the benchmark. Default is False.",
     )
-    Parser.add_argument(
+    parser.add_argument(
         "--print-optimized-module",
         action=argparse.BooleanOptionalAction,
         help="Whether to print the optimized module. Default is False.",
     )
-    Parser.add_argument(
+    parser.add_argument(
         "--entry-point",
         type=str,
         default="main",
         help="Name of the function to execute or benchmark. Default is 'main'.",
     )
-    Parser.add_argument(
+    parser.add_argument(
         "--print-tensor",
         type=int,
         default=0,
         help="Print the Nth tensor. Default is 0 (no print).",
     )
-    Parser.add_argument(
+    parser.add_argument(
         "--print-mlir-after-all",
         action=argparse.BooleanOptionalAction,
         help="Whether to print the MLIR module after all stages. Default is False.",
     )
-    args = Parser.parse_args()
+    parser.add_argument(
+        "--verbose",
+        "-v",
+        action="count",
+        default=0,
+        help="Increase output verbosity.",
+    )
+
+    args = parser.parse_args()
 
     # Initialize the random seed, for stable tests
     if args.seed:
@@ -199,27 +223,105 @@ if __name__ == "__main__":
     # Import the model with the custom sample inputs from the command line.
     mlir_file = import_kb_module(args.kernel_bench_model, sample_args=sample_tensors)
 
+    # Create pipeline driver
+    driver = CompilerDriver(mlir_file)
+
+    # Inspect payload function arguments
+    # FIXME Payload should be inspected *after* convert_function_results has been applied
+    payload_meta = inspect_payload(driver.module)
+    assert args.entry_point in payload_meta, (
+        f"Entry point function '{args.entry_point}' not found in the payload module."
+    )
+    payload_meta = payload_meta[args.entry_point]
+    if args.verbose:
+        print(f"Payload function '{args.entry_point}' metadata: {payload_meta}")
+
+    # Set target specific default pipeline if no pipeline is provided.
+    default_pipeline = None
+    pipeline_params = None
+    if args.target == "xegpu" and args.pipeline is None:
+        default_pipeline = "xegpu_mlp_pipeline"
+        matmul_shapes = payload_meta.get("matmuls", [])
+        pipeline_params = xegpu_parameter_selector.get_parameters_for_layers(
+            matmul_shapes
+        )
+        if args.verbose:
+            print("Selected matmul parameters:")
+            for shape, params in zip(matmul_shapes, pipeline_params):
+                print(f"  shape {shape}: {params}")
+
     # Create the driver and run the pipeline.
-    driver = define_compiler_pipeline(mlir_file, args.pipeline, args.benchmark)
+    define_compiler_pipeline(
+        driver,
+        args.pipeline,
+        args.benchmark,
+        default_pipeline=default_pipeline,
+        pipeline_params=pipeline_params,
+    )
+
+    mem_manager_cls = GPUMemoryManager if args.target == "xegpu" else None
+
+    # Here we need to assume what order the arguments will be in.
+    func_args = payload_meta["results"] + payload_meta["inputs"]
+
+    if args.target == "xegpu":
+        # emit gpu helper functions to the payload module
+        with driver.context, ir.Location.unknown():
+            mod = driver.module
+            ranks_and_types = [(len(tt.shape), tt.element_type) for tt in func_args]
+            mem_manager_cls.emit_memory_management_funcs(
+                mod, ranks_and_types=ranks_and_types
+            )
+
+    # Check that input buffers match the payload function arguments.
+    # Otherwise calling the payload function segfaults.
+    for i, (buf, ttype) in enumerate(zip(buffers, func_args)):
+        with driver.context:
+            assert numpy_to_mlir_type(buf.dtype) == ttype.element_type, (
+                f"Buffer {i} dtype {buf.dtype} does not match func arg type {ttype.element_type}."
+            )
+            assert buf.shape == tuple(ttype.shape), (
+                f"Buffer {i} shape {buf.shape} does not match func arg shape {ttype.shape}."
+            )
 
     # Run the pipeline to get the optimized module.
     optimized_module = driver.run(print_after_all=args.print_mlir_after_all)
     if args.print_optimized_module:
         print(optimized_module)
 
-    # Create the runner and execute/benchmark the module.
-    runner = Runner(optimized_module, opt_level=args.O)
+    shared_libs = None
+    arg_callback = None
+    if args.target == "xegpu":
+        shared_libs = ["libmlir_levelzero_runtime.so"]
+        if args.print_tensor > 0:
+            idx = args.print_tensor - 1
+            arg_callback = Runner.get_gpu_argument_access_callback(
+                buffers[idx], arg_index=idx
+            )
 
-    if args.benchmark:
-        print("Running the benchmark...")
-        time_array = runner.benchmark(host_input_buffers=buffers)
-        print(f"{len(time_array)} runs: {np.mean(time_array)} seconds")
-    else:
-        print("Executing the module...")
-        runner.execute(
-            payload_function_name=args.entry_point,
-            host_input_buffers=buffers,
+    # Create the runner and execute/benchmark the module.
+    with driver.context, ir.Location.unknown():
+        runner = Runner(
+            optimized_module,
+            opt_level=args.O,
+            mem_manager_cls=mem_manager_cls,
+            shared_libs=shared_libs,
         )
+
+        if args.benchmark:
+            print("Running the benchmark...")
+            time_array = runner.benchmark(
+                host_input_buffers=buffers,
+                argument_access_callback=arg_callback,
+            )
+            print(f"{len(time_array)} runs: {np.mean(time_array)} seconds")
+        else:
+            print("Executing the module...")
+            runner.execute(
+                payload_function_name=args.entry_point,
+                host_input_buffers=buffers,
+                argument_access_callback=arg_callback,
+            )
 
     # Optionally print the output tensor after execution.
     if args.print_tensor > 0:
