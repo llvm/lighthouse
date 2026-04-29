@@ -4,7 +4,7 @@ Utility to choose matmul tile size parameters for XeGPU targets.
 
 import json
 from pathlib import Path
-from lighthouse.schedule.xegpu.mlp_schedule import DPAS
+from .mlp_schedule import DPAS
 
 DEFAULT_JSON_FILE = str(Path(__file__).parent / "matmul_params.json")
 
