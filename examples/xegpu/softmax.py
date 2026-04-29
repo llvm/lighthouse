@@ -280,8 +280,9 @@ if __name__ == "__main__":
             )
             if args.check_result:
                 # Setup callback function to copy result from device to host.
-                result_host_copy, argument_access_callback = (
-                    Runner.get_gpu_argument_access_callback(wload.shape, wload.dtype)
+                result_host_copy = np.zeros(wload.shape, dtype=wload.dtype)
+                argument_access_callback = Runner.get_gpu_argument_access_callback(
+                    result_host_copy, arg_index=0
                 )
 
                 # Execute kernel once.

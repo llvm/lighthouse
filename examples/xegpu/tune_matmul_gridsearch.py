@@ -69,8 +69,9 @@ def run_experiment(
         )
         if check_result:
             # Setup callback function to copy result from device to host.
-            D_host_copy, argument_access_callback = (
-                Runner.get_gpu_argument_access_callback(wload.c_shape, wload.c_dtype)
+            D_host_copy = np.zeros(wload.c_shape, dtype=wload.c_dtype)
+            argument_access_callback = Runner.get_gpu_argument_access_callback(
+                D_host_copy, arg_index=0
             )
             runner.execute(
                 host_input_buffers=wload._initial_host_arrays,
