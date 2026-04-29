@@ -235,9 +235,10 @@ class Runner:
 
     @staticmethod
     def get_gpu_argument_access_callback(
-        output_shape: tuple[int, int], dtype: np.dtype
-    ) -> tuple[np.ndarray, RunnerCallable]:
-        D_host_copy = np.zeros(output_shape, dtype=dtype)
+        host_buffer: np.ndarray,
+        arg_index: int = 0,
+    ) -> RunnerCallable:
+        """Returns a callback that copies device-allocated function argument to the host."""
 
         def argument_access_callback(
             inputs: list[ctypes.Structure],
@@ -245,6 +246,6 @@ class Runner:
             memory_manager: GPUMemoryManager,
             **kwargs,
         ):
-            memory_manager.copy(inputs[0], D_host_copy)
+            memory_manager.copy(inputs[arg_index], host_buffer)
 
-        return D_host_copy, argument_access_callback
+        return argument_access_callback
