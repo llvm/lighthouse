@@ -1,6 +1,6 @@
-# RUN: %PYTHON %s --dry-run | FileCheck %s
-# CHECK: Total complexity: 2657205 configurations
-# CHECK: Number of executed configurations: 5292
+# RUN: %PYTHON %s --dry-run --max-iters 1000 | FileCheck %s
+# CHECK: Total complexity: 23914845 configurations
+# CHECK: Number of executed configurations: 1000
 
 from time import perf_counter
 from datetime import timedelta
@@ -335,6 +335,11 @@ if __name__ == "__main__":
         help="Check validity of combinations but do not execute kernels.",
     )
     parser.add_argument(
+        "--max-iters",
+        type=int,
+        help="Maximum number of executed configurations.",
+    )
+    parser.add_argument(
         "--no-check-result",
         action="store_true",
         help="Skip correctness check.",
@@ -388,6 +393,9 @@ if __name__ == "__main__":
             continue
 
         i += 1
+        if args.max_iters is not None and i >= args.max_iters:
+            print(f"Reached maximum number of iterations: {args.max_iters}")
+            break
         if args.dry_run:
             continue
         time, gflops = execute_and_log(
@@ -410,12 +418,12 @@ if __name__ == "__main__":
     print(f"Number of executed configurations: {i}")
     print(f"Total duration: {timedelta(seconds=duration)}")
 
-    if args.n_dump_json > 0:
+    if args.n_dump_json > 0 and not args.dry_run:
         executed_configs.sort(key=lambda x: x[0], reverse=True)
         best_configs = [c for c in executed_configs[: args.n_dump_json]]
         print("Best configurations found:")
         for gflops, params in best_configs:
-            print(f" GFLOPS: {gflops:.2f}: {list(params.values)}")
+            print(f" GFLOPS: {gflops:.2f}: {list(params.values())}")
         sizes_str = "-".join(str(s) for s in sizes)
         relu_str = "_relu" if has_relu else ""
         bias_str = "_bias" if has_bias else ""
