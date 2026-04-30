@@ -34,7 +34,7 @@ PFETCH_MIN_ROWS = 8
 PFETCH_MAX_ROWS = 32
 PFETCH_MIN_COLS = 16
 PFETCH_MAX_COLS = 32
-MAX_NB_SG_THREADS = 64
+MAX_NB_SG_THREADS = 32  # 32 for large register file, 16 otherwise
 # heuristics: skip likely suboptimal configurations
 MIN_NB_THREADS = 16
 

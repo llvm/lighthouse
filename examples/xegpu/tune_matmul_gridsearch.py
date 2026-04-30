@@ -23,6 +23,16 @@ from genetic_algorithm import (
     VariableSet,
 )
 from tune_utils import dump_configs_json, execute_and_log
+from lighthouse.schedule.xegpu.mlp_schedule import (
+    MAX_NB_SG_THREADS,
+    LOAD_MAX_COLS,
+    LOAD_MAX_ROWS,
+    PFETCH_MAX_COLS,
+    PFETCH_MAX_ROWS,
+    PFETCH_MIN_COLS,
+    PFETCH_MIN_ROWS,
+    MIN_NB_THREADS,
+)
 
 
 def run_experiment(
@@ -103,18 +113,6 @@ def check_constraints(params: dict, verbose: bool = False) -> bool:
         if verbose:
             print(f"  Invalid: {msg}")
 
-    # hardware constraints
-    max_nb_sg_threads = 64
-    load_max_rows = 32
-    load_max_cols = 16
-    pfetch_min_rows = 8
-    pfetch_max_rows = 32
-    pfetch_min_cols = 16
-    pfetch_max_cols = 32
-
-    # heuristics: skip likely suboptimal configurations
-    min_nb_threads = 16
-
     M = params["m"]
     N = params["n"]
     wg_tile_m = params["wg_m"]
@@ -157,10 +155,10 @@ def check_constraints(params: dict, verbose: bool = False) -> bool:
     nb_sg_threads_m = wg_tile_m // sg_tile_m
     nb_sg_threads_n = wg_tile_n // sg_tile_n
     nb_sg_threads = nb_sg_threads_m * nb_sg_threads_n
-    if nb_sg_threads > max_nb_sg_threads:
+    if nb_sg_threads > MAX_NB_SG_THREADS:
         print_reason("too many sg threads")
         return False
-    if nb_sg_threads < min_nb_threads:
+    if nb_sg_threads < MIN_NB_THREADS:
         print_reason("too few sg threads")
         return False
 
@@ -176,16 +174,16 @@ def check_constraints(params: dict, verbose: bool = False) -> bool:
     if sg_tile_n % load_tile_b_n != 0:
         print_reason("load_tile_b_n does not divide sg_tile_n")
         return False
-    if load_tile_a_m > load_max_rows:
+    if load_tile_a_m > LOAD_MAX_ROWS:
         print_reason("too large load_tile_a_m")
         return False
-    if load_tile_a_k > load_max_cols:
+    if load_tile_a_k > LOAD_MAX_COLS:
         print_reason("too large load_tile_a_k")
         return False
-    if load_tile_b_k > load_max_rows:
+    if load_tile_b_k > LOAD_MAX_ROWS:
         print_reason("too large load_tile_b_k")
         return False
-    if load_tile_b_n > load_max_cols:
+    if load_tile_b_n > LOAD_MAX_COLS:
         print_reason("too large load_tile_b_n")
         return False
     if sg_tile_m % prefetch_tile_a_m != 0:
@@ -200,28 +198,28 @@ def check_constraints(params: dict, verbose: bool = False) -> bool:
     if sg_tile_n % prefetch_tile_b_n != 0:
         print_reason("prefetch_tile_b_n does not divide sg_tile_n")
         return False
-    if prefetch_tile_a_m > pfetch_max_rows:
+    if prefetch_tile_a_m > PFETCH_MAX_ROWS:
         print_reason("too large prefetch_tile_a_m")
         return False
-    if prefetch_tile_a_k > pfetch_max_cols:
+    if prefetch_tile_a_k > PFETCH_MAX_COLS:
         print_reason("too large prefetch_tile_a_k")
         return False
-    if prefetch_tile_b_k > pfetch_max_rows:
+    if prefetch_tile_b_k > PFETCH_MAX_ROWS:
         print_reason("too large prefetch_tile_b_k")
         return False
-    if prefetch_tile_b_n > pfetch_max_cols:
+    if prefetch_tile_b_n > PFETCH_MAX_COLS:
         print_reason("too large prefetch_tile_b_n")
         return False
-    if prefetch_tile_a_m < pfetch_min_rows:
+    if prefetch_tile_a_m < PFETCH_MIN_ROWS:
         print_reason("too small prefetch_tile_a_m")
         return False
-    if prefetch_tile_a_k < pfetch_min_cols:
+    if prefetch_tile_a_k < PFETCH_MIN_COLS:
         print_reason("too small prefetch_tile_a_k")
         return False
-    if prefetch_tile_b_k < pfetch_min_rows:
+    if prefetch_tile_b_k < PFETCH_MIN_ROWS:
         print_reason("too small prefetch_tile_b_k")
         return False
-    if prefetch_tile_b_n < pfetch_min_cols:
+    if prefetch_tile_b_n < PFETCH_MIN_COLS:
         print_reason("too small prefetch_tile_b_n")
         return False
     if load_tile_a_m % DPAS.M != 0:
@@ -247,20 +245,20 @@ def check_constraints(params: dict, verbose: bool = False) -> bool:
     # prefetch A layout
     nb_prefetch_a_m = wg_tile_m // prefetch_tile_a_m
     nb_prefetch_a_k = k_tile // prefetch_tile_a_k
-    if nb_prefetch_a_m * nb_prefetch_a_k > max_nb_sg_threads:
+    if nb_prefetch_a_m * nb_prefetch_a_k > MAX_NB_SG_THREADS:
         print_reason("too many prefetch A tiles")
         return False
-    if nb_prefetch_a_m * nb_prefetch_a_k < min_nb_threads:
+    if nb_prefetch_a_m * nb_prefetch_a_k < MIN_NB_THREADS:
         print_reason("too few prefetch A threads")
         return False
 
     # prefetch B layout
     nb_prefetch_b_k = k_tile // prefetch_tile_b_k
     nb_prefetch_b_n = wg_tile_n // prefetch_tile_b_n
-    if nb_prefetch_b_k * nb_prefetch_b_n > max_nb_sg_threads:
+    if nb_prefetch_b_k * nb_prefetch_b_n > MAX_NB_SG_THREADS:
         print_reason("too many prefetch B tiles")
         return False
-    if nb_prefetch_b_k * nb_prefetch_b_n < min_nb_threads:
+    if nb_prefetch_b_k * nb_prefetch_b_n < MIN_NB_THREADS:
         print_reason("too few prefetch B threads")
         return False
 
