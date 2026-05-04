@@ -12,7 +12,7 @@ from mlir.runtime.np_to_memref import (
 from . import memref as memref_utils
 
 
-def dtype_torch_to_ctype(dtype: torch.dtype):
+def torch_dtype_to_ctype(dtype: torch.dtype):
     """
     Convert a PyTorch dtype to a corresponding ctype.
 
@@ -45,7 +45,7 @@ def to_memref(input: torch.Tensor) -> ctypes.Structure:
     Args:
         input: PyTorch tensor.
     """
-    ctp = dtype_torch_to_ctype(input.dtype)
+    ctp = torch_dtype_to_ctype(input.dtype)
     ndim = input.dim()
     data_ptr = input.data_ptr()
 
