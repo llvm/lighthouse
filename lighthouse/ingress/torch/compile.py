@@ -345,3 +345,40 @@ def cpu_backend(
         shared_libs=shared_libs,
         entry_func=entry_func,
     )
+
+
+def gpu_backend(
+    fn_compile: Callable[[ir.Module], ir.Module],
+    device: torch.device,
+    dialect: TargetDialect = TargetDialect.LINALG_ON_TENSORS,
+    ir_context: ir.Context | None = None,
+    shared_libs: Sequence[str] = [],
+    entry_func: str = "main",
+) -> Callable[[torch.fx.GraphModule, list[torch.Tensor]], Callable]:
+    """
+    GPU backend for JIT-compiling a PyTorch model using MLIR.
+
+    Args:
+        fn_compile: Function to compile imported MLIR to LLVM IR dialect.
+            The function accepts an MLIR module, and returns an MLIR module with
+            transformed IR.
+        device: Target GPU device.
+        dialect: The target dialect for MLIR IR imported from PyTorch model.
+        ir_context: An optional MLIR context to use for compilation.
+        shared_libs: Paths to external runtime libraries used to execute
+            compiled MLIR function.
+        entry_func: Name of the entry function.
+
+    Returns:
+        A torch.compile backend object.
+    """
+    assert device.type in ("cuda", "rocm", "xpu"), "Expected a GPU device"
+
+    return MLIRBackend(
+        device,
+        fn_compile,
+        dialect=dialect,
+        ir_context=ir_context,
+        shared_libs=shared_libs,
+        entry_func=entry_func,
+    )
