@@ -1,11 +1,41 @@
 import ctypes
-import ml_dtypes
 
 import torch
 from mlir import ir
-from mlir.runtime.np_to_memref import get_ranked_memref_descriptor
+from mlir.runtime.np_to_memref import (
+    BF16,
+    F16,
+    make_nd_memref_descriptor,
+    make_zero_d_memref_descriptor,
+)
 
 from . import memref as memref_utils
+
+
+def dtype_torch_to_ctype(dtype: torch.dtype):
+    """
+    Convert a PyTorch dtype to a corresponding ctype.
+
+    Args:
+        dtype: PyTorch dtype
+    Returns:
+        Corresponding ctype
+    """
+    _dtype_map = {
+        torch.float16: F16,
+        torch.bfloat16: BF16,
+        torch.float32: ctypes.c_float,
+        torch.float64: ctypes.c_double,
+        torch.int8: ctypes.c_int8,
+        torch.int16: ctypes.c_int16,
+        torch.int32: ctypes.c_int32,
+        torch.int64: ctypes.c_int64,
+        torch.uint8: ctypes.c_uint8,
+        torch.bool: ctypes.c_bool,
+    }
+    if dtype not in _dtype_map:
+        raise ValueError(f"Unsupported dtype: {dtype}")
+    return _dtype_map[dtype]
 
 
 def to_memref(input: torch.Tensor) -> ctypes.Structure:
@@ -15,15 +45,25 @@ def to_memref(input: torch.Tensor) -> ctypes.Structure:
     Args:
         input: PyTorch tensor.
     """
-    if input.dtype == torch.bfloat16:
-        # Numpy doesn't support bf16 natively which disables
-        # direct conversion from PyTorch.
-        # Solved through non-destructive type casting.
-        nparray = input.view(dtype=torch.uint16).numpy()
-        nparray = nparray.view(ml_dtypes.bfloat16)
-    else:
-        nparray = input.numpy()
-    return get_ranked_memref_descriptor(nparray)
+    ctp = dtype_torch_to_ctype(input.dtype)
+    ndim = input.dim()
+    data_ptr = input.data_ptr()
+
+    if ndim == 0:
+        x = make_zero_d_memref_descriptor(ctp)()
+        x.allocated = data_ptr
+        x.aligned = ctypes.cast(data_ptr, ctypes.POINTER(ctp))
+        x.offset = ctypes.c_longlong(0)
+        return x
+
+    x = make_nd_memref_descriptor(ndim, ctp)()
+    x.allocated = data_ptr
+    x.aligned = ctypes.cast(data_ptr, ctypes.POINTER(ctp))
+    x.offset = ctypes.c_longlong(0)
+    x.shape = (ctypes.c_longlong * ndim)(*input.shape)
+    # PyTorch strides are in element units (unlike NumPy which uses bytes)
+    x.strides = (ctypes.c_longlong * ndim)(*input.stride())
+    return x
 
 
 def to_packed_args(inputs: list[torch.Tensor]) -> ctypes.Array[ctypes.c_void_p]:
