@@ -67,6 +67,10 @@ class PipelineDriver:
         for s in stages:
             self.add_stage(s)
 
+    def add_descriptor(self, stage: Descriptor) -> None:
+        for s in PipelineDescriptor(stage).get_stages():
+            self.add_stage(s)
+
     def apply(self, module: ir.Module, print_after_all: bool = False) -> ir.Module:
         if module.context != self.context:
             raise ValueError("Module context does not match driver context.")
