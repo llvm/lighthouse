@@ -160,13 +160,13 @@ def get_tiling_sizes(
     snake_case wrapper to create a GetTilingSizesOp.
 
     Args:
-        target: Handle to target op
-        tile_dim: Optional size used for tile dimensions (default: 32)
+        target: Handle to target op.
+        tile_dim: Optional size used for tile dimensions (default: 32).
     Returns:
-        Created op
+        Handle holding tile size values.
     """
     if isinstance(tile_dim, int):
         param_attr = GetTilingSizesOp.tile_param_attr(tile_dim)
         tile_dim = transform.ParamConstantOp(transform.AnyParamType.get(), param_attr)
 
-    return GetTilingSizesOp(target=target, tile_dim=tile_dim)
+    return GetTilingSizesOp(target=target, tile_dim=tile_dim).result

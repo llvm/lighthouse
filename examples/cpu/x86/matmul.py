@@ -167,7 +167,7 @@ class Matmul:
             ops = lh_transform.match_op(named_seq.bodyTarget, gemm_op)
             with lh_transform.foreach(ops) as op:
                 lh_transform_x86.matmul_cache_tiling(
-                    op, num_tiles=6, tile_size=self.tile_size, fuse_producers=True
+                    op, tile_size=self.tile_size, fuse_producers=True
                 )
                 transform.yield_()
             transform.yield_()
