@@ -2,8 +2,8 @@ import os
 
 from mlir import ir
 import lighthouse.pipeline.stage as lhs
-from lighthouse.pipeline.helper import import_mlir_module, remove_args_and_opts
-from lighthouse.pipeline.descriptor import PipelineDescriptor
+from lighthouse.pipeline.helper import import_mlir_module
+from lighthouse.pipeline.descriptor import PipelineDescriptor, Descriptor
 
 
 class PipelineDriver:
@@ -18,33 +18,65 @@ class PipelineDriver:
     def __init__(self, context: ir.Context):
         self.context = context
         self.stages = []
+        self.bundles = lhs.PassBundles
 
-    def add_pass(self, name: str) -> None:
+    def add_pass(self, stage: Descriptor) -> None:
         # Assume the pass name exists, will crash later if it does not.
-        self.stages.append(lhs.PassStage([lhs.Pass(name)], self.context))
+        self.stages.append(lhs.PassStage([lhs.Pass(stage)], self.context))
 
-    def add_transform(self, stage: str | ir.Module) -> None:
+    def add_transform(self, stage: Descriptor | ir.Module) -> None:
         # Transform will figure out if this is MLIR, Python or Module, and will handle it accordingly.
         if isinstance(stage, ir.Module):
             # This is a transform already in module form. Assume it has been verified already.
             if stage.context != self.context:
                 raise ValueError("Module context does not match driver context.")
             self.stages.append(lhs.TransformStage(stage, self.context))
-        elif isinstance(stage, str):
+        elif isinstance(stage, Descriptor):
             self.stages.append(lhs.TransformStage(lhs.Transform(stage), self.context))
         else:
             raise ValueError(f"Unsupported stage type: {type(stage)}")
 
-    def add_bundle(self, name: str) -> None:
+    def add_bundle(self, stage: Descriptor) -> None:
         # A bundle name that must exist.
-        if name not in lhs.PassBundles:
-            raise ValueError(f"Unknown pass bundle: {name}")
-        self.stages.append(lhs.PassStage(lhs.PassBundles[name], self.context))
+        if stage.basename not in lhs.PassBundles:
+            raise ValueError(f"Unknown pass bundle: {stage.basename}")
+        self.stages.append(lhs.PassStage(lhs.PassBundles[stage.basename], self.context))
 
-    def add_stage(self, stage: lhs.Stage) -> None:
+    def add_stage(self, stage: lhs.Stage | Descriptor) -> None:
         # A generit stage that isn't covered by the existing infrastructure.
         # Users can derive their own classes from Stage and add them to the pipeline with this method.
-        self.stages.append(stage)
+        if isinstance(stage, lhs.Stage):
+            self.stages.append(stage)
+            return
+
+        if not isinstance(stage, Descriptor):
+            raise ValueError(f"Unsupported stage type: {type(stage)}")
+
+        # Stages can contain arguments and options, clean up for os checks
+        filename = stage.basename
+
+        if stage.basename in self.bundles:
+            # Pass Bundle
+            self.add_bundle(stage)
+
+        elif os.path.exists(filename):
+            # Transform or YAML
+            if filename.endswith(".mlir") or filename.endswith(".py"):
+                self.add_transform(stage)
+            elif filename.endswith(".yaml"):
+                self.add_stages(PipelineDescriptor(stage).get_stages())
+            else:
+                _, ext = os.path.splitext(filename)
+                raise ValueError(f"Unknown file type '{ext}' for stage '{stage}'.")
+
+        else:
+            # Assume random strings represent a single pass
+            # Will crash later if the pass name is not registered.
+            self.add_pass(stage)
+
+    def add_stages(self, stages: list[Descriptor]) -> None:
+        for s in stages:
+            self.add_stage(s)
 
     def apply(self, module: ir.Module, print_after_all: bool = False) -> ir.Module:
         if module.context != self.context:
@@ -101,9 +133,8 @@ class CompilerDriver:
             self.import_payload(filename)
         self.pipeline = PipelineDriver(self.context)
         self.pipeline_fixed = False
-        self.bundles = lhs.PassBundles
         if stages:
-            self.add_stages(stages)
+            self.add_stages([Descriptor(s) for s in stages])
 
     def import_payload(self, path: str) -> None:
         """Import the payload module and set it as the current module in the pipeline."""
@@ -111,40 +142,15 @@ class CompilerDriver:
             raise ValueError("Module already imported. Reset to start again.")
         self.module = import_mlir_module(path, self.context)
 
-    def add_stage(self, stage_name: str) -> None:
+    def add_stage(self, stage: str) -> None:
         if self.pipeline_fixed:
             raise ValueError("Pipeline is fixed. Reset to start again.")
-
-        # Stages can contain arguments and options, clean up for os checks
-        filename = remove_args_and_opts(stage_name)
-
-        if stage_name in self.bundles:
-            # Pass Bundle
-            self.pipeline.add_bundle(stage_name)
-
-        elif os.path.exists(filename):
-            # Transform or YAML
-            if filename.endswith(".mlir") or filename.endswith(".py"):
-                self.pipeline.add_transform(stage_name)
-            elif filename.endswith(".yaml"):
-                desc = PipelineDescriptor(stage_name)
-                for s in desc.get_stages():
-                    self.add_stage(s)
-            else:
-                _, ext = os.path.splitext(filename)
-                raise ValueError(f"Unknown file type '{ext}' for stage '{stage_name}'.")
-
-        else:
-            # Assume random strings represent a single pass
-            # Will crash later if the pass name is not registered.
-            self.pipeline.add_pass(stage_name)
+        self.pipeline.add_stage(Descriptor(stage))
 
     def add_stages(self, stages: list[str]) -> None:
-        """
-        Add multiple stages to the pipeline.
-        """
-        for s in stages:
-            self.add_stage(s)
+        if self.pipeline_fixed:
+            raise ValueError("Pipeline is fixed. Reset to start again.")
+        self.pipeline.add_stages([Descriptor(s) for s in stages])
 
     def add_module_stage(self, stage_module: ir.Module) -> None:
         """

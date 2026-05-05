@@ -7,7 +7,8 @@ import os
 from mlir import ir
 from mlir.passmanager import PassManager
 from mlir.dialects import transform
-from lighthouse.pipeline.helper import import_mlir_module, parse_args_and_opts
+from lighthouse.pipeline.helper import import_mlir_module
+from lighthouse.pipeline.descriptor import Descriptor
 
 
 class Pass:
@@ -17,9 +18,13 @@ class Pass:
     Or used directly with the Transform Schedule by passing the options as a dictionary.
     """
 
-    def __init__(self, name: str, options: dict = {}):
-        self.name = name
-        self.options = options
+    def __init__(self, desc: Descriptor):
+        if not isinstance(desc, Descriptor):
+            raise ValueError(
+                f"Pass must be initialized with a Descriptor, got {type(desc)}"
+            )
+        self.name = desc.basename
+        self.options = desc.opts
 
     def __str__(self) -> str:
         """serialize name + options dictionary for pass manager consumption"""
@@ -39,30 +44,32 @@ PassBundles = {
     # This is self consistent and should be used together.
     "BufferizationBundle": [
         Pass(
-            "one-shot-bufferize",
-            {
-                "function-boundary-type-conversion": "identity-layout-map",
-                "bufferize-function-boundaries": True,
-            },
+            Descriptor(
+                "one-shot-bufferize",
+                opts={
+                    "function-boundary-type-conversion": "identity-layout-map",
+                    "bufferize-function-boundaries": True,
+                },
+            )
         ),
-        Pass("drop-equivalent-buffer-results"),
+        Pass(Descriptor("drop-equivalent-buffer-results")),
         # This last pass only works with the pass manager, not schedules.
-        # Pass("buffer-deallocation-pipeline"),
+        # Pass(Descriptor("buffer-deallocation-pipeline")),
     ],
     # Lowers most dialects to basic control flow.
     "MLIRLoweringBundle": [
-        Pass("convert-linalg-to-loops"),
+        Pass(Descriptor("convert-linalg-to-loops")),
     ],
     # Lowers most dialects to LLVM Dialect
     "LLVMLoweringBundle": [
-        Pass("convert-scf-to-cf"),
-        Pass("convert-to-llvm"),
-        Pass("reconcile-unrealized-casts"),
+        Pass(Descriptor("convert-scf-to-cf")),
+        Pass(Descriptor("convert-to-llvm")),
+        Pass(Descriptor("reconcile-unrealized-casts")),
     ],
     # Canonicalization bundle.
     "CleanupBundle": [
-        Pass("cse"),
-        Pass("canonicalize"),
+        Pass(Descriptor("cse")),
+        Pass(Descriptor("canonicalize")),
     ],
 }
 
@@ -105,23 +112,26 @@ class Transform:
         MLIR = 1
         Python = 2
 
-    def __init__(self, filename: str):
-        # First, eliminate arguments and options
-        filename, args, self.options = parse_args_and_opts(filename)
-        if filename.endswith(".mlir"):
+    def __init__(self, desc: Descriptor):
+        if not isinstance(desc, Descriptor):
+            raise ValueError(
+                f"Transform must be initialized with a Descriptor, got {type(desc)}"
+            )
+        if desc.basename.endswith(".mlir"):
             self.type = Transform.Type.MLIR
-        elif filename.endswith(".py"):
+        elif desc.basename.endswith(".py"):
             self.type = Transform.Type.Python
         else:
-            raise ValueError(f"Unsupported transform file type: {filename}")
-        self.filename = filename
-        self.generator = args["gen"] if "gen" in args else "create_schedule"
-        self.sequence = args["seq"] if "seq" in args else ""
+            raise ValueError(f"Unsupported transform file type: {desc.basename}")
+        self.filename = desc.basename
+        self.options = desc.opts
+        self.generator = desc.args["gen"] if "gen" in desc.args else "create_schedule"
+        self.sequence = desc.args["seq"] if "seq" in desc.args else ""
 
     def __str__(self) -> str:
         """serialize name + filename for debugging purposes"""
         if not self.options:
-            return self.name
+            return self.filename
         return f"{self.filename}{{{self.options}}}"
 
 

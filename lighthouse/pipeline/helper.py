@@ -1,69 +1,8 @@
 import os
-import re
 
 from mlir import ir
 from mlir.dialects import transform
 from mlir.dialects.transform import structured
-
-
-def convert_string(value: str) -> str | int | float | bool:
-    if value == "True":
-        return True
-    elif value == "False":
-        return False
-    try:
-        return int(value)
-    except ValueError:
-        try:
-            return float(value)
-        except ValueError:
-            return value
-
-
-def parse_csv(line: str, separator: str = ",") -> dict:
-    result = {}
-    arg_tuples = line.split(separator)
-    for arg in arg_tuples:
-        if not arg:
-            continue
-        if "=" in arg:
-            key, value = arg.split("=")
-            result[key] = convert_string(value)
-        else:
-            result[arg] = True
-    return result
-
-
-def remove_args_and_opts(line: str) -> str:
-    if m := re.search(r"^([^[{]*)", line):
-        line = m.group(1)
-    return line
-
-
-def update_filename(line: str, filename: str) -> str:
-    if m := re.search(r"^([^[{]+)(.*)$", line):
-        line = filename + m.group(2)
-    return line
-
-
-def parse_args_and_opts(line: str) -> tuple[str, dict, dict]:
-    args = {}
-    options = {}
-
-    # Args: [arg1=val1,args2]
-    if m := re.search(r"\[([^]]*)\]", line):
-        args_str = m.group(1)
-        args = parse_csv(args_str, ",")
-
-    # Opts: {arg1=val1 args2}
-    if m := re.search(r"\{([^}]+)\}", line):
-        opts_str = m.group(1)
-        options = parse_csv(opts_str, " ")
-
-    # Cleanup the original string
-    line = remove_args_and_opts(line)
-
-    return [line, args, options]
 
 
 def import_mlir_module(path: str, context: ir.Context) -> ir.Module:
