@@ -236,13 +236,6 @@ def check_constraints(params: dict, verbose: bool = False) -> bool:
         print_reason("load_tile_b_n not multiple of dpas_n")
         return False
 
-    nb_load_b_n = load_tile_b_n // DPAS.N
-    if nb_load_b_n > 1:
-        # unsupported VNNI layout, loaded tile can only be row-sliced for vnni
-        # NOTE this can plausibly be relaxed
-        print_reason("invalid load_tile_b_n for VNNI")
-        return False
-
     # prefetch A layout
     nb_prefetch_a_m = wg_tile_m // prefetch_tile_a_m
     nb_prefetch_a_k = k_tile // prefetch_tile_a_k
