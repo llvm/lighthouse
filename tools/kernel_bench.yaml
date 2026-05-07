@@ -2,4 +2,5 @@
 # For optimized builds, pass the --pipeline to the kernel_bench program.
 Pipeline:
   - include: bufferization.yaml
+  - pass: convert-linalg-to-loops
   - include: llvm_lowering.yaml

@@ -18,7 +18,6 @@ class PipelineDriver:
     def __init__(self, context: ir.Context):
         self.context = context
         self.stages = []
-        self.bundles = lhs.PassBundles
 
     def add_pass(self, stage: Descriptor) -> None:
         # Assume the pass name exists, will crash later if it does not.
@@ -36,12 +35,6 @@ class PipelineDriver:
         else:
             raise ValueError(f"Unsupported stage type: {type(stage)}")
 
-    def add_bundle(self, stage: Descriptor) -> None:
-        # A bundle name that must exist.
-        if stage.basename not in lhs.PassBundles:
-            raise ValueError(f"Unknown pass bundle: {stage.basename}")
-        self.stages.append(lhs.PassStage(lhs.PassBundles[stage.basename], self.context))
-
     def add_stage(self, stage: lhs.Stage | Descriptor) -> None:
         # A generit stage that isn't covered by the existing infrastructure.
         # Users can derive their own classes from Stage and add them to the pipeline with this method.
@@ -55,11 +48,7 @@ class PipelineDriver:
         # Stages can contain arguments and options, clean up for os checks
         filename = stage.basename
 
-        if stage.basename in self.bundles:
-            # Pass Bundle
-            self.add_bundle(stage)
-
-        elif os.path.exists(filename):
+        if os.path.exists(filename):
             # Transform or YAML
             if filename.endswith(".mlir") or filename.endswith(".py"):
                 self.add_transform(stage)

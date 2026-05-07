@@ -1,7 +1,7 @@
 from mlir import ir
 from mlir.dialects import transform
-from lighthouse.pipeline.helper import match
-from lighthouse.pipeline.stage import PassBundles, apply_bundle
+from lighthouse.pipeline.helper import apply_registered_pass, match
+from lighthouse.pipeline.stage import apply_bundle
 
 
 def create_schedule(options: dict = {}) -> ir.Module:
@@ -27,12 +27,13 @@ def create_schedule(options: dict = {}) -> ir.Module:
                 op_name="builtin.module",
                 deduplicate=True,
             )
-            mod = apply_bundle(mod, PassBundles["BufferizationBundle"])
-            mod = apply_bundle(mod, PassBundles["MLIRLoweringBundle"])
-            mod = apply_bundle(mod, PassBundles["CleanupBundle"])
+            mod = apply_bundle(mod, "bufferization.yaml")
+            mod = apply_bundle(mod, "bufferization_cleanup.yaml")
+            mod = apply_registered_pass(mod, "convert-linalg-to-loops")
+            mod = apply_bundle(mod, "cleanup.yaml")
 
             if not options.get("skip_llvm", False):
-                mod = apply_bundle(mod, PassBundles["LLVMLoweringBundle"])
+                mod = apply_bundle(mod, "llvm_lowering.yaml")
             transform.YieldOp()
 
     return schedule_module

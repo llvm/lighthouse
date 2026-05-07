@@ -2,8 +2,6 @@ import yaml
 import os
 import re
 
-import lighthouse.pipeline.stage as lhs
-
 
 class Descriptor:
     """
@@ -48,7 +46,7 @@ class Descriptor:
     def is_pass(self) -> bool:
         if self.type == "pass":
             return True
-        if self.type in ("transform", "bundle", "include"):
+        if self.type in ("transform", "include"):
             return False
         # If type not passed
         pattern = re.compile(r"\.\w+$")
@@ -56,33 +54,16 @@ class Descriptor:
             self.basename
             and not self.args
             and not self.opts
-            and self.basename not in lhs.PassBundles
             and not pattern.search(self.basename)
         ):
             self.type = "pass"
             return True
         return False
 
-    def is_bundle(self) -> bool:
-        if self.type == "bundle":
-            return True
-        if self.type in ("pass", "transform", "include"):
-            return False
-        # If type not passed
-        if (
-            self.basename
-            and not self.args
-            and not self.opts
-            and self.basename in lhs.PassBundles
-        ):
-            self.type = "bundle"
-            return True
-        return False
-
     def is_include(self) -> bool:
         if self.type == "include":
             return True
-        if self.type in ("pass", "transform", "bundle"):
+        if self.type in ("pass", "transform"):
             return False
         # If type not passed
         if (
@@ -98,7 +79,7 @@ class Descriptor:
     def is_transform(self) -> bool:
         if self.type == "transform":
             return True
-        if self.type in ("pass", "bundle", "include"):
+        if self.type in ("pass", "include"):
             return False
         # If type not passed
         if self.basename and (
@@ -247,7 +228,6 @@ class PipelineDescriptor:
       - transform: TransformFile.py[gen=generator_name,seq=sequence_name]{opt1=val1 opt2=val2}
       - transform: TransformFile.mlir
       - include: OtherPipeline.yaml
-      - bundle: BundleName
       ...
     """
 
@@ -283,9 +263,6 @@ class PipelineDescriptor:
                 self._include_pipeline(desc)
 
             elif desc.is_transform():
-                self.stages.append(desc)
-
-            elif desc.is_bundle():
                 self.stages.append(desc)
 
             elif desc.is_pass():

@@ -6,27 +6,9 @@ import numpy as np
 
 from lighthouse.execution.runner import Runner
 from lighthouse.execution.init import KernelArgumentParser
+from lighthouse.pipeline.descriptor import Descriptor
 from lighthouse.pipeline.driver import CompilerDriver
 from lighthouse import dialects as lh_dialects
-
-
-def add_lower_to_llvm_stages() -> list[str]:
-    """
-    Adds the LLVM lowering passes to guarantee the IR can be ingested by the ExecutionEngine.
-    """
-    stages = [
-        "convert-linalg-to-loops",
-        "fold-memref-alias-ops",
-        "expand-strided-metadata",
-        "canonicalize",
-        "convert-vector-to-scf",
-        "lower-affine",
-        "convert-scf-to-cf",
-        "convert-vector-to-llvm",
-        "convert-to-llvm",
-        "reconcile-unrealized-casts",
-    ]
-    return stages
 
 
 if __name__ == "__main__":
@@ -118,7 +100,8 @@ if __name__ == "__main__":
     driver.add_stages(args.stage)
 
     # Add the necessary LLVM lowering stages to ensure the module can be executed by the ExecutionEngine.
-    driver.add_stages(add_lower_to_llvm_stages())
+    driver.add_stage(Descriptor("convert-linalg-to-loops"))
+    driver.add_stage(Descriptor("llvm_lowering.yaml"))
 
     # Run the pipeline to get the optimized module.
     optimized_module = driver.run(print_after_all=args.print_mlir_after_all)

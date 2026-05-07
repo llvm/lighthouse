@@ -1,6 +1,3 @@
-// RUN: lh-opt --stage=BufferizationBundle %s | FileCheck %s --check-prefixes=BUFFERIZED
-// RUN: lh-opt --stage=BufferizationBundle --stage=canonicalize --stage=MLIRLoweringBundle %s | FileCheck %s --check-prefixes=LINALG_LOWERED
-// RUN: lh-opt --stage=BufferizationBundle --stage=canonicalize --stage=MLIRLoweringBundle --stage=canonicalize --stage=LLVMLoweringBundle %s | FileCheck %s --check-prefixes=LLVM_LOWERED
 // RUN: lh-opt --stage=%TEST/opt/transforms/pipeline-check.mlir %s | FileCheck %s --check-prefixes=LLVM_LOWERED
 // RUN: lh-opt --stage=%TEST/opt/stages/pipeline-check.yaml %s | FileCheck %s --check-prefixes=LLVM_LOWERED
 // RUN: lh-opt --stage=%TEST/opt/stages/my-transform.yaml %s | FileCheck %s --check-prefixes=LLVM_LOWERED

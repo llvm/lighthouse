@@ -1,0 +1,5 @@
+Pipeline:
+  - pass: buffer-deallocation-pipeline
+  - pass: convert-bufferization-to-memref
+  - pass: cse
+  - pass: canonicalize

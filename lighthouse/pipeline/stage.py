@@ -8,7 +8,7 @@ from mlir import ir
 from mlir.passmanager import PassManager
 from mlir.dialects import transform
 from lighthouse.pipeline.helper import import_mlir_module
-from lighthouse.pipeline.descriptor import Descriptor
+from lighthouse.pipeline.descriptor import Descriptor, PipelineDescriptor
 
 
 class Pass:
@@ -34,57 +34,27 @@ class Pass:
         return f"{self.name}{{{options_str}}}"
 
 
-# Predefined pass bundles for common transformations.
-# These are not exhaustive and can be extended as needed.
-# The idea is to group together passes that are commonly used together in a pipeline,
-# so that they can be easily added to a PassManager or Transform Schedule with a single function call.
-# FIXME: Deprecate bundles in favor of YAML pipeline descriptors.
-PassBundles = {
-    # All in one bufferization bundle.
-    # This is self consistent and should be used together.
-    "BufferizationBundle": [
-        Pass(
-            Descriptor(
-                "one-shot-bufferize",
-                opts={
-                    "function-boundary-type-conversion": "identity-layout-map",
-                    "bufferize-function-boundaries": True,
-                },
-            )
-        ),
-        Pass(Descriptor("drop-equivalent-buffer-results")),
-        # This last pass only works with the pass manager, not schedules.
-        # Pass(Descriptor("buffer-deallocation-pipeline")),
-    ],
-    # Lowers most dialects to basic control flow.
-    "MLIRLoweringBundle": [
-        Pass(Descriptor("convert-linalg-to-loops")),
-    ],
-    # Lowers most dialects to LLVM Dialect
-    "LLVMLoweringBundle": [
-        Pass(Descriptor("convert-scf-to-cf")),
-        Pass(Descriptor("convert-to-llvm")),
-        Pass(Descriptor("reconcile-unrealized-casts")),
-    ],
-    # Canonicalization bundle.
-    "CleanupBundle": [
-        Pass(Descriptor("cse")),
-        Pass(Descriptor("canonicalize")),
-    ],
-}
-
-
 # Utility function to add a bundle of passes to a PassManager.
-def add_bundle(pm: PassManager, bundle: list[Pass]) -> None:
-    for p in bundle:
-        pm.add(str(p))
+def add_bundle(pm: PassManager, filename: str) -> None:
+    desc = PipelineDescriptor(Descriptor(filename))
+    for p in desc.get_stages():
+        if not isinstance(p, Descriptor) or not p.is_pass():
+            raise ValueError(
+                f"Expected Descriptor of type Pass in bundle, got {type(p)}"
+            )
+        pm.add(str(Pass(p)))
 
 
 # Utility function to add a bundle of passes to a Schedule.
-def apply_bundle(op, bundle: list[Pass], *args, **kwargs) -> None:
-    for p in bundle:
+def apply_bundle(op, filename: str, *args, **kwargs) -> None:
+    desc = PipelineDescriptor(Descriptor(filename))
+    for p in desc.get_stages():
+        if not isinstance(p, Descriptor) or not p.is_pass():
+            raise ValueError(
+                f"Expected Descriptor of type Pass in bundle, got {type(p)}"
+            )
         op = transform.apply_registered_pass(
-            transform.AnyOpType.get(), op, p.name, options=p.options, *args, **kwargs
+            transform.AnyOpType.get(), op, p.basename, options=p.opts, *args, **kwargs
         )
     return op
 
@@ -158,7 +128,8 @@ class PassStage(Stage):
         self.context = context
         self.pm = PassManager("builtin.module", self.context)
         self.passes = passes
-        add_bundle(self.pm, passes)
+        for p in passes:
+            self.pm.add(str(p))
 
     def apply(self, module: ir.Module) -> ir.Module:
         if module is None:

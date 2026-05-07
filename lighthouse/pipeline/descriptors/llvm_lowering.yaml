@@ -1,5 +1,4 @@
 Pipeline:
-  - pass: "convert-linalg-to-loops"
   - pass: "fold-memref-alias-ops"
   - pass: "expand-strided-metadata"
   - pass: "canonicalize"
