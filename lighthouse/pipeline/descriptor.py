@@ -151,7 +151,8 @@ class Descriptor:
                 (searched in {self.base_path} and {schedule_module_path})"
         )
 
-    def _string_to_type(self, value: str) -> str | int | float | bool:
+    @staticmethod
+    def _string_to_type(value: str) -> str | int | float | bool:
         value = str(value)
         if value == "True":
             return True
@@ -165,7 +166,8 @@ class Descriptor:
             except ValueError:
                 return value
 
-    def _parse_csv(self, line: str, separator: str = ",") -> dict:
+    @staticmethod
+    def _parse_csv(line: str, separator: str = ",") -> dict:
         line = str(line)
         result = {}
         arg_tuples = line.split(separator)
@@ -174,18 +176,20 @@ class Descriptor:
                 continue
             if "=" in arg:
                 key, value = arg.split("=")
-                result[key] = self._string_to_type(value)
+                result[key] = Descriptor._string_to_type(value)
             else:
                 result[arg] = True
         return result
 
-    def _remove_args_and_opts(self, line: str) -> str:
+    @staticmethod
+    def _remove_args_and_opts(line: str) -> str:
         line = str(line)
         if m := re.search(r"^([^[{]*)", line):
             line = m.group(1)
         return line
 
-    def _parse_args_and_opts(self, line: str) -> tuple[str, dict, dict]:
+    @staticmethod
+    def _parse_args_and_opts(line: str) -> tuple[str, dict, dict]:
         line = str(line)
         args = {}
         options = {}
@@ -193,15 +197,15 @@ class Descriptor:
         # Args: [arg1=val1,args2]
         if m := re.search(r"\[([^]]*)\]", line):
             args_str = m.group(1)
-            args = self._parse_csv(args_str, ",")
+            args = Descriptor._parse_csv(args_str, ",")
 
         # Opts: {arg1=val1 args2}
         if m := re.search(r"\{([^}]+)\}", line):
             opts_str = m.group(1)
-            options = self._parse_csv(opts_str, " ")
+            options = Descriptor._parse_csv(opts_str, " ")
 
         # Cleanup the original string
-        line = self._remove_args_and_opts(line)
+        line = Descriptor._remove_args_and_opts(line)
 
         return [line, args, options]
 
