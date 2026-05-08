@@ -2,6 +2,7 @@ import os
 import shlex
 import importlib.util
 import shutil
+import platform
 
 import lit.formats
 from lit.TestingConfig import TestingConfig
@@ -66,3 +67,10 @@ for pkg in ["torch", "mpi4py", "mpich", "impi-rt"]:
 torch_kernels_dir = project_root + "/third_party/KernelBench/KernelBench"
 if os.path.isdir(torch_kernels_dir):
     config.available_features.add("kernel_bench")
+
+# Detect host architecture.
+arch = platform.machine().lower()
+if arch in ["x86_64", "amd64", "i386", "i686"]:
+    config.available_features.add("x86")
+elif arch in ["arm", "armv6l", "armv7l", "arm64", "aarch64"]:
+    config.available_features.add("arm")

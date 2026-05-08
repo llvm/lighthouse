@@ -1,11 +1,19 @@
 # RUN: %PYTHON %s --dump-kernel=vectorized | FileCheck %s
 # RUN: %PYTHON %s --dump-kernel=vectorized --tile-size=64 | FileCheck %s
 # RUN: %PYTHON %s --dump-kernel=vectorized --dtype=bf16 --avx512 | FileCheck %s --check-prefix=AVX512
+# RUN: %PYTHON %s --nwarmup 0 --nruns 1 --sizes 128 128 128 | FileCheck %s --check-prefix=BENCH
+
+# REQUIRES: x86
 
 # CHECK: vector.broadcast
 # CHECK: vector.fma
 
 # AVX512: x86.avx512.dot
+
+# BENCH: MxNxK: [128, 128, 128]
+# BENCH: Input dtype: f32
+# BENCH: Timings
+# BENCH: Throughput
 
 """
 Matrix multiplication C = A * B on CPU.
