@@ -7,5 +7,10 @@
 
 set -ex
 
+# Certain tests may require a larger stack size.
+# Setting it here to a minimum expected to avoid cryptic
+# runtime errors during test execution.
+ulimit -s 16384
+
 uv run pre-commit run --all-files
 uv run lit -v .
