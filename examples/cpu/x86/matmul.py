@@ -73,7 +73,7 @@ class Matmul:
         np.random.seed(123)
         A = np.random.rand(self.M, self.K).astype(self.dtype)
         B = np.random.rand(self.K, self.N).astype(self.dtype)
-        C = np.random.rand(self.M, self.N).astype(self.dtype)
+        C = np.random.rand(self.M, self.N).astype(np.float32) # Always accumulate in F32
         return [A, B, C]
 
     def _get_input_arrays(self) -> list[ctypes.Structure]:
