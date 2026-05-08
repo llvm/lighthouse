@@ -70,7 +70,7 @@ if os.path.isdir(torch_kernels_dir):
 
 # Detect host architecture.
 arch = platform.machine().lower()
-if arch in ["x86_64", "amd64", "i386", "i686"]:
+if arch in ["x86_64", "amd64"]:
     config.available_features.add("x86")
-elif arch in ["arm", "armv6l", "armv7l", "arm64", "aarch64"]:
+elif arch in ["arm64", "aarch64"]:
     config.available_features.add("arm")
