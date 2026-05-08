@@ -75,7 +75,8 @@ class PipelineDriver:
         if module.context != self.context:
             raise ValueError("Module context does not match driver context.")
         for stage in self.stages:
-            module = stage.apply(module)
+            with self.context:
+                module = stage.apply(module)
             if print_after_all:
                 print(f"After stage {stage}:\n{module}")
         return module

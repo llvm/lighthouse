@@ -1,17 +1,11 @@
 from mlir import ir
 from mlir.dialects import transform
 
-from .builders import schedule_boilerplate
+from lighthouse.schedule.builders import schedule_boilerplate
 import lighthouse.transform as lh_transform
 
 
-def block_pack_matmuls(
-    block_factors: tuple[int, int, int],
-    lhs_transpose_outer_block: bool = False,
-    lhs_transpose_inner_block: bool = False,
-    rhs_transpose_outer_block: bool = True,
-    rhs_transpose_inner_block: bool = True,
-) -> ir.Module:
+def block_pack_matmuls(options: dict) -> ir.Module:
     """
     Block pack all matmuls.
 
@@ -25,15 +19,21 @@ def block_pack_matmuls(
     and the (mb, nb, kb) are the minor blocks of their respective
     original 2D dimensions (M, N, K).
 
-    Args:
+    Options:
         block_factors: Block sizes (mb, nb, kb)
-        lhs_transpose_outer_block: A matrix MB x KB => KB x MB
-        lhs_transpose_inner_block: A matrix mb x kb => kb x mb
-        rhs_transpose_outer_block: B matrix KB x NB => NB x KB
-        rhs_transpose_inner_block: B matrix kb x nb => nb x kb
+        lhs_transpose_outer_block: True if A matrix MB x KB => KB x MB
+        lhs_transpose_inner_block: True if A matrix mb x kb => kb x mb
+        rhs_transpose_outer_block: True if B matrix KB x NB => NB x KB
+        rhs_transpose_inner_block: True if B matrix kb x nb => nb x kb
     Returns:
         Schedule
     """
+    block_factors = options.get("block_factors")
+    lhs_transpose_outer_block = options.get("lhs_transpose_outer_block", False)
+    lhs_transpose_inner_block = options.get("lhs_transpose_inner_block", False)
+    rhs_transpose_outer_block = options.get("rhs_transpose_outer_block", True)
+    rhs_transpose_inner_block = options.get("rhs_transpose_inner_block", True)
+
     if len(block_factors) != 3:
         raise ValueError(f"Expected 3 block factors but got {len(block_factors)}")
 

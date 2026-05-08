@@ -133,19 +133,33 @@ class Descriptor:
         )
 
     @staticmethod
-    def _string_to_type(value: str) -> str | int | float | bool:
+    def _string_to_type(value: str) -> str | int | float | bool | list:
+        # Boolean
         value = str(value)
         if value == "True":
             return True
         elif value == "False":
             return False
+        # Integer
         try:
             return int(value)
         except ValueError:
+            # Floating point
             try:
                 return float(value)
             except ValueError:
-                return value
+                # List of values, e.g. [val1,val2,...]
+                if value.startswith("[") and value.endswith("]"):
+                    list_str = value[1:-1]
+                # List of values, e.g. val1,val2,...
+                elif value.find(",") != -1:
+                    list_str = value
+                else:
+                    # Something else entirely, return as string
+                    return value
+                return [
+                    Descriptor._string_to_type(v.strip()) for v in list_str.split(",")
+                ]
 
     @staticmethod
     def _parse_csv(line: str, separator: str = ",") -> dict:
