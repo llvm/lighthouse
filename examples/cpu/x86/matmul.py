@@ -236,6 +236,7 @@ class Matmul:
 
         # Lower to memrefs.
         scheds.add_descriptor(Descriptor("bufferization.yaml"))
+        scheds.add_descriptor(Descriptor("bufferization_cleanup.yaml"))
 
         # Apply x86 vectorization again as some patterns require memref abstraction.
         scheds.add_transform(lh_schedule.x86_vectorization())
@@ -253,7 +254,7 @@ class Matmul:
             return scheds
 
         # Lower to LLVM.
-        scheds.add_descriptor(Descriptor("llvm-lowering.yaml"))
+        scheds.add_descriptor(Descriptor("llvm_lowering.yaml"))
 
         return scheds
 
