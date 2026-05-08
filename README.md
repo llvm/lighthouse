@@ -6,7 +6,7 @@ _"In essence, this project should guide you through using MLIR for your own proj
 
 ## Project Status
 
-[![Lighthouse Examples](https://github.com/llvm/lighthouse/actions/workflows/examples.yml/badge.svg)](https://github.com/llvm/lighthouse/actions/workflows/examples.yml)
+[![Lighthouse Pre-Commit](https://github.com/llvm/lighthouse/actions/workflows/precommit.yml/badge.svg)](https://github.com/llvm/lighthouse/actions/workflows/precommit.yml)
 
 [![Lint](https://github.com/llvm/lighthouse/actions/workflows/lint.yml/badge.svg)](https://github.com/llvm/lighthouse/actions/workflows/lint.yml)
 
