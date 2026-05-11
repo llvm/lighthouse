@@ -4,6 +4,7 @@
 # REQUIRES: kernel_bench
 
 import subprocess
+import platform
 from pathlib import Path
 
 script_path = Path(__file__).parent
@@ -11,12 +12,15 @@ project_root = script_path.parent.parent.parent
 kb_program = project_root / "tools" / "kernel_bench"
 kb_default_pipeline = kb_program.parent / "kernel_bench.yaml"
 kb_path = project_root / "third_party" / "KernelBench" / "KernelBench"
+arch = platform.machine()
 tests = [
     {
         "kernel": "level1/1_Square_matrix_multiplication_.py",
         "input_shapes": "32x32xf32xrnd,32x32xf32xid",
         "output_shape": "32x32xf32x0",
-        "pipeline": f"{script_path}/cpu_matmul.yaml",
+        "pipeline": f"{script_path}/cpu_matmul.yaml"
+        if arch == "x86_64"
+        else str(kb_default_pipeline),
     },
     {
         "kernel": "level1/1_Square_matrix_multiplication_.py",
@@ -28,7 +32,9 @@ tests = [
         "kernel": "level1/2_Standard_matrix_multiplication_.py",
         "input_shapes": "8x16xf32xrnd,16x8xf32xrnd",
         "output_shape": "8x8xf32x0",
-        "pipeline": f"{script_path}/cpu_matmul.yaml",
+        "pipeline": f"{script_path}/cpu_matmul.yaml"
+        if arch == "x86_64"
+        else str(kb_default_pipeline),
     },
     {
         "kernel": "level1/2_Standard_matrix_multiplication_.py",
