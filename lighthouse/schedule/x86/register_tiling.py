@@ -26,7 +26,9 @@ def matmul_register_tiling(
         reg_tile_m: Target size for M dimension tile.
         reg_tile_n: Target size for N dimension tile.
         reg_tile_k: Target size for K dimension tile.
-        batch: True is the input has batch dimension.
+        batch: True if the input has batch dimension.
+    Returns:
+        Schedule
     """
     tile_sizes = [reg_tile_m, reg_tile_n, reg_tile_k]
     tile_interchange = []
@@ -72,7 +74,10 @@ def matmul_register_unroll(
         reg_tile_k: Target size for K dimension tile.
         reg_unroll_m: Unroll M dimension after tiling.
         reg_unroll_n: Unroll N dimension after tiling.
-        batch: True is the input has batch dimension.
+        reg_unroll_k: Unroll K dimension after tiling.
+        batch: True if the input has batch dimension.
+    Returns:
+        Schedule
     """
     tile_sizes = [reg_unroll_m, reg_unroll_n, reg_unroll_k]
     if batch:

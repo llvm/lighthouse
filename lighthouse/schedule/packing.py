@@ -25,7 +25,7 @@ def block_pack_matmuls(
     and the (mb, nb, kb) are the minor blocks of their respective
     original 2D dimensions (M, N, K).
 
-    Options:
+    Args:
         block_factors: Block sizes (mb, nb, kb)
         lhs_transpose_outer_block: A matrix MB x KB => KB x MB
         lhs_transpose_inner_block: A matrix mb x kb => kb x mb
