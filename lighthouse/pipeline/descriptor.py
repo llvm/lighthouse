@@ -134,17 +134,14 @@ class Descriptor:
 
     @staticmethod
     def _string_to_type(value: str) -> str | int | float | bool | list:
-        # Boolean
         value = str(value)
         if value == "True":
             return True
         elif value == "False":
             return False
-        # Integer
         try:
             return int(value)
         except ValueError:
-            # Floating point
             try:
                 return float(value)
             except ValueError:
@@ -157,6 +154,7 @@ class Descriptor:
                 else:
                     # Something else entirely, return as string
                     return value
+                # Recursesively parse the list elements
                 return [
                     Descriptor._string_to_type(v.strip()) for v in list_str.split(",")
                 ]
