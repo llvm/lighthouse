@@ -1,3 +1,4 @@
+from mlir import ir
 from mlir.dialects import transform
 from mlir.dialects.transform import structured
 
@@ -8,7 +9,7 @@ import lighthouse.transform as lh_transform
 
 def matmul_cache_tiling(
     target: str, tile_size: int = 32, fuse_producers: bool = False
-) -> transform.TransformOpInterface:
+) -> ir.Module:
     """
     Applies cache tiling to the target matmul operation.
     Creates a forall loop on successful rewrite.
@@ -23,6 +24,8 @@ def matmul_cache_tiling(
         target: Handle to target operation.
         tile_size: Target size for tile dimensions.
         fuse_producers: Apply extra producer ops fusion after tiling.
+    Returns:
+        Schedule module
     """
     with schedule_boilerplate() as (sched, named_seq):
         ops = lh_transform.match_op(named_seq.bodyTarget, target)

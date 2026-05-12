@@ -16,7 +16,7 @@ Pipeline:
 
   ## Tensor vectorization (for the left-over element wise)
   - schedule: "vectorization.py[gen=vectorize_linalg]"
-  - schedule: "vectorization.py[gen=fold_into_vector_transfer]"
+  - schedule: "vectorization.py[gen=simplify_vector_ops]"
   - include: cleanup.yaml
   - schedule: "vectorization.py[gen=x86_vectorization]"
 

@@ -1,4 +1,4 @@
-from mlir.dialects import transform
+from mlir import ir
 
 import lighthouse.schedule as lh_schedule
 
@@ -9,12 +9,11 @@ import lighthouse.schedule as lh_schedule
 def matmul_register_tiling(
     target: str,
     tile_size: int = 32,
-    reg_tile_batch: int = 1,
+    reg_tile_batch: int = 0,
     reg_tile_m: int = 8,
     reg_tile_n: int = 32,
     reg_tile_k: int = 2,
-    batch: bool = False,
-) -> transform.TransformOpInterface:
+) -> ir.Module:
     """
     Applies register tiling to the target matmul operation.
 
@@ -30,8 +29,10 @@ def matmul_register_tiling(
         batch: True is the input has batch dimension.
     """
     tile_sizes = [reg_tile_m, reg_tile_n, reg_tile_k]
-    if batch:
+    tile_interchange = []
+    if reg_tile_batch:
         tile_sizes = [reg_tile_batch] + tile_sizes
+        tile_interchange = [1, 2, 0, 3]
 
     reg_peel_loops = []
     assert tile_size % reg_tile_k == 0, "Invalid K dim register tiling"
@@ -42,14 +43,13 @@ def matmul_register_tiling(
     return lh_schedule.tile_ops(
         target_op=target,
         tile_sizes=tile_sizes,
-        tile_interchange=[1, 2, 0, 3],
+        tile_interchange=tile_interchange,
         peel_loops=reg_peel_loops,
     )
 
 
 def matmul_register_unroll(
     target: str,
-    tile_size: int = 32,
     reg_tile_m: int = 8,
     reg_tile_n: int = 32,
     reg_tile_k: int = 2,
@@ -57,7 +57,7 @@ def matmul_register_unroll(
     reg_unroll_n: int = 16,
     reg_unroll_k: int = 1,
     batch: bool = False,
-) -> transform.TransformOpInterface:
+) -> ir.Module:
     """
     Applies register unrolling to the target matmul operation.
 

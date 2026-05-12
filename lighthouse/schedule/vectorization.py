@@ -65,9 +65,9 @@ def x86_vectorization() -> ir.Module:
     return schedule
 
 
-def fold_into_vector_transfer() -> ir.Module:
+def simplify_vector_ops() -> ir.Module:
     """
-    Fold vector.contract into vector.transfer_read and vector.transfer_write.
+    Apply simplification patterns to vector operations.
 
     Returns:
         Schedule
@@ -76,6 +76,9 @@ def fold_into_vector_transfer() -> ir.Module:
         with ir.InsertionPoint(
             transform.ApplyPatternsOp(named_seq.bodyTarget).patterns
         ):
+            # FIXME: This transform breaks AVX512 FMA recognition,
+            # but it's in the other sub-schedule of the same name.
+            # vector.apply_patterns_vector_cast_away_vector_leading_one_dim()
             tensor.apply_patterns_tensor_fold_tensor_subset_ops_into_vector_transfers()
             transform.apply_patterns_canonicalization()
         transform.yield_()

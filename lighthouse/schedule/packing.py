@@ -6,11 +6,11 @@ import lighthouse.transform as lh_transform
 
 
 def block_pack_matmuls(
-    block_factors,
-    lhs_transpose_outer_block=False,
-    lhs_transpose_inner_block=False,
-    rhs_transpose_outer_block=True,
-    rhs_transpose_inner_block=True,
+    block_factors: tuple[int, int, int],
+    lhs_transpose_outer_block: bool = False,
+    lhs_transpose_inner_block: bool = False,
+    rhs_transpose_outer_block: bool = True,
+    rhs_transpose_inner_block: bool = True,
 ) -> ir.Module:
     """
     Block pack all matmuls.
@@ -27,10 +27,10 @@ def block_pack_matmuls(
 
     Options:
         block_factors: Block sizes (mb, nb, kb)
-        lhs_transpose_outer_block: True if A matrix MB x KB => KB x MB
-        lhs_transpose_inner_block: True if A matrix mb x kb => kb x mb
-        rhs_transpose_outer_block: True if B matrix KB x NB => NB x KB
-        rhs_transpose_inner_block: True if B matrix kb x nb => nb x kb
+        lhs_transpose_outer_block: A matrix MB x KB => KB x MB
+        lhs_transpose_inner_block: A matrix mb x kb => kb x mb
+        rhs_transpose_outer_block: B matrix KB x NB => NB x KB
+        rhs_transpose_inner_block: B matrix kb x nb => nb x kb
     Returns:
         Schedule
     """

@@ -175,14 +175,19 @@ class Matmul:
         scheds.add_transform(lh_schedule.linalg_contract_fold_unit_dims())
 
         # GEMM register tiling, ensure that computation can fit into vector registers.
+        reg_tile_batch = 1
+        reg_tile_m = 8
+        reg_tile_n = 32
+        reg_tile_k = 2
+
         scheds.add_transform(
             lh_schedule_x86.matmul_register_tiling(
                 target="linalg.contract",
                 tile_size=self.tile_size,
-                reg_tile_m=8,
-                reg_tile_n=32,
-                reg_tile_k=2,
-                batch=True,
+                reg_tile_batch=reg_tile_batch,
+                reg_tile_m=reg_tile_m,
+                reg_tile_n=reg_tile_n,
+                reg_tile_k=reg_tile_k,
             )
         )
 
@@ -190,14 +195,13 @@ class Matmul:
         scheds.add_transform(
             lh_schedule_x86.matmul_register_unroll(
                 target="linalg.contract",
-                tile_size=self.tile_size,
-                reg_tile_m=8,
-                reg_tile_n=32,
-                reg_tile_k=2,
+                reg_tile_m=reg_tile_m,
+                reg_tile_n=reg_tile_n,
+                reg_tile_k=reg_tile_k,
                 reg_unroll_m=1,
                 reg_unroll_n=16,
                 reg_unroll_k=2 if self.dtype == ml_dtypes.bfloat16 else 1,
-                batch=True,
+                batch=reg_tile_batch > 0,
             )
         )
 
@@ -216,7 +220,7 @@ class Matmul:
         scheds.add_transform(lh_schedule.vectorize_linalg())
         scheds.add_transform(lh_schedule.hoist_loops())
 
-        scheds.add_transform(lh_schedule.fold_into_vector_transfer())
+        scheds.add_transform(lh_schedule.simplify_vector_ops())
 
         # Rewrite vector ops into x86-specific sequences.
         scheds.add_transform(lh_schedule.x86_vectorization())
