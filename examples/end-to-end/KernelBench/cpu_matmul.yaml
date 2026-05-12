@@ -5,12 +5,12 @@ Pipeline:
   - schedule: "packing.py[gen=block_pack_matmuls]{block_factors=32,32,32 rhs_transpose_outer_block=True rhs_transpose_inner_block=False}"
   - schedule: "x86/pack_lowering.py[gen=lower_packs_unpacks]{tile_size=32}"
   - pass: "linalg-morph-ops{named-to-category generic-to-category}"
-  - schedule: "x86/cache_tiling.py[gen=matmul_cache_tiling]{fuse_producers}"
+  - schedule: "x86/cache_tiling.py[gen=matmul_cache_tiling]{target=linalg.contract fuse_producers}"
   - schedule: "linalg.py[gen=linalg_contract_fold_unit_dims]"
 
   ## CPU specific register tiling (depends on uArch & data type)
-  - schedule: "x86/register_tiling.py[gen=matmul_register_tiling]"
-  - schedule: "x86/register_tiling.py[gen=matmul_register_unroll]"
+  - schedule: "x86/register_tiling.py[gen=matmul_register_tiling]{target=linalg.contract}"
+  - schedule: "x86/register_tiling.py[gen=matmul_register_unroll]{target=linalg.contract}"
   - schedule: "tiling.py[gen=tile_ops]{target_op=linalg.fill tile_sizes=[1,1,1]}"
   - schedule: "tiling.py[gen=tile_ops]{target_op=linalg.generic tile_sizes=[1,8]}"
 

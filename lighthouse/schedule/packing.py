@@ -5,7 +5,13 @@ from lighthouse.schedule.builders import schedule_boilerplate
 import lighthouse.transform as lh_transform
 
 
-def block_pack_matmuls(options: dict) -> ir.Module:
+def block_pack_matmuls(
+    block_factors,
+    lhs_transpose_outer_block=False,
+    lhs_transpose_inner_block=False,
+    rhs_transpose_outer_block=True,
+    rhs_transpose_inner_block=True,
+) -> ir.Module:
     """
     Block pack all matmuls.
 
@@ -28,12 +34,6 @@ def block_pack_matmuls(options: dict) -> ir.Module:
     Returns:
         Schedule
     """
-    block_factors = options.get("block_factors")
-    lhs_transpose_outer_block = options.get("lhs_transpose_outer_block", False)
-    lhs_transpose_inner_block = options.get("lhs_transpose_inner_block", False)
-    rhs_transpose_outer_block = options.get("rhs_transpose_outer_block", True)
-    rhs_transpose_inner_block = options.get("rhs_transpose_inner_block", True)
-
     if len(block_factors) != 3:
         raise ValueError(f"Expected 3 block factors but got {len(block_factors)}")
 

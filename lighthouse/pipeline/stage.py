@@ -180,11 +180,12 @@ class TransformStage(Stage):
                 raise ValueError(
                     f"Transform module '{transform.filename}' does not define a '{transform.generator}' generator function."
                 )
+            # Get the generator function in the transform module.
             self.generator = getattr(transform_module, transform.generator)
 
             # Run the function with the dictionary as the options that will create the named sequence.
             with context, ir.Location.unknown():
-                self.module = self.generator(transform.options)
+                self.module = self.generator(**transform.options)
         else:
             raise ValueError(f"Unsupported transform type: {transform.type}")
 

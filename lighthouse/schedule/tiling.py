@@ -6,7 +6,14 @@ from lighthouse.schedule.builders import schedule_boilerplate
 import lighthouse.transform as lh_transform
 
 
-def tile_ops(options: dict) -> ir.Module:
+def tile_ops(
+    target_op: str | list[str] | MatchInterfaceEnum,
+    tile_sizes: list[int],
+    fuse_producers: bool = False,
+    tile_interchange: list[int] | None = None,
+    peel_loops: list[int] = [],
+    unroll_factors: list[int] = [],
+) -> ir.Module:
     """
     Tile all matching op.
 
@@ -32,13 +39,6 @@ def tile_ops(options: dict) -> ir.Module:
     Returns:
         Schedule
     """
-    target_op: str | list[str] | MatchInterfaceEnum = options["target_op"]
-    tile_sizes: list[int] = options["tile_sizes"]
-    fuse_producers: bool = options.get("fuse_producers", False)
-    tile_interchange: list[int] | None = options.get("tile_interchange", None)
-    peel_loops: list[int] = options.get("peel_loops", [])
-    unroll_factors: list[int] = options.get("unroll_factors", [])
-
     with schedule_boilerplate() as (schedule, named_seq):
         ops = lh_transform.match_op(named_seq.bodyTarget, target_op)
         with lh_transform.foreach(ops) as op:

@@ -6,7 +6,15 @@ import lighthouse.schedule as lh_schedule
 # up with the appropriate tiling and unrolling factors based on the target hardware
 
 
-def matmul_register_tiling(options: dict) -> transform.TransformOpInterface:
+def matmul_register_tiling(
+    target: str,
+    tile_size: int = 32,
+    reg_tile_batch: int = 1,
+    reg_tile_m: int = 8,
+    reg_tile_n: int = 32,
+    reg_tile_k: int = 2,
+    batch: bool = False,
+) -> transform.TransformOpInterface:
     """
     Applies register tiling to the target matmul operation.
 
@@ -21,14 +29,6 @@ def matmul_register_tiling(options: dict) -> transform.TransformOpInterface:
         reg_tile_k: Target size for K dimension tile.
         batch: True is the input has batch dimension.
     """
-    target = options.get("target", "linalg.contract")
-    tile_size: int = options.get("tile_size", 32)
-    reg_tile_batch: int = options.get("reg_tile_batch", 1)
-    reg_tile_m: int = options.get("reg_tile_m", 8)
-    reg_tile_n: int = options.get("reg_tile_n", 32)
-    reg_tile_k: int = options.get("reg_tile_k", 2)
-    batch: bool = options.get("batch", False)
-
     tile_sizes = [reg_tile_m, reg_tile_n, reg_tile_k]
     if batch:
         tile_sizes = [reg_tile_batch] + tile_sizes
@@ -40,16 +40,24 @@ def matmul_register_tiling(options: dict) -> transform.TransformOpInterface:
     if tile_size % reg_tile_m != 0:
         reg_peel_loops.append(0)
     return lh_schedule.tile_ops(
-        {
-            "target_op": target,
-            "tile_sizes": tile_sizes,
-            "tile_interchange": [1, 2, 0, 3],
-            "peel_loops": reg_peel_loops,
-        }
+        target_op=target,
+        tile_sizes=tile_sizes,
+        tile_interchange=[1, 2, 0, 3],
+        peel_loops=reg_peel_loops,
     )
 
 
-def matmul_register_unroll(options: dict) -> transform.TransformOpInterface:
+def matmul_register_unroll(
+    target: str,
+    tile_size: int = 32,
+    reg_tile_m: int = 8,
+    reg_tile_n: int = 32,
+    reg_tile_k: int = 2,
+    reg_unroll_m: int = 1,
+    reg_unroll_n: int = 16,
+    reg_unroll_k: int = 1,
+    batch: bool = False,
+) -> transform.TransformOpInterface:
     """
     Applies register unrolling to the target matmul operation.
 
@@ -66,15 +74,6 @@ def matmul_register_unroll(options: dict) -> transform.TransformOpInterface:
         reg_unroll_n: Unroll N dimension after tiling.
         batch: True is the input has batch dimension.
     """
-    target = options.get("target", "linalg.contract")
-    reg_tile_m: int = options.get("reg_tile_m", 8)
-    reg_tile_n: int = options.get("reg_tile_n", 32)
-    reg_tile_k: int = options.get("reg_tile_k", 2)
-    reg_unroll_m: int = options.get("reg_unroll_m", 1)
-    reg_unroll_n: int = options.get("reg_unroll_n", 16)
-    reg_unroll_k: int = options.get("reg_unroll_k", 1)
-    batch: bool = options.get("batch", False)
-
     tile_sizes = [reg_unroll_m, reg_unroll_n, reg_unroll_k]
     if batch:
         tile_sizes = [0] + tile_sizes
@@ -85,9 +84,7 @@ def matmul_register_unroll(options: dict) -> transform.TransformOpInterface:
         reg_tile_k // reg_unroll_k,
     ]
     return lh_schedule.tile_ops(
-        {
-            "target_op": target,
-            "tile_sizes": tile_sizes,
-            "unroll_factors": reg_unroll_factors,
-        }
+        target_op=target,
+        tile_sizes=tile_sizes,
+        unroll_factors=reg_unroll_factors,
     )

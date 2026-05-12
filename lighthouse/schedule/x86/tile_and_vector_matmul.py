@@ -8,7 +8,6 @@ import lighthouse.transform as lh_transform
 
 
 def create_schedule(
-    options: dict = {},
     tile_sizes: tuple[int, int] = [32, 32],
     register_tile: tuple[int, int, int] = [8, 32, 1],
     matmul_op: str = "linalg.matmul",

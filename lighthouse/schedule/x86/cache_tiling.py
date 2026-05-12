@@ -6,7 +6,9 @@ from lighthouse.schedule.builders import schedule_boilerplate
 import lighthouse.transform as lh_transform
 
 
-def matmul_cache_tiling(options: dict) -> transform.TransformOpInterface:
+def matmul_cache_tiling(
+    target: str, tile_size: int = 32, fuse_producers: bool = False
+) -> transform.TransformOpInterface:
     """
     Applies cache tiling to the target matmul operation.
     Creates a forall loop on successful rewrite.
@@ -22,10 +24,6 @@ def matmul_cache_tiling(options: dict) -> transform.TransformOpInterface:
         tile_size: Target size for tile dimensions.
         fuse_producers: Apply extra producer ops fusion after tiling.
     """
-    target = options.get("target", "linalg.contract")
-    tile_size: int = options.get("tile_size", 32)
-    fuse_producers: bool = options.get("fuse_producers", False)
-
     with schedule_boilerplate() as (sched, named_seq):
         ops = lh_transform.match_op(named_seq.bodyTarget, target)
         with lh_transform.foreach(ops) as op:

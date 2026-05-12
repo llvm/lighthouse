@@ -6,7 +6,7 @@ from lighthouse.schedule.builders import schedule_boilerplate
 import lighthouse.transform as lh_transform
 
 
-def vectorize_linalg(options: dict = {}) -> ir.Module:
+def vectorize_linalg() -> ir.Module:
     """
     Vectorize all linalg ops.
 
@@ -32,7 +32,7 @@ def vectorize_linalg(options: dict = {}) -> ir.Module:
     return schedule
 
 
-def vectorize_all(options: dict = {}) -> ir.Module:
+def vectorize_all() -> ir.Module:
     """
     Vectorize all ops.
 
@@ -50,7 +50,7 @@ def vectorize_all(options: dict = {}) -> ir.Module:
     return schedule
 
 
-def x86_vectorization(options: dict = {}) -> ir.Module:
+def x86_vectorization() -> ir.Module:
     """
     Apply x86-specific vector rewrites.
 
@@ -65,7 +65,7 @@ def x86_vectorization(options: dict = {}) -> ir.Module:
     return schedule
 
 
-def fold_into_vector_transfer(options: dict = {}) -> ir.Module:
+def fold_into_vector_transfer() -> ir.Module:
     """
     Fold vector.contract into vector.transfer_read and vector.transfer_write.
 
@@ -82,7 +82,7 @@ def fold_into_vector_transfer(options: dict = {}) -> ir.Module:
     return schedule
 
 
-def flatten_vector_ops(options: dict = {}) -> ir.Module:
+def flatten_vector_ops() -> ir.Module:
     """
     Flatten vector ops to 1D.
 

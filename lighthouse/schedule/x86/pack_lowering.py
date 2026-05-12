@@ -9,7 +9,9 @@ from lighthouse.schedule import schedule_boilerplate
 from lighthouse import transform as lh_transform
 
 
-def lower_packs_for_vectorization(options: dict):
+def lower_packs_for_vectorization(
+    pack_ops, pack_tile_sizes, vector_tile_sizes=None, vector_unroll_factors=[]
+):
     """
     Lower packs into hardware-friendly operations.
 
@@ -19,11 +21,6 @@ def lower_packs_for_vectorization(options: dict):
         vector_tile_sizes: Target vector shapes
         vector_unroll_factors: Unroll factors for each vector loop.
     """
-    pack_ops = options["pack_ops"]
-    pack_tile_sizes = options["pack_tile_sizes"]
-    vector_tile_sizes = options.get("vector_tile_sizes", None)
-    vector_unroll_factors = options.get("vector_unroll_factors", [])
-
     with lh_transform.foreach(pack_ops) as pack_op:
         tiled_pack = structured.TileUsingForOp(
             pack_op, sizes=pack_tile_sizes
@@ -44,7 +41,9 @@ def lower_packs_for_vectorization(options: dict):
         transform.yield_()
 
 
-def lower_unpacks_for_vectorization(options: dict):
+def lower_unpacks_for_vectorization(
+    unpack_ops, unpack_tile_sizes, vector_tile_sizes=None
+):
     """
     Lower unpacks into hardware-friendly operations.
 
@@ -53,10 +52,6 @@ def lower_unpacks_for_vectorization(options: dict):
         unpack_tile_sizes: Unpack sub-tiling sizes
         vector_tile_sizes: Target vector shapes
     """
-    unpack_ops = options["unpack_ops"]
-    unpack_tile_sizes = options["unpack_tile_sizes"]
-    vector_tile_sizes = options.get("vector_tile_sizes", None)
-
     with lh_transform.foreach(unpack_ops) as unpack_op:
         tiled_unpack = structured.TileUsingForOp(
             unpack_op, sizes=unpack_tile_sizes
@@ -77,7 +72,7 @@ def lower_unpacks_for_vectorization(options: dict):
         transform.yield_()
 
 
-def lower_packs_unpacks(options: dict) -> ir.Module:
+def lower_packs_unpacks(tile_size: int) -> ir.Module:
     """
     Lower pack and unpack ops into hardware-friendly shapes.
 
@@ -86,29 +81,23 @@ def lower_packs_unpacks(options: dict) -> ir.Module:
     Returns:
         Schedule
     """
-    tile_size = options["tile_size"]
-
     with schedule_boilerplate() as (schedule, named_seq):
         pack_unpack_vector_m = max(8, tile_size)
         pack_unpack_vector_n = min(64, tile_size)
         packs = lh_transform.match_op(named_seq.bodyTarget, "linalg.pack")
         lower_packs_for_vectorization(
-            {
-                "pack_ops": packs,
-                "pack_tile_sizes": [1, 1],
-                "vector_tile_sizes": [1, 1, pack_unpack_vector_m, pack_unpack_vector_n],
-                "vector_unroll_factors": [tile_size // pack_unpack_vector_n],
-            }
+            pack_ops=packs,
+            pack_tile_sizes=[1, 1],
+            vector_tile_sizes=[1, 1, pack_unpack_vector_m, pack_unpack_vector_n],
+            vector_unroll_factors=[tile_size // pack_unpack_vector_n],
         )
         lh_transform.cleanup(named_seq.bodyTarget)
 
         unpacks = lh_transform.match_op(named_seq.bodyTarget, "linalg.unpack")
         lower_unpacks_for_vectorization(
-            {
-                "unpack_ops": unpacks,
-                "unpack_tile_sizes": [tile_size, tile_size],
-                "vector_tile_sizes": [1],
-            }
+            unpack_ops=unpacks,
+            unpack_tile_sizes=[tile_size, tile_size],
+            vector_tile_sizes=[1],
         )
         transposes = lh_transform.match_op(named_seq.bodyTarget, "linalg.transpose")
         with lh_transform.foreach(transposes) as tranpose:

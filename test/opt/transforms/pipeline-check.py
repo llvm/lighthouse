@@ -4,7 +4,7 @@ from lighthouse.pipeline.helper import apply_registered_pass, match
 from lighthouse.pipeline.stage import apply_bundle
 
 
-def create_schedule(options: dict = {}) -> ir.Module:
+def create_schedule(skip_llvm=False) -> ir.Module:
     """Creates a Transform Schedule for the test's optimization pipeline."""
 
     schedule_module = ir.Module.create()
@@ -32,7 +32,7 @@ def create_schedule(options: dict = {}) -> ir.Module:
             mod = apply_registered_pass(mod, "convert-linalg-to-loops")
             mod = apply_bundle(mod, "cleanup.yaml")
 
-            if not options.get("skip_llvm", False):
+            if not skip_llvm:
                 mod = apply_bundle(mod, "llvm_lowering.yaml")
             transform.YieldOp()
 

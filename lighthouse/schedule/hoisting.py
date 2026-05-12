@@ -6,7 +6,11 @@ from .builders import schedule_boilerplate
 import lighthouse.transform as lh_transform
 
 
-def hoist_loops(options: dict = {}) -> ir.Module:
+def hoist_loops(
+    target_op: str
+    | list[str]
+    | MatchInterfaceEnum = MatchInterfaceEnum.LoopLikeInterface,
+) -> ir.Module:
     """
     Apply loop hoisting to all matching ops.
 
@@ -15,10 +19,6 @@ def hoist_loops(options: dict = {}) -> ir.Module:
     Returns:
         Schedule
     """
-    target_op: str | list[str] | MatchInterfaceEnum = options.get(
-        "target_op", MatchInterfaceEnum.LoopLikeInterface
-    )
-
     with schedule_boilerplate() as (schedule, named_seq):
         ops = lh_transform.match_op(named_seq.bodyTarget, target_op)
         lh_transform.loop_hoisting(ops)

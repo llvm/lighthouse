@@ -146,15 +146,13 @@ class Matmul:
         # Create cache-friendly access pattern across matmul tiles.
         scheds.add_transform(
             lh_schedule.block_pack_matmuls(
-                {
-                    "block_factors": [self.tile_size, self.tile_size, self.tile_size],
-                    "rhs_transpose_outer_block": True,
-                    "rhs_transpose_inner_block": False,
-                }
+                block_factors=[self.tile_size, self.tile_size, self.tile_size],
+                rhs_transpose_outer_block=True,
+                rhs_transpose_inner_block=False,
             )
         )
         scheds.add_transform(
-            lh_schedule_x86.lower_packs_unpacks({"tile_size": self.tile_size})
+            lh_schedule_x86.lower_packs_unpacks(tile_size=self.tile_size)
         )
 
         # Convert to category ops for easier op matching.
@@ -165,11 +163,10 @@ class Matmul:
             )
         )
 
-        # GEMM cache tiling.
-        # Create memory friendly access pattern.
+        # GEMM cache tiling, create memory friendly access pattern.
         scheds.add_transform(
             lh_schedule_x86.matmul_cache_tiling(
-                {"tile_size": self.tile_size, "fuse_producers": True}
+                target="linalg.contract", tile_size=self.tile_size, fuse_producers=True
             )
         )
 
@@ -180,37 +177,36 @@ class Matmul:
         # GEMM register tiling, ensure that computation can fit into vector registers.
         scheds.add_transform(
             lh_schedule_x86.matmul_register_tiling(
-                {
-                    "tile_size": self.tile_size,
-                    "reg_tile_m": 8,
-                    "reg_tile_n": 32,
-                    "reg_tile_k": 2,
-                    "batch": True,
-                }
+                target="linalg.contract",
+                tile_size=self.tile_size,
+                reg_tile_m=8,
+                reg_tile_n=32,
+                reg_tile_k=2,
+                batch=True,
             )
         )
 
         # GEMM register unroll, ensure that shapes are compatible with target hardware instructions.
         scheds.add_transform(
             lh_schedule_x86.matmul_register_unroll(
-                {
-                    "reg_tile_m": 8,
-                    "reg_tile_n": 32,
-                    "reg_tile_k": 2,
-                    "reg_unroll_m": 1,
-                    "reg_unroll_n": 16,
-                    "reg_unroll_k": 2 if self.dtype == ml_dtypes.bfloat16 else 1,
-                    "batch": True,
-                }
+                target="linalg.contract",
+                tile_size=self.tile_size,
+                reg_tile_m=8,
+                reg_tile_n=32,
+                reg_tile_k=2,
+                reg_unroll_m=1,
+                reg_unroll_n=16,
+                reg_unroll_k=2 if self.dtype == ml_dtypes.bfloat16 else 1,
+                batch=True,
             )
         )
 
         # Further tiling into hardware-friendly sizes for vectorization.
         scheds.add_transform(
-            lh_schedule.tile_ops({"target_op": "linalg.fill", "tile_sizes": [1, 1, 1]})
+            lh_schedule.tile_ops(target_op="linalg.fill", tile_sizes=[1, 1, 1])
         )
         scheds.add_transform(
-            lh_schedule.tile_ops({"target_op": "linalg.generic", "tile_sizes": [1, 8]})
+            lh_schedule.tile_ops(target_op="linalg.generic", tile_sizes=[1, 8])
         )
 
         if stop_at_stage == "tiled":
@@ -308,6 +304,11 @@ def parse_cli():
         action="store_true",
         help="Dump transform schedule.",
     )
+    parser.add_argument(
+        "--print-mlir-after-all",
+        action="store_true",
+        help="Dump MLIR after all transformations.",
+    )
     args = parser.parse_args()
 
     return args
@@ -331,7 +332,9 @@ if __name__ == "__main__":
 
         wload = Matmul(*args.sizes, dtype=in_dtype, tile_size=args.tile_size)
         pipeline = wload.get_pipeline(stop_at_stage=args.dump_kernel)
-        payload = pipeline.apply(wload.payload_module(), print_after_all=True)
+        payload = pipeline.apply(
+            wload.payload_module(), print_after_all=args.print_mlir_after_all
+        )
 
         if args.dump_kernel or args.dump_schedule:
             if args.dump_kernel:

@@ -6,7 +6,7 @@ from lighthouse.schedule.builders import schedule_boilerplate
 import lighthouse.transform as lh_transform
 
 
-def linalg_contract_fold_unit_dims(options: dict = {}) -> ir.Module:
+def linalg_contract_fold_unit_dims() -> ir.Module:
     """
     Fold unit dims of linalg contract.
 
