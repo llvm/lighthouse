@@ -130,7 +130,6 @@ class Matmul:
     def get_pipeline(
         self,
         stop_at_stage: Optional[str] = None,
-        parameters: Optional[dict] = None,
     ) -> PipelineDriver:
         scheds = PipelineDriver(self.context)
 
