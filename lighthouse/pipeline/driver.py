@@ -4,6 +4,7 @@ from mlir import ir
 import lighthouse.pipeline.stage as lhs
 from lighthouse.pipeline.helper import import_mlir_module
 from lighthouse.pipeline.descriptor import PipelineDescriptor, Descriptor
+import lighthouse.dialects as lh_dialects
 
 
 class PipelineDriver:
@@ -122,6 +123,9 @@ class CompilerDriver:
         # The module is owned by the Driver to encapsulate its use through the pipeline.
         # It is returned at the end of run() after being transformed by the stages in the pipeline.
         self.context = ir.Context()
+        # Load Lighthouse dialects in the context, so that they can be used in the pipeline stages.
+        with self.context:
+            lh_dialects.register_and_load()
         self.module = None
         if filename:
             self.import_payload(filename)
