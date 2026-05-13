@@ -26,7 +26,9 @@ def get_pipeline_file(kernel_name: str, dtype: str) -> Path:
 
     # Level 1 matmuls should use the same pipelines
     if kernel_name.startswith("level1") and "matrix_multiplication" in kernel_name:
-        return script_path / f"schedules/{arch}/matmul/{dtype}.yaml"
+        pipeline = script_path / f"schedules/{arch}/matmul/{dtype}.yaml"
+        if pipeline.exists():
+            return pipeline
 
     # Otherwise, just return the safe option
     return kb_default_pipeline
