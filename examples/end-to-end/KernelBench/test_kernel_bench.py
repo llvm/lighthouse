@@ -13,43 +13,67 @@ project_root = script_path.parent.parent.parent
 kb_program = project_root / "tools" / "kernel_bench"
 kb_default_pipeline = kb_program.parent / "kernel_bench.yaml"
 kb_path = project_root / "third_party" / "KernelBench" / "KernelBench"
-arch = platform.machine()
+
+
+def get_pipeline_file(kernel_name: str, dtype: str) -> Path:
+    """
+    Returns the appropriate pipeline file for a given kernel.
+
+    Args:
+        kernel_name: Name of the kernel for which to retrieve the pipeline file.
+        dtype: Data type of the kernel (e.g., "f32", "bf16").
+
+    Returns:
+        Path to the appropriate pipeline file.
+    """
+    arch = platform.machine()
+    if arch != "x86_64":
+        return kb_default_pipeline
+
+    # Level 1 matmuls should use the same pipelines
+    if kernel_name.startswith("level1") and "matrix_multiplication" in kernel_name:
+        return script_path / f"schedules/{arch}/matmul/{dtype}.yaml"
+
+    # Otherwise, just return the safe option
+    return kb_default_pipeline
+
+
 tests = [
     {
         "kernel": "level1/1_Square_matrix_multiplication_.py",
         "input_shapes": "1024x1024xf32xrnd,1024x1024xf32xid",
         "output_shape": "1024x1024xf32x0",
         "gflops": (1024 * 1024 * 1024 * 2) / 1e9,
-        "pipeline": f"{script_path}/cpu_matmul_fp32.yaml"
-        if arch == "x86_64"
-        else str(kb_default_pipeline),
+        "pipeline": str(
+            get_pipeline_file("level1/1_Square_matrix_multiplication_", "f32")
+        ),
     },
     {
         "kernel": "level1/1_Square_matrix_multiplication_.py",
         "input_shapes": "1024x1024xbf16xrnd,1024x1024xbf16xid",
         "output_shape": "1024x1024xbf16x0",
         "gflops": (1024 * 1024 * 1024 * 2) / 1e9,
-        "pipeline": f"{script_path}/cpu_matmul_bf16.yaml"
-        if arch == "x86_64"
-        else str(kb_default_pipeline),
+        "pipeline": str(
+            get_pipeline_file("level1/1_Square_matrix_multiplication_", "bf16")
+        ),
     },
     {
         "kernel": "level1/2_Standard_matrix_multiplication_.py",
         "input_shapes": "512x1024xf32xrnd,1024x512xf32xrnd",
         "output_shape": "512x512xf32x0",
         "gflops": (512 * 1024 * 512 * 2) / 1e9,
-        "pipeline": f"{script_path}/cpu_matmul_fp32.yaml"
-        if arch == "x86_64"
-        else str(kb_default_pipeline),
+        "pipeline": str(
+            get_pipeline_file("level1/2_Standard_matrix_multiplication_", "f32")
+        ),
     },
     {
         "kernel": "level1/2_Standard_matrix_multiplication_.py",
         "input_shapes": "512x1024xbf16xrnd,1024x512xbf16xrnd",
         "output_shape": "512x512xbf16x0",
         "gflops": (512 * 1024 * 512 * 2) / 1e9,
-        "pipeline": f"{script_path}/cpu_matmul_bf16.yaml"
-        if arch == "x86_64"
-        else str(kb_default_pipeline),
+        "pipeline": str(
+            get_pipeline_file("level1/2_Standard_matrix_multiplication_", "bf16")
+        ),
     },
 ]
 

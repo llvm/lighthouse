@@ -1,0 +1,15 @@
+# This is an optimizing pipeline for kernel_bench matmuls on fp32 types.
+# Tested on x86_64 with AVX512 reaching good performance for simple KB kernels.
+# It may not apply to other workloads / extensions / architectures, so use with caution.
+Pipeline:
+  - include: pack_and_tile.yaml
+
+  ## CPU specific register tiling (depends on uArch & data type)
+  - schedule: "x86/register_tiling.py[gen=matmul_register_tiling]{target=linalg.contract reg_tile_batch=1 reg_tile_m=8 reg_tile_n=32 reg_tile_k=2}"
+  - schedule: "x86/register_tiling.py[gen=matmul_register_unroll]{target=linalg.contract batch=1 reg_tile_m=8 reg_tile_n=32 reg_tile_k=2 reg_unroll_m=1 reg_unroll_n=16 reg_unroll_k=1}"
+  - schedule: "tiling.py[gen=tile_ops]{target_op=linalg.fill tile_sizes=[1,1,1]}"
+  - schedule: "tiling.py[gen=tile_ops]{target_op=linalg.generic tile_sizes=[1,8]}"
+
+  - include: vectorize.yaml
+
+  - include: lower.yaml

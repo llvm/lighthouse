@@ -1,0 +1,9 @@
+# High-level (cache) tiling, packing and fusion.
+# This is a good default to most CPU based pipelines.
+Pipeline:
+  ## Packing & Cache tiling (CPU generic)
+  - schedule: "packing.py[gen=block_pack_matmuls]{block_factors=32,32,32 rhs_transpose_outer_block=True rhs_transpose_inner_block=False}"
+  - schedule: "x86/pack_lowering.py[gen=lower_packs_unpacks]{tile_size=32}"
+  - pass: "linalg-morph-ops{named-to-category generic-to-category}"
+  - schedule: "x86/cache_tiling.py[gen=matmul_cache_tiling]{target=linalg.contract fuse_producers}"
+  - schedule: "linalg.py[gen=linalg_contract_fold_unit_dims]"
