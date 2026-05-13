@@ -1,5 +1,6 @@
-# This is the default pipeline for kernel_bench, producing serial code.
-# For optimized builds, pass the --pipeline to the kernel_bench program.
+# This is an optimizing pipeline for kernel_bench matmuls on fp32 types.
+# Tested on x86_64 with AVX512 reaching good performance for simple KB kernels.
+# It may not apply to other workloads / extensions / architectures, so use with caution.
 Pipeline:
   ## Packing & Cache tiling (CPU generic)
   - schedule: "packing.py[gen=block_pack_matmuls]{block_factors=32,32,32 rhs_transpose_outer_block=True rhs_transpose_inner_block=False}"

@@ -20,30 +20,36 @@ tests = [
         "input_shapes": "1024x1024xf32xrnd,1024x1024xf32xid",
         "output_shape": "1024x1024xf32x0",
         "gflops": (1024 * 1024 * 1024 * 2) / 1e9,
-        "pipeline": f"{script_path}/cpu_matmul.yaml"
+        "pipeline": f"{script_path}/cpu_matmul_fp32.yaml"
         if arch == "x86_64"
         else str(kb_default_pipeline),
     },
     {
         "kernel": "level1/1_Square_matrix_multiplication_.py",
-        "input_shapes": "32x32xbf16xrnd,32x32xbf16xid",
-        "output_shape": "32x32xbf16x0",
-        "pipeline": str(kb_default_pipeline),
+        "input_shapes": "1024x1024xbf16xrnd,1024x1024xbf16xid",
+        "output_shape": "1024x1024xbf16x0",
+        "gflops": (1024 * 1024 * 1024 * 2) / 1e9,
+        "pipeline": f"{script_path}/cpu_matmul_bf16.yaml"
+        if arch == "x86_64"
+        else str(kb_default_pipeline),
     },
     {
         "kernel": "level1/2_Standard_matrix_multiplication_.py",
         "input_shapes": "512x1024xf32xrnd,1024x512xf32xrnd",
         "output_shape": "512x512xf32x0",
         "gflops": (512 * 1024 * 512 * 2) / 1e9,
-        "pipeline": f"{script_path}/cpu_matmul.yaml"
+        "pipeline": f"{script_path}/cpu_matmul_fp32.yaml"
         if arch == "x86_64"
         else str(kb_default_pipeline),
     },
     {
         "kernel": "level1/2_Standard_matrix_multiplication_.py",
-        "input_shapes": "8x16xbf16xrnd,16x8xbf16xrnd",
-        "output_shape": "8x8xbf16x0",
-        "pipeline": str(kb_default_pipeline),
+        "input_shapes": "512x1024xbf16xrnd,1024x512xbf16xrnd",
+        "output_shape": "512x512xbf16x0",
+        "gflops": (512 * 1024 * 512 * 2) / 1e9,
+        "pipeline": f"{script_path}/cpu_matmul_bf16.yaml"
+        if arch == "x86_64"
+        else str(kb_default_pipeline),
     },
 ]
 
@@ -101,8 +107,9 @@ if __name__ == "__main__":
 # CHECK-NOT: Execution failed
 
 # CHECK: 1_Square_matrix_multiplication_.mlir
-# CHECK: 0.375 0.949219 0.730469 ... 0.0463867 0.609375 0.170898
-# CHECK: 0.271484 0.589844 0.361328 ... 0.296875 0.925781 0.972656
+# CHECK: 0.375{{.*}} 0.949{{.*}} 0.730{{.*}} ... 0.296{{.*}} 0.925{{.*}} 0.972{{.*}}
+# CHECK: 0.718{{.*}} 0.992{{.*}} 0.121{{.*}} ... 0.173{{.*}} 0.347{{.*}} 0.644{{.*}}
+# CHECK: Performance: {{.*}} GFLOPS
 
 # CHECK-NOT: Execution failed
 
@@ -114,7 +121,8 @@ if __name__ == "__main__":
 # CHECK-NOT: Execution failed
 
 # CHECK: 2_Standard_matrix_multiplication_.mlir
-# CHECK: 3.125 3.76562 4.53125 4.40625 4.4375 3.26562 3.53125 3.9375
-# CHECK: 5.03125 5.3125 5.8125 4.8125 4.75 4.34375 5.3125 5.5625
+# CHECK: 250 260 249 ... 262 260 258
+# CHECK: 244 251 252 ... 260 262 256
+# CHECK: Performance: {{.*}} GFLOPS
 
 # CHECK-NOT: Execution failed
