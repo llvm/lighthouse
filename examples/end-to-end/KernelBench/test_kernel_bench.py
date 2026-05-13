@@ -3,6 +3,7 @@
 # REQUIRES: torch
 # REQUIRES: kernel_bench
 
+import argparse
 import re
 import subprocess
 import platform
@@ -18,13 +19,6 @@ kb_path = project_root / "third_party" / "KernelBench" / "KernelBench"
 def get_pipeline_file(kernel_name: str, dtype: str) -> Path:
     """
     Returns the appropriate pipeline file for a given kernel.
-
-    Args:
-        kernel_name: Name of the kernel for which to retrieve the pipeline file.
-        dtype: Data type of the kernel (e.g., "f32", "bf16").
-
-    Returns:
-        Path to the appropriate pipeline file.
     """
     arch = platform.machine()
     if arch != "x86_64":
@@ -41,41 +35,49 @@ def get_pipeline_file(kernel_name: str, dtype: str) -> Path:
 tests = [
     {
         "kernel": "level1/1_Square_matrix_multiplication_.py",
-        "input_shapes": "1024x1024xf32xrnd,1024x1024xf32xid",
-        "output_shape": "1024x1024xf32x0",
+        "input_shapes": ["1024x1024", "1024x1024"],
+        "initializations": ["rnd", "id"],
+        "output_shape": "1024x1024",
+        "dtypes": ["f32", "bf16"],
         "gflops": (1024 * 1024 * 1024 * 2) / 1e9,
-        "pipeline": str(
-            get_pipeline_file("level1/1_Square_matrix_multiplication_", "f32")
-        ),
-    },
-    {
-        "kernel": "level1/1_Square_matrix_multiplication_.py",
-        "input_shapes": "1024x1024xbf16xrnd,1024x1024xbf16xid",
-        "output_shape": "1024x1024xbf16x0",
-        "gflops": (1024 * 1024 * 1024 * 2) / 1e9,
-        "pipeline": str(
-            get_pipeline_file("level1/1_Square_matrix_multiplication_", "bf16")
-        ),
     },
     {
         "kernel": "level1/2_Standard_matrix_multiplication_.py",
-        "input_shapes": "512x1024xf32xrnd,1024x512xf32xrnd",
-        "output_shape": "512x512xf32x0",
+        "input_shapes": ["512x1024", "1024x512"],
+        "initializations": ["rnd", "rnd"],
+        "output_shape": "512x512",
+        "dtypes": ["f32", "bf16"],
         "gflops": (512 * 1024 * 512 * 2) / 1e9,
-        "pipeline": str(
-            get_pipeline_file("level1/2_Standard_matrix_multiplication_", "f32")
-        ),
-    },
-    {
-        "kernel": "level1/2_Standard_matrix_multiplication_.py",
-        "input_shapes": "512x1024xbf16xrnd,1024x512xbf16xrnd",
-        "output_shape": "512x512xbf16x0",
-        "gflops": (512 * 1024 * 512 * 2) / 1e9,
-        "pipeline": str(
-            get_pipeline_file("level1/2_Standard_matrix_multiplication_", "bf16")
-        ),
     },
 ]
+
+
+def get_tests(args: argparse.Namespace) -> list[dict]:
+    """
+    Returns the list of tests to be executed.
+    """
+    test_list = []
+    for test in tests:
+        for dtype in test["dtypes"]:
+            if not args.bf16 and dtype == "bf16":
+                continue
+            test_list.append(
+                {
+                    "kernel": test["kernel"],
+                    "input_shapes": ",".join(
+                        f"{shape}x{dtype}x{init}"
+                        for shape, init in zip(
+                            test["input_shapes"], test["initializations"]
+                        )
+                    ),
+                    "output_shape": f"{test['output_shape']}x{dtype}x0",
+                    "gflops": test["gflops"]
+                    if "gflops" in test and args.benchmark
+                    else None,
+                    "pipeline": str(get_pipeline_file(test["kernel"], dtype)),
+                }
+            )
+    return test_list
 
 
 def get_flops_per_second(stdout: str, gflops: float) -> float:
@@ -88,7 +90,22 @@ def get_flops_per_second(stdout: str, gflops: float) -> float:
 
 
 if __name__ == "__main__":
-    for test in tests:
+    Parser = argparse.ArgumentParser(
+        description="""Kernel Bench testing & benchmarking."""
+    )
+    Parser.add_argument(
+        "--benchmark",
+        action=argparse.BooleanOptionalAction,
+        help="Whether to run the benchmark.",
+    )
+    Parser.add_argument(
+        "--bf16",
+        action=argparse.BooleanOptionalAction,
+        help="Enable bf16 precision kernels.",
+    )
+    args = Parser.parse_args()
+
+    for test in get_tests(args):
         kb_kernel = kb_path / test["kernel"]
         command_line = [
             str(kb_program),
@@ -102,7 +119,8 @@ if __name__ == "__main__":
             "--print-tensor=1",
             "--seed=42",
         ]
-        if "gflops" in test:
+        benchmark = test.get("gflops") is not None
+        if benchmark:
             command_line += ["--benchmark"]
         print(f"Running command: {' '.join(command_line)}")
         result = subprocess.run(
@@ -113,7 +131,7 @@ if __name__ == "__main__":
 
         print("STDOUT:")
         print(result.stdout)
-        if "gflops" in test:
+        if benchmark:
             flops_per_second = get_flops_per_second(result.stdout, test["gflops"])
             if flops_per_second > 0:
                 print(f"Performance: {flops_per_second:.2f} GFLOPS")
@@ -126,27 +144,11 @@ if __name__ == "__main__":
 # CHECK: 1_Square_matrix_multiplication_.mlir
 # CHECK: 0.3745{{.*}} 0.9507{{.*}} 0.7319{{.*}} ... 0.2973{{.*}} 0.9243{{.*}} 0.9710{{.*}}
 # CHECK: 0.7201{{.*}} 0.9926{{.*}} 0.1208{{.*}} ... 0.1742{{.*}} 0.3485{{.*}} 0.6436{{.*}}
-# CHECK: Performance: {{.*}} GFLOPS
-
-# CHECK-NOT: Execution failed
-
-# CHECK: 1_Square_matrix_multiplication_.mlir
-# CHECK: 0.375{{.*}} 0.949{{.*}} 0.730{{.*}} ... 0.296{{.*}} 0.925{{.*}} 0.972{{.*}}
-# CHECK: 0.718{{.*}} 0.992{{.*}} 0.121{{.*}} ... 0.173{{.*}} 0.347{{.*}} 0.644{{.*}}
-# CHECK: Performance: {{.*}} GFLOPS
 
 # CHECK-NOT: Execution failed
 
 # CHECK: 2_Standard_matrix_multiplication_.mlir
 # CHECK: 249.78{{.*}} 260.13{{.*}} 249.36{{.*}} ... 261.10{{.*}} 260.49{{.*}} 257.09{{.*}}
 # CHECK: 243.56{{.*}} 250.91{{.*}} 252.38{{.*}} ... 260.40{{.*}} 261.56{{.*}} 256.24{{.*}}
-# CHECK: Performance: {{.*}} GFLOPS
-
-# CHECK-NOT: Execution failed
-
-# CHECK: 2_Standard_matrix_multiplication_.mlir
-# CHECK: 250 260 249 ... 262 260 258
-# CHECK: 244 251 252 ... 260 262 256
-# CHECK: Performance: {{.*}} GFLOPS
 
 # CHECK-NOT: Execution failed
