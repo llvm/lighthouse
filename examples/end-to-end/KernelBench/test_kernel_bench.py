@@ -368,7 +368,7 @@ def get_tests(args: argparse.Namespace) -> list[dict]:
             if not args.bf16 and dtype == "bf16":
                 continue
             # If a specific test is specified, only include that test
-            if args.test and test["kernel"] != args.test:
+            if args.test and not test["kernel"].startswith(args.test):
                 continue
             test_list.append(
                 {
@@ -425,6 +425,11 @@ if __name__ == "__main__":
         type=str,
         help="Specify a particular test to run.",
     )
+    Parser.add_argument(
+        "--print-mlir-after-all",
+        action=argparse.BooleanOptionalAction,
+        help="Whether to print the MLIR module after all stages. Default is False.",
+    )
     args = Parser.parse_args()
     tests = get_tests(args)
     if len(tests) == 0:
@@ -450,25 +455,37 @@ if __name__ == "__main__":
             "--print-tensor=1",
             "--seed=42",
         ]
-        benchmark = test.get("gflops") is not None
+        benchmark = args.benchmark and test.get("gflops") is not None
         if benchmark:
             command_line += ["--benchmark"]
+        if args.print_mlir_after_all:
+            command_line += ["--print-mlir-after-all"]
         print(f"Running command: {' '.join(command_line)}")
+
+        # While debugging kernels, it's useful to see the output as it comes.
+        # Note: GFLOPS can't be shown if the output is not captured.
+        capture_output = True
+        if args.print_mlir_after_all and not args.ci:
+            capture_output = False
+
         result = subprocess.run(
             command_line,
-            capture_output=True,
+            capture_output=capture_output,
             text=True,
         )
 
-        print("STDOUT:")
-        print(result.stdout)
-        if benchmark:
-            flops_per_second = get_flops_per_second(result.stdout, test["gflops"])
-            if flops_per_second > 0:
-                print(f"Performance: {flops_per_second:.2f} GFLOPS")
+        # If output is captured, print it out, including benchmark results if applicable.
+        if capture_output:
+            print("STDOUT:")
+            print(result.stdout)
+            if benchmark:
+                flops_per_second = get_flops_per_second(result.stdout, test["gflops"])
+                if flops_per_second > 0:
+                    print(f"Performance: {flops_per_second:.2f} GFLOPS")
 
-        print("STDERR:")
-        print(result.stderr)
+            print("STDERR:")
+            print(result.stderr)
+
         print(f"Return code: {result.returncode}")
         assert result.returncode == 0, "Execution failed"
 
