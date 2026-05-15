@@ -82,7 +82,9 @@
   initializations: [rnd, rnd]
   output_shape: 4096x4096
   dtypes: [f32, bf16]
-  warning: "torch_mlir.compiler_utils.TorchMlirCompilerError: Lowering TorchFX IR -> Torch Backend IR failed with the following diagnostics: python exception: Failure while executing pass pipeline"
+  warning: '''ERROR: torch_mlir.compiler_utils.TorchMlirCompilerError:
+              Lowering TorchFX IR -> Torch Backend IR failed with the following diagnostics:
+              python exception: Failure while executing pass pipeline'''
 
 - kernel: level1/13_Matmul_for_symmetric_matrices.py
   input_shapes: [4096x4096, 4096x4096]
