@@ -85,7 +85,7 @@ class GPUMemoryManager(DeviceMemoryManager):
         ptr_mref = memref_to_ctype(mref)
         ptr_dims = [ctypes.pointer(ctypes.c_int32(d)) for d in shape]
         rank = len(shape)
-        assert rank in (1, 2), "Only 1d or 2d arrays are supported."
+        assert rank >= 1 and rank <= 5, "Only 1d to 5d arrays are supported."
         suffix = f"{rank}d_{str(elem_type)}"
         self.execution_engine.invoke("gpu_alloc_" + suffix, ptr_mref, *ptr_dims)
 

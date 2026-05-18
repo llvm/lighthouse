@@ -10,11 +10,13 @@ from .ops.extract_handle import extract_handle
 from .ops.get_tileable_consumers import get_tileable_consumers
 from .ops.get_tiling_sizes import get_tiling_sizes
 from .ops.update_address_space import update_address_space
+from .ops.generate_fused_attention import generate_fused_attention
 
 __all__ = [
     "TransformExtensionDialect",
     "convert_func_results_to_args",
     "extract_handle",
+    "generate_fused_attention",
     "get_named_attribute",
     "get_named_attribute",
     "get_tileable_consumers",
