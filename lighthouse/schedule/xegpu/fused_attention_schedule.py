@@ -347,20 +347,21 @@ def bundle_xegpu_fused_attention_schedule(
         raise PipelineInterrupt()
 
     # Define XeGPU layout parameters
-    q_sg_layout = [8, 1]
-    q_sg_data = [16, 64]
+    n_head = parameters["n_head"]
+    q_sg_layout = [num_subgroups, 1]
+    q_sg_data = [16, n_head]
     q_inst_data = [8, 16]
 
-    k_sg_layout = [8, 1]
-    k_sg_data = [16, 64]
+    k_sg_layout = [num_subgroups, 1]
+    k_sg_data = [16, n_head]
     k_inst_data = [16, 16]
 
     v_sg_layout = k_sg_layout
     v_sg_data = k_sg_data
     v_inst_data = k_inst_data
 
-    kt_sg_layout = [1, 8]
-    kt_sg_data = [64, 16]
+    kt_sg_layout = [1, num_subgroups]
+    kt_sg_data = [n_head, 16]
     kt_inst_data = [16, 16]
     kt_order = [0, 1]
 
@@ -368,7 +369,7 @@ def bundle_xegpu_fused_attention_schedule(
     out_sg_data = q_sg_data
     out_inst_data = q_inst_data
 
-    layout_128x16_sg_layout = [8, 1]
+    layout_128x16_sg_layout = [num_subgroups, 1]
     layout_128x16_sg_data = [16, 16]
     layout_128x16_inst_data = [8, 16]
 
