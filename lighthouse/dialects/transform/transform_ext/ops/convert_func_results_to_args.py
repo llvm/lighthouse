@@ -58,8 +58,24 @@ class ConvertFuncResultsToArgsOp(
                 t = emit_buf_to_tensor(input, restrict=True)
                 input_tensors.append(t)
 
-            # clone function body and map args and return values
+            # keep track of cloned ops to replace operands
             cloned_map = {}
+
+            def replace_operands(op: ir.Operation) -> ir.WalkResult:
+                for i, oprnd in enumerate(op.operands):
+                    if isinstance(oprnd, ir.BlockArgument):
+                        # operand is block argument
+                        owner = oprnd.owner.owner  # op that owns the block
+                        if owner == target:
+                            # payload func argument, replace with input tensor
+                            op.operands[i] = input_tensors[oprnd.arg_number]
+                    else:
+                        # replace operands with cloned values
+                        if oprnd.owner in cloned_map:
+                            iresult = oprnd.result_number
+                            op.operands[i] = cloned_map[oprnd.owner].results[iresult]
+                return ir.WalkResult.ADVANCE
+
             for op in target.regions[0].blocks[0].operations:
                 if isinstance(op, func.ReturnOp):
                     # emit materialize_in_destination for each return value
@@ -77,18 +93,7 @@ class ConvertFuncResultsToArgsOp(
                         )
                 else:
                     new_op = op.clone()
-                    for i, oo in enumerate(op.operands):
-                        if isinstance(oo, ir.BlockArgument):
-                            # operand is func argument
-                            # replace with new input tensors
-                            new_op.operands[i] = input_tensors[oo.arg_number]
-                        else:
-                            # replace operands with cloned values
-                            if oo.owner in cloned_map:
-                                iresult = oo.result_number
-                                new_op.operands[i] = cloned_map[oo.owner].results[
-                                    iresult
-                                ]
+                    new_op.walk(replace_operands, ir.WalkOrder.PRE_ORDER)
                     cloned_map[op] = new_op
 
         return f.func_op
@@ -130,7 +135,7 @@ class ConvertFuncResultsToArgsOp(
 
 
 def convert_func_results_to_args(
-    target: ir.Value[transform.AnyOpType], bench_name: str | None = None
+    target: ir.Value[transform.AnyOpType],
 ) -> ir.Value[transform.AnyOpType]:
     """snake_case wrapper to create a ConvertFuncResultsToArgsOp."""
     op = ConvertFuncResultsToArgsOp(target=target)
