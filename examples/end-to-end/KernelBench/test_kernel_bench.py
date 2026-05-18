@@ -16,7 +16,8 @@ project_root = script_path.parent.parent.parent
 kb_program = project_root / "tools" / "kernel_bench"
 kb_default_pipeline = kb_program.parent / "kernel_bench.yaml"
 kb_path = project_root / "third_party" / "KernelBench" / "KernelBench"
-yaml_path = script_path / "tests.yaml"
+level1_yaml_path = script_path / "level1.yaml"
+level2_yaml_path = script_path / "level2.yaml"
 
 
 def get_pipeline_file(name: str, dtype: str) -> Path:
@@ -47,16 +48,18 @@ def get_tests(args: argparse.Namespace) -> list[dict]:
         args.benchmark = False  # Disable benchmarking in CI for faster feedback
 
     tests = []
-    with open(yaml_path) as f:
+    with open(level1_yaml_path) as f:
         tests = yaml.safe_load(f)
+    with open(level2_yaml_path) as f:
+        tests += yaml.safe_load(f)
 
     test_list = []
     for test in tests:
+        # If a specific test is specified, only include that test
+        if args.test and not test["kernel"].startswith(args.test):
+            continue
         for dtype in test["dtypes"]:
             if not args.bf16 and dtype == "bf16":
-                continue
-            # If a specific test is specified, only include that test
-            if args.test and not test["kernel"].startswith(args.test):
                 continue
             test_list.append(
                 {
@@ -68,7 +71,7 @@ def get_tests(args: argparse.Namespace) -> list[dict]:
                         )
                     ),
                     "output_shape": f"{test['output_shape']}x{dtype}x0",
-                    "gflops": test["gflops"]
+                    "gflops": eval(test["gflops"])
                     if "gflops" in test and args.benchmark
                     else None,
                     "pipeline": str(get_pipeline_file(test.get("pipeline", ""), dtype)),
