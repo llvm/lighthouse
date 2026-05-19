@@ -29,7 +29,7 @@ DPAS = namedtuple("DPAS", ["M", "N", "K", "A_TILE", "B_TILE", "C_TILE"])(
 PREFETCH_INST_DATA = [8, 16]
 NB_WORKITEMS = 16  # workitems in subgroup
 LOAD_MAX_ROWS = 32
-LOAD_MAX_COLS = 16
+LOAD_MAX_COLS = 32
 PFETCH_MIN_ROWS = 8
 PFETCH_MAX_ROWS = 32
 PFETCH_MIN_COLS = 16
@@ -413,11 +413,6 @@ def xegpu_wg_annotation_for_mlp_layer(
         smt_ext.assert_(LDA_K % DPAS.K == 0)
         smt_ext.assert_(LDB_K % DPAS.K == 0)
         smt_ext.assert_(LDB_N % DPAS.N == 0)
-
-        nb_load_b_n = LDB_N // DPAS.N
-        # unsupported VNNI layout, loaded tile can only be row-sliced for vnni
-        # NOTE this can plausibly be relaxed
-        smt_ext.assert_(nb_load_b_n <= 1, "invalid load_tile_b_n for VNNI")
 
         # prefetch A thread layout
         prefetch_th_a_m = WG_M // PFA_M
