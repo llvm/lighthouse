@@ -58,6 +58,12 @@ def get_tests(args: argparse.Namespace) -> list[dict]:
         # If a specific test is specified, only include that test
         if args.test and not test["kernel"].startswith(args.test):
             continue
+        # CI mode runs fewer tests for faster feedback
+        if args.ci and len(test_list) >= 5:
+            break
+        # Smoke tests run on the simplest lowering
+        if args.smoke_test:
+            test["pipeline"] = str(kb_default_pipeline)
         for dtype in test["dtypes"]:
             if not args.bf16 and dtype == "bf16":
                 continue
@@ -78,9 +84,6 @@ def get_tests(args: argparse.Namespace) -> list[dict]:
                     "warning": test.get("warning", None),
                 }
             )
-            # CI mode runs fewer tests for faster feedback
-            if args.ci and len(test_list) >= 5:
-                return test_list
     return test_list
 
 
@@ -110,7 +113,7 @@ if __name__ == "__main__":
     Parser.add_argument(
         "--ci",
         action=argparse.BooleanOptionalAction,
-        help="Enable CI mode (faster run, fewer kernels).",
+        help="Enable CI mode (faster run, fewer kernels). Incompatible with --smoke-test.",
     )
     Parser.add_argument(
         "--test",
@@ -122,7 +125,17 @@ if __name__ == "__main__":
         action=argparse.BooleanOptionalAction,
         help="Whether to print the MLIR module after all stages. Default is False.",
     )
+    Parser.add_argument(
+        "--smoke-test",
+        action=argparse.BooleanOptionalAction,
+        help="Runs every kernel with loops lowering to pipe clean.",
+    )
     args = Parser.parse_args()
+    if args.smoke_test and args.ci:
+        print("\nERROR: Smoke test and CI mode are incompatible.\n")
+        Parser.print_help()
+        exit(1)
+
     tests = get_tests(args)
     if len(tests) == 0:
         if args.test:
@@ -181,7 +194,11 @@ if __name__ == "__main__":
             print(result.stderr)
 
         print(f"Return code: {result.returncode}")
-        assert result.returncode == 0, "Execution failed"
+
+        # Only stop on failure on normal runs.
+        # Smoke tests try to run as much as possible.
+        if not args.smoke_test:
+            assert result.returncode == 0, "Execution failed"
 
 # CHECK: 1_Square_matrix_multiplication_.mlir
 # CHECK: 0.3745{{.*}} 0.9507{{.*}} 0.7319{{.*}} ... 0.2973{{.*}} 0.9243{{.*}} 0.9710{{.*}}

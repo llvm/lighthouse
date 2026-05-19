@@ -15,6 +15,7 @@
   initializations: [rnd]
   output_shape: 32x64x16x32x32
   dtypes: [f32, bf16]
+  warning: "missing `LLVMTranslationDialectInterface` registration for dialect for op: math.erf"
 
 - kernel: level2/4_Conv2d_Mish_Mish.py
   input_shapes: [64x64x256x256]
@@ -39,6 +40,7 @@
   initializations: [rnd]
   output_shape: 64x32x30x62x62
   dtypes: [f32, bf16]
+  warning: "missing `LLVMTranslationDialectInterface` registration for dialect for op: math.erf"
 
 - kernel: level2/8_Conv3d_Divide_Max_GlobalAvgPool_BiasAdd_Sum.py
   input_shapes: [128x8x16x64x64]
@@ -112,6 +114,7 @@
   initializations: [rnd]
   output_shape: 128x64x258x258
   dtypes: [f32, bf16]
+  warning: "missing `LLVMTranslationDialectInterface` registration for dialect for op: math.erf"
 
 - kernel: level2/20_ConvTranspose3d_Sum_ResidualAdd_Multiply_ResidualAdd.py
   input_shapes: [16x32x16x32x32]
@@ -203,6 +206,7 @@
   initializations: [rnd]
   output_shape: 32x64x32x64x64
   dtypes: [f32, bf16]
+  warning: "missing `LLVMTranslationDialectInterface` registration for dialect for op: math.erf"
 
 - kernel: level2/35_Conv2d_Subtract_HardSwish_MaxPool_Mish.py
   input_shapes: [128x64x128x128]
@@ -215,6 +219,7 @@
   initializations: [rnd]
   output_shape: 16x1x1x256
   dtypes: [f32, bf16]
+  warning: "missing `LLVMTranslationDialectInterface` registration for dialect for op: math.erf"
 
 - kernel: level2/37_Matmul_Swish_Sum_GroupNorm.py
   input_shapes: [32768x1024]
@@ -245,18 +250,21 @@
   initializations: [rnd]
   output_shape: 16384x4096
   dtypes: [f32, bf16]
+  warning: "missing `LLVMTranslationDialectInterface` registration for dialect for op: math.erf"
 
 - kernel: level2/42_ConvTranspose2d_GlobalAvgPool_BiasAdd_LogSumExp_Sum_Multiply.py
   input_shapes: [16x64x512x512]
   initializations: [rnd]
   output_shape: 16x1
   dtypes: [f32, bf16]
+  warning: "error: failed to legalize operation torch.constant.bool"
 
 - kernel: level2/43_Conv3d_Max_LogSumExp_ReLU.py
   input_shapes: [4x32x32x128x128]
   initializations: [rnd]
   output_shape: 4x1x16x64x64
   dtypes: [f32, bf16]
+  warning: "error: failed to legalize operation torch.constant.bool"
 
 - kernel: level2/44_ConvTranspose2d_Multiply_GlobalAvgPool_GlobalAvgPool_Mean.py
   input_shapes: [16x64x128x128]
@@ -313,6 +321,8 @@
   initializations: [rnd]
   output_shape: 64x128x126x126
   dtypes: [f32, bf16]
+  warning: '''ERROR: torch_mlir.compiler_utils.TorchMlirCompilerError:
+              error: failed to legalize operation torch.operator that was explicitly marked illegal'''
 
 - kernel: level2/53_Gemm_Scaling_Hardtanh_GELU.py
   input_shapes: [2048x8192]
@@ -325,6 +335,7 @@
   initializations: [rnd]
   output_shape: 64x64x254x254
   dtypes: [f32, bf16]
+  warning: "missing `LLVMTranslationDialectInterface` registration for dialect for op: math.erf"
 
 - kernel: level2/55_Matmul_MaxPool_Sum_Scale.py
   input_shapes: [128x32768]
@@ -351,6 +362,7 @@
   initializations: [rnd]
   output_shape: 128x1x31x63x63
   dtypes: [f32, bf16]
+  warning: "'ERROR: torch_mlir.compiler_utils.TorchMlirCompilerError: failed to legalize operation torch.constant.bool'"
 
 - kernel: level2/59_Matmul_Swish_Scaling.py
   input_shapes: [128x32768]
