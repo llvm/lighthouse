@@ -85,8 +85,7 @@
   initializations: [rnd, rnd]
   output_shape: 4096x4096
   dtypes: [f32, bf16]
-  warning: '''ERROR: torch_mlir.compiler_utils.TorchMlirCompilerError:
-              error: failed to legalize operation torch.operator that was explicitly marked illegal'''
+  warning: "error: failed to legalize operation torch.operator that was explicitly marked illegal"
 
 - kernel: level1/13_Matmul_for_symmetric_matrices.py
   input_shapes: [4096x4096, 4096x4096]
@@ -191,8 +190,7 @@
   output_shape: 4096x393216
   dtypes: [f32, bf16]
   gflops: (4096 * 393216) / 1e9
-  warning: '''error: cannot be converted to LLVM IR:
-              missing `LLVMTranslationDialectInterface` registration for dialect for op: math.erf'''
+  warning: "missing `LLVMTranslationDialectInterface` registration for dialect for op: 'math.erf'"
 
 - kernel: level1/27_SELU_.py
   input_shapes: [4096x393216]
@@ -242,6 +240,7 @@
   output_shape: 64x64x512x512
   dtypes: [f32, bf16]
   gflops: (64 * 64 * 512 * 512) / 1e9
+  warning: "Segmentation fault"
 
 - kernel: level1/34_InstanceNorm.py
   input_shapes: [112x64x512x512]
@@ -249,6 +248,7 @@
   output_shape: 112x64x512x512
   dtypes: [f32, bf16]
   gflops: (112 * 64 * 512 * 512) / 1e9
+  warning: "LLVM ERROR: SmallVector unable to grow (93TB! > 4GB)"
 
 - kernel: level1/35_GroupNorm_.py
   input_shapes: [112x64x512x512]
@@ -367,6 +367,7 @@
   output_shape: 128x4095
   dtypes: [f32, bf16]
   gflops: (128 * 4096 * 4095) / 1e9
+  warning: "Segmentation fault"
 
 - kernel: level1/52_Argmin_over_a_dimension.py
   input_shapes: [128x4096x4095]
@@ -374,6 +375,7 @@
   output_shape: 128x4095
   dtypes: [f32, bf16]
   gflops: (128 * 4096 * 4095) / 1e9
+  warning: "Segmentation fault"
 
 - kernel: level1/53_Min_reduction_over_a_dimension.py
   input_shapes: [128x4096x4095]
@@ -654,8 +656,7 @@
   output_shape: "1"
   dtypes: [f32, bf16]
   gflops: (32768 * 32768) / 1e9
-  warning: '''ERROR: torch_mlir.compiler_utils.TorchMlirCompilerError:
-              error: failed to legalize operation torch.operator that was explicitly marked illegal'''
+  warning: "error: failed to legalize operation 'torch.operator' that was explicitly marked illegal"
 
 - kernel: level1/97_ScaledDotProductAttention.py
   input_shapes: [32x32x512x1024, 32x32x512x1024, 32x32x512x1024]
@@ -677,8 +678,7 @@
   output_shape: "1"
   dtypes: [f32, bf16]
   gflops: (32768 * 8192) / 1e9
-  warning: '''ERROR: torch_mlir.compiler_utils.TorchMlirCompilerError:
-              error: failed to legalize operation torch.operator that was explicitly marked illegal'''
+  warning: "error: failed to legalize operation 'torch.operator' that was explicitly marked illegal"
 
 - kernel: level1/100_HingeLoss.py
   input_shapes: [32768x32768, 32768]
