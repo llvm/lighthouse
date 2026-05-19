@@ -6,5 +6,7 @@ Pipeline:
   - pass: "lower-affine"
   - pass: "convert-scf-to-cf"
   - pass: "convert-vector-to-llvm"
+  - pass: "convert-math-to-llvm"
+  - pass: "convert-math-to-libm"
   - pass: "convert-to-llvm"
   - pass: "reconcile-unrealized-casts"
