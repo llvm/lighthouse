@@ -30,7 +30,6 @@ def generate_configs(
     K: int,
     gpu_specs: XeGPUSpecs,
     perf_threshold: float | None = None,
-    load_strategy: str = "dpas",
     pf_strategy: str = "first",
     max_nb_configs: int | None = None,
 ) -> list[tuple[float, dict[str, int]]]:
@@ -41,19 +40,16 @@ def generate_configs(
     perf_threshold: if set, only return configurations with
     estimated_perf >= perf_threshold * max_found_estimated_perf.
 
-    load_strategy: sets the load tile selection strategy
-    - "dpas": use dpas op A/B tile size as load tile
-
     pf_strategy: sets the prefetch tile selection strategy
     - "first": take the first prefetch tile for A and B
     - "all": append all valid prefetch tiles for A and B
+
+    Load tile sizes are currently fixed to DPAS tile sizes for A and B.
 
     Returns:
     A list of (perf_estimate, params_dict) tuples sorted by perf_estimate (descending).
     """
     # TODO add data types as variables
-
-    assert load_strategy == "dpas", "Only 'dpas' load strategy is supported"
 
     def tuple_to_param_dict(
         M: int,
@@ -107,15 +103,10 @@ def generate_configs(
             perf = estimate_performance(
                 M, N, K, wg_tile, sg_tile, k_tile, gpu_specs, verbose=False
             )
-            if pf_strategy == "first":
-                pf_a, pf_b = generate_prefetch_tiles(wg_tile, k_tile, gpu_specs, n=1)
-                pf_a_list = [pf_a]
-                pf_b_list = [pf_b]
-            else:
-                pf_a_list, pf_b_list = generate_prefetch_tiles(
-                    wg_tile, k_tile, gpu_specs
-                )
-            # load_strategy = "dpas"
+            n_prefetch = 1 if pf_strategy == "first" else None
+            pf_a_list, pf_b_list = generate_prefetch_tiles(
+                wg_tile, k_tile, gpu_specs, n=n_prefetch
+            )
             load_a_list = [DPAS.A_TILE]
             load_b_list = [DPAS.B_TILE]
             for la, lb, pa, pb in product(
@@ -148,8 +139,8 @@ def generate_prefetch_tiles(
     gpu_specs: XeGPUSpecs,
     n: int | None = None,
 ) -> tuple[
-    list[tuple[int, int]] | tuple[int, int],
-    list[tuple[int, int]] | tuple[int, int],
+    list[tuple[int, int]],
+    list[tuple[int, int]],
 ]:
     """Generates valid prefetch tile sizes for A and B.
 
@@ -181,12 +172,8 @@ def generate_prefetch_tiles(
     prefetch_tiles_a = gridsearch(check_prefetch_tile_a)
     prefetch_tiles_b = gridsearch(check_prefetch_tile_b)
     if n is not None:
-        if n == 1:
-            prefetch_tiles_a = prefetch_tiles_a[0]
-            prefetch_tiles_b = prefetch_tiles_b[0]
-        else:
-            prefetch_tiles_a = prefetch_tiles_a[:n]
-            prefetch_tiles_b = prefetch_tiles_b[:n]
+        prefetch_tiles_a = prefetch_tiles_a[:n]
+        prefetch_tiles_b = prefetch_tiles_b[:n]
 
     return prefetch_tiles_a, prefetch_tiles_b
 
