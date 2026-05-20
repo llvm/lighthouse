@@ -1,5 +1,3 @@
-from collections import namedtuple
-
 from mlir import ir
 from mlir.dialects.transform import loop
 from mlir.dialects.transform import bufferization
@@ -21,22 +19,20 @@ from lighthouse.schedule import schedule_boilerplate
 from lighthouse.dialects import smt_ext
 from lighthouse.dialects.transform import smt_ext as td_smt_ext
 from lighthouse.dialects.transform.tune_ext import knob, KnobValue
-
-# hardware constraints
-DPAS = namedtuple("DPAS", ["M", "N", "K", "A_TILE", "B_TILE", "C_TILE"])(
-    8, 16, 16, (8, 16), (16, 16), (8, 16)
+from lighthouse.schedule.xegpu.xegpu_parameter_selector import XeGPUParameterSelector
+from lighthouse.schedule.xegpu.matmul_constraints import (
+    DPAS,
+    PREFETCH_INST_DATA,
+    NB_WORKITEMS,
+    LOAD_MAX_ROWS,
+    LOAD_MAX_COLS,
+    PFETCH_MIN_ROWS,
+    PFETCH_MIN_COLS,
+    PFETCH_MAX_ROWS,
+    PFETCH_MAX_COLS,
+    MAX_NB_SG_THREADS,
+    MIN_NB_THREADS,
 )
-PREFETCH_INST_DATA = [8, 16]
-NB_WORKITEMS = 16  # workitems in subgroup
-LOAD_MAX_ROWS = 32
-LOAD_MAX_COLS = 32
-PFETCH_MIN_ROWS = 8
-PFETCH_MAX_ROWS = 32
-PFETCH_MIN_COLS = 16
-PFETCH_MAX_COLS = 32
-MAX_NB_SG_THREADS = 32  # 32 for large register file, 16 otherwise
-# heuristics: skip likely suboptimal configurations
-MIN_NB_THREADS = 16
 
 
 @KnobValue.ast_rewrite(in_exprs=True)
@@ -124,7 +120,40 @@ def mlp_schedule(
             op_name="builtin.module",
             deduplicate=True,
         )
+        # preprocess layer parameters
         for i, layer_params in enumerate(params):
+            m = layer_params.get("m")
+            n = layer_params.get("n")
+            k = layer_params.get("k")
+            assert all(d is not None for d in (m, n, k)), (
+                "m, n, k must be provided in params"
+            )
+
+            required_params = [
+                "wg_m",
+                "wg_n",
+                "sg_m",
+                "sg_n",
+                "k_tile",
+                "load_a_m",
+                "load_a_k",
+                "load_b_k",
+                "load_b_n",
+                "prefetch_a_m",
+                "prefetch_a_k",
+                "prefetch_b_k",
+                "prefetch_b_n",
+                "prefetch_a_nb",
+                "prefetch_b_nb",
+            ]
+            if not all(p in layer_params for p in required_params):
+                # Some parameters are missing, use the parameter selector to fill
+                device = layer_params.get("device")
+                param_selector = XeGPUParameterSelector(device=device)
+                generated_params = param_selector.get_parameters(m, n, k)
+                # Overwrite original params to ensure consistent configuration
+                layer_params.update(generated_params)
+
             layer_params |= params_with_constraints_imposed(
                 layer_params, knob_name_prefix=f"layer_{i}_"
             )

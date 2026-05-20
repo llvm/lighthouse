@@ -20,10 +20,11 @@ from lighthouse import dialects as lh_dialects
 from lighthouse import schedule as lh_schedule
 from lighthouse.pipeline.driver import TransformDriver
 from lighthouse.utils.mlir import get_mlir_library_path
-from lighthouse.schedule.xegpu import mlp_schedule, xegpu_to_binary
+from lighthouse.schedule.xegpu import (
+    mlp_schedule,
+    xegpu_to_binary,
+)
 from lighthouse.ingress.torch import gpu_backend, TargetDialect
-
-import parameter_selector
 
 
 class Model(nn.Module):
@@ -164,6 +165,11 @@ def parse_cli_args(description):
         "--json",
         help="Read problem sizes and tile parameters from a JSON file.",
     )
+    parser.add_argument(
+        "--target",
+        choices=["B70", "B50"],
+        help="Target GPU device, e.g., B70.",
+    )
     args = parser.parse_args()
 
     return args
@@ -182,30 +188,14 @@ enabled via CLI arguments.
 
     # Problem size
     m, n, k = args.sizes if args.sizes else (4096, 4096, 4096)
-    # Get default parameters from the database
-    try:
-        params = parameter_selector.get_matmul_parameters(m, n, k)
-    except ValueError:
-        # Initialize with a stub and assume the rest will be populated
-        params = {
-            "m": m,
-            "n": n,
-            "k": k,
-            "wg_m": None,
-            "wg_n": None,
-            "sg_m": None,
-            "sg_n": None,
-            "k_tile": None,
-            "load_a_m": None,
-            "load_a_k": None,
-            "load_b_k": None,
-            "load_b_n": None,
-            "prefetch_a_m": None,
-            "prefetch_a_k": None,
-            "prefetch_b_k": None,
-            "prefetch_b_n": None,
-            "prefetch_nb": None,
-        }
+    # Set required parameters
+    params = {
+        "m": m,
+        "n": n,
+        "k": k,
+    }
+    if args.target:
+        params["device"] = args.target
     if args.json:
         # Override parameters with values from JSON file if provided
         with open(args.json, "r") as f:

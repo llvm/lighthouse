@@ -36,7 +36,6 @@ from lighthouse.ingress.mlir_gen import (
     generate_gpu_mlp_payload,
     get_mlir_elem_type,
 )
-from lighthouse.schedule.xegpu import xegpu_parameter_selector
 
 from matmul import matmul_complexity
 
@@ -333,6 +332,11 @@ def parse_cli():
         help="Dump transform schedule.",
     )
     parser.add_argument(
+        "--target",
+        choices=["B70", "B50"],
+        help="Target GPU device, e.g., B70.",
+    )
+    parser.add_argument(
         "--verbose",
         "-v",
         action="count",
@@ -371,7 +375,11 @@ if __name__ == "__main__":
         ab_type = wload.ab_type
         acc_type = wload.acc_type
 
-        params = xegpu_parameter_selector.get_parameters_for_layers(matmuls)
+        # Initialize layer parameters
+        params = [{"m": M, "n": N, "k": K} for M, N, K in matmuls]
+        if args.target:
+            for layer_params in params:
+                layer_params["device"] = args.target
 
         if args.dump_kernel or args.dump_schedule:
             pipeline = TransformDriver(
