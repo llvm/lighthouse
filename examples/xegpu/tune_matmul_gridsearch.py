@@ -174,7 +174,7 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--target",
-        choices=["B70", "B580"],
+        choices=["B70", "B50"],
         default="B70",
         help="Target GPU device.",
     )

@@ -27,6 +27,7 @@ class XeGPUParameterSelector:
         if json_file is None:
             json_file = DEFAULT_JSON_FILE
         self.device = device if device is not None else "B70"
+        self.gpu_specs = XeGPUSpecs.get(self.device)
         self.matmul_param_db = load_param_database(json_file)
 
     def get_parameters(self, m: int, n: int, k: int) -> dict:
@@ -34,13 +35,16 @@ class XeGPUParameterSelector:
         if shape not in self.matmul_param_db:
             try:
                 # Use cost model to generate tile sizes and take first config
-                gpu_specs = XeGPUSpecs.get(self.device)
-                configs = generate_configs(m, n, k, gpu_specs, max_nb_configs=1)
+                configs = generate_configs(m, n, k, self.gpu_specs, max_nb_configs=1)
+                if not configs:
+                    raise ValueError(
+                        f"Cost model did not return any valid configurations for matmul {shape}."
+                    )
                 params = configs[0][1]
                 return params
             except Exception as e:
                 msg = f"Error generating parameters for shape {shape} using cost model: {e}"
-                raise ValueError(msg)
+                raise ValueError(msg) from e
         return self.matmul_param_db[shape]
 
     def get_parameters_for_layers(self, shapes: list[tuple[int, int, int]]) -> list:

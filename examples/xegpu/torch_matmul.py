@@ -140,9 +140,14 @@ def parse_cli_args(description):
         help="Tile size for cooperative prefetching of subgroup B matrix",
     )
     parser.add_argument(
-        "--prefetch-nb",
+        "--prefetch-a-nb",
         type=int,
-        help="Number of initial prefetches.",
+        help="Number of initial prefetches for A matrix.",
+    )
+    parser.add_argument(
+        "--prefetch-b-nb",
+        type=int,
+        help="Number of initial prefetches for B matrix.",
     )
     parser.add_argument(
         "--check-result",
@@ -217,8 +222,10 @@ enabled via CLI arguments.
         params["prefetch_a_m"], params["prefetch_a_k"] = args.prefetch_tile_a
     if args.prefetch_tile_b:
         params["prefetch_b_k"], params["prefetch_b_n"] = args.prefetch_tile_b
-    if args.prefetch_nb is not None:
-        params["prefetch_nb"] = args.prefetch_nb
+    if args.prefetch_a_nb is not None:
+        params["prefetch_a_nb"] = args.prefetch_a_nb
+    if args.prefetch_b_nb is not None:
+        params["prefetch_b_nb"] = args.prefetch_b_nb
 
     for param_key, v in params.items():
         if v is None:

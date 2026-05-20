@@ -73,6 +73,6 @@ class XeGPUSpecs:
             raise ValueError(
                 f"Unknown device name: {device_name}. Available devices: {list(gpu_specs_db.keys())}"
             )
-        specs_dict = gpu_specs_db[device_name]
+        specs_dict = gpu_specs_db[device_name].copy()
         specs_dict["reg_file"] = reg_file
         return cls(**specs_dict)

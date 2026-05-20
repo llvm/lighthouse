@@ -131,7 +131,7 @@ def generate_configs(
     # sort by performance (descending)
     valid_configs.sort(key=lambda x: x[0], reverse=True)
 
-    if perf_threshold is not None:
+    if perf_threshold is not None and len(valid_configs) > 0:
         assert 0 < perf_threshold <= 1, "perf_threshold must be in (0, 1]"
         max_perf = valid_configs[0][0]
         valid_configs = [c for c in valid_configs if c[0] >= perf_threshold * max_perf]
