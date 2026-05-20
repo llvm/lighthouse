@@ -85,7 +85,7 @@
   initializations: [rnd, rnd]
   output_shape: 4096x4096
   dtypes: [f32, bf16]
-  warning: "error: failed to legalize operation torch.operator that was explicitly marked illegal"
+  warning: "error: failed to legalize operation 'torch.operator' that was explicitly marked illegal"
 
 - kernel: level1/13_Matmul_for_symmetric_matrices.py
   input_shapes: [4096x4096, 4096x4096]
@@ -190,7 +190,6 @@
   output_shape: 4096x393216
   dtypes: [f32, bf16]
   gflops: (4096 * 393216) / 1e9
-  warning: "missing `LLVMTranslationDialectInterface` registration for dialect for op: 'math.erf'"
 
 - kernel: level1/27_SELU_.py
   input_shapes: [4096x393216]
