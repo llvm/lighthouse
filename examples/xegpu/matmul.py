@@ -1,3 +1,4 @@
+# RUN: %PYTHON %s --sizes 512 1024 128 --dump-kernel=xegpu-wg | FileCheck %s
 # RUN: %PYTHON %s --dump-kernel=xegpu-wg | FileCheck %s
 # RUN: %PYTHON %s --dump-kernel=xegpu-wg --bias | FileCheck %s
 # RUN: %PYTHON %s --dump-kernel=xegpu-wg --relu | FileCheck %s
