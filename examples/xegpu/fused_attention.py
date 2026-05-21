@@ -18,8 +18,8 @@ from lighthouse.pipeline.driver import TransformDriver
 from lighthouse.execution import GPUMemoryManager
 from lighthouse.utils.numpy import mlir_to_numpy_dtype
 from lighthouse.ingress.mlir_gen import get_mlir_elem_type
-from lighthouse.ingress.mlir_gen.gpu_fused_attention_payload import (
-    generate_gpu_fused_attention_payload,
+from lighthouse.ingress.mlir_gen.gpu_attention_payload import (
+    generate_gpu_attention_payload,
 )
 from lighthouse.schedule.xegpu import fused_attention_schedule, xegpu_to_binary
 
@@ -157,7 +157,7 @@ class XeGPUFusedAttention:
 
     def payload_module(self) -> ir.Module:
         """Generate MLIR module for fused attention payload."""
-        return generate_gpu_fused_attention_payload(
+        return generate_gpu_attention_payload(
             func_name=self.payload_function_name,
             Z=self.Z,
             H=self.H,

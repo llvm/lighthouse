@@ -1,4 +1,4 @@
-"""Generate MLIR payload for GPU fused attention operation."""
+"""Generate MLIR payload for GPU attention operation."""
 
 import math
 
@@ -10,7 +10,7 @@ from lighthouse.ingress.mlir_gen.gpu_utils import emit_gpu_util_funcs
 from lighthouse.ingress.mlir_gen.utils import emit_buf_to_tensor
 
 
-def generate_gpu_fused_attention_payload(
+def generate_gpu_attention_payload(
     func_name: str,
     Z: int,
     H: int,
@@ -19,9 +19,9 @@ def generate_gpu_fused_attention_payload(
     dtype: ir.Type,
 ) -> ir.Module:
     """
-    Generate MLIR module for fused attention payload.
+    Generate MLIR module for attention payload.
 
-    Computes fused attention:
+    Computes attention:
     output = softmax(Q @ K^T / sqrt(n_head)) @ V
 
     Args:
@@ -33,7 +33,7 @@ def generate_gpu_fused_attention_payload(
         dtype: MLIR element type (e.g., F32Type)
 
     Returns:
-        MLIR module containing the fused attention payload function
+        MLIR module containing the attention payload function
     """
     mod = ir.Module.create()
     shape = (Z, H, n_ctx, n_head)
