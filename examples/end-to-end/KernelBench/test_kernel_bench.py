@@ -175,7 +175,7 @@ if __name__ == "__main__":
             command_line += ["--print-mlir-after-all"]
         if test.get("warning"):
             print(f"WARNING: {test['warning']}")
-        print(f"Running command: {' '.join(command_line)}")
+        print(f"Running command: {' '.join(command_line)}", flush=True)
 
         # While debugging kernels, it's useful to see the output as it comes.
         # Note: GFLOPS can't be shown if the output is not captured.
@@ -201,7 +201,7 @@ if __name__ == "__main__":
             print("STDERR:")
             print(result.stderr)
 
-        print(f"Return code: {result.returncode}")
+        print(f"Return code: {result.returncode}", flush=True)
 
         # Only stop on failure on normal runs.
         # Smoke tests try to run as much as possible.
