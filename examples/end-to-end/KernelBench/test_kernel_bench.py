@@ -1,4 +1,5 @@
 # RUN: python %s --ci | FileCheck %s
+# RUN: python %s --ci --torch-compile | FileCheck %s
 
 # REQUIRES: torch
 # REQUIRES: kernel_bench
@@ -116,6 +117,11 @@ if __name__ == "__main__":
         help="Enable CI mode (faster run, fewer kernels). Incompatible with --smoke-test.",
     )
     Parser.add_argument(
+        "--torch-compile",
+        action=argparse.BooleanOptionalAction,
+        help="Enable TorchScript compilation. Default is False.",
+    )
+    Parser.add_argument(
         "--test",
         type=str,
         help="Specify a particular test to run.",
@@ -157,12 +163,14 @@ if __name__ == "__main__":
             test["output_shape"],
             "--pipeline",
             test["pipeline"],
-            "--print-tensor=1",
+            "--print-output",
             "--seed=42",
         ]
         benchmark = args.benchmark and test.get("gflops") is not None
         if benchmark:
             command_line += ["--benchmark"]
+        if args.torch_compile:
+            command_line += ["--torch-compile"]
         if args.print_mlir_after_all:
             command_line += ["--print-mlir-after-all"]
         if test.get("warning"):
@@ -200,22 +208,17 @@ if __name__ == "__main__":
         if not args.smoke_test:
             assert result.returncode == 0, "Execution failed"
 
-# CHECK: 1_Square_matrix_multiplication_.mlir
-# CHECK: 0.3745{{.*}} 0.9507{{.*}} 0.7319{{.*}} ... 0.2973{{.*}} 0.9243{{.*}} 0.9710{{.*}}
-# CHECK: 0.7201{{.*}} 0.9926{{.*}} 0.1208{{.*}} ... 0.1742{{.*}} 0.3485{{.*}} 0.6436{{.*}}
+# CHECK: 1_Square_matrix_multiplication_.py
+# CHECK: Success: The output of the compiled model matches the reference output.
 
-# CHECK: 2_Standard_matrix_multiplication_.mlir
-# CHECK: 249.78{{.*}} 260.13{{.*}} 249.36{{.*}} ... 261.10{{.*}} 260.49{{.*}} 257.09{{.*}}
-# CHECK: 243.56{{.*}} 250.91{{.*}} 252.38{{.*}} ... 260.40{{.*}} 261.56{{.*}} 256.24{{.*}}
+# CHECK: 2_Standard_matrix_multiplication_.py
+# CHECK: Success: The output of the compiled model matches the reference output.
 
-# CHECK: 3_Batched_matrix_multiplication.mlir
-# CHECK: 5.2403{{.*}} 7.7905{{.*}} 6.0769{{.*}} ... 7.8579{{.*}} 6.8890{{.*}} 6.6193{{.*}}
-# CHECK: 9.0407{{.*}} 6.3299{{.*}} 5.2003{{.*}} ... 6.2594{{.*}} 6.2980{{.*}} 5.9807{{.*}}
+# CHECK: 3_Batched_matrix_multiplication.py
+# CHECK: Success: The output of the compiled model matches the reference output.
 
-# CHECK: 4_Matrix_vector_multiplication_.mlir
-# CHECK: 264.86{{.*}}
-# CHECK: 265.12{{.*}}
+# CHECK: 4_Matrix_vector_multiplication_.py
+# CHECK: Success: The output of the compiled model matches the reference output.
 
-# CHECK: 5_Matrix_scalar_multiplication.mlir
-# CHECK: 0.1750{{.*}} 0.4442{{.*}} 0.3420{{.*}} ... 0.1389{{.*}} 0.4319{{.*}} 0.4538{{.*}}
-# CHECK: 0.3365{{.*}} 0.4638{{.*}} 0.0564{{.*}} ... 0.0814{{.*}} 0.1628{{.*}} 0.3007{{.*}}
+# CHECK: 5_Matrix_scalar_multiplication.py
+# CHECK: Success: The output of the compiled model matches the reference output.
