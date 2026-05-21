@@ -21,7 +21,7 @@ from lighthouse.pipeline.helper import (
 )
 from lighthouse.schedule import schedule_boilerplate
 from lighthouse.dialects.transform.transform_ext import (
-    generate_fused_attention,
+    replace_with_fused_attention,
     update_address_space,
 )
 
@@ -277,7 +277,7 @@ def bundle_xegpu_fused_attention_schedule(
     tile_size = parameters.get(
         "inner_loop_tile_size", 64
     )  # Tile size for reduction dimension (K/V sequence length)
-    generate_fused_attention(
+    replace_with_fused_attention(
         q_load=q_load,
         k_load=k_load,
         v_load=v_load,

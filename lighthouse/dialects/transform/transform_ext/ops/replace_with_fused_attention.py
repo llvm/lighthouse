@@ -8,10 +8,11 @@ from mlir.dialects.transform import DiagnosedSilenceableFailure
 from lighthouse.dialects.transform.transform_ext import TransformExtensionDialect
 
 
-class GenerateFusedAttention(
+class ReplaceWithFusedAttentionOp(
     TransformExtensionDialect.Operation, name="generate_fused_attention"
 ):
-    """Generate tiled fused attention computation (flash attention optimization).
+    """Replace a given (standard) attention output with an equivalent output that is
+    computed in a fused fashion (fused attention optimization).
 
     Takes Q, K, V loads and scale constant from bufferized IR, and generates an inner
     tiled loop that computes fused attention with online softmax using running max and sum.
@@ -46,7 +47,7 @@ class GenerateFusedAttention(
     class TransformOpInterfaceModel(transform.TransformOpInterface):
         @staticmethod
         def apply(
-            op: "GenerateFusedAttention",
+            op: "ReplaceWithFusedAttentionOp",
             rewriter: transform.TransformRewriter,
             results: transform.TransformResults,
             state: transform.TransformState,
@@ -473,7 +474,7 @@ class GenerateFusedAttention(
             return DiagnosedSilenceableFailure.Success
 
         @staticmethod
-        def allow_repeated_handle_operands(_op: "GenerateFusedAttention") -> bool:
+        def allow_repeated_handle_operands(_op: "ReplaceWithFusedAttentionOp") -> bool:
             return False
 
     class MemoryEffectsOpInterfaceModel(ir.MemoryEffectsOpInterface):
@@ -489,7 +490,7 @@ class GenerateFusedAttention(
             transform.modifies_payload(effects)
 
 
-def generate_fused_attention(
+def replace_with_fused_attention(
     q_load: ir.Value,
     k_load: ir.Value,
     v_load: ir.Value,
@@ -497,7 +498,8 @@ def generate_fused_attention(
     output: ir.Value,
     tile_size: int | ir.IntegerAttr,
 ) -> ir.Value:
-    """Generate fused attention computation with inner tiling on bufferized IR.
+    """Replace a given (standard) attention output with an equivalent output
+    that is computed in a fused fashion (fused attention optimization).
 
     Args:
         q_load: Handle to Q load operation (vector.transfer_read)
@@ -513,6 +515,6 @@ def generate_fused_attention(
     if not isinstance(tile_size, ir.IntegerAttr):
         tile_size = ir.IntegerAttr.get(ir.IntegerType.get_signless(64), tile_size)
 
-    return GenerateFusedAttention(
+    return ReplaceWithFusedAttentionOp(
         q_load, k_load, v_load, scale, output, tile_size=tile_size
     ).new_output
