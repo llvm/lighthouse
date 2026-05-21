@@ -76,6 +76,28 @@ class ReplaceWithFusedAttentionOp(
             scale_op = scale_ops[0]
             output_op = output_ops[0]
 
+            # Verify operation types
+            if not isinstance(q_load_op.opview, vector.TransferReadOp):
+                return DiagnosedSilenceableFailure.emit_silenceable_error(
+                    f"Expected q_load to be vector.transfer_read, got {q_load_op.operation.name}"
+                )
+            if not isinstance(k_load_op.opview, vector.TransferReadOp):
+                return DiagnosedSilenceableFailure.emit_silenceable_error(
+                    f"Expected k_load to be vector.transfer_read, got {k_load_op.operation.name}"
+                )
+            if not isinstance(v_load_op.opview, vector.TransferReadOp):
+                return DiagnosedSilenceableFailure.emit_silenceable_error(
+                    f"Expected v_load to be vector.transfer_read, got {v_load_op.operation.name}"
+                )
+            if not isinstance(scale_op.opview, arith.ConstantOp):
+                return DiagnosedSilenceableFailure.emit_silenceable_error(
+                    f"Expected scale to be arith.constant, got {scale_op.operation.name}"
+                )
+            if not isinstance(output_op.opview, vector.ContractionOp):
+                return DiagnosedSilenceableFailure.emit_silenceable_error(
+                    f"Expected output to be vector.contract, got {output_op.operation.name}"
+                )
+
             # Extract the scale scalar value from scale_op (arith.constant)
             scale_attr = scale_op.attributes["value"]
             scale_dense_attr = ir.DenseElementsAttr(scale_attr)
