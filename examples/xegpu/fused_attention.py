@@ -157,7 +157,7 @@ class XeGPUFusedAttention:
 
     def payload_module(self) -> ir.Module:
         """Generate MLIR module for fused attention payload."""
-        return generate_gpu_attention_payload(
+        mod = generate_gpu_attention_payload(
             func_name=self.payload_function_name,
             Z=self.Z,
             H=self.H,
@@ -165,6 +165,11 @@ class XeGPUFusedAttention:
             n_head=self.n_head,
             dtype=self.elem_type,
         )
+        ranks_and_types = [(4, self.elem_type)]
+        self.memory_manager_class.emit_memory_management_funcs(
+            mod, ranks_and_types=ranks_and_types
+        )
+        return mod
 
     def schedule_modules(
         self, stop_at_stage: Optional[str] = None, parameters: Optional[dict] = None

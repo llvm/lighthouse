@@ -6,7 +6,6 @@ from mlir import ir
 from mlir.dialects import arith, bufferization, linalg, memref, tensor
 
 from lighthouse.utils.mlir import func_cif
-from lighthouse.ingress.mlir_gen.gpu_utils import emit_gpu_util_funcs
 from lighthouse.ingress.mlir_gen.utils import emit_buf_to_tensor
 
 
@@ -129,8 +128,5 @@ def generate_gpu_attention_payload(
             bufferization.materialize_in_destination(
                 None, result_3d, output_3d_memref, restrict=True, writable=True
             )
-
-        # Emit utility functions for GPU memory management
-        emit_gpu_util_funcs(dtype, rank=4)
 
     return mod
