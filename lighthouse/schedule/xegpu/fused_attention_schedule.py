@@ -22,7 +22,6 @@ from lighthouse.pipeline.helper import (
 from lighthouse.schedule import schedule_boilerplate
 from lighthouse.dialects.transform.transform_ext import (
     replace_with_fused_attention,
-    update_address_space,
 )
 
 
@@ -31,14 +30,15 @@ def fused_attention_schedule(
     parameters: Optional[dict] = None,
 ) -> ir.Module:
     """
-    Generate transform schedule for fused attention operation.
+    Generate transform schedule for attention kernel.
 
     The schedule performs the following transformations:
-    1. Tile the fused attention operation
+    1. Tile the fuse the strandard attention computation along parallel dims
     2. Vectorize operations
     3. Bufferize tensors
-    4. Convert to GPU dialect
-    5. Lower to XeGPU operations
+    4. Perform the fused attention optimization for the innermost computation
+    5. Convert to GPU dialect
+    6. Lower to XeGPU operations
 
     Args:
         stop_at_stage: Optional stage name to stop early (for debugging)
@@ -86,7 +86,7 @@ def bundle_xegpu_fused_attention_schedule(
     parameters: dict,
     stop_at_stage: str = "",
 ) -> ir.Value[transform.AnyOpType]:
-    """Schedule for lowering fused attention payload to xegpu wg level."""
+    """Schedule for lowering attention payload to xegpu wg level."""
 
     if stop_at_stage == "initial":
         raise PipelineInterrupt()
@@ -165,6 +165,7 @@ def bundle_xegpu_fused_attention_schedule(
     transform.apply_cse(func)
     canonicalize(func)
 
+    # Fuse the remaining operations into the scf.forall loop.
     linalg_mul_op = match_and_split(func, ops={"linalg.mul"}, nhandles=1)[0]
     first_matmul = transform.get_producer_of_operand(
         anytype, linalg_mul_op, operand_number=0
@@ -197,7 +198,7 @@ def bundle_xegpu_fused_attention_schedule(
     if stop_at_stage == "outer-tiled":
         raise PipelineInterrupt()
 
-    # vectorize
+    # Vectorize
     func = structured.VectorizeChildrenAndApplyPatternsOp(
         func,
         fold_type_extensions_into_contract=True,
@@ -212,7 +213,7 @@ def bundle_xegpu_fused_attention_schedule(
     if stop_at_stage == "vectorized":
         raise PipelineInterrupt()
 
-    # bufferize
+    # Bufferize
     mod = apply_registered_pass(mod, "eliminate-empty-tensors")
     identity_layout = LayoutMapOption.IdentityLayoutMap
     mod = transform_bufferization.OneShotBufferizeOp(
@@ -221,23 +222,13 @@ def bundle_xegpu_fused_attention_schedule(
         bufferize_function_boundaries=True,
         function_boundary_type_conversion=identity_layout,
     ).result
-    transform.apply_cse(mod)
-    canonicalize(mod)
     # fold memref.subviews into vector.transfer_read/write ops
     mod = apply_registered_pass(mod, "fold-memref-alias-ops")
     transform.apply_cse(mod)
     canonicalize(mod)
 
-    # promote memref.alloc to memref.alloca in payload function
-    func = match(mod, ops={"func.func"})
-    func = apply_registered_pass(
-        func,
-        "promote-buffers-to-stack",
-        options={
-            "max-alloc-size-in-bytes": "8192",
-            "max-rank-of-allocated-memref": "2",
-        },
-    )
+    if stop_at_stage == "bufferized":
+        raise PipelineInterrupt()
 
     # Extract q, k, v memrefs from the bufferized IR
     # Match vector.contract ops to find the q, k, v loads
@@ -256,8 +247,8 @@ def bundle_xegpu_fused_attention_schedule(
         anytype, first_contract, operand_number=1
     )
 
-    # # Second vector.contract is attention_weights @ V
-    # # Its second operand is the v load (vector.transfer_read)
+    # Second vector.contract is attention_weights @ V
+    # Its second operand is the v load (vector.transfer_read)
     second_contract = contract_ops[1]
     v_load = transform.get_producer_of_operand(
         anytype, second_contract, operand_number=1
@@ -268,12 +259,9 @@ def bundle_xegpu_fused_attention_schedule(
     mulf_op = match_and_split(func, ops={"arith.mulf"}, nhandles=1)[0]
     scale = transform.get_producer_of_operand(anytype, mulf_op, operand_number=1)
 
-    if stop_at_stage == "bufferized":
-        raise PipelineInterrupt()
-
-    # Generate fused attention computation with inner tiling
-    # This replaces the second vector.contract (attention_weights @ V) with a tiled
-    # loop that implements online softmax for efficient memory usage
+    # Apply the fused attention optimization. This replaces the second vector.contract
+    # (attention_weights @ V) with a tiled loop that implements online softmax for
+    # efficient memory usage
     tile_size = parameters.get(
         "inner_loop_tile_size", 64
     )  # Tile size for reduction dimension (K/V sequence length)
@@ -291,20 +279,20 @@ def bundle_xegpu_fused_attention_schedule(
     if stop_at_stage == "inner-tiled":
         raise PipelineInterrupt()
 
-    # convert forall to parallel
+    # Convert forall to parallel
     wg_loops = match_and_split(mod, ops={"scf.forall"})
     for wg_loop in wg_loops:
         wg_loop = loop.loop_forall_to_parallel([anytype], wg_loop)
     func = transform.get_parent_op(anytype, wg_loop)
 
-    # convert scf.parallel to gpu.launch
+    # Convert scf.parallel to gpu.launch
     func = apply_registered_pass(func, "gpu-map-parallel-loops")
     func = apply_registered_pass(func, "convert-parallel-loops-to-gpu")
     func = apply_registered_pass(func, "lower-affine")
     transform.apply_cse(func)
     canonicalize(func)
 
-    # set the number of threads for the gpu.launch operation
+    # Set the number of threads for the gpu.launch operation
     launch_op = match_and_split(func, ops={"gpu.launch"})
     wg_rows = parameters["wg_rows"]
     sg_rows = parameters["sg_rows"]
@@ -313,7 +301,7 @@ def bundle_xegpu_fused_attention_schedule(
     num_threads = num_subgroups * subgroup_size
     xegpu.set_gpu_launch_threads(launch_op[0], threads=[num_threads, 1, 1])
 
-    # outline gpu func
+    # Outline gpu func
     func = apply_registered_pass(func, "lower-affine")
     canonicalize(func)
     func = apply_registered_pass(func, "gpu-launch-sink-index-computations")
@@ -323,22 +311,17 @@ def bundle_xegpu_fused_attention_schedule(
     if stop_at_stage == "gpu-outlining":
         raise PipelineInterrupt()
 
-    # set xevm target
+    # Set xevm target
     mod = apply_registered_pass(
         mod,
         "xevm-attach-target",
         options={"O": "3", "chip": "bmg"},
     )
 
-    # for each gpu function in the gpu module, change memref.alloca address
-    # space to 3 (SLM) and convert vector to xegpu.
+    # Convert vectot to xegpu
     gpu_mod_ops = match_and_split(mod, ops={"gpu.module"})
     for gpu_mod in gpu_mod_ops:
         gpu_func = match(gpu_mod, ops={"gpu.func"})
-        allocas = match_and_split(gpu_func, ops={"memref.alloca"}, nhandles=3)
-        for alloca in allocas:
-            # print("Updating address space for alloca:")
-            update_address_space(alloca, address_space=3)
         gpu_func = apply_registered_pass(gpu_func, "convert-vector-to-xegpu")
         transform.apply_cse(gpu_func)
         gpu_func = apply_registered_pass(gpu_func, "loop-invariant-code-motion")

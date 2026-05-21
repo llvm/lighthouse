@@ -107,7 +107,10 @@ def check_correctness(
 
 class XeGPUFusedAttention:
     """
-    Fused attention workload on XeGPU.
+    Fused attention workload on XeGPU. This workload starts with standard attention
+    at linalg level and applies a series of transformations to arrive at a fused
+    attention kernel where each work group computes a tile of the output with the
+    fused attention algorithm.
 
     Computes fused attention:
     output = softmax(Q @ K^T / sqrt(n_head)) @ V
