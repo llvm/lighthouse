@@ -64,9 +64,7 @@
   initializations: [rnd, rnd]
   output_shape: 1024x1024
   dtypes: [f32, bf16]
-  # gflops: (1024 * 32 * 1024 * 2) / 1e9
-  # pipeline: matmul
-  warning: "Optimized pipeline error: too many tiles provided, expected at most 3 found 4"
+  gflops: (1024 * 32 * 1024 * 2) / 1e9
 
 - kernel: level1/10_3D_tensor_matrix_multiplication.py
   input_shapes: [16x1024x2048, 2048x768]
@@ -87,9 +85,7 @@
   initializations: [rnd, rnd]
   output_shape: 4096x4096
   dtypes: [f32, bf16]
-  warning: '''ERROR: torch_mlir.compiler_utils.TorchMlirCompilerError:
-              Lowering TorchFX IR -> Torch Backend IR failed with the following diagnostics:
-              python exception: Failure while executing pass pipeline'''
+  warning: "error: failed to legalize operation 'torch.operator' that was explicitly marked illegal"
 
 - kernel: level1/13_Matmul_for_symmetric_matrices.py
   input_shapes: [4096x4096, 4096x4096]
@@ -107,7 +103,6 @@
   gflops: (4096 * 4096 * 4096 * 2) / 1e9
   pipeline: matmul
 
-
 - kernel: level1/15_Matmul_for_lower_triangular_matrices.py
   input_shapes: [4096x4096, 4096x4096]
   initializations: [rnd, rnd]
@@ -115,7 +110,6 @@
   dtypes: [f32, bf16]
   gflops: (4096 * 4096 * 4096 * 2) / 1e9
   pipeline: matmul
-
 
 - kernel: level1/16_Matmul_with_transposed_A.py
   input_shapes: [8192x2048, 8192x4096]
@@ -148,14 +142,12 @@
   dtypes: [f32, bf16]
   gflops: (4096 * 393216) / 1e9
 
-
 - kernel: level1/20_LeakyReLU.py
   input_shapes: [4096x393216]
   initializations: [rnd]
   output_shape: 4096x393216
   dtypes: [f32, bf16]
   gflops: (4096 * 393216) / 1e9
-
 
 - kernel: level1/21_Sigmoid.py
   input_shapes: [4096x393216]
@@ -164,14 +156,12 @@
   dtypes: [f32, bf16]
   gflops: (4096 * 393216) / 1e9
 
-
 - kernel: level1/22_Tanh.py
   input_shapes: [4096x393216]
   initializations: [rnd]
   output_shape: 4096x393216
   dtypes: [f32, bf16]
   gflops: (4096 * 393216) / 1e9
-
 
 - kernel: level1/23_Softmax.py
   input_shapes: [4096x393216]
@@ -180,14 +170,12 @@
   dtypes: [f32, bf16]
   gflops: (4096 * 393216) / 1e9
 
-
 - kernel: level1/24_LogSoftmax.py
   input_shapes: [4096x393216]
   initializations: [rnd]
   output_shape: 4096x393216
   dtypes: [f32, bf16]
   gflops: (4096 * 393216) / 1e9
-
 
 - kernel: level1/25_Swish.py
   input_shapes: [4096x393216]
@@ -196,14 +184,12 @@
   dtypes: [f32, bf16]
   gflops: (4096 * 393216) / 1e9
 
-
 - kernel: level1/26_GELU_.py
   input_shapes: [4096x393216]
   initializations: [rnd]
   output_shape: 4096x393216
   dtypes: [f32, bf16]
   gflops: (4096 * 393216) / 1e9
-
 
 - kernel: level1/27_SELU_.py
   input_shapes: [4096x393216]
@@ -212,14 +198,12 @@
   dtypes: [f32, bf16]
   gflops: (4096 * 393216) / 1e9
 
-
 - kernel: level1/28_HardSigmoid.py
   input_shapes: [4096x393216]
   initializations: [rnd]
   output_shape: 4096x393216
   dtypes: [f32, bf16]
   gflops: (4096 * 393216) / 1e9
-
 
 - kernel: level1/29_Softplus.py
   input_shapes: [4096x393216]
@@ -228,14 +212,12 @@
   dtypes: [f32, bf16]
   gflops: (4096 * 393216) / 1e9
 
-
 - kernel: level1/30_Softsign.py
   input_shapes: [4096x393216]
   initializations: [rnd]
   output_shape: 4096x393216
   dtypes: [f32, bf16]
   gflops: (4096 * 393216) / 1e9
-
 
 - kernel: level1/31_ELU.py
   input_shapes: [4096x393216]
@@ -244,7 +226,6 @@
   dtypes: [f32, bf16]
   gflops: (4096 * 393216) / 1e9
 
-
 - kernel: level1/32_HardTanh.py
   input_shapes: [4096x393216]
   initializations: [rnd]
@@ -252,14 +233,13 @@
   dtypes: [f32, bf16]
   gflops: (4096 * 393216) / 1e9
 
-
 - kernel: level1/33_BatchNorm.py
   input_shapes: [64x64x512x512]
   initializations: [rnd]
   output_shape: 64x64x512x512
   dtypes: [f32, bf16]
   gflops: (64 * 64 * 512 * 512) / 1e9
-
+  warning: "Segmentation fault"
 
 - kernel: level1/34_InstanceNorm.py
   input_shapes: [112x64x512x512]
@@ -267,7 +247,7 @@
   output_shape: 112x64x512x512
   dtypes: [f32, bf16]
   gflops: (112 * 64 * 512 * 512) / 1e9
-
+  warning: "LLVM ERROR: SmallVector unable to grow (93TB! > 4GB)"
 
 - kernel: level1/35_GroupNorm_.py
   input_shapes: [112x64x512x512]
@@ -276,14 +256,12 @@
   dtypes: [f32, bf16]
   gflops: (112 * 64 * 512 * 512) / 1e9
 
-
 - kernel: level1/36_RMSNorm_.py
   input_shapes: [112x64x512x512]
   initializations: [rnd]
   output_shape: 112x64x512x512
   dtypes: [f32, bf16]
   gflops: (112 * 64 * 512 * 512) / 1e9
-
 
 - kernel: level1/37_FrobeniusNorm_.py
   input_shapes: [112x64x512x512]
@@ -292,14 +270,12 @@
   dtypes: [f32, bf16]
   gflops: (112 * 64 * 512 * 512) / 1e9
 
-
 - kernel: level1/38_L1Norm_.py
   input_shapes: [32768x65535]
   initializations: [rnd]
   output_shape: 32768x65535
   dtypes: [f32, bf16]
   gflops: (32768 * 65535) / 1e9
-
 
 - kernel: level1/39_L2Norm_.py
   input_shapes: [32768x65535]
@@ -308,14 +284,12 @@
   dtypes: [f32, bf16]
   gflops: (32768 * 65535) / 1e9
 
-
 - kernel: level1/40_LayerNorm.py
   input_shapes: [16x64x256x256]
   initializations: [rnd]
   output_shape: 16x64x256x256
   dtypes: [f32, bf16]
   gflops: (16 * 64 * 256 * 256) / 1e9
-
 
 - kernel: level1/41_Max_Pooling_1D.py
   input_shapes: [64x192x65536]
@@ -392,6 +366,7 @@
   output_shape: 128x4095
   dtypes: [f32, bf16]
   gflops: (128 * 4096 * 4095) / 1e9
+  warning: "Segmentation fault"
 
 - kernel: level1/52_Argmin_over_a_dimension.py
   input_shapes: [128x4096x4095]
@@ -399,6 +374,7 @@
   output_shape: 128x4095
   dtypes: [f32, bf16]
   gflops: (128 * 4096 * 4095) / 1e9
+  warning: "Segmentation fault"
 
 - kernel: level1/53_Min_reduction_over_a_dimension.py
   input_shapes: [128x4096x4095]
@@ -624,6 +600,7 @@
   output_shape: 32768x32768
   dtypes: [f32, bf16]
   gflops: (32768 * 32768) / 1e9
+  warning: "error: Dialect `tm_tensor' not found for custom op 'tm_tensor.scan'"
 
 - kernel: level1/90_cumprod.py
   input_shapes: [32768x32768]
@@ -631,6 +608,7 @@
   output_shape: 32768x32768
   dtypes: [f32, bf16]
   gflops: (32768 * 32768) / 1e9
+  warning: "error: Dialect `tm_tensor' not found for custom op 'tm_tensor.scan'"
 
 - kernel: level1/91_cumsum_reverse.py
   input_shapes: [32768x32768]
@@ -638,6 +616,7 @@
   output_shape: 32768x32768
   dtypes: [f32, bf16]
   gflops: (32768 * 32768) / 1e9
+  warning: "error: Dialect `tm_tensor' not found for custom op 'tm_tensor.scan'"
 
 - kernel: level1/92_cumsum_exclusive.py
   input_shapes: [32768x32768]
@@ -645,6 +624,7 @@
   output_shape: 32767x32769
   dtypes: [f32, bf16]
   gflops: (32768 * 32768) / 1e9
+  warning: "error: Dialect `tm_tensor' not found for custom op 'tm_tensor.scan'"
 
 - kernel: level1/93_masked_cumsum.py
   input_shapes: [32768x32768, 32768x32768]
@@ -652,6 +632,7 @@
   output_shape: 32768x32768
   dtypes: [f32, bf16]
   gflops: (32768 * 32768) / 1e9
+  warning: "error: Dialect `tm_tensor' not found for custom op 'tm_tensor.scan'"
 
 - kernel: level1/94_MSELoss.py
   input_shapes: [32768x32768, 32768x32768]
@@ -666,6 +647,7 @@
   output_shape: "1"
   dtypes: [f32, bf16]
   gflops: (32768 * 4096) / 1e9
+  warning: "RuntimeError: gather(): Expected dtype int32/int64 for index, but got torch.float32"
 
 - kernel: level1/96_HuberLoss.py
   input_shapes: [32768x32768, 32768x32768]
@@ -673,6 +655,7 @@
   output_shape: "1"
   dtypes: [f32, bf16]
   gflops: (32768 * 32768) / 1e9
+  warning: "error: failed to legalize operation 'torch.operator' that was explicitly marked illegal"
 
 - kernel: level1/97_ScaledDotProductAttention.py
   input_shapes: [32x32x512x1024, 32x32x512x1024, 32x32x512x1024]
@@ -694,6 +677,7 @@
   output_shape: "1"
   dtypes: [f32, bf16]
   gflops: (32768 * 8192) / 1e9
+  warning: "error: failed to legalize operation 'torch.operator' that was explicitly marked illegal"
 
 - kernel: level1/100_HingeLoss.py
   input_shapes: [32768x32768, 32768]

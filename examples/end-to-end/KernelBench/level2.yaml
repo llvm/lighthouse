@@ -63,6 +63,7 @@
   initializations: [rnd]
   output_shape: 512x128x17x17
   dtypes: [f32, bf16]
+  warning: "Segmentation fault"
 
 - kernel: level2/12_Gemm_Multiply_LeakyReLU.py
   input_shapes: [1024x8192]
@@ -87,6 +88,7 @@
   initializations: [rnd]
   output_shape: 16x32x31x63x63
   dtypes: [f32, bf16]
+  warning: "Segmentation fault"
 
 - kernel: level2/16_ConvTranspose2d_Mish_Add_Hardtanh_Scaling.py
   input_shapes: [128x64x128x128]
@@ -99,13 +101,14 @@
   initializations: [rnd]
   output_shape: 128x128x126x126
   dtypes: [f32, bf16]
+  warning: "LLVM ERROR: SmallVector unable to grow (93TB! > 4GB)"
 
 - kernel: level2/18_Matmul_Sum_Max_AvgPool_LogSumExp_LogSumExp.py
   input_shapes: [1024x8192]
   initializations: [rnd]
   output_shape: 1024x1
   dtypes: [f32, bf16]
-  warning: "'ERROR: torch_mlir.compiler_utils.TorchMlirCompilerError: Lowering TorchFX IR -> Torch Backend IR failed with the following diagnostics: python exception: Failure while executing pass pipeline'"
+  warning: "error: failed to legalize operation 'torch.constant.bool'"
 
 - kernel: level2/19_ConvTranspose2d_GELU_GroupNorm.py
   input_shapes: [128x64x256x256]
@@ -130,7 +133,7 @@
   initializations: [rnd]
   output_shape: 1024x1
   dtypes: [f32, bf16]
-  warning: "'ERROR: torch_mlir.compiler_utils.TorchMlirCompilerError: failed to legalize operation torch.constant.bool'"
+  warning: "error: failed to legalize operation 'torch.constant.bool'"
 
 - kernel: level2/23_Conv3d_GroupNorm_Mean.py
   input_shapes: [128x3x24x32x32]
@@ -167,6 +170,7 @@
   initializations: [rnd, rnd]
   output_shape: 1024x8192
   dtypes: [f32, bf16]
+  warning: "LLVM ERROR: SmallVector unable to grow (93TB! > 4GB) + Input size at dim=1 does not match num_features"
 
 - kernel: level2/29_Matmul_Mish_Mish.py
   input_shapes: [1024x8192]
@@ -197,6 +201,7 @@
   initializations: [rnd]
   output_shape: 1024x8192
   dtypes: [f32, bf16]
+  warning: "Segmentation fault"
 
 - kernel: level2/34_ConvTranspose3d_LayerNorm_GELU_Scaling.py
   input_shapes: [32x32x16x32x32]
@@ -233,6 +238,7 @@
   initializations: [rnd]
   output_shape: 16384x4096
   dtypes: [f32, bf16]
+  warning: "Segmentation fault"
 
 - kernel: level2/40_Matmul_Scaling_ResidualAdd.py
   input_shapes: [16384x4096]
@@ -251,12 +257,14 @@
   initializations: [rnd]
   output_shape: 16x1
   dtypes: [f32, bf16]
+  warning: "error: failed to legalize operation 'torch.constant.bool'"
 
 - kernel: level2/43_Conv3d_Max_LogSumExp_ReLU.py
   input_shapes: [4x32x32x128x128]
   initializations: [rnd]
   output_shape: 4x1x16x64x64
   dtypes: [f32, bf16]
+  warning: "error: failed to legalize operation 'torch.constant.bool'"
 
 - kernel: level2/44_ConvTranspose2d_Multiply_GlobalAvgPool_GlobalAvgPool_Mean.py
   input_shapes: [16x64x128x128]
@@ -269,7 +277,7 @@
   initializations: [rnd]
   output_shape: 16384
   dtypes: [f32, bf16]
-  warning: "'ERROR: torch_mlir.compiler_utils.TorchMlirCompilerError: failed to legalize operation torch.constant.bool'"
+  warning: "error: failed to legalize operation 'torch.constant.bool'"
 
 - kernel: level2/46_Conv2d_Subtract_Tanh_Subtract_AvgPool.py
   input_shapes: [128x64x128x128]
@@ -306,13 +314,14 @@
   initializations: [rnd]
   output_shape: 2048x8192
   dtypes: [f32, bf16]
-  warning: "'ERROR: torch_mlir.compiler_utils.TorchMlirCompilerError: Lowering TorchFX IR -> Torch Backend IR failed with the following diagnostics: python exception: Failure while executing pass pipeline'"
+  warning: "error: failed to legalize operation 'torch.constant.bool'"
 
 - kernel: level2/52_Conv2d_Activation_BatchNorm.py
   input_shapes: [64x64x128x128]
   initializations: [rnd]
   output_shape: 64x128x126x126
   dtypes: [f32, bf16]
+  warning: "error: failed to legalize operation 'torch.operator' that was explicitly marked illegal"
 
 - kernel: level2/53_Gemm_Scaling_Hardtanh_GELU.py
   input_shapes: [2048x8192]
@@ -331,14 +340,12 @@
   initializations: [rnd]
   output_shape: 128
   dtypes: [f32, bf16]
-  warning: 'Execution just fails, return code -9, no errors reported.'
 
 - kernel: level2/56_Matmul_Sigmoid_Sum.py
   input_shapes: [128x32768]
   initializations: [rnd]
   output_shape: 128x1
   dtypes: [f32, bf16]
-  warning: 'Execution just fails, return code -9, no errors reported.'
 
 - kernel: level2/57_Conv2d_ReLU_HardSwish.py
   input_shapes: [128x8x128x128]
@@ -351,13 +358,13 @@
   initializations: [rnd]
   output_shape: 128x1x31x63x63
   dtypes: [f32, bf16]
+  warning: "error: failed to legalize operation 'torch.constant.bool'"
 
 - kernel: level2/59_Matmul_Swish_Scaling.py
   input_shapes: [128x32768]
   initializations: [rnd]
   output_shape: 128x32768
   dtypes: [f32, bf16]
-  warning: 'Execution just fails, return code -9, no errors reported.'
 
 - kernel: level2/60_ConvTranspose3d_Swish_GroupNorm_HardSwish.py
   input_shapes: [128x3x16x32x32]
@@ -388,7 +395,7 @@
   initializations: [rnd]
   output_shape: 1024x1
   dtypes: [f32, bf16]
-  warning: "'ERROR: torch_mlir.compiler_utils.TorchMlirCompilerError: failed to legalize operation torch.constant.bool'"
+  warning: "error: failed to legalize operation 'torch.constant.bool'"
 
 - kernel: level2/65_Conv2d_AvgPool_Sigmoid_Sum.py
   input_shapes: [128x8x384x384]
@@ -401,7 +408,6 @@
   initializations: [rnd]
   output_shape: 128x16384
   dtypes: [f32, bf16]
-  warning: "Compiles, but doesn't seem to terminate"
 
 - kernel: level2/67_Conv2d_GELU_GlobalAvgPool.py
   input_shapes: [128x8x256x256]
@@ -414,7 +420,6 @@
   initializations: [rnd]
   output_shape: 128x16384
   dtypes: [f32, bf16]
-  warning: "Compiles, but doesn't seem to terminate"
 
 - kernel: level2/69_Conv2d_HardSwish_ReLU.py
   input_shapes: [128x8x128x128]
@@ -439,12 +444,14 @@
   initializations: [rnd]
   output_shape: 64x16x15x15x15
   dtypes: [f32, bf16]
+  warning: "Segmentation fault"
 
 - kernel: level2/73_Conv2d_BatchNorm_Scaling.py
   input_shapes: [128x8x128x128]
   initializations: [rnd]
   output_shape: 128x64x126x126
   dtypes: [f32, bf16]
+  warning: "Segmentation fault"
 
 - kernel: level2/74_ConvTranspose3d_LeakyReLU_Multiply_LeakyReLU_Max.py
   input_shapes: [16x16x16x32x32]
@@ -469,6 +476,7 @@
   initializations: [rnd]
   output_shape: 16x128x1x1x1
   dtypes: [f32, bf16]
+  warning: "Segmentation fault"
 
 - kernel: level2/78_ConvTranspose3d_Max_Max_Sum.py
   input_shapes: [16x32x32x32x32]
@@ -481,6 +489,7 @@
   initializations: [rnd]
   output_shape: 128x14x30x30
   dtypes: [f32, bf16]
+  warning: "LLVM ERROR: SmallVector unable to grow (93TB! > 4GB)"
 
 - kernel: level2/80_Gemm_Max_Subtract_GELU.py
   input_shapes: [1024x8192]
@@ -511,6 +520,7 @@
   initializations: [rnd]
   output_shape: 1024x8192
   dtypes: [f32, bf16]
+  warning: "Segmentation fault"
 
 - kernel: level2/85_Conv2d_GroupNorm_Scale_MaxPool_Clamp.py
   input_shapes: [128x8x128x128]
@@ -559,6 +569,7 @@
   initializations: [rnd]
   output_shape: 128x1x126x126
   dtypes: [f32, bf16]
+  warning: "error: failed to legalize operation 'torch.constant.bool'"
 
 - kernel: level2/93_ConvTranspose2d_Add_Min_GELU_Multiply.py
   input_shapes: [128x64x64x64]
@@ -589,6 +600,7 @@
   initializations: [rnd]
   output_shape: 1024x8192
   dtypes: [f32, bf16]
+  warning: "Segmentation fault"
 
 - kernel: level2/98_Matmul_AvgPool_GELU_Scale_Max.py
   input_shapes: [1024x8192]
