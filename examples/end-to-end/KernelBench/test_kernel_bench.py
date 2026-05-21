@@ -157,10 +157,6 @@ if __name__ == "__main__":
         command_line = [
             str(kb_program),
             str(kb_kernel),
-            "--input-shapes",
-            test["input_shapes"],
-            "--output-shape",
-            test["output_shape"],
             "--pipeline",
             test["pipeline"],
             "--print-output",
@@ -169,8 +165,20 @@ if __name__ == "__main__":
         benchmark = args.benchmark and test.get("gflops") is not None
         if benchmark:
             command_line += ["--benchmark"]
+
+        # We allow toch.compile to pick its own shapes (unless it's CI)
         if args.torch_compile:
             command_line += ["--torch-compile"]
+
+        # TODO: Implement auto-shapes for non-compile mode as well.
+        if args.ci or not args.torch_compile:
+            command_line += [
+                "--input-shapes",
+                test["input_shapes"],
+                "--output-shape",
+                test["output_shape"],
+            ]
+
         if args.print_mlir_after_all:
             command_line += ["--print-mlir-after-all"]
         if test.get("warning"):
