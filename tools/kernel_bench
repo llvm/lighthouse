@@ -163,8 +163,9 @@ def torch_compile(args, buffers: list, sample_tensors: list):
 
     # TODO: Implement benchmarking
     if args.benchmark:
-        print("Benchmarking is not yet implemented for torch.compile backend.")
-        exit(1)
+        raise NotImplementedError(
+            "Benchmarking is not yet implemented for torch.compile backend."
+        )
     else:
         # Reconfigure the model to be compiled using torch.compile, take the compiled output.
         model.compile(dynamic=False, backend=cpu_backend(compiler_pipeline))
@@ -211,6 +212,30 @@ def torch_import(args, model: torch.nn.Module, buffers: list, sample_tensors: li
     return torch.from_numpy(buffers[0])
 
 
+def compare_outputs(out_ref, out, tolerance, max_tolerance):
+    """
+    Compares the reference output with the output from the compiled model.
+    On success, iteratively reduces the tolerance to find the maximum
+    tolerance at which the outputs still match.
+    """
+    if torch.allclose(out_ref, out, rtol=tolerance, atol=tolerance):
+        return True, tolerance
+
+    # From here on, we know the outputs don't match at the initial tolerance.
+    max_tol = max_tolerance
+    if tolerance >= max_tol:
+        return False, tolerance
+
+    # Now try to find the widest tolerance.
+    tol = tolerance * 10
+    while tol <= max_tol:
+        # Fails with this but not previous, return previous tolerance
+        if torch.allclose(out_ref, out, rtol=tol, atol=tol):
+            return False, tol / 10
+        tol *= 10
+    return False, max_tol
+
+
 if __name__ == "__main__":
     Parser = argparse.ArgumentParser(
         description="""Kernel Bench importer, optimization and runner."""
@@ -237,6 +262,18 @@ if __name__ == "__main__":
         type=int,
         default=0,
         help="Random seed for initializing input tensors.",
+    )
+    Parser.add_argument(
+        "--tolerance",
+        type=float,
+        default=0.01,
+        help="Expected tolerance for comparing outputs.",
+    )
+    Parser.add_argument(
+        "--max-tolerance",
+        type=float,
+        default=1.0,
+        help="Maximum tolerance to check if outputs don't match.",
     )
     Parser.add_argument(
         "--pipeline",
@@ -297,11 +334,9 @@ if __name__ == "__main__":
     if (
         args.input_shapes is None or args.output_shape is None
     ) and not args.torch_compile:
-        print(
-            "ERROR: --input-shapes and --output-shape must be provided together for non-torch-compile mode.",
-            file=sys.stderr,
+        raise ValueError(
+            "--input-shapes and --output-shape must be provided together for non-torch-compile mode."
         )
-        exit(1)
 
     # Initialize the device data
     buffers, sample_tensors = parse_inputs_and_outputs(
@@ -329,9 +364,14 @@ if __name__ == "__main__":
         print(f"MLIR Output:\n{out}")
 
     # Compare the outputs
-    if not torch.allclose(out_ref, out, rtol=0.01, atol=0.01):
-        print(
-            "ERROR: The output of the compiled model does not match the reference output."
+    match, tol = compare_outputs(
+        out_ref, out, tolerance=args.tolerance, max_tolerance=args.max_tolerance
+    )
+    if not match:
+        raise RuntimeError(
+            f"The output of the compiled model does't match the reference output.\n"
+            f"Tolerance requested: [{args.tolerance}, {args.max_tolerance}], got at or beyond: {tol}"
         )
-        exit(1)
+
     print("Success: The output of the compiled model matches the reference output.")
+    print(f"Tolerance: {tol}")
