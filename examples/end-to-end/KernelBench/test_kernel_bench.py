@@ -159,14 +159,14 @@ if __name__ == "__main__":
             str(kb_kernel),
             "--pipeline",
             test["pipeline"],
-            "--print-output",
             "--seed=42",
         ]
+        # Benchmarks only if there's data to calculate FLOPS.
         benchmark = args.benchmark and test.get("gflops") is not None
         if benchmark:
             command_line += ["--benchmark"]
 
-        # We allow toch.compile to pick its own shapes (unless it's CI)
+        # We allow torch.compile to pick its own shapes (unless it's CI).
         if args.torch_compile:
             command_line += ["--torch-compile"]
 
@@ -179,8 +179,15 @@ if __name__ == "__main__":
                 test["output_shape"],
             ]
 
+        # Smoke tests / CI don't print outputs.
+        if not args.smoke_test and not args.ci:
+            command_line += ["--print-output"]
+
+        # For debugging, prefer not to capture output.
         if args.print_mlir_after_all:
             command_line += ["--print-mlir-after-all"]
+
+        # Print out before we run the test.
         if test.get("warning"):
             print(f"WARNING: {test['warning']}")
         print(f"Running command: {' '.join(command_line)}", flush=True)
