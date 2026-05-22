@@ -29,6 +29,134 @@ except ImportError as e:
 from mlir import ir
 
 
+def import_model(
+    filepath: str | Path,
+    model_class_name: str = "Model",
+    init_args_fn_name: str | None = "get_init_inputs",
+    init_kwargs_fn_name: str | None = None,
+    model_init_args: Iterable | None = None,
+    sample_args_fn_name: str = "get_inputs",
+    sample_kwargs_fn_name: str | None = None,
+    sample_args: Iterable | None = None,
+    state_path: str | Path | None = None,
+    **kwargs,
+) -> str | ir.Module:
+    """Load a PyTorch nn.Module from a file.
+
+    The function takes a `filepath` to a Python file containing the model definition,
+    along with the names of functions to get model init arguments and sample inputs.
+    The function imports the model class on its own and instantiates it.
+
+    Args:
+        filepath (str | Path): Path to the Python file containing the model definition.
+        model_class_name (str, optional): The name of the model class in the file.
+            Defaults to "Model".
+        init_args_fn_name (str | None, optional): The name of the function in the file
+            that returns the arguments for initializing the model. If None, the model
+            is initialized without arguments. Defaults to "get_init_inputs".
+        init_kwargs_fn_name (str | None, optional): The name of the function in the file
+            that returns the keyword arguments for initializing the model. If None, the model
+            is initialized without keyword arguments.
+        model_init_args (Iterable | None, optional): If provided, these are used directly as
+            initialization arguments instead of calling ``init_args_fn_name`` from the file.
+            Useful for overriding hard-coded sizes in the model file. Defaults to None.
+        sample_args_fn_name (str, optional): The name of the function in the file that
+            returns the sample input arguments for the model. Defaults to "get_inputs".
+        sample_kwargs_fn_name (str, optional): The name of the function in the file that
+            returns the sample keyword input arguments for the model. Defaults to None.
+        sample_args (Iterable | None, optional): If provided, these are used directly as
+            sample inputs instead of calling ``sample_args_fn_name`` from the file.
+            Useful for overriding hard-coded sizes in the model file. Defaults to None.
+        state_path (str | Path | None, optional): Optional path to a file containing
+            the model's ``state_dict``. Defaults to None.
+        **kwargs: Additional keyword arguments passed to the ``torch_mlir.fx.export_and_import`` function.
+
+    Returns:
+        torch.nn.Module: The imported PyTorch model.
+        sample_args: The sample input arguments for the model.
+        sample_kwargs: The sample keyword input arguments for the model.
+
+    Examples:
+        Given a file `path/to/model_file.py` with the following content:
+        ```python
+        import torch
+        import torch.nn as nn
+
+
+        class MyModel(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.fc = nn.Linear(10, 5)
+
+            def forward(self, x):
+                return self.fc(x)
+
+
+        def get_inputs():
+            return (torch.randn(1, 10),)
+        ```
+
+        The import script would look like:
+        >>> from lighthouse.ingress.torch_import import import_model
+        >>> # option 1: get MLIR module as a string
+        >>> model: nn.Module = import_model(
+        ...     "path/to/model_file.py",
+        ...     model_class_name="MyModel",
+        ...     init_args_fn_name=None,
+        ... )
+    """
+    if isinstance(filepath, str):
+        filepath = Path(filepath)
+    module_name = filepath.stem
+
+    spec = importlib.util.spec_from_file_location(module_name, filepath)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    model = getattr(module, model_class_name, None)
+    if model is None:
+        raise ValueError(f"Model class '{model_class_name}' not found in {filepath}")
+
+    model_init_args = (
+        maybe_load_and_run_callable(
+            module,
+            init_args_fn_name,
+            default=tuple(),
+            error_msg=f"Init args function '{init_args_fn_name}' not found in {filepath}",
+        )
+        if model_init_args is None
+        else model_init_args
+    )
+    model_init_kwargs = maybe_load_and_run_callable(
+        module,
+        init_kwargs_fn_name,
+        default={},
+        error_msg=f"Init kwargs function '{init_kwargs_fn_name}' not found in {filepath}",
+    )
+    sample_args = (
+        load_and_run_callable(
+            module,
+            sample_args_fn_name,
+            f"Sample args function '{sample_args_fn_name}' not found in {filepath}",
+        )
+        if sample_args is None
+        else sample_args
+    )
+    sample_kwargs = maybe_load_and_run_callable(
+        module,
+        sample_kwargs_fn_name,
+        default={},
+        error_msg=f"Sample kwargs function '{sample_kwargs_fn_name}' not found in {filepath}",
+    )
+
+    nn_model: nn.Module = model(*model_init_args, **model_init_kwargs)
+    if state_path is not None:
+        state_dict = torch.load(state_path)
+        nn_model.load_state_dict(state_dict)
+
+    return nn_model, sample_args, sample_kwargs
+
+
 def import_from_model(
     model: nn.Module,
     sample_args: Iterable,
@@ -118,10 +246,8 @@ def import_from_file(
 ) -> str | ir.Module:
     """Load a PyTorch nn.Module from a file and import it into MLIR.
 
-    The function takes a `filepath` to a Python file containing the model definition,
-    along with the names of functions to get model init arguments and sample inputs.
-    The function imports the model class on its own, instantiates it, and passes
-    it to ``torch_mlir`` to get a MLIR module in the specified `dialect`.
+    The function calls ``import_model`` to load the model from the given file
+    and then calls ``import_from_model`` to convert it into an MLIR module.
 
     Args:
         filepath (str | Path): Path to the Python file containing the model definition.
@@ -156,93 +282,20 @@ def import_from_file(
         str | ir.Module: The imported MLIR module as a string or an ir.Module if `ir_context` is provided.
 
     Examples:
-        Given a file `path/to/model_file.py` with the following content:
-        ```python
-        import torch
-        import torch.nn as nn
-
-
-        class MyModel(nn.Module):
-            def __init__(self):
-                super().__init__()
-                self.fc = nn.Linear(10, 5)
-
-            def forward(self, x):
-                return self.fc(x)
-
-
-        def get_inputs():
-            return (torch.randn(1, 10),)
-        ```
-
-        The import script would look like:
-        >>> from lighthouse.ingress.torch_import import import_from_file
-        >>> # option 1: get MLIR module as a string
-        >>> mlir_module: str = import_from_file(
-        ...     "path/to/model_file.py",
-        ...     model_class_name="MyModel",
-        ...     init_args_fn_name=None,
-        ...     dialect="linalg-on-tensors",
-        ... )
-        >>> print(mlir_module)  # prints the MLIR module in linalg-on-tensors dialect
-        >>> # option 2: get MLIR module as an ir.Module
-        >>> ir_context = ir.Context()
-        >>> mlir_module_ir: ir.Module = import_from_file(
-        ...     "path/to/model_file.py",
-        ...     model_class_name="MyModel",
-        ...     init_args_fn_name=None,
-        ...     dialect="linalg-on-tensors",
-        ...     ir_context=ir_context,
-        ... )
+        See ``import_model`` and ``import_from_model`` for examples
+        of the expected content of the model file and how to call this function.
     """
-    if isinstance(filepath, str):
-        filepath = Path(filepath)
-    module_name = filepath.stem
-
-    spec = importlib.util.spec_from_file_location(module_name, filepath)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-
-    model = getattr(module, model_class_name, None)
-    if model is None:
-        raise ValueError(f"Model class '{model_class_name}' not found in {filepath}")
-
-    model_init_args = (
-        maybe_load_and_run_callable(
-            module,
-            init_args_fn_name,
-            default=tuple(),
-            error_msg=f"Init args function '{init_args_fn_name}' not found in {filepath}",
-        )
-        if model_init_args is None
-        else model_init_args
+    nn_model, sample_args, sample_kwargs = import_model(
+        filepath=filepath,
+        model_class_name=model_class_name,
+        init_args_fn_name=init_args_fn_name,
+        init_kwargs_fn_name=init_kwargs_fn_name,
+        model_init_args=model_init_args,
+        sample_args_fn_name=sample_args_fn_name,
+        sample_kwargs_fn_name=sample_kwargs_fn_name,
+        sample_args=sample_args,
+        state_path=state_path,
     )
-    model_init_kwargs = maybe_load_and_run_callable(
-        module,
-        init_kwargs_fn_name,
-        default={},
-        error_msg=f"Init kwargs function '{init_kwargs_fn_name}' not found in {filepath}",
-    )
-    sample_args = (
-        load_and_run_callable(
-            module,
-            sample_args_fn_name,
-            f"Sample args function '{sample_args_fn_name}' not found in {filepath}",
-        )
-        if sample_args is None
-        else sample_args
-    )
-    sample_kwargs = maybe_load_and_run_callable(
-        module,
-        sample_kwargs_fn_name,
-        default={},
-        error_msg=f"Sample kwargs function '{sample_kwargs_fn_name}' not found in {filepath}",
-    )
-
-    nn_model: nn.Module = model(*model_init_args, **model_init_kwargs)
-    if state_path is not None:
-        state_dict = torch.load(state_path)
-        nn_model.load_state_dict(state_dict)
 
     return import_from_model(
         nn_model,

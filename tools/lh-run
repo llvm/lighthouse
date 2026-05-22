@@ -7,7 +7,7 @@ import numpy as np
 from lighthouse.execution.runner import Runner
 from lighthouse.execution.init import KernelArgumentParser
 from lighthouse.pipeline.descriptor import Descriptor
-from lighthouse.pipeline.driver import CompilerDriver
+from lighthouse.pipeline.driver import CompilerDriver, make_function_callable
 from lighthouse import dialects as lh_dialects
 
 
@@ -94,7 +94,7 @@ if __name__ == "__main__":
             driver.add_module_stage(bench_wrapper)
     else:
         # Calling the entry point directly, so set the attribute on the entry point function.
-        driver.make_function_callable(args.entry_point)
+        make_function_callable(driver.module, args.entry_point)
 
     # Add the remaining stages defined by the user.
     driver.add_stages(args.stage)
