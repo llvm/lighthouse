@@ -127,6 +127,11 @@ if __name__ == "__main__":
         help="Specify a particular test to run.",
     )
     Parser.add_argument(
+        "--print-output",
+        action=argparse.BooleanOptionalAction,
+        help="Whether to print the output of the kernel. Default is False.",
+    )
+    Parser.add_argument(
         "--print-mlir-after-all",
         action=argparse.BooleanOptionalAction,
         help="Whether to print the MLIR module after all stages. Default is False.",
@@ -180,7 +185,7 @@ if __name__ == "__main__":
             ]
 
         # Smoke tests / CI don't print outputs.
-        if not args.smoke_test and not args.ci:
+        if args.print_output:
             command_line += ["--print-output"]
 
         # For debugging, prefer not to capture output.

@@ -17,6 +17,11 @@ from lighthouse.schedule import convert_function_results
 from lighthouse import dialects as lh_dialects
 from lighthouse import ingress as lh_ingress
 from lighthouse.ingress.torch import cpu_backend
+from lighthouse.utils.mlir import get_mlir_library_path
+import os
+
+lib_dir = get_mlir_library_path()
+c_runner_lib = os.path.join(lib_dir, "libmlir_c_runner_utils.so")
 
 
 def import_torch(
@@ -168,7 +173,10 @@ def torch_compile(args, buffers: list, sample_tensors: list):
         )
     else:
         # Reconfigure the model to be compiled using torch.compile, take the compiled output.
-        model.compile(dynamic=False, backend=cpu_backend(compiler_pipeline))
+        model.compile(
+            dynamic=False,
+            backend=cpu_backend(compiler_pipeline, shared_libs=[c_runner_lib]),
+        )
         out = model(*sample_tensors, **sample_kwargs)
 
     return out
