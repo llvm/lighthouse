@@ -7,6 +7,20 @@ from lighthouse.pipeline.descriptor import PipelineDescriptor, Descriptor
 import lighthouse.dialects as lh_dialects
 
 
+def make_function_callable(module: ir.Module, func_name: str) -> None:
+    """
+    Set the 'llvm.emit_c_interface' attribute of the given function in the module.
+    This is required to make the function callable from the execution engine.
+    It has to be called on a @func.func (not an @llvm.func), so should be called
+    before the LLVM lowering stages are added to the pipeline.
+    """
+    with module.context:
+        for func in module.body.operations:
+            if func.sym_name.value == func_name:
+                func.attributes["llvm.emit_c_interface"] = ir.UnitAttr.get()
+                break
+
+
 class PipelineDriver:
     """
     A simple driver that runs the optimization pipeline on a given workload.
@@ -159,19 +173,6 @@ class CompilerDriver:
         if self.pipeline_fixed:
             raise ValueError("Pipeline is fixed. Reset to start again.")
         self.pipeline.add_transform(stage_module)
-
-    def make_function_callable(self, func_name: str) -> None:
-        """
-        Set the 'llvm.emit_c_interface' attribute of the given function in the module.
-        This is required to make the function callable from the execution engine.
-        It has to be called on a @func.func (not an @llvm.func), so should be called
-        before the LLVM lowering stages are added to the pipeline.
-        """
-        with self.context:
-            for func in self.module.body.operations:
-                if func.sym_name.value == func_name:
-                    func.attributes["llvm.emit_c_interface"] = ir.UnitAttr.get()
-                    break
 
     def reset(self) -> None:
         """Reset the pipeline to an empty state, allowing for new stages to be added."""
