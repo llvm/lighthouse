@@ -55,11 +55,13 @@ class JITFunction:
         results: list[BufferMetadata],
         shared_libs: Sequence[str] = [],
         entry_func: str = "main",
+        n_outputs: int | None = None,
     ):
         self.eng = ExecutionEngine(module, opt_level=3, shared_libs=shared_libs)
         self.eng.initialize()
         self.fn = self.eng.lookup(entry_func)
         self.results = results
+        self.n_outputs = n_outputs if n_outputs is not None else len(results)
 
     def __call__(
         self,
@@ -82,12 +84,22 @@ class JITFunction:
 
         # Prepare arguments according to MLIR backend's calling convention:
         # input data followed by output storage buffers.
-        mlir_args = [arg.detach() for arg in args]
-        mlir_args.extend(outs)
-        mlir_args = lh_utils.torch.to_packed_args(mlir_args)
+        all_tensors = [arg.detach() for arg in args]
+        all_tensors.extend(outs)
+        # Keep the ctypes chain alive for the duration of the MLIR call.
+        # to_packed_args() returns only the packed void* array; the intermediate
+        # ctypes structures (memref descriptors and pointers) would be freed
+        # immediately otherwise, causing a use-after-free in the MLIR function.
+        _memrefs = [lh_utils.torch.to_memref(t) for t in all_tensors]
+        _ctype_ptrs = [lh_utils.memref.to_ctype(m) for m in _memrefs]
+        mlir_args = lh_utils.memref.get_packed_arg(_ctype_ptrs)
         self.fn(mlir_args)
 
-        return outs
+        # Return only the outputs corresponding to the FX graph's actual return
+        # values. torch-mlir may prepend extra results for in-place state
+        # mutations (e.g. BatchNorm running statistics), which Dynamo does not
+        # expect in the backend callable's return value.
+        return outs[len(self.results) - self.n_outputs :]
 
 
 class MLIRBackend:
@@ -297,6 +309,12 @@ class MLIRBackend:
                 " - consider using 'torch.compile(..., dynamic=False)'"
             )
 
+        # Count the FX graph's actual outputs before importing to MLIR.
+        # torch-mlir's import may prepend extra results for in-place state
+        # mutations that the FX graph does not expose as outputs.
+        output_node = next(n for n in model.graph.nodes if n.op == "output")
+        n_fx_outputs = len(output_node.args[0])
+
         mlir_mod = self.get_mlir(model, example_inputs)
 
         func_op = self.get_entry_func(mlir_mod)
@@ -310,7 +328,11 @@ class MLIRBackend:
         mlir_mod = self.compile_mlir(mlir_mod)
 
         return JITFunction(
-            mlir_mod, results, shared_libs=self.shared_libs, entry_func=self.entry_func
+            mlir_mod,
+            results,
+            shared_libs=self.shared_libs,
+            entry_func=self.entry_func,
+            n_outputs=n_fx_outputs,
         )
 
 

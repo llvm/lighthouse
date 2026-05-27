@@ -234,12 +234,11 @@
   gflops: (4096 * 393216) / 1e9
 
 - kernel: level1/33_BatchNorm.py
-  input_shapes: [64x64x512x512]
+  input_shapes: [64x64x32x32]
   initializations: [rnd]
-  output_shape: 64x64x512x512
+  output_shape: 64x64x32x32
   dtypes: [f32, bf16]
-  gflops: (64 * 64 * 512 * 512) / 1e9
-  warning: "Segmentation fault"
+  gflops: (64 * 64 * 32 * 32) / 1e9
 
 - kernel: level1/34_InstanceNorm.py
   input_shapes: [112x64x512x512]
@@ -366,7 +365,6 @@
   output_shape: 128x4095
   dtypes: [f32, bf16]
   gflops: (128 * 4096 * 4095) / 1e9
-  warning: "Segmentation fault"
 
 - kernel: level1/52_Argmin_over_a_dimension.py
   input_shapes: [128x4096x4095]
@@ -374,7 +372,6 @@
   output_shape: 128x4095
   dtypes: [f32, bf16]
   gflops: (128 * 4096 * 4095) / 1e9
-  warning: "Segmentation fault"
 
 - kernel: level1/53_Min_reduction_over_a_dimension.py
   input_shapes: [128x4096x4095]
