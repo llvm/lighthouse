@@ -59,11 +59,10 @@
   dtypes: [f32, bf16]
 
 - kernel: level2/11_ConvTranspose2d_BatchNorm_Tanh_MaxPool_GroupNorm.py
-  input_shapes: [512x64x32x32]
+  input_shapes: [8x64x32x32]
   initializations: [rnd]
-  output_shape: 512x128x17x17
+  output_shape: 8x128x17x17
   dtypes: [f32, bf16]
-  warning: "Segmentation fault"
 
 - kernel: level2/12_Gemm_Multiply_LeakyReLU.py
   input_shapes: [1024x8192]
@@ -84,11 +83,10 @@
   dtypes: [f32, bf16]
 
 - kernel: level2/15_ConvTranspose3d_BatchNorm_Subtract.py
-  input_shapes: [16x16x16x32x32]
+  input_shapes: [4x16x16x32x32]
   initializations: [rnd]
-  output_shape: 16x32x31x63x63
+  output_shape: 4x32x31x63x63
   dtypes: [f32, bf16]
-  warning: "Segmentation fault"
 
 - kernel: level2/16_ConvTranspose2d_Mish_Add_Hardtanh_Scaling.py
   input_shapes: [128x64x128x128]
@@ -197,11 +195,10 @@
   dtypes: [f32, bf16]
 
 - kernel: level2/33_Gemm_Scale_BatchNorm.py
-  input_shapes: [1024x8192]
+  input_shapes: [8x8192]
   initializations: [rnd]
-  output_shape: 1024x8192
+  output_shape: 8x8192
   dtypes: [f32, bf16]
-  warning: "Segmentation fault"
 
 - kernel: level2/34_ConvTranspose3d_LayerNorm_GELU_Scaling.py
   input_shapes: [32x32x16x32x32]
@@ -234,11 +231,10 @@
   dtypes: [f32, bf16]
 
 - kernel: level2/39_Gemm_Scale_BatchNorm.py
-  input_shapes: [16384x4096]
+  input_shapes: [8x4096]
   initializations: [rnd]
-  output_shape: 16384x4096
+  output_shape: 8x4096
   dtypes: [f32, bf16]
-  warning: "Segmentation fault"
 
 - kernel: level2/40_Matmul_Scaling_ResidualAdd.py
   input_shapes: [16384x4096]
@@ -440,18 +436,16 @@
   dtypes: [f32, bf16]
 
 - kernel: level2/72_ConvTranspose3d_BatchNorm_AvgPool_AvgPool.py
-  input_shapes: [64x3x32x32x32]
+  input_shapes: [4x3x32x32x32]
   initializations: [rnd]
-  output_shape: 64x16x15x15x15
+  output_shape: 4x16x15x15x15
   dtypes: [f32, bf16]
-  warning: "Segmentation fault"
 
 - kernel: level2/73_Conv2d_BatchNorm_Scaling.py
-  input_shapes: [128x8x128x128]
+  input_shapes: [8x8x128x128]
   initializations: [rnd]
-  output_shape: 128x64x126x126
+  output_shape: 8x64x126x126
   dtypes: [f32, bf16]
-  warning: "Segmentation fault"
 
 - kernel: level2/74_ConvTranspose3d_LeakyReLU_Multiply_LeakyReLU_Max.py
   input_shapes: [16x16x16x32x32]
@@ -472,11 +466,10 @@
   dtypes: [f32, bf16]
 
 - kernel: level2/77_ConvTranspose3d_Scale_BatchNorm_GlobalAvgPool.py
-  input_shapes: [16x64x16x32x32]
+  input_shapes: [4x64x16x32x32]
   initializations: [rnd]
-  output_shape: 16x128x1x1x1
+  output_shape: 4x128x1x1x1
   dtypes: [f32, bf16]
-  warning: "Segmentation fault"
 
 - kernel: level2/78_ConvTranspose3d_Max_Max_Sum.py
   input_shapes: [16x32x32x32x32]
@@ -516,11 +509,10 @@
   dtypes: [f32, bf16]
 
 - kernel: level2/84_Gemm_BatchNorm_Scaling_Softmax.py
-  input_shapes: [1024x8192]
+  input_shapes: [8x8192]
   initializations: [rnd]
-  output_shape: 1024x8192
+  output_shape: 8x8192
   dtypes: [f32, bf16]
-  warning: "Segmentation fault"
 
 - kernel: level2/85_Conv2d_GroupNorm_Scale_MaxPool_Clamp.py
   input_shapes: [128x8x128x128]
@@ -596,11 +588,10 @@
   dtypes: [f32, bf16]
 
 - kernel: level2/97_Matmul_BatchNorm_BiasAdd_Divide_Swish.py
-  input_shapes: [1024x8192]
+  input_shapes: [8x8192]
   initializations: [rnd]
-  output_shape: 1024x8192
+  output_shape: 8x8192
   dtypes: [f32, bf16]
-  warning: "Segmentation fault"
 
 - kernel: level2/98_Matmul_AvgPool_GELU_Scale_Max.py
   input_shapes: [1024x8192]

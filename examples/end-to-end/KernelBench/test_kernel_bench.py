@@ -117,9 +117,10 @@ if __name__ == "__main__":
         help="Enable CI mode (faster run, fewer kernels). Incompatible with --smoke-test.",
     )
     Parser.add_argument(
-        "--torch-compile",
+        "--infer-shapes",
         action=argparse.BooleanOptionalAction,
-        help="Enable TorchScript compilation. Default is False.",
+        default=False,
+        help="Enable shape inference mode. Default is to use values in YAML file.",
     )
     Parser.add_argument(
         "--kernel",
@@ -170,11 +171,7 @@ if __name__ == "__main__":
                 f" Skipping benchmark."
             )
 
-        # We allow torch.compile to pick its own shapes (unless it's CI).
-        # TODO: Implement auto-shapes for non-compile mode as well.
-        if args.torch_compile:
-            command_line += ["--torch-compile"]
-        if args.ci or not args.torch_compile:
+        if not args.infer_shapes:
             command_line += [
                 "--input-shapes",
                 test["input_shapes"],
