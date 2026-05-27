@@ -56,8 +56,8 @@ def get_tests(args: argparse.Namespace) -> list[dict]:
 
     test_list = []
     for test in tests:
-        # If a specific test is specified, only include that test
-        if args.test and not test["kernel"].startswith(args.test):
+        # If a specific kernel is specified, only include that kernel
+        if args.kernel and not test["kernel"].startswith(args.kernel):
             continue
         # CI mode runs fewer tests for faster feedback
         if args.ci and len(test_list) >= 5:
@@ -122,14 +122,9 @@ if __name__ == "__main__":
         help="Enable TorchScript compilation. Default is False.",
     )
     Parser.add_argument(
-        "--test",
+        "--kernel",
         type=str,
-        help="Specify a particular test to run.",
-    )
-    Parser.add_argument(
-        "--print-output",
-        action=argparse.BooleanOptionalAction,
-        help="Whether to print the output of the kernel. Default is False.",
+        help="Specify a particular kernel to run.",
     )
     Parser.add_argument(
         "--print-mlir-after-all",
@@ -141,7 +136,7 @@ if __name__ == "__main__":
         action=argparse.BooleanOptionalAction,
         help="Runs every kernel with loops lowering to pipe clean.",
     )
-    args = Parser.parse_args()
+    args, unknown_args = Parser.parse_known_args()
     if args.smoke_test and args.ci:
         print("\nERROR: Smoke test and CI mode are incompatible.\n")
         Parser.print_help()
@@ -149,9 +144,9 @@ if __name__ == "__main__":
 
     tests = get_tests(args)
     if len(tests) == 0:
-        if args.test:
+        if args.kernel:
             print(
-                f"No tests found matching '{args.test}'. Please check your arguments."
+                f"No tests found matching '{args.kernel}'. Please check your arguments."
             )
         else:
             print("No tests to run. Please check your arguments.")
@@ -164,18 +159,21 @@ if __name__ == "__main__":
             str(kb_kernel),
             "--pipeline",
             test["pipeline"],
-            "--seed=42",
         ]
         # Benchmarks only if there's data to calculate FLOPS.
         benchmark = args.benchmark and test.get("gflops") is not None
         if benchmark:
             command_line += ["--benchmark"]
+        elif args.benchmark:
+            print(
+                f"WARNING: Benchmarking enabled but no GFLOPS data for kernel {test['kernel']}."
+                f" Skipping benchmark."
+            )
 
         # We allow torch.compile to pick its own shapes (unless it's CI).
+        # TODO: Implement auto-shapes for non-compile mode as well.
         if args.torch_compile:
             command_line += ["--torch-compile"]
-
-        # TODO: Implement auto-shapes for non-compile mode as well.
         if args.ci or not args.torch_compile:
             command_line += [
                 "--input-shapes",
@@ -184,13 +182,13 @@ if __name__ == "__main__":
                 test["output_shape"],
             ]
 
-        # Smoke tests / CI don't print outputs.
-        if args.print_output:
-            command_line += ["--print-output"]
-
         # For debugging, prefer not to capture output.
         if args.print_mlir_after_all:
             command_line += ["--print-mlir-after-all"]
+
+        # If any extra args are provided, add them to the command line.
+        if unknown_args:
+            command_line += unknown_args
 
         # Print out before we run the test.
         if test.get("warning"):
