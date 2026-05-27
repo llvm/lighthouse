@@ -26,6 +26,20 @@ except ImportError as e:
         "Make sure to install ingress-torch dependencies e.g. 'uv sync --extra ingress-torch-cpu'"
     ) from e
 
+try:
+    import triton as _triton
+
+    if not hasattr(_triton, "language"):
+        # triton is a CPU stub with no submodules. Block it in sys.modules so
+        # that torch._inductor and torch._dynamo treat triton as absent; all
+        # their "try: import triton / except ImportError:" guards already handle
+        # this case cleanly.
+        import sys
+
+        sys.modules["triton"] = None  # type: ignore[assignment]
+    del _triton
+except ImportError:
+    pass
 from mlir import ir
 
 
