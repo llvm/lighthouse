@@ -6,6 +6,7 @@ from .ops.get_named_attribute import get_named_attribute
 from .ops.param_cmp_eq import param_cmp_eq
 from .ops.replace import replace
 from .ops.convert_func_results_to_args import convert_func_results_to_args
+from .ops.convert_const_resources_to_args import convert_const_resources_to_args
 from .ops.extract_handle import extract_handle
 from .ops.get_tileable_consumers import get_tileable_consumers
 from .ops.get_tiling_sizes import get_tiling_sizes
@@ -13,6 +14,7 @@ from .ops.update_address_space import update_address_space
 
 __all__ = [
     "TransformExtensionDialect",
+    "convert_const_resources_to_args",
     "convert_func_results_to_args",
     "extract_handle",
     "get_named_attribute",
