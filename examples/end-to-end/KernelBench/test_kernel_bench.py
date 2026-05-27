@@ -21,15 +21,38 @@ level1_yaml_path = script_path / "level1.yaml"
 level2_yaml_path = script_path / "level2.yaml"
 
 
-def get_pipeline_file(name: str, dtype: str) -> Path:
+class TargetInfo:
+    """
+    Struct to hold target architecture and feature information.
+    Since this is used in a JIT context, we can safely assume the host
+    architecture is the target architecture if not specified.
+    """
+
+    def __init__(self, arch: str = None, feature: str = None):
+        if arch is not None:
+            self.arch = arch
+        else:
+            self.arch = platform.machine()
+        self.feature = feature
+
+
+def get_pipeline_file(name: str, dtype: str, target: TargetInfo) -> Path:
     """
     Returns the appropriate pipeline file for a given kernel.
     """
-    arch = platform.machine()
+    # If no name is provided, return the default pipeline.
+    if not name:
+        return kb_default_pipeline
 
-    # If the pipeline file exists for the given name and dtype
-    if name:
-        pipeline = script_path / f"schedules/{arch}/{name}/{dtype}.yaml"
+    # First check if there's a pipeline file specific to the target features.
+    if target.feature:
+        pipeline = script_path / f"schedules/{target.feature}/{name}/{dtype}.yaml"
+        if pipeline.exists():
+            return pipeline
+
+    # Second, check if there's a pipeline file specific to the target architecture.
+    if target.arch:
+        pipeline = script_path / f"schedules/{target.arch}/{name}/{dtype}.yaml"
         if pipeline.exists():
             return pipeline
 
@@ -81,7 +104,13 @@ def get_tests(args: argparse.Namespace) -> list[dict]:
                     "gflops": eval(test["gflops"])
                     if "gflops" in test and args.benchmark
                     else None,
-                    "pipeline": str(get_pipeline_file(test.get("pipeline", ""), dtype)),
+                    "pipeline": str(
+                        get_pipeline_file(
+                            test.get("pipeline", ""),
+                            dtype,
+                            TargetInfo(args.target, args.feature),
+                        )
+                    ),
                     "warning": test.get("warning", None),
                 }
             )
@@ -119,7 +148,6 @@ if __name__ == "__main__":
     Parser.add_argument(
         "--infer-shapes",
         action=argparse.BooleanOptionalAction,
-        default=False,
         help="Enable shape inference mode. Default is to use values in YAML file.",
     )
     Parser.add_argument(
@@ -136,6 +164,16 @@ if __name__ == "__main__":
         "--smoke-test",
         action=argparse.BooleanOptionalAction,
         help="Runs every kernel with loops lowering to pipe clean.",
+    )
+    Parser.add_argument(
+        "--target",
+        type=str,
+        help="Specify a particular target architecture (x86_64, arm64, etc.). Default is to auto-detect.",
+    )
+    Parser.add_argument(
+        "--feature",
+        type=str,
+        help="Specify a particular target feature (amx, avx512, etc.).",
     )
     args, unknown_args = Parser.parse_known_args()
     if args.smoke_test and args.ci:
