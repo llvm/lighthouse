@@ -18,6 +18,11 @@ PFETCH_MAX_COLS = 32
 MIN_NB_THREADS = 16
 
 
+def print_header(title: str, char: str = "=", width: int = 80):
+    header = f" {title} "
+    print(f"{header:{char}^{width}}")
+
+
 def check_wg_tile(M: int, N: int, wg_tile: tuple[int, int]) -> tuple[int, int]:
     if M % wg_tile[0] != 0:
         raise ValueError("wg_tile_m does not divide M")
@@ -63,6 +68,7 @@ def check_load_tile(
     parent_shape: tuple[int, int],
     child_shape: tuple[int, int],
     name: str = "A",
+    transpose: bool = False,
 ):
     if parent_shape[0] % tile[0] != 0 or parent_shape[1] % tile[1] != 0:
         raise ValueError(
@@ -80,26 +86,32 @@ def check_load_tile(
         raise ValueError(f"Load tile {name} {tile} has too many rows.")
     if tile[1] > LOAD_MAX_COLS:
         raise ValueError(f"Load tile {name} {tile} has too many cols.")
+    if transpose and (tile[0] != child_shape[1] or tile[1] != child_shape[0]):
+        raise ValueError(
+            f"Load tile {name} must match the DPAS tile {child_shape} (transposed case)."
+        )
 
 
 def check_load_tile_a(
     tile: tuple[int, int],
     sg_tile: tuple[int, int],
     k_tile: int,
+    transpose: bool = False,
 ):
     data_shape = (sg_tile[0], k_tile)
     child_shape = DPAS.A_TILE
-    check_load_tile(tile, data_shape, child_shape, name="A")
+    check_load_tile(tile, data_shape, child_shape, name="A", transpose=transpose)
 
 
 def check_load_tile_b(
     tile: tuple[int, int],
     sg_tile: tuple[int, int],
     k_tile: int,
+    transpose: bool = False,
 ):
     data_shape = (k_tile, sg_tile[1])
     child_shape = DPAS.B_TILE
-    check_load_tile(tile, data_shape, child_shape, name="B")
+    check_load_tile(tile, data_shape, child_shape, name="B", transpose=transpose)
 
 
 def check_prefetch_tile(
@@ -107,9 +119,12 @@ def check_prefetch_tile(
     data_shape: tuple[int, int],
     gpu_specs: XeGPUSpecs,
     name: str = "A",
+    transpose: bool = False,
     min_nb_threads: int | None = None,
     verbose: bool = False,
 ) -> tuple[int, int]:
+    if transpose:
+        data_shape = data_shape[::-1]
     if tile[0] < PFETCH_MIN_ROWS:
         raise ValueError(
             f"Prefetch tile {name} {tile} has too few rows (min {PFETCH_MIN_ROWS})."
@@ -134,7 +149,8 @@ def check_prefetch_tile(
     cols = int(data_shape[1] / tile[1])
     nb_threads = int(rows * cols)
     if verbose:
-        print(f"=== Prefetch {name} ===")
+        print_header(f"Prefetch {name}", char="-", width=50)
+        print(f"data shape: {data_shape}, transpose: {transpose}")
         print(f"tile size {tile}, grid size ({rows}, {cols}), {nb_threads} threads")
     if nb_threads > gpu_specs.max_nb_threads:
         raise ValueError(
@@ -152,6 +168,7 @@ def check_prefetch_tile_a(
     wg_tile: tuple[int, int],
     k_tile: int,
     gpu_specs: XeGPUSpecs,
+    transpose: bool = False,
     min_nb_threads: int | None = None,
     verbose: bool = False,
 ) -> tuple[int, int]:
@@ -161,6 +178,7 @@ def check_prefetch_tile_a(
         data_shape,
         gpu_specs,
         name="A",
+        transpose=transpose,
         min_nb_threads=min_nb_threads,
         verbose=verbose,
     )
@@ -171,6 +189,7 @@ def check_prefetch_tile_b(
     wg_tile: tuple[int, int],
     k_tile: int,
     gpu_specs: XeGPUSpecs,
+    transpose: bool = False,
     min_nb_threads: int | None = None,
     verbose: bool = False,
 ) -> tuple[int, int]:
@@ -180,6 +199,7 @@ def check_prefetch_tile_b(
         data_shape,
         gpu_specs,
         name="B",
+        transpose=transpose,
         min_nb_threads=min_nb_threads,
         verbose=verbose,
     )
@@ -208,6 +228,8 @@ def check_constraints(
     prefetch_tile_b_k = params["prefetch_b_k"]
     prefetch_tile_b_n = params["prefetch_b_n"]
     k_tile = params["k_tile"]
+    transpose_a = params.get("transpose_a", False)
+    transpose_b = params.get("transpose_b", False)
 
     wg_tile = (wg_tile_m, wg_tile_n)
     sg_tile = (sg_tile_m, sg_tile_n)
@@ -220,13 +242,14 @@ def check_constraints(
         check_wg_tile(M, N, wg_tile)
         check_sg_tile(wg_tile, sg_tile, gpu_specs, min_nb_threads=MIN_NB_THREADS)
         check_k_tile(K, k_tile)
-        check_load_tile_a(load_tile_a, sg_tile, k_tile)
-        check_load_tile_b(load_tile_b, sg_tile, k_tile)
+        check_load_tile_a(load_tile_a, sg_tile, k_tile, transpose=transpose_a)
+        check_load_tile_b(load_tile_b, sg_tile, k_tile, transpose=transpose_b)
         check_prefetch_tile_a(
             prefetch_tile_a,
             wg_tile,
             k_tile,
             gpu_specs,
+            transpose=transpose_a,
             min_nb_threads=MIN_NB_THREADS,
             verbose=verbose,
         )
@@ -235,6 +258,7 @@ def check_constraints(
             wg_tile,
             k_tile,
             gpu_specs,
+            transpose=transpose_b,
             min_nb_threads=MIN_NB_THREADS,
             verbose=verbose,
         )
