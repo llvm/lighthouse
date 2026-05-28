@@ -21,15 +21,38 @@ level1_yaml_path = script_path / "level1.yaml"
 level2_yaml_path = script_path / "level2.yaml"
 
 
-def get_pipeline_file(name: str, dtype: str) -> Path:
+class TargetInfo:
+    """
+    Struct to hold target architecture and feature information.
+    Since this is used in a JIT context, we can safely assume the host
+    architecture is the target architecture if not specified.
+    """
+
+    def __init__(self, arch: str = None, feature: str = None):
+        if arch is not None:
+            self.arch = arch
+        else:
+            self.arch = platform.machine()
+        self.feature = feature
+
+
+def get_pipeline_file(name: str, dtype: str, target: TargetInfo) -> Path:
     """
     Returns the appropriate pipeline file for a given kernel.
     """
-    arch = platform.machine()
+    # If no name is provided, return the default pipeline.
+    if not name:
+        return kb_default_pipeline
 
-    # If the pipeline file exists for the given name and dtype
-    if name:
-        pipeline = script_path / f"schedules/{arch}/{name}/{dtype}.yaml"
+    # First check if there's a pipeline file specific to the target features.
+    if target.feature:
+        pipeline = script_path / f"schedules/{target.feature}/{name}/{dtype}.yaml"
+        if pipeline.exists():
+            return pipeline
+
+    # Second, check if there's a pipeline file specific to the target architecture.
+    if target.arch:
+        pipeline = script_path / f"schedules/{target.arch}/{name}/{dtype}.yaml"
         if pipeline.exists():
             return pipeline
 
@@ -56,8 +79,8 @@ def get_tests(args: argparse.Namespace) -> list[dict]:
 
     test_list = []
     for test in tests:
-        # If a specific test is specified, only include that test
-        if args.test and not test["kernel"].startswith(args.test):
+        # If a specific kernel is specified, only include that kernel
+        if args.kernel and not test["kernel"].startswith(args.kernel):
             continue
         # CI mode runs fewer tests for faster feedback
         if args.ci and len(test_list) >= 5:
@@ -81,7 +104,13 @@ def get_tests(args: argparse.Namespace) -> list[dict]:
                     "gflops": eval(test["gflops"])
                     if "gflops" in test and args.benchmark
                     else None,
-                    "pipeline": str(get_pipeline_file(test.get("pipeline", ""), dtype)),
+                    "pipeline": str(
+                        get_pipeline_file(
+                            test.get("pipeline", ""),
+                            dtype,
+                            TargetInfo(args.target, args.feature),
+                        )
+                    ),
                     "warning": test.get("warning", None),
                 }
             )
@@ -117,14 +146,14 @@ if __name__ == "__main__":
         help="Enable CI mode (faster run, fewer kernels). Incompatible with --smoke-test.",
     )
     Parser.add_argument(
-        "--torch-compile",
+        "--infer-shapes",
         action=argparse.BooleanOptionalAction,
-        help="Enable TorchScript compilation. Default is False.",
+        help="Enable shape inference mode. Default is to use values in YAML file.",
     )
     Parser.add_argument(
-        "--test",
+        "--kernel",
         type=str,
-        help="Specify a particular test to run.",
+        help="Specify a particular kernel to run.",
     )
     Parser.add_argument(
         "--print-mlir-after-all",
@@ -136,7 +165,17 @@ if __name__ == "__main__":
         action=argparse.BooleanOptionalAction,
         help="Runs every kernel with loops lowering to pipe clean.",
     )
-    args = Parser.parse_args()
+    Parser.add_argument(
+        "--target",
+        type=str,
+        help="Specify a particular target architecture (x86_64, arm64, etc.). Default is to auto-detect.",
+    )
+    Parser.add_argument(
+        "--feature",
+        type=str,
+        help="Specify a particular target feature (amx, avx512, etc.).",
+    )
+    args, unknown_args = Parser.parse_known_args()
     if args.smoke_test and args.ci:
         print("\nERROR: Smoke test and CI mode are incompatible.\n")
         Parser.print_help()
@@ -144,9 +183,9 @@ if __name__ == "__main__":
 
     tests = get_tests(args)
     if len(tests) == 0:
-        if args.test:
+        if args.kernel:
             print(
-                f"No tests found matching '{args.test}'. Please check your arguments."
+                f"No tests found matching '{args.kernel}'. Please check your arguments."
             )
         else:
             print("No tests to run. Please check your arguments.")
@@ -159,19 +198,18 @@ if __name__ == "__main__":
             str(kb_kernel),
             "--pipeline",
             test["pipeline"],
-            "--seed=42",
         ]
         # Benchmarks only if there's data to calculate FLOPS.
         benchmark = args.benchmark and test.get("gflops") is not None
         if benchmark:
             command_line += ["--benchmark"]
+        elif args.benchmark:
+            print(
+                f"WARNING: Benchmarking enabled but no GFLOPS data for kernel {test['kernel']}."
+                f" Skipping benchmark."
+            )
 
-        # We allow torch.compile to pick its own shapes (unless it's CI).
-        if args.torch_compile:
-            command_line += ["--torch-compile"]
-
-        # TODO: Implement auto-shapes for non-compile mode as well.
-        if args.ci or not args.torch_compile:
+        if not args.infer_shapes:
             command_line += [
                 "--input-shapes",
                 test["input_shapes"],
@@ -179,13 +217,13 @@ if __name__ == "__main__":
                 test["output_shape"],
             ]
 
-        # Smoke tests / CI don't print outputs.
-        if not args.smoke_test and not args.ci:
-            command_line += ["--print-output"]
-
         # For debugging, prefer not to capture output.
         if args.print_mlir_after_all:
             command_line += ["--print-mlir-after-all"]
+
+        # If any extra args are provided, add them to the command line.
+        if unknown_args:
+            command_line += unknown_args
 
         # Print out before we run the test.
         if test.get("warning"):

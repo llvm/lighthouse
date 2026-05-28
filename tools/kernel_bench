@@ -17,6 +17,11 @@ from lighthouse.schedule import convert_function_results
 from lighthouse import dialects as lh_dialects
 from lighthouse import ingress as lh_ingress
 from lighthouse.ingress.torch import cpu_backend
+from lighthouse.utils.mlir import get_mlir_library_path
+import os
+
+lib_dir = get_mlir_library_path()
+c_runner_lib = os.path.join(lib_dir, "libmlir_c_runner_utils.so")
 
 
 def import_torch(
@@ -143,7 +148,7 @@ def parse_inputs_and_outputs(
     return buffers, sample_tensors
 
 
-def torch_compile(args, buffers: list, sample_tensors: list):
+def torch_compile(args, model: torch.nn.Module, sample_tensors: list):
     """
     Compiles the model using torch.compile with a custom MLIR backend.
     """
@@ -168,7 +173,10 @@ def torch_compile(args, buffers: list, sample_tensors: list):
         )
     else:
         # Reconfigure the model to be compiled using torch.compile, take the compiled output.
-        model.compile(dynamic=False, backend=cpu_backend(compiler_pipeline))
+        model.compile(
+            dynamic=False,
+            backend=cpu_backend(compiler_pipeline, shared_libs=[c_runner_lib]),
+        )
         out = model(*sample_tensors, **sample_kwargs)
 
     return out
@@ -293,6 +301,12 @@ if __name__ == "__main__":
         help="Whether to run the benchmark. Default is False.",
     )
     Parser.add_argument(
+        "--validate",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Whether to run the validation. Default is True.",
+    )
+    Parser.add_argument(
         "--torch-compile",
         action=argparse.BooleanOptionalAction,
         help="Whether to use TorchScript compilation. Default is False.",
@@ -347,9 +361,10 @@ if __name__ == "__main__":
     model, sample_args, sample_kwargs = import_torch(
         args.kernel_bench_model, sample_args=sample_tensors
     )
-    out_ref = model(*sample_args, **sample_kwargs)
-    if args.print_output:
-        print(f"Reference output:\n{out_ref}")
+    if args.validate:
+        out_ref = model(*sample_args, **sample_kwargs)
+        if args.print_output:
+            print(f"Reference output:\n{out_ref}")
 
     # Now run the MLIR compiler on either imported or Dynamo plugin
     if sample_tensors is None:
@@ -361,17 +376,19 @@ if __name__ == "__main__":
 
     # Optionally print the output tensors after execution.
     if args.print_output:
-        print(f"MLIR Output:\n{out}")
+        print(f"Output:\n{out}")
 
     # Compare the outputs
-    match, tol = compare_outputs(
-        out_ref, out, tolerance=args.tolerance, max_tolerance=args.max_tolerance
-    )
-    if not match:
-        raise RuntimeError(
-            f"The output of the compiled model does't match the reference output.\n"
-            f"Tolerance requested: [{args.tolerance}, {args.max_tolerance}], got at or beyond: {tol}"
+    if args.validate:
+        match, tol = compare_outputs(
+            out_ref, out, tolerance=args.tolerance, max_tolerance=args.max_tolerance
         )
+        if not match:
+            raise RuntimeError(
+                f"The output of the compiled model does't match the reference output.\n"
+                f"Tolerance requested: [{args.tolerance}, {args.max_tolerance}],\n"
+                f"Got at or beyond: {tol}"
+            )
 
-    print("Success: The output of the compiled model matches the reference output.")
-    print(f"Tolerance: {tol}")
+        print("Success: The output of the compiled model matches the reference output.")
+        print(f"Tolerance: {tol}")
