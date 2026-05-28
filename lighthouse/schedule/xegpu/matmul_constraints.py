@@ -14,6 +14,7 @@ PFETCH_MIN_ROWS = 8
 PFETCH_MAX_ROWS = 32
 PFETCH_MIN_COLS = 16
 PFETCH_MAX_COLS = 32
+TRANSPOSE_LOAD = [16, 16]
 # heuristics: skip likely suboptimal configurations
 MIN_NB_THREADS = 16
 
@@ -86,9 +87,9 @@ def check_load_tile(
         raise ValueError(f"Load tile {name} {tile} has too many rows.")
     if tile[1] > LOAD_MAX_COLS:
         raise ValueError(f"Load tile {name} {tile} has too many cols.")
-    if transpose and (tile[0] != child_shape[1] or tile[1] != child_shape[0]):
+    if transpose and (tile[0] != TRANSPOSE_LOAD[1] or tile[1] != TRANSPOSE_LOAD[0]):
         raise ValueError(
-            f"Load tile {name} must match the DPAS tile {child_shape} (transposed case)."
+            f"If {name} is transposed, load tile must be {TRANSPOSE_LOAD}."
         )
 
 

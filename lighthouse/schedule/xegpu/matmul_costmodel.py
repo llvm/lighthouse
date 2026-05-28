@@ -22,6 +22,7 @@ from .matmul_constraints import (
     PFETCH_MIN_COLS,
     PFETCH_MAX_COLS,
     MIN_NB_THREADS,
+    TRANSPOSE_LOAD,
     print_header,
 )
 
@@ -156,8 +157,8 @@ def generate_configs(
                 transpose_b=transpose_b,
                 verbose=False,
             )
-            load_a_list = [DPAS.A_TILE]
-            load_b_list = [DPAS.B_TILE]
+            load_a_list = [DPAS.A_TILE if not transpose_a else TRANSPOSE_LOAD]
+            load_b_list = [DPAS.B_TILE if not transpose_b else TRANSPOSE_LOAD]
             for la, lb, pa, pb in product(
                 load_a_list, load_b_list, pf_a_list, pf_b_list
             ):
