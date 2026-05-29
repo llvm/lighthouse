@@ -270,6 +270,18 @@ def bundle_xegpu_mlp_schedule(
     ).result
     # fold memref.subviews into vector.transfer_read/write ops
     mod = apply_registered_pass(mod, "fold-memref-alias-ops")
+    # match payload function
+    wg_loops = match(mod, ops={"scf.forall"})
+    func = transform.get_parent_op(
+        anytype, wg_loops, op_name="func.func", deduplicate=True
+    )
+    # insert dealloc ops
+    func = apply_registered_pass(func, "buffer-deallocation-pipeline")
+    # convert to gpu.alloc and gpu.dealloc ops
+    alloc_ops = match(func, ops={"memref.alloc"})
+    transform_ext.replace(alloc_ops, "gpu.alloc")
+    alloc_ops = match(func, ops={"memref.dealloc"})
+    transform_ext.replace(alloc_ops, "gpu.dealloc")
     transform.apply_cse(mod)
     canonicalize(mod)
 
