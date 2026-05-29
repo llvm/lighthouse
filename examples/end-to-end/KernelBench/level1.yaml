@@ -44,11 +44,11 @@
   pipeline: matmul
 
 - kernel: level1/7_Matmul_with_small_K_dimension_.py
-  input_shapes: [32768x64, 64x32768]
+  input_shapes: [4096x64, 64x4096]
   initializations: [rnd, rnd]
-  output_shape: 32768x32768
+  output_shape: 4096x4096
   dtypes: [f32, bf16]
-  gflops: (32768 * 64 * 32768 * 2) / 1e9
+  gflops: (4096 * 64 * 4096 * 2) / 1e9
   pipeline: matmul
 
 - kernel: level1/8_Matmul_with_irregular_shapes_.py
@@ -136,102 +136,102 @@
   pipeline: matmul
 
 - kernel: level1/19_ReLU.py
-  input_shapes: [4096x393216]
+  input_shapes: [4096x8192]
   initializations: [rnd]
-  output_shape: 4096x393216
+  output_shape: 4096x8192
   dtypes: [f32, bf16]
-  gflops: (4096 * 393216) / 1e9
+  gflops: (4096 * 8192) / 1e9
 
 - kernel: level1/20_LeakyReLU.py
-  input_shapes: [4096x393216]
+  input_shapes: [4096x8192]
   initializations: [rnd]
-  output_shape: 4096x393216
+  output_shape: 4096x8192
   dtypes: [f32, bf16]
-  gflops: (4096 * 393216) / 1e9
+  gflops: (4096 * 8192) / 1e9
 
 - kernel: level1/21_Sigmoid.py
-  input_shapes: [4096x393216]
+  input_shapes: [4096x8192]
   initializations: [rnd]
-  output_shape: 4096x393216
+  output_shape: 4096x8192
   dtypes: [f32, bf16]
-  gflops: (4096 * 393216) / 1e9
+  gflops: (4096 * 8192) / 1e9
 
 - kernel: level1/22_Tanh.py
-  input_shapes: [4096x393216]
+  input_shapes: [4096x8192]
   initializations: [rnd]
-  output_shape: 4096x393216
+  output_shape: 4096x8192
   dtypes: [f32, bf16]
-  gflops: (4096 * 393216) / 1e9
+  gflops: (4096 * 8192) / 1e9
 
 - kernel: level1/23_Softmax.py
-  input_shapes: [4096x393216]
+  input_shapes: [4096x8192]
   initializations: [rnd]
-  output_shape: 4096x393216
+  output_shape: 4096x8192
   dtypes: [f32, bf16]
-  gflops: (4096 * 393216) / 1e9
+  gflops: (4096 * 8192) / 1e9
 
 - kernel: level1/24_LogSoftmax.py
-  input_shapes: [4096x393216]
+  input_shapes: [4096x8192]
   initializations: [rnd]
-  output_shape: 4096x393216
+  output_shape: 4096x8192
   dtypes: [f32, bf16]
-  gflops: (4096 * 393216) / 1e9
+  gflops: (4096 * 8192) / 1e9
 
 - kernel: level1/25_Swish.py
-  input_shapes: [4096x393216]
+  input_shapes: [4096x8192]
   initializations: [rnd]
-  output_shape: 4096x393216
+  output_shape: 4096x8192
   dtypes: [f32, bf16]
-  gflops: (4096 * 393216) / 1e9
+  gflops: (4096 * 8192) / 1e9
 
 - kernel: level1/26_GELU_.py
-  input_shapes: [4096x393216]
+  input_shapes: [4096x8192]
   initializations: [rnd]
-  output_shape: 4096x393216
+  output_shape: 4096x8192
   dtypes: [f32, bf16]
-  gflops: (4096 * 393216) / 1e9
+  gflops: (4096 * 8192) / 1e9
 
 - kernel: level1/27_SELU_.py
-  input_shapes: [4096x393216]
+  input_shapes: [4096x8192]
   initializations: [rnd]
-  output_shape: 4096x393216
+  output_shape: 4096x8192
   dtypes: [f32, bf16]
-  gflops: (4096 * 393216) / 1e9
+  gflops: (4096 * 8192) / 1e9
 
 - kernel: level1/28_HardSigmoid.py
-  input_shapes: [4096x393216]
+  input_shapes: [4096x8192]
   initializations: [rnd]
-  output_shape: 4096x393216
+  output_shape: 4096x8192
   dtypes: [f32, bf16]
-  gflops: (4096 * 393216) / 1e9
+  gflops: (4096 * 8192) / 1e9
 
 - kernel: level1/29_Softplus.py
-  input_shapes: [4096x393216]
+  input_shapes: [4096x8192]
   initializations: [rnd]
-  output_shape: 4096x393216
+  output_shape: 4096x8192
   dtypes: [f32, bf16]
-  gflops: (4096 * 393216) / 1e9
+  gflops: (4096 * 8192) / 1e9
 
 - kernel: level1/30_Softsign.py
-  input_shapes: [4096x393216]
+  input_shapes: [4096x8192]
   initializations: [rnd]
-  output_shape: 4096x393216
+  output_shape: 4096x8192
   dtypes: [f32, bf16]
-  gflops: (4096 * 393216) / 1e9
+  gflops: (4096 * 8192) / 1e9
 
 - kernel: level1/31_ELU.py
-  input_shapes: [4096x393216]
+  input_shapes: [4096x8192]
   initializations: [rnd]
-  output_shape: 4096x393216
+  output_shape: 4096x8192
   dtypes: [f32, bf16]
-  gflops: (4096 * 393216) / 1e9
+  gflops: (4096 * 8192) / 1e9
 
 - kernel: level1/32_HardTanh.py
-  input_shapes: [4096x393216]
+  input_shapes: [4096x8192]
   initializations: [rnd]
-  output_shape: 4096x393216
+  output_shape: 4096x8192
   dtypes: [f32, bf16]
-  gflops: (4096 * 393216) / 1e9
+  gflops: (4096 * 8192) / 1e9
 
 - kernel: level1/33_BatchNorm.py
   input_shapes: [64x64x32x32]
@@ -241,47 +241,47 @@
   gflops: (64 * 64 * 32 * 32) / 1e9
 
 - kernel: level1/34_InstanceNorm.py
-  input_shapes: [112x64x512x512]
+  input_shapes: [12x64x512x512]
   initializations: [rnd]
-  output_shape: 112x64x512x512
+  output_shape: 12x64x512x512
   dtypes: [f32, bf16]
-  gflops: (112 * 64 * 512 * 512) / 1e9
+  gflops: (12 * 64 * 512 * 512) / 1e9
   warning: "LLVM ERROR: SmallVector unable to grow (93TB! > 4GB)"
 
 - kernel: level1/35_GroupNorm_.py
-  input_shapes: [112x64x512x512]
+  input_shapes: [12x64x512x512]
   initializations: [rnd]
-  output_shape: 112x64x512x512
+  output_shape: 12x64x512x512
   dtypes: [f32, bf16]
-  gflops: (112 * 64 * 512 * 512) / 1e9
+  gflops: (12 * 64 * 512 * 512) / 1e9
 
 - kernel: level1/36_RMSNorm_.py
-  input_shapes: [112x64x512x512]
+  input_shapes: [12x64x512x512]
   initializations: [rnd]
-  output_shape: 112x64x512x512
+  output_shape: 12x64x512x512
   dtypes: [f32, bf16]
-  gflops: (112 * 64 * 512 * 512) / 1e9
+  gflops: (12 * 64 * 512 * 512) / 1e9
 
 - kernel: level1/37_FrobeniusNorm_.py
-  input_shapes: [112x64x512x512]
+  input_shapes: [12x64x512x512]
   initializations: [rnd]
-  output_shape: 112x64x512x512
+  output_shape: 12x64x512x512
   dtypes: [f32, bf16]
-  gflops: (112 * 64 * 512 * 512) / 1e9
+  gflops: (12 * 64 * 512 * 512) / 1e9
 
 - kernel: level1/38_L1Norm_.py
-  input_shapes: [32768x65535]
+  input_shapes: [8192x8191]
   initializations: [rnd]
-  output_shape: 32768x65535
+  output_shape: 8192x8191
   dtypes: [f32, bf16]
-  gflops: (32768 * 65535) / 1e9
+  gflops: (8192 * 8191) / 1e9
 
 - kernel: level1/39_L2Norm_.py
-  input_shapes: [32768x65535]
+  input_shapes: [8192x8191]
   initializations: [rnd]
-  output_shape: 32768x65535
+  output_shape: 8192x8191
   dtypes: [f32, bf16]
-  gflops: (32768 * 65535) / 1e9
+  gflops: (8192 * 8191) / 1e9
 
 - kernel: level1/40_LayerNorm.py
   input_shapes: [16x64x256x256]
@@ -319,11 +319,11 @@
   gflops: (64 * 128 * 65537) / 1e9
 
 - kernel: level1/45_Average_Pooling_2D.py
-  input_shapes: [16x64x2048x2048]
+  input_shapes: [16x64x512x512]
   initializations: [rnd]
-  output_shape: 16x64x186x186
+  output_shape: 16x64x46x46
   dtypes: [f32, bf16]
-  gflops: (16 * 64 * 186 * 186) / 1e9
+  gflops: (16 * 64 * 512 * 512) / 1e9
 
 - kernel: level1/46_Average_Pooling_3D.py
   input_shapes: [16x32x128x128x256]
@@ -333,25 +333,25 @@
   gflops: (16 * 32 * 64 * 64 * 128) / 1e9
 
 - kernel: level1/47_Sum_reduction_over_a_dimension.py
-  input_shapes: [128x4096x4095]
+  input_shapes: [128x512x4095]
   initializations: [rnd]
   output_shape: 128x1x4095
   dtypes: [f32, bf16]
-  gflops: (128 * 4096 * 4095) / 1e9
+  gflops: (128 * 512 * 4095) / 1e9
 
 - kernel: level1/48_Mean_reduction_over_a_dimension.py
-  input_shapes: [128x4096x4095]
+  input_shapes: [128x512x4095]
   initializations: [rnd]
   output_shape: 128x4095
   dtypes: [f32, bf16]
-  gflops: (128 * 4096 * 4095) / 1e9
+  gflops: (128 * 512 * 4095) / 1e9
 
 - kernel: level1/49_Max_reduction_over_a_dimension.py
-  input_shapes: [128x4096x4095]
+  input_shapes: [128x512x4095]
   initializations: [rnd]
   output_shape: 128x4095
   dtypes: [f32, bf16]
-  gflops: (128 * 4096 * 4095) / 1e9
+  gflops: (128 * 512 * 4095) / 1e9
 
 - kernel: level1/50_conv_standard_2D__square_input__square_kernel.py
   input_shapes: [256x3x224x224]
@@ -360,25 +360,25 @@
   dtypes: [f32, bf16]
 
 - kernel: level1/51_Argmax_over_a_dimension.py
-  input_shapes: [128x4096x4095]
+  input_shapes: [128x512x4095]
   initializations: [rnd]
   output_shape: 128x4095
   dtypes: [f32, bf16]
-  gflops: (128 * 4096 * 4095) / 1e9
+  gflops: (128 * 512 * 4095) / 1e9
 
 - kernel: level1/52_Argmin_over_a_dimension.py
-  input_shapes: [128x4096x4095]
+  input_shapes: [128x512x4095]
   initializations: [rnd]
   output_shape: 128x4095
   dtypes: [f32, bf16]
-  gflops: (128 * 4096 * 4095) / 1e9
+  gflops: (128 * 512 * 4095) / 1e9
 
 - kernel: level1/53_Min_reduction_over_a_dimension.py
-  input_shapes: [128x4096x4095]
+  input_shapes: [128x512x4095]
   initializations: [rnd]
   output_shape: 128x4095
   dtypes: [f32, bf16]
-  gflops: (128 * 4096 * 4095) / 1e9
+  gflops: (128 * 512 * 4095) / 1e9
 
 - kernel: level1/54_conv_standard_3D__square_input__square_kernel.py
   input_shapes: [16x3x64x64x64]
@@ -513,9 +513,9 @@
   dtypes: [f32, bf16]
 
 - kernel: level1/76_conv_standard_1D_dilated_strided__.py
-  input_shapes: [64x64x524280]
+  input_shapes: [64x64x3072]
   initializations: [rnd]
-  output_shape: 64x128x174758
+  output_shape: 64x128x1022
   dtypes: [f32, bf16]
 
 - kernel: level1/77_conv_transposed_3D_square_input_square_kernel___padded____dilated____strided__.py
