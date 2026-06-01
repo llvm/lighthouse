@@ -119,7 +119,7 @@ def define_compiler_pipeline(
     return driver
 
 
-def parse_inputs_and_outputs(
+def parse_module_arguments(
     input_shapes_str: str, output_shape_str: str, init_args_str: str
 ) -> tuple[list, list, tuple]:
     """
@@ -363,7 +363,7 @@ if __name__ == "__main__":
         )
 
     # Initialize the device data
-    buffers, sample_tensors, init_args = parse_inputs_and_outputs(
+    buffers, sample_tensors, init_args = parse_module_arguments(
         args.input_shapes, args.output_shape, args.init_args
     )
 
