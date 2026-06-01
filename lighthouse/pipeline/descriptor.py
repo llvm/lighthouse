@@ -2,6 +2,8 @@ import yaml
 import os
 import re
 
+from lighthouse.utils.types import string_to_type
+
 
 class Descriptor:
     """
@@ -133,33 +135,6 @@ class Descriptor:
         )
 
     @staticmethod
-    def _string_to_type(value: str) -> str | int | float | bool | list:
-        value = str(value)
-        if value == "True":
-            return True
-        elif value == "False":
-            return False
-        try:
-            return int(value)
-        except ValueError:
-            try:
-                return float(value)
-            except ValueError:
-                # List of values, e.g. [val1,val2,...]
-                if value.startswith("[") and value.endswith("]"):
-                    list_str = value[1:-1]
-                # List of values, e.g. val1,val2,...
-                elif value.find(",") != -1:
-                    list_str = value
-                else:
-                    # Something else entirely, return as string
-                    return value
-                # Recursesively parse the list elements
-                return [
-                    Descriptor._string_to_type(v.strip()) for v in list_str.split(",")
-                ]
-
-    @staticmethod
     def _parse_csv(line: str, separator: str = ",") -> dict:
         line = str(line)
         result = {}
@@ -169,7 +144,7 @@ class Descriptor:
                 continue
             if "=" in arg:
                 key, value = arg.split("=")
-                result[key] = Descriptor._string_to_type(value)
+                result[key] = string_to_type(value)
             else:
                 result[arg] = True
         return result
