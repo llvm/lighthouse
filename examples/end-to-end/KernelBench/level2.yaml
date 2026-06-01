@@ -195,9 +195,10 @@
   dtypes: [f32, bf16]
 
 - kernel: level2/33_Gemm_Scale_BatchNorm.py
-  input_shapes: [8x8192]
+  input_shapes: [8x1024]
   initializations: [rnd]
-  output_shape: 8x8192
+  output_shape: 8x1024
+  init_args: (1024,1024,1024)
   dtypes: [f32, bf16]
 
 - kernel: level2/34_ConvTranspose3d_LayerNorm_GELU_Scaling.py

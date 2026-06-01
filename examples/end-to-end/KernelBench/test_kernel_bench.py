@@ -101,6 +101,7 @@ def get_tests(args: argparse.Namespace) -> list[dict]:
                         )
                     ),
                     "output_shape": f"{test['output_shape']}x{dtype}x0",
+                    "init_args": test.get("init_args", "None"),
                     "gflops": eval(test["gflops"])
                     if "gflops" in test and args.benchmark
                     else None,
@@ -215,6 +216,8 @@ if __name__ == "__main__":
                 test["input_shapes"],
                 "--output-shape",
                 test["output_shape"],
+                "--init-args",
+                test["init_args"],
             ]
 
         # For debugging, prefer not to capture output.

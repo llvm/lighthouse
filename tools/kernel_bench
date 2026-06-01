@@ -20,6 +20,8 @@ from lighthouse.ingress.torch import cpu_backend
 from lighthouse.utils.mlir import get_mlir_library_path
 import os
 
+from lighthouse.utils.types import string_to_type
+
 lib_dir = get_mlir_library_path()
 c_runner_lib = os.path.join(lib_dir, "libmlir_c_runner_utils.so")
 
@@ -118,14 +120,14 @@ def define_compiler_pipeline(
 
 
 def parse_inputs_and_outputs(
-    input_shapes_str: str, output_shape_str: str
-) -> tuple[list, list]:
+    input_shapes_str: str, output_shape_str: str, init_args_str: str
+) -> tuple[list, list, tuple]:
     """
     Parses the input and output shape strings to create sample tensors for the inputs and outputs.
     """
     # Empty buffers shortcut (either both or none, ignore either)
     if input_shapes_str is None or output_shape_str is None:
-        return None, None
+        return None, None, None
 
     # Parse input shapes first, to create sample tensors for the inputs only
     buffers = [arg.arg for arg in KernelArgumentParser.parse_all(input_shapes_str)]
@@ -142,10 +144,11 @@ def parse_inputs_and_outputs(
         else torch.from_numpy(buf)
         for buf in buffers
     ]
+    init_args = string_to_type(init_args_str)
 
     # Now include the output shape in the buffers
     buffers = [KernelArgumentParser.parse(output_shape_str).arg, *buffers]
-    return buffers, sample_tensors
+    return buffers, sample_tensors, init_args
 
 
 def torch_compile(args, model: torch.nn.Module, sample_tensors: list):
@@ -255,15 +258,22 @@ if __name__ == "__main__":
     )
     Parser.add_argument(
         "--input-shapes",
+        type=str,
         help="Shape of the input tensors in format: \
               DIMS(MxNx...)xTYPE(f16/f32/f64/bf16/i8)xINIT(0/1/rnd/id). \
               For multiple inputs, separate by comma.",
     )
     Parser.add_argument(
         "--output-shape",
+        type=str,
         help="Shape of the output tensor in format: \
               DIMS(MxNx...)xTYPE(f16/f32/f64/bf16/i8)xINIT(0/1/rnd/id). \
               Single output shape supported.",
+    )
+    Parser.add_argument(
+        "--init-args",
+        type=str,
+        help="Comma-separated list of arguments to initialize the model.",
     )
     Parser.add_argument(
         "--seed",
@@ -353,13 +363,13 @@ if __name__ == "__main__":
         )
 
     # Initialize the device data
-    buffers, sample_tensors = parse_inputs_and_outputs(
-        args.input_shapes, args.output_shape
+    buffers, sample_tensors, init_args = parse_inputs_and_outputs(
+        args.input_shapes, args.output_shape, args.init_args
     )
 
     # First, import the model and run the reference numbers
     model, sample_args, sample_kwargs = import_torch(
-        args.kernel_bench_model, sample_args=sample_tensors
+        args.kernel_bench_model, sample_args=sample_tensors, model_init_args=init_args
     )
     if args.validate:
         out_ref = model(*sample_args, **sample_kwargs)
