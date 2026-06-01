@@ -14,7 +14,7 @@ There are three core components of this example:
 Example:
 ```bash
 # Runs kernel 2 from level 1 and compares the output with PyTorch eager for correctness
-$ uv run examples/end-to-end/KernelBench/test_kernel_bench.py --kernel level1/2_
+$ uv run examples/end-to-end/KernelBench/test-kernel-bench.py --kernel level1/2_
 
 STDOUT:
 Executing the module...
@@ -148,7 +148,7 @@ This also reduces your work downstream while you're working, minimizing rebase w
 
 Runs all registered kernels with the default schedule (lower-to-loops) on `Torch Compile` mode:
 ```bash
-$ uv run examples/end-to-end/KernelBench/test_kernel_bench.py --smoke-test --torch-compile
+$ uv run examples/end-to-end/KernelBench/test-kernel-bench.py --smoke-test --torch-compile
 ```
 _Note: This takes a loooong time..._
 
@@ -178,9 +178,9 @@ _Note: This will show the `kernel-bench` command line, verify the correctness of
 
 To compare the MLIR generated between Import and Compile modes, call both with the `-print-original-module` argument:
 ```bash
-$ uv run examples/end-to-end/KernelBench/test_kernel_bench.py --kernel level2/11_ --print-original-module > import.mlir
+$ uv run examples/end-to-end/KernelBench/test-kernel-bench.py --kernel level2/11_ --print-original-module > import.mlir
 
-$ uv run examples/end-to-end/KernelBench/test_kernel_bench.py --kernel level2/11_ --print-original-module --torch-compile > compile.mlir
+$ uv run examples/end-to-end/KernelBench/test-kernel-bench.py --kernel level2/11_ --print-original-module --torch-compile > compile.mlir
 ```
 _Note: there will be some verbosity in the text file, before and after the MLIR module._
 
