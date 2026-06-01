@@ -169,11 +169,6 @@ def import_model(
     nn_model: nn.Module = model(*model_init_args, **model_init_kwargs)
     if model_datatype is not None:
         nn_model = nn_model.to(model_datatype)
-        if sample_args is not None:
-            sample_args = [
-                arg.to(model_datatype) if isinstance(arg, torch.Tensor) else arg
-                for arg in sample_args
-            ]
     if state_path is not None:
         state_dict = torch.load(state_path)
         nn_model.load_state_dict(state_dict)
