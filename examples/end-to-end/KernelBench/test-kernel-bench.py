@@ -14,8 +14,8 @@ import yaml
 
 script_path = Path(__file__).parent
 project_root = script_path.parent.parent.parent
-kb_program = project_root / "tools" / "kernel_bench"
-kb_default_pipeline = kb_program.parent / "kernel_bench.yaml"
+kb_program = project_root / "tools" / "kernel-bench"
+kb_default_pipeline = kb_program.parent / "kernel-bench.yaml"
 kb_path = project_root / "third_party" / "KernelBench" / "KernelBench"
 level1_yaml_path = script_path / "level1.yaml"
 level2_yaml_path = script_path / "level2.yaml"
