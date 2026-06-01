@@ -1,5 +1,3 @@
-from collections import namedtuple
-
 from mlir import ir
 from mlir.dialects.transform import loop
 from mlir.dialects.transform import bufferization
@@ -21,22 +19,20 @@ from lighthouse.schedule import schedule_boilerplate
 from lighthouse.dialects import smt_ext
 from lighthouse.dialects.transform import smt_ext as td_smt_ext
 from lighthouse.dialects.transform.tune_ext import knob, KnobValue
-
-# hardware constraints
-DPAS = namedtuple("DPAS", ["M", "N", "K", "A_TILE", "B_TILE", "C_TILE"])(
-    8, 16, 16, (8, 16), (16, 16), (8, 16)
+from .xegpu_specs import XeGPUSpecs
+from .xegpu_parameter_selector import XeGPUParameterSelector
+from .matmul_constraints import (
+    DPAS,
+    PREFETCH_INST_DATA,
+    NB_WORKITEMS,
+    LOAD_MAX_ROWS,
+    LOAD_MAX_COLS,
+    PFETCH_MIN_ROWS,
+    PFETCH_MIN_COLS,
+    PFETCH_MAX_ROWS,
+    PFETCH_MAX_COLS,
+    MIN_NB_THREADS,
 )
-PREFETCH_INST_DATA = [8, 16]
-NB_WORKITEMS = 16  # workitems in subgroup
-LOAD_MAX_ROWS = 32
-LOAD_MAX_COLS = 32
-PFETCH_MIN_ROWS = 8
-PFETCH_MAX_ROWS = 32
-PFETCH_MIN_COLS = 16
-PFETCH_MAX_COLS = 32
-MAX_NB_SG_THREADS = 32  # 32 for large register file, 16 otherwise
-# heuristics: skip likely suboptimal configurations
-MIN_NB_THREADS = 16
 
 
 @KnobValue.ast_rewrite(in_exprs=True)
@@ -114,6 +110,12 @@ def mlp_schedule(
 ) -> ir.Module:
     """Generate transform schedule module for MLP payload."""
     assert params is not None and len(params) > 0, "params must be provided."
+    devices = {p.get("device") for p in params if "device" in p}
+    assert len(devices) <= 1, f"Multiple devices specified in params list: {devices}"
+    device = devices.pop() if devices else None
+    param_selector = XeGPUParameterSelector(device=device)
+    gpu_specs = param_selector.gpu_specs
+
     with schedule_boilerplate() as (schedule, named_seq):
         # match the payload module
         anytype = transform.AnyOpType.get()
@@ -124,7 +126,39 @@ def mlp_schedule(
             op_name="builtin.module",
             deduplicate=True,
         )
+        # preprocess layer parameters
         for i, layer_params in enumerate(params):
+            m = layer_params.get("m")
+            n = layer_params.get("n")
+            k = layer_params.get("k")
+            assert all(d is not None for d in (m, n, k)), (
+                "m, n, k must be provided in params"
+            )
+
+            required_params = [
+                "wg_m",
+                "wg_n",
+                "sg_m",
+                "sg_n",
+                "k_tile",
+                "load_a_m",
+                "load_a_k",
+                "load_b_k",
+                "load_b_n",
+                "prefetch_a_m",
+                "prefetch_a_k",
+                "prefetch_b_k",
+                "prefetch_b_n",
+                "prefetch_a_nb",
+                "prefetch_b_nb",
+            ]
+            if not all(p in layer_params for p in required_params):
+                # Some parameters are missing, use the parameter selector to fill
+                # NOTE None values are interpreted as knobs in the constraint function
+                generated_params = param_selector.get_parameters(m, n, k)
+                # Overwrite original params to ensure consistent configuration
+                layer_params.update(generated_params)
+
             layer_params |= params_with_constraints_imposed(
                 layer_params, knob_name_prefix=f"layer_{i}_"
             )
@@ -132,6 +166,7 @@ def mlp_schedule(
         try:
             bundle_xegpu_mlp_schedule(
                 payload_mod,
+                gpu_specs=gpu_specs,
                 params=params,
                 stop_at_stage=stop_at_stage,
             )
@@ -145,6 +180,7 @@ def mlp_schedule(
 
 def bundle_xegpu_mlp_schedule(
     mod: ir.Value[transform.AnyOpType],
+    gpu_specs: XeGPUSpecs,
     params: list[dict[str, int | KnobValue]],
     stop_at_stage: str = "",
 ) -> ir.Value[transform.AnyOpType]:
@@ -262,7 +298,9 @@ def bundle_xegpu_mlp_schedule(
             sg_m_threads = WG_M // SG_M
             sg_n_threads = WG_N // SG_N
             sg_threads = sg_m_threads * sg_n_threads
-            smt_ext.assert_(sg_threads <= MAX_NB_SG_THREADS, "too many SG threads")
+            smt_ext.assert_(
+                sg_threads <= gpu_specs.max_nb_threads, "too many SG threads"
+            )
             smt_ext.assert_(sg_threads >= MIN_NB_THREADS, "too few SG threads")
 
             # number of threads collapsed to 1d layout
@@ -303,7 +341,7 @@ def bundle_xegpu_mlp_schedule(
     )
     for gpu_mod, layer_params in zip(gpu_mod_ops, params):
         gpu_func = match(gpu_mod, ops={"gpu.func"})
-        xegpu_wg_annotation_for_mlp_layer(gpu_func, **layer_params)
+        xegpu_wg_annotation_for_mlp_layer(gpu_func, gpu_specs=gpu_specs, **layer_params)
 
     if stop_at_stage == "xegpu-wg":
         raise PipelineInterrupt()
@@ -313,6 +351,7 @@ def bundle_xegpu_mlp_schedule(
 
 def xegpu_wg_annotation_for_mlp_layer(
     gpu_func: ir.Value,
+    gpu_specs: XeGPUSpecs,
     *,
     wg_m: int | KnobValue,
     wg_n: int | KnobValue,
@@ -418,14 +457,14 @@ def xegpu_wg_annotation_for_mlp_layer(
         prefetch_th_a_m = WG_M // PFA_M
         prefetch_th_a_k = K_TILE // PFA_K
         prefetch_th_a = prefetch_th_a_m * prefetch_th_a_k
-        smt_ext.assert_(prefetch_th_a <= MAX_NB_SG_THREADS)
+        smt_ext.assert_(prefetch_th_a <= gpu_specs.max_nb_threads)
         smt_ext.assert_(prefetch_th_a_m * prefetch_th_a_k >= MIN_NB_THREADS)
 
         # prefetch B thread layout
         prefetch_th_b_k = K_TILE // PFB_K
         prefetch_th_b_n = WG_N // PFB_N
         prefetch_th_b = prefetch_th_b_k * prefetch_th_b_n
-        smt_ext.assert_(prefetch_th_b <= MAX_NB_SG_THREADS)
+        smt_ext.assert_(prefetch_th_b <= gpu_specs.max_nb_threads)
         if isinstance(prefetch_th_b, smt_ext.SMTIntValue):
             # NB: Constraint only enabled during tuning.
             smt_ext.assert_(prefetch_th_b_k * prefetch_th_b_n >= MIN_NB_THREADS)

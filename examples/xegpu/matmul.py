@@ -1,3 +1,4 @@
+# RUN: %PYTHON %s --sizes 512 1024 128 --dump-kernel=xegpu-wg | FileCheck %s
 # RUN: %PYTHON %s --dump-kernel=xegpu-wg | FileCheck %s
 # RUN: %PYTHON %s --dump-kernel=xegpu-wg --bias | FileCheck %s
 # RUN: %PYTHON %s --dump-kernel=xegpu-wg --relu | FileCheck %s
@@ -29,7 +30,6 @@ from lighthouse.execution import (
 from lighthouse.schedule.xegpu import mlp_schedule, xegpu_to_binary
 from lighthouse.utils.numpy import mlir_to_numpy_dtype
 from lighthouse.ingress.mlir_gen import generate_gpu_matmul_payload, get_mlir_elem_type
-from lighthouse.schedule.xegpu import xegpu_parameter_selector
 
 
 def matmul_complexity(
@@ -346,6 +346,11 @@ def parse_cli_args(description):
         help="Read problem sizes and tile parameters from a JSON file.",
     )
     parser.add_argument(
+        "--target",
+        choices=["B70", "B50"],
+        help="Target GPU device, e.g., B70.",
+    )
+    parser.add_argument(
         "--verbose",
         "-v",
         action="count",
@@ -370,31 +375,15 @@ enabled via CLI arguments.
 
     # Problem size
     m, n, k = args.sizes if args.sizes else (4096, 4096, 4096)
-    # Get default parameters from the database
-    try:
-        params = xegpu_parameter_selector.get_matmul_parameters(m, n, k)
-    except ValueError:
-        # Initialize with a stub and assume the rest will be populated
-        params = {
-            "m": m,
-            "n": n,
-            "k": k,
-            "wg_m": None,
-            "wg_n": None,
-            "sg_m": None,
-            "sg_n": None,
-            "k_tile": None,
-            "load_a_m": None,
-            "load_a_k": None,
-            "load_b_k": None,
-            "load_b_n": None,
-            "prefetch_a_m": None,
-            "prefetch_a_k": None,
-            "prefetch_b_k": None,
-            "prefetch_b_n": None,
-            "prefetch_a_nb": None,
-            "prefetch_b_nb": None,
-        }
+    # Set required parameters
+    params = {
+        "m": m,
+        "n": n,
+        "k": k,
+    }
+    if args.target:
+        params["device"] = args.target
+
     if args.json:
         # Override parameters with values from JSON file if provided
         with open(args.json, "r") as f:
