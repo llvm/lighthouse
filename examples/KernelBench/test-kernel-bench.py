@@ -13,7 +13,7 @@ from pathlib import Path
 import yaml
 
 script_path = Path(__file__).parent
-project_root = script_path.parent.parent.parent
+project_root = script_path.parent.parent
 kb_program = project_root / "tools" / "kernel-bench"
 kb_default_pipeline = kb_program.parent / "kernel-bench.yaml"
 kb_path = project_root / "third_party" / "KernelBench" / "KernelBench"
