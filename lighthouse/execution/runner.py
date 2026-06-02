@@ -219,13 +219,11 @@ class Runner:
         Returns:
             Name of the dumped file.
         """
-        if file_name:
-            self.engine.dump_to_object_file(file_name)
-            return file_name
-
-        with tempfile.NamedTemporaryFile(suffix=".o", delete=False) as tmp:
-            self.engine.dump_to_object_file(tmp.name)
-            return tmp.name
+        if not file_name:
+            with tempfile.NamedTemporaryFile(suffix=".o", delete=False) as tmp:
+                file_name = tmp.name
+        self.engine.dump_to_object_file(file_name)
+        return file_name
 
     @staticmethod
     def get_bench_wrapper_schedule(payload_func: str) -> ir.Module:
