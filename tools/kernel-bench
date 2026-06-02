@@ -256,7 +256,7 @@ def compare_outputs(out_ref, out, tolerance, max_tolerance):
     return False, max_tol
 
 
-def get_data_type(dtype_str: str):
+def get_torch_data_type(dtype_str: str):
     if dtype_str == "f32":
         return torch.float32
     elif dtype_str == "bf16":
@@ -297,6 +297,7 @@ if __name__ == "__main__":
         "--dtype",
         type=str,
         default="f32",
+        choices=["f32", "bf16"],
         help="Data type. Default f32.",
     )
     Parser.add_argument(
@@ -388,7 +389,7 @@ if __name__ == "__main__":
         )
 
     # Validate data type argument
-    dtype = get_data_type(args.dtype)
+    dtype = get_torch_data_type(args.dtype)
 
     # Initialize the device data
     buffers, sample_tensors, init_args = parse_module_arguments(
