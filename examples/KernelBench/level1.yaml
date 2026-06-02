@@ -13,10 +13,11 @@
   pipeline: matmul
 
 - kernel: level1/3_Batched_matrix_multiplication.py
-  input_shapes: [4x64x32, 4x32x64]
+  input_shapes: [128x64x32, 128x32x64]
   initializations: [rnd, rnd]
-  output_shape: 4x64x64
-  gflops: (4 * 64 * 32 * 64 * 2) / 1e9
+  output_shape: 128x64x64
+  gflops: (128 * 64 * 32 * 64 * 2) / 1e9
+  pipeline: batch_matmul
 
 - kernel: level1/4_Matrix_vector_multiplication_.py
   input_shapes: [1024x1024, 1024x1]
