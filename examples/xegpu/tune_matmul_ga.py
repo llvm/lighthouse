@@ -10,6 +10,7 @@ import random
 from matmul import cli_parser
 from tune_matmul_gridsearch import construct_search_space, run_experiment
 from tune_utils import dump_configs_json, execute_and_log
+from lighthouse.schedule.xegpu import XeGPUSpecs
 
 from genetic_algorithm import (
     init_random_population,
@@ -30,6 +31,7 @@ def optimize_kernel(
     ngenerations: int = 30,
     mutation_rate: float = 0.001,
     dump_json: int = 0,
+    target: str = "B70",
     random_seed: Optional[int] = None,
 ):
     if random_seed is not None:
@@ -46,7 +48,9 @@ def optimize_kernel(
     # disable IGC compiler cache
     os.environ["NEO_CACHE_PERSISTENT"] = "0"
 
-    var_set, sample_to_dict = construct_search_space(*sizes)
+    gpu_specs = XeGPUSpecs.get(target)
+
+    var_set, sample_to_dict = construct_search_space(*sizes, gpu_specs=gpu_specs)
     print(f"Matmul problem size: {sizes}")
     print(f"{ab_type=}")
     print(f"{c_type=}")
@@ -129,6 +133,12 @@ if __name__ == "__main__":
         help="Mutation rate for the genetic algorithm.",
     )
     parser.add_argument(
+        "--target",
+        choices=["B70", "B50"],
+        default="B70",
+        help="Target GPU device.",
+    )
+    parser.add_argument(
         "--dump-json",
         dest="n_dump_json",
         type=int,
@@ -153,5 +163,6 @@ if __name__ == "__main__":
         mutation_rate=args.mutation_rate,
         npopulation=args.population_size,
         dump_json=args.n_dump_json,
+        target=args.target,
         random_seed=2,
     )
