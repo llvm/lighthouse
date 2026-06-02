@@ -14,7 +14,7 @@ There are three core components of this example:
 Example:
 ```bash
 # Runs kernel 2 from level 1 and compares the output with PyTorch eager for correctness
-$ uv run examples/end-to-end/KernelBench/test-kernel-bench.py --kernel level1/2_
+$ uv run examples/KernelBench/test-kernel-bench.py --kernel level1/2_
 
 STDOUT:
 Executing the module...
@@ -148,7 +148,7 @@ This also reduces your work downstream while you're working, minimizing rebase w
 
 Runs all registered kernels with the default schedule (lower-to-loops) on `Torch Compile` mode:
 ```bash
-$ uv run examples/end-to-end/KernelBench/test-kernel-bench.py --smoke-test --torch-compile
+$ uv run examples/KernelBench/test-kernel-bench.py --smoke-test --torch-compile
 ```
 _Note: This takes a loooong time..._
 
@@ -156,9 +156,9 @@ _Note: This takes a loooong time..._
 
 Benchmarks a kernel with its default options
 ```bash
-$ uv run examples/end-to-end/KernelBench/test-kernel-bench.py --kernel level1/1_ --benchmark
+$ uv run examples/KernelBench/test-kernel-bench.py --kernel level1/1_ --benchmark
 
-Running command: /home/rengolin/devel/llvm/lighthouse/tools/kernel-bench /home/rengolin/devel/llvm/lighthouse/third_party/KernelBench/KernelBench/level1/1_Square_matrix_multiplication_.py --pipeline /home/rengolin/devel/llvm/lighthouse/examples/end-to-end/KernelBench/schedules/x86_64/matmul/f32.yaml --benchmark --input-shapes 1024x1024xf32xrnd,1024x1024xf32xid --output-shape 1024x1024xf32x0 --init-args None
+Running command: /home/rengolin/devel/llvm/lighthouse/tools/kernel-bench /home/rengolin/devel/llvm/lighthouse/third_party/KernelBench/KernelBench/level1/1_Square_matrix_multiplication_.py --pipeline /home/rengolin/devel/llvm/lighthouse/examples/KernelBench/schedules/x86_64/matmul/f32.yaml --benchmark --input-shapes 1024x1024xf32xrnd,1024x1024xf32xid --output-shape 1024x1024xf32x0 --init-args None
 
 STDOUT:
 Running the benchmark...
@@ -178,9 +178,9 @@ _Note: This will show the `kernel-bench` command line, verify the correctness of
 
 To compare the MLIR generated between Import and Compile modes, call both with the `-print-original-module` argument:
 ```bash
-$ uv run examples/end-to-end/KernelBench/test-kernel-bench.py --kernel level2/11_ --print-original-module > import.mlir
+$ uv run examples/KernelBench/test-kernel-bench.py --kernel level2/11_ --print-original-module > import.mlir
 
-$ uv run examples/end-to-end/KernelBench/test-kernel-bench.py --kernel level2/11_ --print-original-module --torch-compile > compile.mlir
+$ uv run examples/KernelBench/test-kernel-bench.py --kernel level2/11_ --print-original-module --torch-compile > compile.mlir
 ```
 _Note: there will be some verbosity in the text file, before and after the MLIR module._
 
@@ -192,6 +192,6 @@ If the pipeline crashes, you'll see exactly where it crashed and have the full c
 This isn't a `test-kernel-bench` options, and is an example of forwarding the arguments into `kernel-bench` directly.
 
 ```bash
-$ uv run examples/end-to-end/KernelBench/test-kernel-bench.py --kernel=level2/11 --print-mlir-after-all
+$ uv run examples/KernelBench/test-kernel-bench.py --kernel=level2/11 --print-mlir-after-all
 ```
 _Note: You can also run this between import and compile modes to see the difference on their own evolution through the same pipeline._
