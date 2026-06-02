@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 
 import argparse
+import subprocess
 from datetime import datetime
 import sys
 import ml_dtypes
@@ -37,6 +38,28 @@ def from_numpy(buf):
         if buf.dtype == ml_dtypes.bfloat16
         else torch.from_numpy(buf)
     )
+
+
+def dump_assembly(args, object_file_path: str):
+    """
+    Dumps the assembly of the object file as an S file
+    next to the original PyTorch module.
+    """
+    asm_file_path = Path(args.kernel_bench_model).stem + ".s"
+    try:
+        result = subprocess.run(
+            ["objdump", "-d", object_file_path],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=True,
+        )
+        with open(asm_file_path, "w") as f:
+            f.write(result.stdout)
+        print(f"Assembly written to {asm_file_path}")
+    except subprocess.CalledProcessError as e:
+        print(f"Error disassembling object file: {e.stderr}", file=sys.stderr)
+        print("'objdump' must be in the path.", file=sys.stderr)
 
 
 def import_torch(
@@ -229,6 +252,9 @@ def torch_import(args, model: torch.nn.Module, buffers: list, sample_tensors: li
             host_input_buffers=buffers,
         )
 
+    if args.dump_assembly:
+        dump_assembly(args, runner.dump_object_file())
+
     return from_numpy(buffers[0])
 
 
@@ -371,6 +397,11 @@ if __name__ == "__main__":
         "--print-mlir-after-all",
         action=argparse.BooleanOptionalAction,
         help="Whether to print the MLIR module after all stages. Default is False.",
+    )
+    Parser.add_argument(
+        "--dump-assembly",
+        action=argparse.BooleanOptionalAction,
+        help="Whether to dump the assembly of the compiled object file to a .s file. Default is False.",
     )
     args = Parser.parse_args()
 
