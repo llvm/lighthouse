@@ -74,8 +74,7 @@ The key arguments in `test-kernel-bench` are:
 * `--kernel`: Specifies the kernel's `startsWith` name. Use to run one or more kernels.
 * `--benchmark`: Selects to run benchmarks (import mode only for now), and dispatches 100 iterations.
   The entry in `levelN.yaml` file must have the `gflops` set to calculate performance.
-* `--bf16`: Selects the BF16 kernel in addition to the F32. Some kernels do not support this yet.
-  (TODO: make this a selectable type instead of one flag per type).
+* `--dtype`: Selects the data type for the kernel. Some kernels only support f32. Default is f32.
 * `--infer-shapes`: Uses the Kernel Bench module's own functions to infer input/output shapes.
   Default is to read from the YAML file. Some kernels are too big and the YAML has smaller sizes override.
 * `--target` and `--feature`: Decides which schedule sub-class to search schedules from.
@@ -89,7 +88,6 @@ The key arguments in `test-kernel-bench` are:
   initializations: [rnd, id]
   output_shape: 1024x1024
   init_args: []
-  dtypes: [f32, bf16]
   gflops: (1024 * 1024 * 1024 * 2) / 1e9
   pipeline: matmul
 ```
@@ -98,7 +96,6 @@ The key arguments in `test-kernel-bench` are:
 * `input_shapes` and `output_shapes`: Dimensions and sizes for input/output shapes.
 * `init_args`: Arguments to initialize the module with (before compilation).
 * `initializations`: What type to initialize the inputs (`rnd`, `id`, `0`)
-* `dtypes`: Supported data types.
 * `gflops`: Calculation on how to get the number of floating point operations in this kernel (for performance measurement).
 * `pipeline`: Name of the sub-dir, replaces: `schedules/$target/$pipeline/$dtype.yaml`.
 

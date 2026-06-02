@@ -26,11 +26,25 @@ lib_dir = get_mlir_library_path()
 c_runner_lib = os.path.join(lib_dir, "libmlir_c_runner_utils.so")
 
 
+def from_numpy(buf):
+    """
+    Converts a numpy array to a torch tensor.
+    If the numpy array is of type bfloat16, it is first reinterpreted as uint16
+    to be compatible with torch.from_numpy(), and then viewed as bfloat16.
+    """
+    return (
+        torch.from_numpy(buf.view(np.uint16)).view(torch.bfloat16)
+        if buf.dtype == ml_dtypes.bfloat16
+        else torch.from_numpy(buf)
+    )
+
+
 def import_torch(
     filepath: str | Path,
     model_class_name: str = "Model",
     sample_args=None,
     model_init_args=None,
+    dtype=torch.float32,
 ) -> torch.nn.Module:
     """
     Imports a PyTorch model from a KernelBench file and returns the PyTorch module.
@@ -42,6 +56,7 @@ def import_torch(
             model_class_name=model_class_name,
             sample_args=sample_args,
             model_init_args=model_init_args,
+            dtype=dtype,
         )
         assert isinstance(model, torch.nn.Module)
         return model, sample_args, sample_kwargs
@@ -132,18 +147,12 @@ def parse_module_arguments(
     # Parse input shapes first, to create sample tensors for the inputs only
     buffers = [arg.arg for arg in KernelArgumentParser.parse_all(input_shapes_str)]
     # Build sample torch tensors from input shapes to override hard-coded sizes in get_inputs().
-    # torch.from_numpy() does not support ml_dtypes.bfloat16, so reinterpret as uint16 first.
     if any(buf.dtype == ml_dtypes.bfloat16 for buf in buffers):
         print(
             "Warning: bfloat16 is not natively supported by torch.from_numpy(), \
             so we are reinterpreting the buffers as uint16. This may cause issues if the buffers are modified after creation."
         )
-    sample_tensors = [
-        torch.from_numpy(buf.view(np.uint16)).view(torch.bfloat16)
-        if buf.dtype == ml_dtypes.bfloat16
-        else torch.from_numpy(buf)
-        for buf in buffers
-    ]
+    sample_tensors = [from_numpy(buf) for buf in buffers]
     init_args = string_to_type(init_args_str)
 
     # Now include the output shape in the buffers
@@ -220,7 +229,7 @@ def torch_import(args, model: torch.nn.Module, buffers: list, sample_tensors: li
             host_input_buffers=buffers,
         )
 
-    return torch.from_numpy(buffers[0])
+    return from_numpy(buffers[0])
 
 
 def compare_outputs(out_ref, out, tolerance, max_tolerance):
@@ -245,6 +254,15 @@ def compare_outputs(out_ref, out, tolerance, max_tolerance):
             return False, tol / 10
         tol *= 10
     return False, max_tol
+
+
+def get_data_type(dtype_str: str):
+    if dtype_str == "f32":
+        return torch.float32
+    elif dtype_str == "bf16":
+        return ml_dtypes.bfloat16
+    else:
+        raise ValueError(f"Unsupported data type: {dtype_str}")
 
 
 if __name__ == "__main__":
@@ -274,6 +292,12 @@ if __name__ == "__main__":
         "--init-args",
         type=str,
         help="Comma-separated list of arguments to initialize the model.",
+    )
+    Parser.add_argument(
+        "--dtype",
+        type=str,
+        default="f32",
+        help="Data type. Default f32.",
     )
     Parser.add_argument(
         "--seed",
@@ -355,12 +379,16 @@ if __name__ == "__main__":
     else:
         np.random.seed(int(datetime.now().timestamp()))
 
+    # Validate input/output/init arguments
     if (
         args.input_shapes is None or args.output_shape is None
     ) and not args.torch_compile:
         raise ValueError(
             "--input-shapes and --output-shape must be provided together for non-torch-compile mode."
         )
+
+    # Validate data type argument
+    dtype = get_data_type(args.dtype)
 
     # Initialize the device data
     buffers, sample_tensors, init_args = parse_module_arguments(
@@ -369,7 +397,10 @@ if __name__ == "__main__":
 
     # First, import the model and run the reference numbers
     model, sample_args, sample_kwargs = import_torch(
-        args.kernel_bench_model, sample_args=sample_tensors, model_init_args=init_args
+        args.kernel_bench_model,
+        sample_args=sample_tensors,
+        model_init_args=init_args,
+        dtype=dtype,
     )
     if args.validate:
         out_ref = model(*sample_args, **sample_kwargs)
