@@ -64,13 +64,6 @@ def get_tests(args: argparse.Namespace) -> list[dict]:
     """
     Returns the list of tests to be executed.
     """
-    if args.ci:
-        print(
-            "Running in CI mode: fewer tests, no bf16, no benchmarking for faster feedback"
-        )
-        args.bf16 = False  # Disable bf16 tests in CI for faster feedback
-        args.benchmark = False  # Disable benchmarking in CI for faster feedback
-
     tests = []
     with open(level1_yaml_path) as f:
         tests = yaml.safe_load(f)
@@ -88,33 +81,31 @@ def get_tests(args: argparse.Namespace) -> list[dict]:
         # Smoke tests run on the simplest lowering
         if args.smoke_test:
             test["pipeline"] = str(kb_default_pipeline)
-        for dtype in test["dtypes"]:
-            if not args.bf16 and dtype == "bf16":
-                continue
-            test_list.append(
-                {
-                    "kernel": test["kernel"],
-                    "input_shapes": ",".join(
-                        f"{shape}x{dtype}x{init}"
-                        for shape, init in zip(
-                            test["input_shapes"], test["initializations"]
-                        )
-                    ),
-                    "output_shape": f"{test['output_shape']}x{dtype}x0",
-                    "init_args": test.get("init_args", "None"),
-                    "gflops": eval(test["gflops"])
-                    if "gflops" in test and args.benchmark
-                    else None,
-                    "pipeline": str(
-                        get_pipeline_file(
-                            test.get("pipeline", ""),
-                            dtype,
-                            TargetInfo(args.target, args.feature),
-                        )
-                    ),
-                    "warning": test.get("warning", None),
-                }
-            )
+
+        test_list.append(
+            {
+                "kernel": test["kernel"],
+                "input_shapes": ",".join(
+                    f"{shape}x{args.dtype}x{init}"
+                    for shape, init in zip(
+                        test["input_shapes"], test["initializations"]
+                    )
+                ),
+                "output_shape": f"{test['output_shape']}x{args.dtype}x0",
+                "init_args": test.get("init_args", "None"),
+                "gflops": eval(test["gflops"])
+                if "gflops" in test and args.benchmark
+                else None,
+                "pipeline": str(
+                    get_pipeline_file(
+                        test.get("pipeline", ""),
+                        args.dtype,
+                        TargetInfo(args.target, args.feature),
+                    )
+                ),
+                "warning": test.get("warning", None),
+            }
+        )
     return test_list
 
 
@@ -132,14 +123,15 @@ if __name__ == "__main__":
         description="""Kernel Bench testing & benchmarking."""
     )
     Parser.add_argument(
+        "--dtype",
+        type=str,
+        default="f32",
+        help="Data type. Default f32.",
+    )
+    Parser.add_argument(
         "--benchmark",
         action=argparse.BooleanOptionalAction,
         help="Whether to run the benchmark.",
-    )
-    Parser.add_argument(
-        "--bf16",
-        action=argparse.BooleanOptionalAction,
-        help="Enable bf16 precision kernels.",
     )
     Parser.add_argument(
         "--ci",
@@ -199,16 +191,12 @@ if __name__ == "__main__":
             str(kb_kernel),
             "--pipeline",
             test["pipeline"],
+            "--dtype",
+            args.dtype,
         ]
-        # Benchmarks only if there's data to calculate FLOPS.
-        benchmark = args.benchmark and test.get("gflops") is not None
-        if benchmark:
+        # Benchmark mode.
+        if args.benchmark:
             command_line += ["--benchmark"]
-        elif args.benchmark:
-            print(
-                f"WARNING: Benchmarking enabled but no GFLOPS data for kernel {test['kernel']}."
-                f" Skipping benchmark."
-            )
 
         if not args.infer_shapes:
             command_line += [
@@ -249,10 +237,14 @@ if __name__ == "__main__":
         if capture_output:
             print("STDOUT:")
             print(result.stdout)
-            if benchmark:
+            # Only show "performance" if gflops count is available.
+            if args.benchmark and test["gflops"] is not None:
                 flops_per_second = get_flops_per_second(result.stdout, test["gflops"])
                 if flops_per_second > 0:
                     print(f"Performance: {flops_per_second:.2f} GFLOPS")
+            # Otherwise just keep the timer and let the user calculate GFLOPS themselves.
+            elif args.benchmark:
+                print("Performance: GFLOPS data not available for this test.")
 
             print("STDERR:")
             print(result.stderr)
