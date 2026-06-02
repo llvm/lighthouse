@@ -6,10 +6,11 @@ from enum import Enum
 
 from lighthouse import utils as lh_utils
 from lighthouse.ingress.torch import import_from_model
+from lighthouse.execution.runner import Runner
+from lighthouse.execution import ExternalMemoryManager
 from mlir import ir
 from mlir.dialects import bufferization
 from mlir.dialects import func
-from mlir.execution_engine import ExecutionEngine
 import torch
 
 
@@ -35,6 +36,16 @@ class BufferMetadata:
     device: torch.device
 
 
+@dataclass
+class TorchMemoryManager(ExternalMemoryManager):
+    """Pass-through memory manager for PyTorch tensors."""
+
+    @contextlib.contextmanager
+    def get_memrefs(self, inputs):
+        """Convert PyTorch tensors to memref descriptors."""
+        yield [lh_utils.torch.to_memref(t) for t in inputs]
+
+
 class JITFunction:
     """
     Wrapper around JIT-compiled MLIR function.
@@ -57,9 +68,10 @@ class JITFunction:
         entry_func: str = "main",
         n_outputs: int | None = None,
     ):
-        self.eng = ExecutionEngine(module, opt_level=3, shared_libs=shared_libs)
-        self.eng.initialize()
-        self.fn = self.eng.lookup(entry_func)
+        self.runner = Runner(
+            module, mem_manager_cls=TorchMemoryManager, shared_libs=shared_libs
+        )
+        self.entry_func = entry_func
         self.results = results
         self.n_outputs = n_outputs if n_outputs is not None else len(results)
 
@@ -86,14 +98,7 @@ class JITFunction:
         # input data followed by output storage buffers.
         all_tensors = [arg.detach() for arg in args]
         all_tensors.extend(outs)
-        # Keep the ctypes chain alive for the duration of the MLIR call.
-        # to_packed_args() returns only the packed void* array; the intermediate
-        # ctypes structures (memref descriptors and pointers) would be freed
-        # immediately otherwise, causing a use-after-free in the MLIR function.
-        _memrefs = [lh_utils.torch.to_memref(t) for t in all_tensors]
-        _ctype_ptrs = [lh_utils.memref.to_ctype(m) for m in _memrefs]
-        mlir_args = lh_utils.memref.get_packed_arg(_ctype_ptrs)
-        self.fn(mlir_args)
+        self.runner.execute(self.entry_func, all_tensors)
 
         # Return only the outputs corresponding to the FX graph's actual return
         # values. torch-mlir may prepend extra results for in-place state

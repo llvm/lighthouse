@@ -44,6 +44,29 @@ class MemoryManager(abc.ABC):
 
 
 @dataclass
+class ExternalMemoryManager(MemoryManager, abc.ABC):
+    """Abstract base class for pass-through memory management.
+
+    It does not manage memory itself, but provides a uniform interface for
+    converting buffers to memref descriptors.
+    """
+
+    @abc.abstractmethod
+    def get_memrefs(self, inputs):
+        """Convert inputs to memref descriptors."""
+        pass
+
+    def alloc(self, name: str = None, **kwargs) -> ctypes.Structure:
+        raise NotImplementedError("Allocation not supported.")
+
+    def get(self, name: str) -> ctypes.Structure:
+        raise NotImplementedError("Lookup not supported.")
+
+    def deallocate_all(self):
+        raise NotImplementedError("Deallocation not supported.")
+
+
+@dataclass
 class DeviceMemoryManager(MemoryManager, abc.ABC):
     """Abstract base class for handling memory on accelerator devices."""
 
