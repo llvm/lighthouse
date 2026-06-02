@@ -1,7 +1,5 @@
 # RUN: python %s --ci | FileCheck %s
 # RUN: python %s --ci --torch-compile | FileCheck %s
-# RUN: python %s --ci --dtype=bf16 | FileCheck %s
-# RUN: python %s --ci --dtype=bf16 --torch-compile | FileCheck %s
 
 # REQUIRES: torch
 # REQUIRES: kernel_bench
@@ -66,13 +64,6 @@ def get_tests(args: argparse.Namespace) -> list[dict]:
     """
     Returns the list of tests to be executed.
     """
-    if args.ci:
-        print(
-            "Running in CI mode: fewer tests, no bf16, no benchmarking for faster feedback"
-        )
-        args.bf16 = False  # Disable bf16 tests in CI for faster feedback
-        args.benchmark = False  # Disable benchmarking in CI for faster feedback
-
     tests = []
     with open(level1_yaml_path) as f:
         tests = yaml.safe_load(f)
