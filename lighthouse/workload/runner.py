@@ -10,6 +10,7 @@ from mlir.dialects.transform import structured
 from mlir.execution_engine import ExecutionEngine
 from mlir.runtime.np_to_memref import get_ranked_memref_descriptor
 
+import lighthouse.config as lh_config
 from lighthouse.dialects.transform import transform_ext
 from lighthouse.schedule import schedule_boilerplate
 from lighthouse.utils.memref import to_packed_args
@@ -50,6 +51,12 @@ def execute(
     if c_runner_lib not in libs:
         libs.append(c_runner_lib)
     engine = get_engine(payload_module, shared_libs=libs)
+
+    # optionally dump the compiled MLIR object file
+    if lh_config.config.mlir_dump_obj:
+        from lighthouse.execution.debug import dump_mlir_object_file
+
+        dump_mlir_object_file(engine)
 
     with workload.allocate_inputs(execution_engine=engine) as inputs:
         # prepare function arguments

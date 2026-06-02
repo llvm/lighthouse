@@ -16,6 +16,7 @@ from mlir.dialects.transform import structured
 from mlir.execution_engine import ExecutionEngine
 from mlir.runtime.np_to_memref import get_ranked_memref_descriptor
 
+import lighthouse.config as lh_config
 from lighthouse.dialects.transform import transform_ext
 from lighthouse.schedule import schedule_boilerplate
 from lighthouse.utils.memref import to_packed_args
@@ -88,6 +89,12 @@ class Runner:
             self.payload, opt_level=self.opt_level, shared_libs=self.shared_libs
         )
         execution_engine.initialize()
+
+        if lh_config.config.mlir_dump_obj:
+            from lighthouse.execution.debug import dump_mlir_object_file
+
+            dump_mlir_object_file(execution_engine)
+
         return execution_engine
 
     @contextmanager
