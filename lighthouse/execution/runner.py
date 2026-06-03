@@ -139,26 +139,22 @@ class Runner:
                 f"Unsupported mem_manager_cls type: {self.mem_manager_cls}"
             )
 
-        if benchmark:
-            time_array = np.zeros((nruns,), dtype=np.float64)
-        else:
-            time_array = None
-
-        def _prepare_args(inputs):
-            if benchmark:
-                # allocate buffer for timings and prepare arguments
-                time_memref = get_ranked_memref_descriptor(time_array)
-                return to_packed_args(inputs + [time_memref, nruns, nwarmup])
-            else:
-                return to_packed_args(inputs)
-
         with allocator() as inputs:
-            args = _prepare_args(inputs)
-
             # call function
             if benchmark:
+                # allocate buffer for timings and prepare arguments
+                time_array = np.zeros((nruns,), dtype=np.float64)
+                time_memref = get_ranked_memref_descriptor(time_array)
+                args = to_packed_args(inputs + [time_memref, nruns, nwarmup])
+
+                # Run the benchmark function instead of the main one
                 function_name = self.payload_benchmark_function_name
             else:
+                # No need for extra allocations
+                time_array = None
+                args = to_packed_args(inputs)
+
+                # Run the main function
                 function_name = payload_function_name
 
             # Now lookup and call the function
