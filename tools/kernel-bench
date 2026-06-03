@@ -217,7 +217,7 @@ def torch_compile(args, model: torch.nn.Module, sample_tensors: list):
         model.compile(
             dynamic=False,
             backend=cpu_backend(
-                compiler_pipeline, shared_libs=[c_runner_lib], dump_obj=obj_file
+                compiler_pipeline, shared_libs=[c_runner_lib], dump_obj_file=obj_file
             ),
         )
         out = model(*sample_tensors, **sample_kwargs)
