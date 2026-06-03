@@ -44,6 +44,8 @@ with ir.Context(), ir.Location.unknown():
         "prefetch_b_n": 16,
         "prefetch_a_nb": 1,
         "prefetch_b_nb": 1,
+        "transpose_a": False,
+        "transpose_b": False,
     }
 
     # Check that at least one constraint was reified into the schedule.
