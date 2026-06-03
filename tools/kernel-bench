@@ -145,7 +145,7 @@ def define_compiler_pipeline(
 
         if not pipeline_yaml:
             # Search for the yaml file in the script directory.
-            pipeline_yaml = Path(__file__).parent / "kernel_bench.yaml"
+            pipeline_yaml = Path(__file__).parent / "kernel-bench.yaml"
         if isinstance(pipeline_yaml, list):
             for yaml in pipeline_yaml:
                 desc = Descriptor(yaml)
