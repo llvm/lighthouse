@@ -6,7 +6,6 @@ import typing
 import numpy as np
 import ctypes
 import os
-import tempfile
 from contextlib import contextmanager
 from functools import partial
 from typing import Optional, Callable
@@ -213,20 +212,18 @@ class Runner:
             benchmark=False,
         )
 
-    def dump_object_file(self, file_name: str = "") -> str:
+    def dump_object_file(self, file_name: str) -> str:
         """
         Dump the compiled object file.
 
         Args:
-            file_name: Optional target file.
-                If not provided, a temporary file is created.
+            file_name: Target output file.
 
         Returns:
             Name of the dumped file.
         """
         if not file_name:
-            with tempfile.NamedTemporaryFile(suffix=".o", delete=False) as tmp:
-                file_name = tmp.name
+            raise ValueError("non-empty file_name must be provided")
         self.engine.dump_to_object_file(file_name)
         return file_name
 

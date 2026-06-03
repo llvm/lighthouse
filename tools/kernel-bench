@@ -201,6 +201,10 @@ def torch_compile(args, model: torch.nn.Module, sample_tensors: list):
             print(module)
         return module
 
+    obj_file = ""
+    if args.dump_assembly:
+        obj_file = Path(args.kernel_bench_model).stem + ".o"
+
     # TODO: Implement benchmarking
     if args.benchmark:
         raise NotImplementedError(
@@ -210,9 +214,14 @@ def torch_compile(args, model: torch.nn.Module, sample_tensors: list):
         # Reconfigure the model to be compiled using torch.compile, take the compiled output.
         model.compile(
             dynamic=False,
-            backend=cpu_backend(compiler_pipeline, shared_libs=[c_runner_lib]),
+            backend=cpu_backend(
+                compiler_pipeline, shared_libs=[c_runner_lib], dump_obj_file=obj_file
+            ),
         )
         out = model(*sample_tensors, **sample_kwargs)
+
+        if args.dump_assembly and obj_file:
+            dump_assembly(args, obj_file)
 
     return out
 
@@ -253,7 +262,8 @@ def torch_import(args, model: torch.nn.Module, buffers: list, sample_tensors: li
         )
 
     if args.dump_assembly:
-        dump_assembly(args, runner.dump_object_file())
+        obj_file = Path(args.kernel_bench_model).stem + ".o"
+        dump_assembly(args, runner.dump_object_file(obj_file))
 
     return from_numpy(buffers[0])
 

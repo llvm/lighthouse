@@ -58,6 +58,10 @@ class JITFunction:
         shared_libs: Paths to external runtime libraries used to execute
             compiled MLIR function.
         entry_func: Name of the entry function.
+        n_outputs: Number of last N outputs to return.
+            Used to skip extra torch-mlir prepended results that might not
+            be necessary.
+        dump_obj_file: Target output object file.
     """
 
     def __init__(
@@ -67,10 +71,13 @@ class JITFunction:
         shared_libs: Sequence[str] = [],
         entry_func: str = "main",
         n_outputs: int | None = None,
+        dump_obj_file: str = "",
     ):
         self.runner = Runner(
             module, mem_manager_cls=TorchMemoryManager, shared_libs=shared_libs
         )
+        if dump_obj_file:
+            self.runner.dump_object_file(dump_obj_file)
         self.entry_func = entry_func
         self.results = results
         self.n_outputs = n_outputs if n_outputs is not None else len(results)
@@ -131,6 +138,7 @@ class MLIRBackend:
         shared_libs: Paths to external runtime libraries used to execute
             compiled MLIR function.
         entry_func: Name of the entry function.
+        dump_obj_file: Target output object file.
     """
 
     def __init__(
@@ -141,6 +149,7 @@ class MLIRBackend:
         ir_context: ir.Context | None = None,
         shared_libs: Sequence[str] = [],
         entry_func: str = "main",
+        dump_obj_file: str = "",
     ):
         self.device = device
         self.fn_compile = fn_compile
@@ -148,6 +157,7 @@ class MLIRBackend:
         self.ctx = ir_context if ir_context is not None else ir.Context()
         self.shared_libs = list(shared_libs)
         self.entry_func = entry_func
+        self.dump_obj_file = dump_obj_file
 
     def get_entry_func(self, module: ir.Module) -> func.FuncOp | None:
         """
@@ -338,6 +348,7 @@ class MLIRBackend:
             shared_libs=self.shared_libs,
             entry_func=self.entry_func,
             n_outputs=n_fx_outputs,
+            dump_obj_file=self.dump_obj_file,
         )
 
 
@@ -347,6 +358,7 @@ def cpu_backend(
     ir_context: ir.Context | None = None,
     shared_libs: Sequence[str] = [],
     entry_func: str = "main",
+    dump_obj_file: str = "",
 ) -> Callable[[torch.fx.GraphModule, list[torch.Tensor]], Callable]:
     """
     CPU backend for JIT-compiling a PyTorch model using MLIR.
@@ -360,6 +372,7 @@ def cpu_backend(
         shared_libs: Paths to external runtime libraries used to execute
             compiled MLIR function.
         entry_func: Name of the entry function.
+        dump_obj_file: Target output object file.
 
     Returns:
         A torch.compile backend object.
@@ -371,6 +384,7 @@ def cpu_backend(
         ir_context=ir_context,
         shared_libs=shared_libs,
         entry_func=entry_func,
+        dump_obj_file=dump_obj_file,
     )
 
 
@@ -381,6 +395,7 @@ def gpu_backend(
     ir_context: ir.Context | None = None,
     shared_libs: Sequence[str] = [],
     entry_func: str = "main",
+    dump_obj_file: str = "",
 ) -> Callable[[torch.fx.GraphModule, list[torch.Tensor]], Callable]:
     """
     GPU backend for JIT-compiling a PyTorch model using MLIR.
@@ -395,6 +410,7 @@ def gpu_backend(
         shared_libs: Paths to external runtime libraries used to execute
             compiled MLIR function.
         entry_func: Name of the entry function.
+        dump_obj_file: Target output object file.
 
     Returns:
         A torch.compile backend object.
@@ -408,4 +424,5 @@ def gpu_backend(
         ir_context=ir_context,
         shared_libs=shared_libs,
         entry_func=entry_func,
+        dump_obj_file=dump_obj_file,
     )
