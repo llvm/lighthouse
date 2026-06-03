@@ -21,7 +21,7 @@ from lighthouse.dialects.transform import transform_ext
 from lighthouse.schedule import schedule_boilerplate
 from lighthouse.utils.memref import to_packed_args
 from lighthouse.utils.mlir import get_mlir_library_path
-from .memory_manager import GPUMemoryManager, MemoryManager
+from .memory_manager import GPUMemoryManager, ExternalMemoryManager, MemoryManager
 
 
 class RunnerCallable(typing.Protocol):
@@ -60,7 +60,9 @@ class Runner:
         if c_runner_lib not in shared_libs:
             shared_libs.append(c_runner_lib)
         self.lib_dir = get_mlir_library_path()
-        self.shared_libs = self._find_shared_libs(shared_libs)
+        shared_libs = self._find_shared_libs(shared_libs)
+        # Remove duplicates, the same library cannot be loaded multiple times.
+        self.shared_libs = list(dict.fromkeys(shared_libs))
         self.opt_level = opt_level
         self.engine = self._get_engine()
 
@@ -100,7 +102,7 @@ class Runner:
 
     def _execute_kernel(
         self,
-        host_input_buffers: list[np.ndarray],
+        host_input_buffers: list,
         payload_function_name: str = "",
         argument_access_callback: Optional[
             Callable[[list[ctypes.Structure], ExecutionEngine, MemoryManager], None]
@@ -129,11 +131,18 @@ class Runner:
             raise ValueError("host_input_buffers must be provided")
 
         if self.mem_manager_cls is None:
+            if any(not isinstance(buf, np.ndarray) for buf in host_input_buffers):
+                raise ValueError(
+                    "host_input_buffers must be numpy arrays when no mem_manager_cls is provided"
+                )
             mem_manager = None
             allocator = partial(self._numpy_to_memref_manager, host_input_buffers)
         elif self.mem_manager_cls is GPUMemoryManager:
             mem_manager = self.mem_manager_cls(self.engine)
             allocator = partial(mem_manager.clone_host_buffers, host_input_buffers)
+        elif issubclass(self.mem_manager_cls, ExternalMemoryManager):
+            mem_manager = self.mem_manager_cls(self.engine)
+            allocator = partial(mem_manager.get_memrefs, host_input_buffers)
         else:
             raise ValueError(
                 f"Unsupported mem_manager_cls type: {self.mem_manager_cls}"
@@ -172,7 +181,7 @@ class Runner:
 
     def benchmark(
         self,
-        host_input_buffers: list[np.ndarray],
+        host_input_buffers: list,
         argument_access_callback: RunnerCallable = None,
         nruns: int = 100,
         nwarmup: int = 10,
@@ -191,7 +200,7 @@ class Runner:
     def execute(
         self,
         payload_function_name: str,
-        host_input_buffers: list[np.ndarray],
+        host_input_buffers: list,
         argument_access_callback: RunnerCallable = None,
     ) -> None:
         """
