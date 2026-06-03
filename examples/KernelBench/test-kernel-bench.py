@@ -5,6 +5,7 @@
 # REQUIRES: kernel_bench
 
 import argparse
+import os
 import re
 import subprocess
 import platform
@@ -186,7 +187,14 @@ if __name__ == "__main__":
 
     for test in tests:
         kb_kernel = kb_path / test["kernel"]
-        command_line = [
+        command_line = []
+
+        # Pin the process to avoid migration
+        if args.benchmark:
+            core = min(os.cpu_count() - 1, 3)
+            command_line += ["taskset", "-c", f"{core}"]
+
+        command_line += [
             str(kb_program),
             str(kb_kernel),
             "--pipeline",
@@ -194,10 +202,12 @@ if __name__ == "__main__":
             "--dtype",
             args.dtype,
         ]
+
         # Benchmark mode.
         if args.benchmark:
             command_line += ["--benchmark"]
 
+        # Shape inference or from args.
         if not args.infer_shapes:
             command_line += [
                 "--input-shapes",
