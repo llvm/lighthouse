@@ -8,6 +8,7 @@ import ml_dtypes
 import numpy as np
 from pathlib import Path
 import torch
+import tempfile
 
 from mlir import ir
 from lighthouse.execution.runner import Runner
@@ -201,6 +202,11 @@ def torch_compile(args, model: torch.nn.Module, sample_tensors: list):
             print(module)
         return module
 
+    obj_file = ""
+    if args.dump_assembly:
+        with tempfile.NamedTemporaryFile(suffix=".o", delete=False) as tmp:
+            obj_file = tmp.name
+
     # TODO: Implement benchmarking
     if args.benchmark:
         raise NotImplementedError(
@@ -210,9 +216,14 @@ def torch_compile(args, model: torch.nn.Module, sample_tensors: list):
         # Reconfigure the model to be compiled using torch.compile, take the compiled output.
         model.compile(
             dynamic=False,
-            backend=cpu_backend(compiler_pipeline, shared_libs=[c_runner_lib]),
+            backend=cpu_backend(
+                compiler_pipeline, shared_libs=[c_runner_lib], dump_obj=obj_file
+            ),
         )
         out = model(*sample_tensors, **sample_kwargs)
+
+        if args.dump_assembly and obj_file:
+            dump_assembly(args, obj_file)
 
     return out
 
