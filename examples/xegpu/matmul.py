@@ -1,5 +1,7 @@
 # RUN: %PYTHON %s --sizes 512 1024 128 --dump-kernel=xegpu-wg | FileCheck %s
 # RUN: %PYTHON %s --dump-kernel=xegpu-wg | FileCheck %s
+# RUN: %PYTHON %s --dump-kernel=xegpu-wg --transpose-a | FileCheck %s
+# RUN: %PYTHON %s --dump-kernel=xegpu-wg --transpose-b | FileCheck %s
 # RUN: %PYTHON %s --dump-kernel=xegpu-wg --bias | FileCheck %s
 # RUN: %PYTHON %s --dump-kernel=xegpu-wg --relu | FileCheck %s
 # RUN: %PYTHON %s --dump-kernel=xegpu-wg --bias --relu | FileCheck %s
@@ -30,6 +32,7 @@ from lighthouse.execution import (
 from lighthouse.schedule.xegpu import mlp_schedule, xegpu_to_binary
 from lighthouse.utils.numpy import mlir_to_numpy_dtype
 from lighthouse.ingress.mlir_gen import generate_gpu_matmul_payload, get_mlir_elem_type
+from lighthouse.schedule.xegpu import XeGPUParameterSelector
 
 
 def matmul_complexity(
@@ -77,6 +80,8 @@ class XeGPUMatMul:
     K: int = 1024
     ab_type: ir.Type | str | None = None
     c_type: ir.Type | str | None = None
+    transpose_a: bool = False
+    transpose_b: bool = False
     has_bias: bool = False
     has_relu: bool = False
     accumulate_c: bool = True
@@ -96,8 +101,8 @@ class XeGPUMatMul:
         assert isinstance(self.c_type, ir.F32Type), "Only f32 type is supported for C"
         self.ab_dtype = mlir_to_numpy_dtype(self.ab_type)
         self.c_dtype = mlir_to_numpy_dtype(self.c_type)
-        self.a_shape = (self.M, self.K)
-        self.b_shape = (self.K, self.N)
+        self.a_shape = (self.M, self.K) if not self.transpose_a else (self.K, self.M)
+        self.b_shape = (self.K, self.N) if not self.transpose_b else (self.N, self.K)
         self.c_shape = (self.M, self.N)
         self.bias_shape = (self.N,)
 
@@ -142,6 +147,8 @@ class XeGPUMatMul:
             K=self.K,
             ab_type=self.ab_type,
             c_type=self.c_type,
+            transpose_a=self.transpose_a,
+            transpose_b=self.transpose_b,
             has_bias=self.has_bias,
             has_relu=self.has_relu,
             accumulate_c=self.accumulate_c,
@@ -190,6 +197,11 @@ def check_results(
     C, A, B = host_inputs[:3]
     bias = host_inputs[3] if mmul.has_bias else None
 
+    if mmul.transpose_a:
+        A = A.T
+    if mmul.transpose_b:
+        B = B.T
+
     # use float32 data type for efficiency
     f32 = np.float32
     D_ref = A.astype(f32) @ B.astype(f32)
@@ -232,6 +244,16 @@ def cli_parser(description):
         nargs=3,
         default=[4096, 4096, 4096],
         help="M,N,K matrix sizes (A=MxK, B=KxN, C=MxN).",
+    )
+    parser.add_argument(
+        "--transpose-a",
+        action="store_true",
+        help="Transpose matrix A (i.e., A is KxM) before multiplication.",
+    )
+    parser.add_argument(
+        "--transpose-b",
+        action="store_true",
+        help="Transpose matrix B (i.e., B is NxK) before multiplication.",
     )
     parser.add_argument(
         "--bias",
@@ -375,46 +397,54 @@ enabled via CLI arguments.
 
     # Problem size
     m, n, k = args.sizes if args.sizes else (4096, 4096, 4096)
+    transpose_a = args.transpose_a
+    transpose_b = args.transpose_b
+
     # Set required parameters
     params = {
         "m": m,
         "n": n,
         "k": k,
+        "transpose_a": transpose_a,
+        "transpose_b": transpose_b,
     }
-    if args.target:
-        params["device"] = args.target
 
+    # Collect parameters from CLI arguments
+    cli_params = {}
+    if args.wg_tile:
+        cli_params["wg_m"], cli_params["wg_n"] = args.wg_tile
+    if args.sg_tile:
+        cli_params["sg_m"], cli_params["sg_n"] = args.sg_tile
+    if args.k_tile:
+        cli_params["k_tile"] = args.k_tile
+    if args.load_tile_a:
+        cli_params["load_a_m"], cli_params["load_a_k"] = args.load_tile_a
+    if args.load_tile_b:
+        cli_params["load_b_k"], cli_params["load_b_n"] = args.load_tile_b
+    if args.prefetch_tile_a:
+        cli_params["prefetch_a_m"], cli_params["prefetch_a_k"] = args.prefetch_tile_a
+    if args.prefetch_tile_b:
+        cli_params["prefetch_b_k"], cli_params["prefetch_b_n"] = args.prefetch_tile_b
+    if args.prefetch_a_nb is not None:
+        cli_params["prefetch_a_nb"] = args.prefetch_a_nb
+    if args.prefetch_b_nb is not None:
+        cli_params["prefetch_b_nb"] = args.prefetch_b_nb
+
+    # By default the tile size parameters are left undefined
     if args.json:
         # Override parameters with values from JSON file if provided
         with open(args.json, "r") as f:
             json_params = json.load(f)
         params.update(json_params)
-
-    # Override parameters with CLI args if provided
-    if args.wg_tile:
-        params["wg_m"], params["wg_n"] = args.wg_tile
-    if args.sg_tile:
-        params["sg_m"], params["sg_n"] = args.sg_tile
-    if args.k_tile:
-        params["k_tile"] = args.k_tile
-    if args.load_tile_a:
-        params["load_a_m"], params["load_a_k"] = args.load_tile_a
-    if args.load_tile_b:
-        params["load_b_k"], params["load_b_n"] = args.load_tile_b
-    if args.prefetch_tile_a:
-        params["prefetch_a_m"], params["prefetch_a_k"] = args.prefetch_tile_a
-    if args.prefetch_tile_b:
-        params["prefetch_b_k"], params["prefetch_b_n"] = args.prefetch_tile_b
-    if args.prefetch_a_nb is not None:
-        params["prefetch_a_nb"] = args.prefetch_a_nb
-    if args.prefetch_b_nb is not None:
-        params["prefetch_b_nb"] = args.prefetch_b_nb
-
-    for k, v in params.items():
-        if v is None:
-            raise ValueError(
-                f"Parameter {k} is not set. Please provide it via CLI or JSON file."
-            )
+        # Override with CLI params
+        params.update(cli_params)
+    elif cli_params:
+        # Get default parameters from selector
+        param_selector = XeGPUParameterSelector(device=args.target)
+        def_params = param_selector.get_parameters((m, n, k), transpose_a, transpose_b)
+        params.update(def_params)
+        # Override with CLI params
+        params.update(cli_params)
 
     with ir.Context(), ir.Location.unknown():
         lh_dialects.register_and_load()
@@ -423,6 +453,8 @@ enabled via CLI arguments.
             M=params["m"],
             N=params["n"],
             K=params["k"],
+            transpose_a=params["transpose_a"],
+            transpose_b=params["transpose_b"],
             has_bias=args.bias,
             has_relu=args.relu,
             accumulate_c=not args.no_accumulate_c,
@@ -481,14 +513,18 @@ enabled via CLI arguments.
             c_type = str(wload.c_type)
             print(
                 f"sizes={list2str([params['m'], params['n'], params['k']])} "
+                f"ta={int(params['transpose_a'])} "
+                f"tb={int(params['transpose_b'])} "
                 f"dt={ab_type},{c_type} "
-                f"wg-tile={list2str([params['wg_m'], params['wg_n']])} "
-                f"sg-tile={list2str([params['sg_m'], params['sg_n']])} "
-                f"k-tile={params['k_tile']} "
-                f"load-a-tile={list2str([params['load_a_m'], params['load_a_k']])} "
-                f"load-b-tile={list2str([params['load_b_k'], params['load_b_n']])} "
-                f"pf-a-tile={list2str([params['prefetch_a_m'], params['prefetch_a_k']])} "
-                f"pf-b-tile={list2str([params['prefetch_b_k'], params['prefetch_b_n']])} "
+                f"wg={list2str([params['wg_m'], params['wg_n']])} "
+                f"sg={list2str([params['sg_m'], params['sg_n']])} "
+                f"k={params['k_tile']} "
+                f"ld-a={list2str([params['load_a_m'], params['load_a_k']])} "
+                f"ld-b={list2str([params['load_b_k'], params['load_b_n']])} "
+                f"pf-a={list2str([params['prefetch_a_m'], params['prefetch_a_k']])} "
+                f"pf-b={list2str([params['prefetch_b_k'], params['prefetch_b_n']])} "
+                f"pf-a-nb={params['prefetch_a_nb']} "
+                f"pf-b-nb={params['prefetch_b_nb']} "
                 f"time(us): {elapsed:.2f} "
                 f"GFLOPS: {gflops:.2f}"
             )
