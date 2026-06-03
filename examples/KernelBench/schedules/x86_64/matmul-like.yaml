@@ -1,0 +1,28 @@
+# This is an optimizing pipeline for kernel_bench matmul-like kernels.
+Pipeline:
+  - include: pack_and_tile.yaml
+
+  ## CPU specific register tiling (depends on uArch & data type)
+  - schedule: "x86/register_tiling.py[gen=matmul_register_tiling] {
+                                                                    target=linalg.contract
+                                                                    reg_tile_batch=$reg_tile_batch
+                                                                    reg_tile_m=$reg_tile_m
+                                                                    reg_tile_n=$reg_tile_n
+                                                                    reg_tile_k=$reg_tile_k
+                                                                  }"
+  - schedule: "x86/register_tiling.py[gen=matmul_register_unroll] {
+                                                                    target=linalg.contract
+                                                                    batch=$batch
+                                                                    reg_tile_m=$reg_tile_m
+                                                                    reg_tile_n=$reg_tile_n
+                                                                    reg_tile_k=$reg_tile_k
+                                                                    reg_unroll_m=$reg_unroll_m
+                                                                    reg_unroll_n=$reg_unroll_n
+                                                                    reg_unroll_k=$reg_unroll_k
+                                                                  }"
+  - schedule: "tiling.py[gen=tile_ops]{target_op=linalg.fill tile_sizes=$fill_tiling}"
+  - schedule: "tiling.py[gen=tile_ops]{target_op=linalg.generic tile_sizes=$generic_tiling}"
+
+  - include: vectorize.yaml
+
+  - include: lower.yaml
