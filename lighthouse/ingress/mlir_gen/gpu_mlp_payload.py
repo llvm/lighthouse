@@ -1,5 +1,5 @@
 from mlir import ir
-from mlir.dialects import linalg, gpu, bufferization, arith, tensor
+from mlir.dialects import linalg, bufferization, arith, tensor
 
 from .utils import emit_buf_to_tensor
 from .named import add_bias, relu, times_weights
@@ -63,7 +63,6 @@ def generate_gpu_mlp_payload(
             ]
 
             layer_input_tensor = input_tensor
-            to_dealloc = None
             for i, (weight_tensor, bias_tensor) in enumerate(
                 zip(weight_tensors, bias_tensors)
             ):
@@ -80,18 +79,12 @@ def generate_gpu_mlp_payload(
                     if transpose_b
                     else weight_tensor.type.shape
                 )
-                if i == nlayers - 1:
-                    c_tensor = output_tensor
-                    c_memref = output
-                else:
-                    # allocate intermediate buffer
-                    memref_type = ir.MemRefType.get((M, N), ab_type)
-                    c_memref = gpu.alloc(memref_type, None, [], [], [])
-                    gpu.memset(None, [], c_memref, arith.constant(ab_type, 0.0))
-                    if accumulate_c:
-                        c_tensor = emit_buf_to_tensor(
-                            c_memref, restrict=True, writable=True
-                        )
+                c_tensor = None
+                if accumulate_c:
+                    if i == nlayers - 1:
+                        c_tensor = output_tensor
+                    else:
+                        c_tensor = tensor.empty((M, N), ab_type)
                 # skip relu for final layer
                 hidden_layer = i < nlayers - 1
                 layer_output = emit_mlp_layer(
@@ -99,21 +92,16 @@ def generate_gpu_mlp_payload(
                     weight_tensor,
                     acc_type=acc_type,
                     result_type=ab_type if hidden_layer else result_type,
-                    acc_tensor=c_tensor if accumulate_c else None,
+                    acc_tensor=c_tensor,
                     bias_tensor=bias_tensor,
                     transpose_a=layer_transpose_a,
                     transpose_b=transpose_b,
                     has_relu=(hidden_layer or relu_on_final_layer) and has_relu,
                 )
-                bufferization.materialize_in_destination(
-                    None, layer_output, c_memref, restrict=True, writable=True
-                )
-                if to_dealloc is not None:
-                    gpu.dealloc(None, [], to_dealloc)
-                    to_dealloc = None
-                if i != nlayers - 1:
-                    # deallocate after next layer
-                    to_dealloc = c_memref
+                if i == nlayers - 1:
+                    bufferization.materialize_in_destination(
+                        None, layer_output, output, restrict=True, writable=True
+                    )
                 layer_input_tensor = layer_output
 
     return mod
