@@ -13,6 +13,7 @@ def tile_ops(
     tile_interchange: list[int] | None = None,
     peel_loops: list[int] = [],
     unroll_factors: list[int] = [],
+    use_forall: bool = False,
 ) -> ir.Module:
     """
     Tile all matching op.
@@ -49,6 +50,7 @@ def tile_ops(
                 tile_interchange=tile_interchange,
                 peel_loops=peel_loops,
                 unroll_factors=unroll_factors,
+                use_forall=use_forall,
             )
             transform.yield_()
         lh_transform.cleanup(named_seq.bodyTarget)

@@ -1,0 +1,29 @@
+# This is an optimizing pipeline for kernel_bench mat-vec-like kernels.
+# Assumption: M, K % 32 = 0, N = 1
+Pipeline:
+  # Pre-ops parallel 2D tiling
+  - schedule: "tiling.py[gen=tile_ops]{target_op=linalg.fill
+                                       tile_sizes=[$cache_tile,$cache_tile]
+                                       use_forall=True}"
+  # Matvec outer parallel M tiling
+  - schedule: "tiling.py[gen=tile_ops]{target_op=linalg.matmul
+                                       tile_sizes=[$cache_tile,1]
+                                       use_forall=True}"
+  # Matvec inner sequential K tiling
+  - schedule: "tiling.py[gen=tile_ops]{target_op=linalg.matmul
+                                       tile_sizes=[0,0,$cache_tile]}"
+  # Register tiling and unroll to fill the pipeline
+  - schedule: "tiling.py[gen=tile_ops]{target_op=linalg.matmul
+                                       tile_sizes=[1,1,$register_tile]
+                                       unroll_factors=[0,$unroll_factor]}"
+  # Tries to vectorize everything still at tensor level
+  - schedule: vectorization.py[gen=vectorize_all]
+
+  - include: bufferization.yaml
+
+  # These passes need bufferized IR
+  - pass: "scf-forall-to-parallel"
+  - pass: "scf-parallel-loop-fusion"
+  - pass: "scf-parallel-loop-tiling"
+
+  - include: ../lower.yaml
