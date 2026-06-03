@@ -262,7 +262,8 @@ def torch_import(args, model: torch.nn.Module, buffers: list, sample_tensors: li
         )
 
     if args.dump_assembly:
-        dump_assembly(args, runner.dump_object_file())
+        obj_file = Path(args.kernel_bench_model).stem + ".o"
+        dump_assembly(args, runner.dump_object_file(obj_file))
 
     return from_numpy(buffers[0])
 
