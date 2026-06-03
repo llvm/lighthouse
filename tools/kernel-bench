@@ -8,7 +8,6 @@ import ml_dtypes
 import numpy as np
 from pathlib import Path
 import torch
-import tempfile
 
 from mlir import ir
 from lighthouse.execution.runner import Runner
@@ -204,8 +203,7 @@ def torch_compile(args, model: torch.nn.Module, sample_tensors: list):
 
     obj_file = ""
     if args.dump_assembly:
-        with tempfile.NamedTemporaryFile(suffix=".o", delete=False) as tmp:
-            obj_file = tmp.name
+        obj_file = Path(args.kernel_bench_model).stem + ".o"
 
     # TODO: Implement benchmarking
     if args.benchmark:
