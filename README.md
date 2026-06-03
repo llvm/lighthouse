@@ -28,8 +28,8 @@ The upstream _lighthouse_ project needs to keep the three parts restricted to up
 A downstream fork of the _lighthouse_ project could extend any and all of the three parts to reach private repositories and tools, execute downstream schedules, load private dialects, etc.
 
 The main purposes of this project, in chronological order, are:
-1. To **test and validate the existing assumptions in the upstream MLIR repository**, by encoding common ingress paths, transform schedules, pipelines, target differentiation and basic execution.
-2. To help MLIR developers **find common patterns on their pipelines**, and propose actions to merge and reuse upstream code for the same purposes.
+1. ~To **test and validate the existing assumptions in the upstream MLIR repository**, by encoding common ingress paths, transform schedules, pipelines, target differentiation and basic execution.~ ✔️
+2. To help MLIR developers **find common patterns on their pipelines**, and propose actions to merge and reuse upstream code for the same purposes. 🛠️
 3. Once common patterns are detected, to **discuss and agree on dialect design, canonical shapes, and common invariants**, to promote upstream and downstream collaboration on the same grounds.
 4. Build a solid base to guide downstream projects (open or closed source) to **fork this project and build on top of it**, making it easier to separate upstream/downstream parts and make it easier to upstream the delta to MLIR and/or the _lighthouse_.
 5. In time, this could eventually be the **seed for official upstream tooling that uses MLIR in production environments**, like Clang is to LLVM.
@@ -39,10 +39,6 @@ The main purposes of this project, in chronological order, are:
 One key point in the proposal was to not hold _"load bearing"_ code in this repository, but instead, upstream it to MLIR proper and _use_ it here.
 
 It should be fine to have schedule descriptions, aggregation transforms and passes that _use_ the upstream MLIR transforms and passes, but we should _not_ add actual transforms, dialects and passes here to _complement_ the MLIR story.
-
-## Testing Framework
-
-This project should have the same initial purpose as the LLVM Test Suite [https://github.com/llvm/llvm-test-suite], but for MLIR.
 
 ## Current Status
 
