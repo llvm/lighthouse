@@ -164,8 +164,8 @@ class XeGPUMLP:
 
         # use integer values to avoid f16/f32 floating point discrepancies
         def gen_random(shape, dtype):
-            # generate values in range [0, 1)
-            return np.random.rand(*shape).astype(dtype)
+            # generate values in range [-0.5, 0.5]
+            return (np.random.rand(*shape) - 0.5).astype(dtype)
 
         def gen_identity(shape, dtype):
             # identity matrix,

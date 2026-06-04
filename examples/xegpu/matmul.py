@@ -15,9 +15,9 @@ XeGPU matrix multiplication example.
 
 import argparse
 import json
-from dataclasses import dataclass
+import warnings
+from dataclasses import dataclass, field
 from typing import Optional, ClassVar
-from functools import cached_property
 
 import numpy as np
 from mlir import ir
@@ -85,6 +85,9 @@ class XeGPUMatMul:
     has_bias: bool = False
     has_relu: bool = False
     accumulate_c: bool = True
+    _input_arrays_cache: dict[bool, list[np.ndarray]] = field(
+        default_factory=dict, init=False, repr=False
+    )
 
     def __post_init__(self):
         if isinstance(self.ab_type, str):
@@ -106,14 +109,23 @@ class XeGPUMatMul:
         self.c_shape = (self.M, self.N)
         self.bias_shape = (self.N,)
 
-    @cached_property
-    def _initial_host_arrays(self) -> list[np.ndarray]:
+    def get_input_arrays(self, init_int: bool = False) -> list[np.ndarray]:
         """Generate initial values on host with numpy."""
 
-        # use integer values to avoid f16/f32 floating point discrepancies
+        # Cache the generated arrays to avoid regenerating them for every run.
+        cached = self._input_arrays_cache.get(init_int)
+        if cached is not None:
+            return cached
+
         def gen_random(shape, dtype):
-            # generate values in range [-3, 3]
-            a = np.random.randint(-3, 4, shape)
+            if init_int:
+                # Use integer values to avoid f16/f32 floating point
+                # discrepancies in the correctness check.
+                a = np.random.randint(-3, 4, shape)
+            else:
+                # Use float values for benchmarking to get reliable performance
+                # measurements.
+                a = np.random.rand(*shape) - 0.5
             return a.astype(dtype)
 
         np.random.seed(2)
@@ -122,8 +134,11 @@ class XeGPUMatMul:
         C = gen_random(self.c_shape, self.c_dtype)
         if self.has_bias:
             bias = gen_random(self.bias_shape, self.c_dtype)
-            return C, A, B, bias
-        return C, A, B
+            arrays = [C, A, B, bias]
+        else:
+            arrays = [C, A, B]
+        self._input_arrays_cache[init_int] = arrays
+        return arrays
 
     def get_complexity(self) -> tuple[int, int, int]:
         nbytes_ab = np.dtype(self.ab_dtype).itemsize
@@ -187,13 +202,15 @@ class XeGPUMatMul:
 
 
 def check_results(
-    mmul: XeGPUMatMul, payload: ir.Module, buffers: list[np.ndarray], verbose: int = 0
+    mmul: XeGPUMatMul,
+    host_inputs: list[np.ndarray],
+    host_solution: np.ndarray,
+    verbose: int = 0,
 ) -> bool:
     """
     Check correctness of the result.
     """
     # Compute reference solution on host.
-    host_inputs = mmul._initial_host_arrays
     C, A, B = host_inputs[:3]
     bias = host_inputs[3] if mmul.has_bias else None
 
@@ -212,7 +229,7 @@ def check_results(
     if mmul.has_relu:
         D_ref = np.maximum(D_ref, 0)
 
-    D_host = buffers[0].astype(np.float32)
+    D_host = host_solution.astype(np.float32)
     if verbose > 1:
         print("Reference solution:")
         print(D_ref)
@@ -325,6 +342,11 @@ def parse_cli_args(description):
         "--prefetch-b-nb",
         type=int,
         help="Number of initial prefetches for B matrix.",
+    )
+    parser.add_argument(
+        "--init-int",
+        action="store_true",
+        help="Initialize arrays with integers in [-3, 3] to make result checking more reliable.",
     )
     parser.add_argument(
         "--check-result",
@@ -460,6 +482,14 @@ enabled via CLI arguments.
             accumulate_c=not args.no_accumulate_c,
         )
 
+        if args.check_result and not args.init_int:
+            warnings.warn(
+                "Correctness checking with float initialization is not reliable: "
+                "it may report a mismatch even when the kernel is correct, due to "
+                "floating-point rounding differences. Consider using --init-int.",
+                RuntimeWarning,
+            )
+
         if args.dump_kernel or args.dump_schedule:
             if args.dump_kernel:
                 pipeline = TransformDriver(
@@ -480,6 +510,7 @@ enabled via CLI arguments.
                 mem_manager_cls=wload.memory_manager_class,
                 shared_libs=wload.shared_libs(),
             )
+            host_inputs = wload.get_input_arrays(args.init_int)
             if args.check_result:
                 # Setup callback function to copy result from device to host.
                 D_host_copy = np.zeros(wload.c_shape, dtype=wload.c_dtype)
@@ -488,16 +519,21 @@ enabled via CLI arguments.
                 )
 
                 runner.execute(
-                    host_input_buffers=wload._initial_host_arrays,
+                    host_input_buffers=host_inputs,
                     payload_function_name=wload.payload_function_name,
                     argument_access_callback=argument_access_callback,
                 )
-                success = check_results(wload, payload, [D_host_copy], args.verbose)
+                success = check_results(
+                    wload,
+                    host_inputs,
+                    D_host_copy,
+                    verbose=args.verbose,
+                )
                 if not success:
                     raise ValueError("Result mismatch!")
 
             times = runner.benchmark(
-                host_input_buffers=wload._initial_host_arrays,
+                host_input_buffers=host_inputs,
                 nruns=args.nruns,
                 nwarmup=args.nwarmup,
             )
