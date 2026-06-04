@@ -98,11 +98,9 @@ def inspect_payload(payload_module: ir.Module) -> dict:
                     match op:
                         case linalg.GenericOp():
                             # TODO support ElementwiseOp and MapOp
-                            iter_parallel = ir.Attribute.parse(
-                                "#linalg.iterator_type<parallel>"
-                            )
+                            iter_parallel = "#linalg.iterator_type<parallel>"
                             parallel = all(
-                                it == iter_parallel for it in op.iterator_types
+                                str(it) == iter_parallel for it in op.iterator_types
                             )
                             assert parallel, (
                                 "Only parallel iterators are supported in linalg.generic"
