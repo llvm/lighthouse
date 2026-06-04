@@ -36,6 +36,7 @@ def run_experiment(
     has_bias: bool = False,
     has_relu: bool = False,
     accumulate_c: bool = True,
+    truncate_c: bool = False,
     **params,
 ) -> tuple[float, float]:
     with ir.Context(), ir.Location.unknown():
@@ -46,12 +47,13 @@ def run_experiment(
             N=params["n"],
             K=params["k"],
             ab_type=ab_type,
-            c_type=c_type,
+            c_type=ab_type if truncate_c else c_type,
             transpose_a=params["transpose_a"],
             transpose_b=params["transpose_b"],
             has_bias=has_bias,
             has_relu=has_relu,
             accumulate_c=accumulate_c,
+            truncate_c=truncate_c,
         )
         pipeline = TransformDriver(wload.schedule_modules(parameters=params))
         payload = pipeline.apply(wload.payload_module())
@@ -214,6 +216,7 @@ if __name__ == "__main__":
     has_bias = args.bias
     has_relu = args.relu
     accumulate_c = not args.no_accumulate_c
+    truncate_c = not args.truncate_c
     ab_type = "f16"
     c_type = "f32"
 
@@ -248,6 +251,7 @@ if __name__ == "__main__":
     print(f"{has_bias=}")
     print(f"{has_relu=}")
     print(f"{accumulate_c=}")
+    print(f"{truncate_c=}")
     var_set.print()
     sys.stdout.flush()
 
@@ -278,6 +282,7 @@ if __name__ == "__main__":
             has_bias=has_bias,
             has_relu=has_relu,
             accumulate_c=accumulate_c,
+            truncate_c=truncate_c,
         )
         executed_configs.append((gflops, params))
 
@@ -297,5 +302,6 @@ if __name__ == "__main__":
         tra_str = "_tra" if transpose_a else ""
         trb_str = "_trb" if transpose_b else ""
         acc_str = "_acc" if accumulate_c else ""
-        prefix = f"matmul_params_{sizes_str}_{ab_type}-{c_type}{tra_str}{trb_str}{bias_str}{relu_str}{acc_str}"
+        trunc_str = "_trunc" if truncate_c else ""
+        prefix = f"matmul_params_{sizes_str}_{ab_type}-{c_type}{tra_str}{trb_str}{bias_str}{relu_str}{acc_str}{trunc_str}"
         dump_configs_json([p for _, p in best_configs], filename_prefix=prefix)
