@@ -14,6 +14,7 @@ def generate_gpu_matmul_payload(
     has_bias: bool,
     has_relu: bool,
     accumulate_c: bool,
+    result_type: ir.Type | None = None,
 ) -> ir.Module:
     """Generate payload function module for a matmul kernel."""
     return generate_gpu_mlp_payload(
@@ -24,8 +25,8 @@ def generate_gpu_matmul_payload(
         hidden_layer_sizes=[],
         ab_type=ab_type,
         acc_type=c_type,
-        bias_type=c_type,
-        result_type=c_type,
+        bias_type=c_type if result_type is None else result_type,
+        result_type=c_type if result_type is None else result_type,
         transpose_a=transpose_a,
         transpose_b=transpose_b,
         has_bias=has_bias,
