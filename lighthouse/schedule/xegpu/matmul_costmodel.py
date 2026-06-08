@@ -21,7 +21,38 @@ from .matmul_constraints import (
     PFETCH_MAX_ROWS,
     PFETCH_MIN_COLS,
     PFETCH_MAX_COLS,
+    MIN_NB_THREADS,
+    TRANSPOSE_LOAD,
+    print_header,
 )
+
+
+def summarize_config(params: dict, gpu_specs: XeGPUSpecs):
+    """Prints a summary of the given configuration."""
+    M = params["m"]
+    N = params["n"]
+    K = params["k"]
+    wg_tile = (params["wg_m"], params["wg_n"])
+    sg_tile = (params["sg_m"], params["sg_n"])
+    k_tile = params["k_tile"]
+    ld_a = (params["load_a_m"], params["load_a_k"])
+    ld_b = (params["load_b_k"], params["load_b_n"])
+    pf_a = (params["prefetch_a_m"], params["prefetch_a_k"])
+    pf_b = (params["prefetch_b_k"], params["prefetch_b_n"])
+    transpose_a = params.get("transpose_a", False)
+    transpose_b = params.get("transpose_b", False)
+    estimate_performance(M, N, K, wg_tile, sg_tile, k_tile, gpu_specs, verbose=True)
+    print_header("Instruction level", char="-", width=50)
+    print(f"load size A: {ld_a}")
+    print(f"inst size A: {DPAS.A_TILE}")
+    print(f"load size B: {ld_b}")
+    print(f"inst size B: {DPAS.B_TILE}")
+    check_prefetch_tile_a(
+        pf_a, wg_tile, k_tile, gpu_specs, transpose=transpose_a, verbose=True
+    )
+    check_prefetch_tile_b(
+        pf_b, wg_tile, k_tile, gpu_specs, transpose=transpose_b, verbose=True
+    )
 
 
 def generate_configs(
@@ -29,9 +60,12 @@ def generate_configs(
     N: int,
     K: int,
     gpu_specs: XeGPUSpecs,
+    transpose_a: bool = False,
+    transpose_b: bool = False,
     perf_threshold: float | None = None,
     pf_strategy: str = "first",
     max_nb_configs: int | None = None,
+    verbose: bool = False,
 ) -> list[tuple[float, dict[str, int]]]:
     """Generate valid tile size configurations for (M, N, K) matrix multiplication.
 
@@ -45,6 +79,12 @@ def generate_configs(
     - "all": append all valid prefetch tiles for A and B
 
     Load tile sizes are currently fixed to DPAS tile sizes for A and B.
+
+    The `transpose_a` and `transpose_b` arguments indicate whether the A and B
+    matrices are transposed. The returned tile sizes are always in
+    non-transposed form, i.e. applicable to the payload op (e.g. DPAS),
+    _except_ for the prefetch tiles which are in the orientation applicable to
+    the prefetch op.
 
     Returns:
     A list of (perf_estimate, params_dict) tuples sorted by perf_estimate (descending).
@@ -63,9 +103,11 @@ def generate_configs(
             tuple[int, int],
             tuple[int, int],
             tuple[int, int],
+            bool,
+            bool,
         ],
     ) -> dict[str, int]:
-        wg_tile, sg_tile, k_tile, ld_a, ld_b, pf_a, pf_b = config
+        wg_tile, sg_tile, k_tile, ld_a, ld_b, pf_a, pf_b, tr_a, tr_b = config
         return {
             "m": M,
             "n": N,
@@ -85,6 +127,8 @@ def generate_configs(
             "prefetch_b_n": pf_b[1],
             "prefetch_a_nb": 1,
             "prefetch_b_nb": 1,
+            "transpose_a": tr_a,
+            "transpose_b": tr_b,
         }
 
     # define search space
@@ -105,17 +149,26 @@ def generate_configs(
             )
             n_prefetch = 1 if pf_strategy == "first" else None
             pf_a_list, pf_b_list = generate_prefetch_tiles(
-                wg_tile, k_tile, gpu_specs, n=n_prefetch
+                wg_tile,
+                k_tile,
+                gpu_specs,
+                n=n_prefetch,
+                transpose_a=transpose_a,
+                transpose_b=transpose_b,
+                verbose=False,
             )
-            load_a_list = [DPAS.A_TILE]
-            load_b_list = [DPAS.B_TILE]
+            load_a_list = [DPAS.A_TILE if not transpose_a else TRANSPOSE_LOAD]
+            load_b_list = [DPAS.B_TILE if not transpose_b else TRANSPOSE_LOAD]
             for la, lb, pa, pb in product(
                 load_a_list, load_b_list, pf_a_list, pf_b_list
             ):
-                c = (wg_tile, sg_tile, k_tile, la, lb, pa, pb)
+                c = (wg_tile, sg_tile, k_tile, la, lb, pa, pb, transpose_a, transpose_b)
                 params = tuple_to_param_dict(M, N, K, c)
-                if check_constraints(params, gpu_specs, verbose=False):
-                    valid_configs.append((perf, params))
+                check_constraints(params, gpu_specs, verbose=False)
+                valid_configs.append((perf, params))
+                if verbose:
+                    print_header("Valid configuration found")
+                    summarize_config(params, gpu_specs)
         except ValueError:
             pass
 
@@ -130,6 +183,10 @@ def generate_configs(
     if max_nb_configs is not None:
         valid_configs = valid_configs[:max_nb_configs]
 
+    if verbose and max_nb_configs == 1:
+        print_header("Selected configuration", char="=", width=50)
+        summarize_config(valid_configs[0][1], gpu_specs)
+
     return valid_configs
 
 
@@ -138,6 +195,9 @@ def generate_prefetch_tiles(
     k_tile: int,
     gpu_specs: XeGPUSpecs,
     n: int | None = None,
+    transpose_a: bool = False,
+    transpose_b: bool = False,
+    verbose: bool = False,
 ) -> tuple[
     list[tuple[int, int]],
     list[tuple[int, int]],
@@ -150,16 +210,26 @@ def generate_prefetch_tiles(
 
     def gridsearch(
         check_fn: Callable[
-            [tuple[int, int], tuple[int, int], int, XeGPUSpecs],
+            [tuple[int, int], tuple[int, int], int, XeGPUSpecs, bool, bool],
             tuple[int, int],
         ],
+        transpose: bool = False,
+        verbose: bool = False,
     ) -> list[tuple[int, int]]:
         tiles = []
         for rows in range(PFETCH_MIN_ROWS, PFETCH_MAX_ROWS + 1):
             for cols in range(PFETCH_MIN_COLS, PFETCH_MAX_COLS + 1):
                 tile = (rows, cols)
                 try:
-                    grid = check_fn(tile, wg_tile, k_tile, gpu_specs)
+                    grid = check_fn(
+                        tile,
+                        wg_tile,
+                        k_tile,
+                        gpu_specs,
+                        transpose=transpose,
+                        min_nb_threads=MIN_NB_THREADS,
+                        verbose=verbose,
+                    )
                     nb_threads = int(grid[0] * grid[1])
                     tiles.append((tile, nb_threads, grid))
                 except ValueError:
@@ -169,8 +239,12 @@ def generate_prefetch_tiles(
         tiles = [t[0] for t in tiles]
         return tiles
 
-    prefetch_tiles_a = gridsearch(check_prefetch_tile_a)
-    prefetch_tiles_b = gridsearch(check_prefetch_tile_b)
+    prefetch_tiles_a = gridsearch(
+        check_prefetch_tile_a, transpose=transpose_a, verbose=verbose
+    )
+    prefetch_tiles_b = gridsearch(
+        check_prefetch_tile_b, transpose=transpose_b, verbose=verbose
+    )
     if n is not None:
         prefetch_tiles_a = prefetch_tiles_a[:n]
         prefetch_tiles_b = prefetch_tiles_b[:n]
@@ -204,7 +278,8 @@ def estimate_performance(
     Raises ValueError if the given configuration is invalid.
     """
     if verbose:
-        print("=== Global Level ===")
+        print_header("Global Level", char="-", width=50)
+
         print(f"Matrix sizes: M={M}, N={N}, K={K}")
 
     # TODO generalize
@@ -213,7 +288,7 @@ def estimate_performance(
 
     # WG
     if verbose:
-        print("=== Workgroup Level ===")
+        print_header("Workgroup Level", char="-", width=50)
     roofline_threshold = gpu_specs.peak_flops / gpu_specs.bw_global_mem  # in FLOPs/Byte
 
     wg_grid = check_wg_tile(M, N, wg_tile)
@@ -268,7 +343,7 @@ def estimate_performance(
 
     # SG
     if verbose:
-        print("=== Subgroup Level ===")
+        print_header("Subgroup Level", char="-", width=50)
 
     sg_grid = check_sg_tile(wg_tile, sg_tile, gpu_specs)
     nb_sgs = sg_grid[0] * sg_grid[1]
@@ -314,18 +389,6 @@ def estimate_performance(
     if nb_reg > gpu_specs.nb_registers:
         raise ValueError(
             f"Number of registers ({nb_reg}) exceeds hardware register file size ({gpu_specs.nb_registers})."
-        )
-
-    if prefetch_tile_a:
-        # check that prefetch tile is suitable for WG-k tile
-        check_prefetch_tile_a(
-            prefetch_tile_a, wg_tile, k_tile, gpu_specs, verbose=verbose
-        )
-
-    if prefetch_tile_b:
-        # check that prefetch tile is suitable for WG-k tile
-        check_prefetch_tile_b(
-            prefetch_tile_b, wg_tile, k_tile, gpu_specs, verbose=verbose
         )
 
     return predicted_throughput

@@ -1,5 +1,5 @@
 from mlir import ir
-from mlir.dialects import linalg, gpu, bufferization, arith, tensor
+from mlir.dialects import linalg, bufferization, arith, tensor
 
 from .utils import emit_buf_to_tensor
 from .named import add_bias, relu, times_weights
@@ -17,6 +17,8 @@ def generate_gpu_mlp_payload(
     acc_type: ir.Type,
     bias_type: ir.Type,
     result_type: ir.Type,
+    transpose_a: bool,
+    transpose_b: bool,
     has_bias: bool,
     has_relu: bool,
     accumulate_c: bool,
@@ -24,14 +26,16 @@ def generate_gpu_mlp_payload(
 ) -> ir.Module:
     """Generate payload function module for an MLP kernel."""
     mod = ir.Module.create()
-    memref_in_t = ir.MemRefType.get((batch_size, input_size), ab_type)
+    a_shape = (batch_size, input_size) if not transpose_a else (input_size, batch_size)
+    memref_in_t = ir.MemRefType.get(a_shape, ab_type)
     memref_out_t = ir.MemRefType.get((batch_size, output_size), result_type)
     layer_sizes = [input_size] + hidden_layer_sizes + [output_size]
     feature_sizes = list(zip(layer_sizes[:-1], layer_sizes[1:]))
     weight_memref_types = []
     bias_memref_types = []
     for in_size, out_size in feature_sizes:
-        memref_t = ir.MemRefType.get((in_size, out_size), ab_type)
+        shape = (in_size, out_size) if not transpose_b else (out_size, in_size)
+        memref_t = ir.MemRefType.get(shape, ab_type)
         weight_memref_types.append(memref_t)
         if has_bias:
             memref_t = ir.MemRefType.get((out_size,), bias_type)
@@ -59,24 +63,28 @@ def generate_gpu_mlp_payload(
             ]
 
             layer_input_tensor = input_tensor
-            to_dealloc = None
             for i, (weight_tensor, bias_tensor) in enumerate(
                 zip(weight_tensors, bias_tensors)
             ):
-                M, K = layer_input_tensor.type.shape
-                K, N = weight_tensor.type.shape
-                if i == nlayers - 1:
-                    c_tensor = output_tensor
-                    c_memref = output
-                else:
-                    # allocate intermediate buffer
-                    memref_type = ir.MemRefType.get((M, N), ab_type)
-                    c_memref = gpu.alloc(memref_type, None, [], [], [])
-                    gpu.memset(None, [], c_memref, arith.constant(ab_type, 0.0))
-                    if accumulate_c:
-                        c_tensor = emit_buf_to_tensor(
-                            c_memref, restrict=True, writable=True
-                        )
+                layer_transpose_a = (
+                    transpose_a and i == 0
+                )  # transpose A only for the first layer
+                M, K = (
+                    layer_input_tensor.type.shape[::-1]
+                    if layer_transpose_a
+                    else layer_input_tensor.type.shape
+                )
+                K, N = (
+                    weight_tensor.type.shape[::-1]
+                    if transpose_b
+                    else weight_tensor.type.shape
+                )
+                c_tensor = None
+                if accumulate_c:
+                    if i == nlayers - 1:
+                        c_tensor = output_tensor
+                    else:
+                        c_tensor = tensor.empty((M, N), ab_type)
                 # skip relu for final layer
                 hidden_layer = i < nlayers - 1
                 layer_output = emit_mlp_layer(
@@ -84,35 +92,34 @@ def generate_gpu_mlp_payload(
                     weight_tensor,
                     acc_type=acc_type,
                     result_type=ab_type if hidden_layer else result_type,
-                    acc_tensor=c_tensor if accumulate_c else None,
+                    acc_tensor=c_tensor,
                     bias_tensor=bias_tensor,
+                    transpose_a=layer_transpose_a,
+                    transpose_b=transpose_b,
                     has_relu=(hidden_layer or relu_on_final_layer) and has_relu,
                 )
-                bufferization.materialize_in_destination(
-                    None, layer_output, c_memref, restrict=True, writable=True
-                )
-                if to_dealloc is not None:
-                    gpu.dealloc(None, [], to_dealloc)
-                    to_dealloc = None
-                if i != nlayers - 1:
-                    # deallocate after next layer
-                    to_dealloc = c_memref
+                if i == nlayers - 1:
+                    bufferization.materialize_in_destination(
+                        None, layer_output, output, restrict=True, writable=True
+                    )
                 layer_input_tensor = layer_output
 
     return mod
 
 
 def emit_mlp_layer(
-    a_tensor,
-    b_tensor,
-    acc_type,
-    result_type,
-    acc_tensor=None,
-    bias_tensor=None,
-    has_relu=False,
+    a_tensor: ir.Value,
+    b_tensor: ir.Value,
+    acc_type: ir.Type,
+    result_type: ir.Type,
+    acc_tensor: ir.Value | None = None,
+    bias_tensor: ir.Value | None = None,
+    transpose_a: bool = False,
+    transpose_b: bool = False,
+    has_relu: bool = False,
 ) -> ir.Value:
-    M, K = a_tensor.type.shape
-    K, N = b_tensor.type.shape
+    M, K = a_tensor.type.shape[::-1] if transpose_a else a_tensor.type.shape
+    K, N = b_tensor.type.shape[::-1] if transpose_b else b_tensor.type.shape
     convert_result = acc_type != result_type
     if acc_tensor is not None:
         if acc_tensor.type.element_type != acc_type:
@@ -124,6 +131,16 @@ def emit_mlp_layer(
         empty = tensor.empty((M, N), acc_type)
         zero_tensor = linalg.fill(zero, outs=[empty])
         acc_tensor = zero_tensor
+    if transpose_a:
+        empty = tensor.empty((M, K), a_tensor.type.element_type)
+        a_tensor = linalg.transpose(
+            a_tensor, outs=(empty,), permutation=[1, 0]
+        ).results[0]
+    if transpose_b:
+        empty = tensor.empty((K, N), b_tensor.type.element_type)
+        b_tensor = linalg.transpose(
+            b_tensor, outs=(empty,), permutation=[1, 0]
+        ).results[0]
     terminal = times_weights(a_tensor, b_tensor, acc_tensor)
     if bias_tensor is not None:
         if bias_tensor.type.element_type != acc_type:
