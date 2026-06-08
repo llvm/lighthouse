@@ -1,0 +1,6 @@
+Pipeline:
+  - include: common.yaml{
+                          cache_tile=32
+                          register_tile=8
+                          unroll_factor=4
+                        }

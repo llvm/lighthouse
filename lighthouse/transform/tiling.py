@@ -63,9 +63,14 @@ def tile(
             use_forall=use_forall,
         ).results
     else:
-        tiled_op, *loops = structured.TileUsingForOp(
-            target, sizes=tile_sizes, interchange=tile_interchange
-        ).results
+        if use_forall:
+            tiled_op, *loops = structured.TileUsingForallOp(
+                target, tile_sizes=tile_sizes
+            ).results
+        else:
+            tiled_op, *loops = structured.TileUsingForOp(
+                target, sizes=tile_sizes, interchange=tile_interchange
+            ).results
 
     remainder_loops = [None] * len(loops)
     for idx in peel_loops:

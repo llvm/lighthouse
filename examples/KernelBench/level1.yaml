@@ -24,6 +24,7 @@
   initializations: [rnd, rnd]
   output_shape: 1024x1
   gflops: (1024 * 1024 * 1 * 2) / 1e9
+  pipeline: matvec
 
 - kernel: level1/5_Matrix_scalar_multiplication.py
   input_shapes: [1024x1024, "1"]
@@ -32,10 +33,10 @@
   gflops: (1024 * 1024) / 1e9
 
 - kernel: level1/6_Matmul_with_large_K_dimension_.py
-  input_shapes: [256x524288, 524288x256]
+  input_shapes: [256x8192, 8192x256]
   initializations: [rnd, rnd]
   output_shape: 256x256
-  gflops: (256 * 524288 * 256 * 2) / 1e9
+  gflops: (256 * 8192 * 256 * 2) / 1e9
   pipeline: matmul
 
 - kernel: level1/7_Matmul_with_small_K_dimension_.py
@@ -57,6 +58,7 @@
   initializations: [rnd, rnd]
   output_shape: 1024x1024
   gflops: (1024 * 32 * 1024 * 2) / 1e9
+  pipeline: batch_matmul
 
 - kernel: level1/10_3D_tensor_matrix_multiplication.py
   input_shapes: [16x1024x2048, 2048x768]
