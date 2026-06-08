@@ -1,5 +1,3 @@
-from collections import namedtuple
-
 from mlir import ir
 from mlir.dialects.transform import loop
 from mlir.dialects.transform import bufferization
@@ -21,22 +19,20 @@ from lighthouse.schedule import schedule_boilerplate
 from lighthouse.dialects import smt_ext
 from lighthouse.dialects.transform import smt_ext as td_smt_ext
 from lighthouse.dialects.transform.tune_ext import knob, KnobValue
-
-# hardware constraints
-DPAS = namedtuple("DPAS", ["M", "N", "K", "A_TILE", "B_TILE", "C_TILE"])(
-    8, 16, 16, (8, 16), (16, 16), (8, 16)
+from .xegpu_specs import XeGPUSpecs
+from .xegpu_parameter_selector import XeGPUParameterSelector
+from .matmul_constraints import (
+    DPAS,
+    PREFETCH_INST_DATA,
+    NB_WORKITEMS,
+    LOAD_MAX_ROWS,
+    LOAD_MAX_COLS,
+    PFETCH_MIN_ROWS,
+    PFETCH_MIN_COLS,
+    PFETCH_MAX_ROWS,
+    PFETCH_MAX_COLS,
+    MIN_NB_THREADS,
 )
-PREFETCH_INST_DATA = [8, 16]
-NB_WORKITEMS = 16  # workitems in subgroup
-LOAD_MAX_ROWS = 32
-LOAD_MAX_COLS = 32
-PFETCH_MIN_ROWS = 8
-PFETCH_MAX_ROWS = 32
-PFETCH_MIN_COLS = 16
-PFETCH_MAX_COLS = 32
-MAX_NB_SG_THREADS = 32  # 32 for large register file, 16 otherwise
-# heuristics: skip likely suboptimal configurations
-MIN_NB_THREADS = 16
 
 
 @KnobValue.ast_rewrite(in_exprs=True)
@@ -114,6 +110,12 @@ def mlp_schedule(
 ) -> ir.Module:
     """Generate transform schedule module for MLP payload."""
     assert params is not None and len(params) > 0, "params must be provided."
+    devices = {p.get("device") for p in params if "device" in p}
+    assert len(devices) <= 1, f"Multiple devices specified in params list: {devices}"
+    device = devices.pop() if devices else None
+    param_selector = XeGPUParameterSelector(device=device)
+    gpu_specs = param_selector.gpu_specs
+
     with schedule_boilerplate() as (schedule, named_seq):
         # match the payload module
         anytype = transform.AnyOpType.get()
@@ -124,7 +126,44 @@ def mlp_schedule(
             op_name="builtin.module",
             deduplicate=True,
         )
+        # preprocess layer parameters
         for i, layer_params in enumerate(params):
+            m = layer_params.get("m")
+            n = layer_params.get("n")
+            k = layer_params.get("k")
+            assert all(d is not None for d in (m, n, k)), (
+                "m, n, k must be provided in params"
+            )
+
+            required_params = [
+                "wg_m",
+                "wg_n",
+                "sg_m",
+                "sg_n",
+                "k_tile",
+                "load_a_m",
+                "load_a_k",
+                "load_b_k",
+                "load_b_n",
+                "prefetch_a_m",
+                "prefetch_a_k",
+                "prefetch_b_k",
+                "prefetch_b_n",
+                "prefetch_a_nb",
+                "prefetch_b_nb",
+            ]
+            if not all(p in layer_params for p in required_params):
+                # Some parameters are missing, use the parameter selector to fill
+                # NOTE None values are interpreted as knobs in the constraint function
+                shape = (m, n, k)
+                transpose_a = layer_params.get("transpose_a", False)
+                transpose_b = layer_params.get("transpose_b", False)
+                generated_params = param_selector.get_parameters(
+                    shape, transpose_a, transpose_b
+                )
+                # Overwrite original params to ensure consistent configuration
+                layer_params.update(generated_params)
+
             layer_params |= params_with_constraints_imposed(
                 layer_params, knob_name_prefix=f"layer_{i}_"
             )
@@ -132,6 +171,7 @@ def mlp_schedule(
         try:
             bundle_xegpu_mlp_schedule(
                 payload_mod,
+                gpu_specs=gpu_specs,
                 params=params,
                 stop_at_stage=stop_at_stage,
             )
@@ -145,6 +185,7 @@ def mlp_schedule(
 
 def bundle_xegpu_mlp_schedule(
     mod: ir.Value[transform.AnyOpType],
+    gpu_specs: XeGPUSpecs,
     params: list[dict[str, int | KnobValue]],
     stop_at_stage: str = "",
 ) -> ir.Value[transform.AnyOpType]:
@@ -155,6 +196,9 @@ def bundle_xegpu_mlp_schedule(
         raise PipelineInterrupt()
 
     anytype = transform.AnyOpType.get()
+
+    # fuse all elementwise ops first
+    mod = apply_registered_pass(mod, "linalg-fuse-elementwise-ops")
 
     matmul_ops = match_and_split(mod, ops={"linalg.matmul"}, nhandles=nlayers)
 
@@ -180,6 +224,12 @@ def bundle_xegpu_mlp_schedule(
         # k loop tiling
         wg_matmul = match(wg_loop, ops={"linalg.matmul"})
         _, [k_loop], _ = lh_transform.tile(wg_matmul, tile_sizes=[0, 0, k_tile])
+        lh_transform.cleanup(wg_loop)
+        # if there's a transpose op fuse it into the k loop
+        transpose_op = match(wg_loop, ops={"linalg.transpose"})
+        structured.structured_fuse_into_containing_op(
+            anytype, anytype, transpose_op, k_loop
+        )
 
     func = transform.get_parent_op(
         anytype,
@@ -220,6 +270,18 @@ def bundle_xegpu_mlp_schedule(
     ).result
     # fold memref.subviews into vector.transfer_read/write ops
     mod = apply_registered_pass(mod, "fold-memref-alias-ops")
+    # match payload function
+    wg_loops = match(mod, ops={"scf.forall"})
+    func = transform.get_parent_op(
+        anytype, wg_loops, op_name="func.func", deduplicate=True
+    )
+    # insert dealloc ops
+    func = apply_registered_pass(func, "buffer-deallocation-pipeline")
+    # convert to gpu.alloc and gpu.dealloc ops
+    alloc_ops = match(func, ops={"memref.alloc"})
+    transform_ext.replace(alloc_ops, "gpu.alloc")
+    alloc_ops = match(func, ops={"memref.dealloc"})
+    transform_ext.replace(alloc_ops, "gpu.dealloc")
     transform.apply_cse(mod)
     canonicalize(mod)
 
@@ -262,7 +324,9 @@ def bundle_xegpu_mlp_schedule(
             sg_m_threads = WG_M // SG_M
             sg_n_threads = WG_N // SG_N
             sg_threads = sg_m_threads * sg_n_threads
-            smt_ext.assert_(sg_threads <= MAX_NB_SG_THREADS, "too many SG threads")
+            smt_ext.assert_(
+                sg_threads <= gpu_specs.max_nb_threads, "too many SG threads"
+            )
             smt_ext.assert_(sg_threads >= MIN_NB_THREADS, "too few SG threads")
 
             # number of threads collapsed to 1d layout
@@ -303,7 +367,7 @@ def bundle_xegpu_mlp_schedule(
     )
     for gpu_mod, layer_params in zip(gpu_mod_ops, params):
         gpu_func = match(gpu_mod, ops={"gpu.func"})
-        xegpu_wg_annotation_for_mlp_layer(gpu_func, **layer_params)
+        xegpu_wg_annotation_for_mlp_layer(gpu_func, gpu_specs=gpu_specs, **layer_params)
 
     if stop_at_stage == "xegpu-wg":
         raise PipelineInterrupt()
@@ -313,6 +377,7 @@ def bundle_xegpu_mlp_schedule(
 
 def xegpu_wg_annotation_for_mlp_layer(
     gpu_func: ir.Value,
+    gpu_specs: XeGPUSpecs,
     *,
     wg_m: int | KnobValue,
     wg_n: int | KnobValue,
@@ -329,6 +394,8 @@ def xegpu_wg_annotation_for_mlp_layer(
     prefetch_b_n: int | KnobValue,
     prefetch_a_nb: int | KnobValue,
     prefetch_b_nb: int | KnobValue,
+    transpose_a: bool,
+    transpose_b: bool,
     **_catch_all,
 ):
     """
@@ -368,6 +435,8 @@ def xegpu_wg_annotation_for_mlp_layer(
         prefetch_a_k,
         prefetch_b_k,
         prefetch_b_n,
+        transpose_a,
+        transpose_b,
     )
     def constrain_and_calculate_load_and_prefetch_params(
         WG_M,
@@ -383,6 +452,8 @@ def xegpu_wg_annotation_for_mlp_layer(
         PFA_K,
         PFB_K,
         PFB_N,
+        TR_A,
+        TR_B,
     ):
         # NB: normal asserts in case of concrete values, SMT assert ops for symbolic values
         smt_ext.assert_(SG_M % LDA_M == 0)
@@ -395,17 +466,22 @@ def xegpu_wg_annotation_for_mlp_layer(
         smt_ext.assert_(LDB_K <= LOAD_MAX_ROWS)
         smt_ext.assert_(LDB_N <= LOAD_MAX_COLS)
 
-        smt_ext.assert_(SG_M % PFA_M == 0)
-        smt_ext.assert_(K_TILE % PFA_K == 0)
-        smt_ext.assert_(K_TILE % PFB_K == 0)
-        smt_ext.assert_(SG_N % PFB_N == 0)
+        # prefetch tile shape depends on transpose flag
+        pf_shape_a = (K_TILE, WG_M) if TR_A else (WG_M, K_TILE)
+        pf_shape_b = (WG_N, K_TILE) if TR_B else (K_TILE, WG_N)
+
+        smt_ext.assert_(pf_shape_a[0] % PFA_M == 0)
+        smt_ext.assert_(pf_shape_a[1] % PFA_K == 0)
+        smt_ext.assert_(pf_shape_b[0] % PFB_K == 0)
+        smt_ext.assert_(pf_shape_b[1] % PFB_N == 0)
 
         smt_ext.assert_(PFA_M <= PFETCH_MAX_ROWS)
         smt_ext.assert_(PFA_K <= PFETCH_MAX_COLS)
-        smt_ext.assert_(PFB_K <= PFETCH_MAX_ROWS)
-        smt_ext.assert_(PFB_N <= PFETCH_MAX_COLS)
         smt_ext.assert_(PFA_M >= PFETCH_MIN_ROWS)
         smt_ext.assert_(PFA_K >= PFETCH_MIN_COLS)
+
+        smt_ext.assert_(PFB_K <= PFETCH_MAX_ROWS)
+        smt_ext.assert_(PFB_N <= PFETCH_MAX_COLS)
         smt_ext.assert_(PFB_K >= PFETCH_MIN_ROWS)
         smt_ext.assert_(PFB_N >= PFETCH_MIN_COLS)
 
@@ -415,17 +491,18 @@ def xegpu_wg_annotation_for_mlp_layer(
         smt_ext.assert_(LDB_N % DPAS.N == 0)
 
         # prefetch A thread layout
-        prefetch_th_a_m = WG_M // PFA_M
-        prefetch_th_a_k = K_TILE // PFA_K
+        prefetch_th_a_m = pf_shape_a[0] // PFA_M
+        prefetch_th_a_k = pf_shape_a[1] // PFA_K
+
         prefetch_th_a = prefetch_th_a_m * prefetch_th_a_k
-        smt_ext.assert_(prefetch_th_a <= MAX_NB_SG_THREADS)
+        smt_ext.assert_(prefetch_th_a <= gpu_specs.max_nb_threads)
         smt_ext.assert_(prefetch_th_a_m * prefetch_th_a_k >= MIN_NB_THREADS)
 
         # prefetch B thread layout
-        prefetch_th_b_k = K_TILE // PFB_K
-        prefetch_th_b_n = WG_N // PFB_N
+        prefetch_th_b_k = pf_shape_b[0] // PFB_K
+        prefetch_th_b_n = pf_shape_b[1] // PFB_N
         prefetch_th_b = prefetch_th_b_k * prefetch_th_b_n
-        smt_ext.assert_(prefetch_th_b <= MAX_NB_SG_THREADS)
+        smt_ext.assert_(prefetch_th_b <= gpu_specs.max_nb_threads)
         if isinstance(prefetch_th_b, smt_ext.SMTIntValue):
             # NB: Constraint only enabled during tuning.
             smt_ext.assert_(prefetch_th_b_k * prefetch_th_b_n >= MIN_NB_THREADS)
@@ -445,7 +522,6 @@ def xegpu_wg_annotation_for_mlp_layer(
     load_op_a = xegpu.get_load_op(transform.get_operand(anyvalue, dpas_op, [0]))
     load_op_b = xegpu.get_load_op(transform.get_operand(anyvalue, dpas_op, [1]))
 
-    # insert prefetch ops for DPAS A and B tiles
     def add_prefetch(load_op, prefetch_nb, **layout):
         desc_op = xegpu.insert_prefetch(
             load_op,
@@ -454,33 +530,40 @@ def xegpu_wg_annotation_for_mlp_layer(
         pf_ops = transform.get_consumers_of_result(anytype, desc_op, 0)
         xegpu.set_anchor_layout(pf_ops, **layout)
 
-    add_prefetch(
-        load_op_a,
-        prefetch_a_nb,
-        sg_layout=prefetch_layout_a,
-        sg_data=prefetch_tile_a,
-        inst_data=PREFETCH_INST_DATA,
-    )
-    add_prefetch(
-        load_op_b,
-        prefetch_b_nb,
-        sg_layout=prefetch_layout_b,
-        sg_data=prefetch_tile_b,
-        inst_data=PREFETCH_INST_DATA,
-    )
+    def annotate_ab_load(
+        dpas_op, index, load_op, layout_load, layout_dpas, layout_prefetch, prefetch_nb
+    ):
+        """Annotate A/B tile load op and dpas operand and insert prefetch ops."""
+        user = transform.get_consumers_of_result(anytype, load_op, 0)
+        # FIXME use transform.alternatives instead of select and foreach
+        # check_transpose = transform.AlternativesOp([], 2)
 
-    def annotate_ab_load(load_op, layout_load, layout_dpas):
-        xegpu.set_anchor_layout(load_op, **layout_load)
-        result_tile = transform.get_result(anyvalue, load_op, [0])
-        xegpu.convert_layout(
-            result_tile,
-            input_sg_layout=layout_load["sg_layout"],
-            input_sg_data=layout_load["sg_data"],
-            input_inst_data=layout_load["inst_data"],
-            target_sg_layout=layout_dpas["sg_layout"],
-            target_sg_data=layout_dpas["sg_data"],
-            target_inst_data=layout_dpas["inst_data"],
-        )
+        # transposed case
+        transpose_consumer_op = transform.select(anytype, user, "vector.transpose")
+        with lh_transform.foreach(transpose_consumer_op):
+            # Load op loads the transposed tile and thus sg_layout and sg_data
+            # dimensions must be transposed. Keep inst_data which has been
+            # validated in its current orientation.
+            tr_load = layout_load.copy()
+            tr_load["sg_layout"] = layout_load["sg_layout"][::-1]
+            tr_load["sg_data"] = layout_load["sg_data"][::-1]
+            tr_load["order"] = [0, 1]
+            # annotate dpas op operand
+            layout_dpas_order = layout_dpas.copy()
+            layout_dpas_order["order"] = [1, 0]
+            xegpu.set_anchor_layout(dpas_op, index=index, **layout_dpas_order)
+            xegpu.set_anchor_layout(load_op, **tr_load)
+            add_prefetch(load_op, prefetch_nb, **layout_prefetch)
+            transform.yield_()
+
+        # no transpose case
+        dpas_consumer_op = transform.select(anytype, user, "xegpu.dpas")
+        with lh_transform.foreach(dpas_consumer_op):
+            # annotate dpas op operand
+            xegpu.set_anchor_layout(dpas_op, index=index, **layout_dpas)
+            xegpu.set_anchor_layout(load_op, **layout_load)
+            add_prefetch(load_op, prefetch_nb, **layout_prefetch)
+            transform.yield_()
 
     # A tile load layout
     layout_load_a = {
@@ -491,7 +574,21 @@ def xegpu_wg_annotation_for_mlp_layer(
     # A tile dpas layout
     layout_dpas_a = layout_load_a.copy()
     layout_dpas_a["inst_data"] = DPAS.A_TILE
-    annotate_ab_load(load_op_a, layout_load_a, layout_dpas_a)
+    # A tile prefetch layout
+    layout_prefetch_a = {
+        "sg_layout": prefetch_layout_a,
+        "sg_data": prefetch_tile_a,
+        "inst_data": PREFETCH_INST_DATA,
+    }
+    annotate_ab_load(
+        dpas_op,
+        0,
+        load_op_a,
+        layout_load_a,
+        layout_dpas_a,
+        layout_prefetch_a,
+        prefetch_a_nb,
+    )
 
     # B tile load layout
     layout_load_b = {
@@ -502,7 +599,21 @@ def xegpu_wg_annotation_for_mlp_layer(
     # B tile dpas layout
     layout_dpas_b = layout_load_b.copy()
     layout_dpas_b["inst_data"] = DPAS.B_TILE
-    annotate_ab_load(load_op_b, layout_load_b, layout_dpas_b)
+    # B tile prefetch layout
+    layout_prefetch_b = {
+        "sg_layout": prefetch_layout_b,
+        "sg_data": prefetch_tile_b,
+        "inst_data": PREFETCH_INST_DATA,
+    }
+    annotate_ab_load(
+        dpas_op,
+        1,
+        load_op_b,
+        layout_load_b,
+        layout_dpas_b,
+        layout_prefetch_b,
+        prefetch_b_nb,
+    )
 
     # C tile layout
     output_layout = {
@@ -511,20 +622,18 @@ def xegpu_wg_annotation_for_mlp_layer(
         "inst_data": DPAS.C_TILE,
     }
     # C tile dpas anchor layout
-    xegpu.set_anchor_layout(dpas_op, index=0, **layout_dpas_a)
-    xegpu.set_anchor_layout(dpas_op, index=1, **layout_dpas_b)
     xegpu.set_anchor_layout(dpas_op, index=2, **output_layout)
     # annotate store op
     store_op_c = match(gpu_func, ops={"xegpu.store_nd"})
     xegpu.set_anchor_layout(store_op_c, **output_layout)
 
     # annotate the 1d load of the broadcast op with a slice layout
-    # FIXME assert that we only match one add op
-    add_ops = match(gpu_func, ops={"arith.addf"})
-    with lh_transform.foreach(add_ops) as bias_add_op:
-        bcast_load = xegpu.get_load_op(
-            transform.get_operand(anyvalue, bias_add_op, [0])
-        )
+    # NOTE assumes that xegpu.load is followed by vector.broadcast
+    maybe_bcast_load = match(gpu_func, ops={"xegpu.load"})
+    load_user = transform.get_consumers_of_result(anytype, maybe_bcast_load, 0)
+    bcast_ops = transform.select(anytype, load_user, "vector.broadcast")
+    with lh_transform.foreach(bcast_ops) as bcast_op:
+        bcast_load = xegpu.get_load_op(transform.get_operand(anyvalue, bcast_op, [0]))
         xegpu.set_anchor_layout(bcast_load, index=0, **output_layout, slice_dims=[0])
         transform.yield_()
 

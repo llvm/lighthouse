@@ -6,6 +6,7 @@ from mlir import ir
 from mlir.dialects import func, linalg
 import os
 from pathlib import Path
+from collections import defaultdict
 
 
 def get_mlir_library_path():
@@ -55,11 +56,34 @@ def inspect_payload(payload_module: ir.Module) -> dict:
         function_name: {
             "inputs": [input types],
             "results": [result types],
-            "matmuls": [(m, n, k), ...]  # list of matmul shapes
+            "layers": {
+                "matmul": {
+                    "m": m,
+                    "n": n,
+                    "k": k,
+                    "transpose_a": bool,
+                    "transpose_b": bool,
+                }
+                ...
+            }
         },
         ...
     }
     """
+
+    def has_producer(value: ir.Value, kind: type) -> bool:
+        if value is None or isinstance(value, ir.BlockArgument):
+            # stop trace
+            return False
+        if isinstance(value, ir.OpResult):
+            parent_op = value.owner
+            if isinstance(parent_op, kind):
+                return True
+            # recursively check producers
+            for operand in parent_op.operands:
+                if has_producer(operand, kind):
+                    return True
+        return False
 
     functions = {}
 
@@ -67,25 +91,77 @@ def inspect_payload(payload_module: ir.Module) -> dict:
         op = op.opview
         match op:
             case func.FuncOp():
-                matmuls = []
+                layers = defaultdict(list)
 
                 def match_linalg(op: ir.Operation) -> ir.WalkResult:
                     op = op.opview
                     match op:
+                        case linalg.GenericOp():
+                            # TODO support ElementwiseOp and MapOp
+                            iter_parallel = "#linalg.iterator_type<parallel>"
+                            parallel = all(
+                                str(it) == iter_parallel for it in op.iterator_types
+                            )
+                            assert parallel, (
+                                "Only parallel iterators are supported in linalg.generic"
+                            )
+                            outputs = op.outputs
+                            assert len(outputs) == 1, "Expected only one output"
+                            out_shape = outputs[0].type.shape
+                            layers["elemwise"].append({"shape": out_shape})
                         case linalg.MatmulOp():
                             inputs = op.inputs
                             outputs = op.outputs
                             assert len(inputs) == 2 and len(outputs) == 1
-                            m, k = inputs[0].type.shape
-                            _, n = inputs[1].type.shape
-                            matmuls.append((m, n, k))
+                            input_is_transpose = [
+                                has_producer(o, linalg.TransposeOp) for o in inputs
+                            ]
+                            a_shape, b_shape = [d.type.shape for d in inputs]
+                            c_shape = outputs[0].type.shape
+                            assert len(c_shape) == 2
+                            assert len(a_shape) == 2 or len(b_shape) == 2
+                            m, n = c_shape
+                            try:
+                                _, k = a_shape
+                            except Exception:
+                                k, _ = b_shape
+                            layers["matmul"].append(
+                                {
+                                    "shape": (m, n, k),
+                                    "transpose_a": input_is_transpose[0],
+                                    "transpose_b": input_is_transpose[1],
+                                }
+                            )
+                        case linalg.BatchMatmulOp():
+                            inputs = op.inputs
+                            outputs = op.outputs
+                            assert len(inputs) == 2 and len(outputs) == 1
+                            input_is_transpose = [
+                                has_producer(o, linalg.TransposeOp) for o in inputs
+                            ]
+                            a_shape, b_shape = [d.type.shape for d in inputs]
+                            c_shape = outputs[0].type.shape
+                            assert len(c_shape) == 3
+                            assert len(a_shape) == 3 or len(b_shape) == 3
+                            b, m, n = c_shape
+                            try:
+                                _, _, k = a_shape
+                            except Exception:
+                                _, k, _ = b_shape
+                            layers["batch_matmul"].append(
+                                {
+                                    "shape": (b, m, n, k),
+                                    "transpose_a": input_is_transpose[0],
+                                    "transpose_b": input_is_transpose[1],
+                                }
+                            )
                     return ir.WalkResult.ADVANCE
 
                 op.walk(match_linalg, ir.WalkOrder.PRE_ORDER)
                 functions[op.sym_name.value] = {
                     "inputs": op.type.inputs,
                     "results": op.type.results,
-                    "matmuls": matmuls,
+                    "layers": layers,
                 }
         return ir.WalkResult.ADVANCE
 

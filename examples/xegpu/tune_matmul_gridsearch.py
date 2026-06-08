@@ -16,6 +16,8 @@ from lighthouse import dialects as lh_dialects
 from lighthouse.execution.runner import Runner
 from lighthouse.schedule.xegpu.mlp_schedule import DPAS
 from lighthouse.pipeline.driver import TransformDriver
+from lighthouse.schedule.xegpu import check_constraints
+from lighthouse.schedule.xegpu import XeGPUSpecs
 
 from matmul import XeGPUMatMul, check_results, cli_parser
 from genetic_algorithm import (
@@ -23,16 +25,6 @@ from genetic_algorithm import (
     VariableSet,
 )
 from tune_utils import dump_configs_json, execute_and_log
-from lighthouse.schedule.xegpu.mlp_schedule import (
-    MAX_NB_SG_THREADS,
-    LOAD_MAX_COLS,
-    LOAD_MAX_ROWS,
-    PFETCH_MAX_COLS,
-    PFETCH_MAX_ROWS,
-    PFETCH_MIN_COLS,
-    PFETCH_MIN_ROWS,
-    MIN_NB_THREADS,
-)
 
 
 def run_experiment(
@@ -55,6 +47,8 @@ def run_experiment(
             K=params["k"],
             ab_type=ab_type,
             c_type=c_type,
+            transpose_a=params["transpose_a"],
+            transpose_b=params["transpose_b"],
             has_bias=has_bias,
             has_relu=has_relu,
             accumulate_c=accumulate_c,
@@ -109,156 +103,6 @@ def run_experiment(
     return elapsed, gflops
 
 
-def check_constraints(params: dict, verbose: bool = False) -> bool:
-    def print_reason(msg):
-        if verbose:
-            print(f"  Invalid: {msg}")
-
-    M = params["m"]
-    N = params["n"]
-    wg_tile_m = params["wg_m"]
-    wg_tile_n = params["wg_n"]
-    sg_tile_m = params["sg_m"]
-    sg_tile_n = params["sg_n"]
-    load_tile_a_m = params["load_a_m"]
-    load_tile_a_k = params["load_a_k"]
-    load_tile_b_k = params["load_b_k"]
-    load_tile_b_n = params["load_b_n"]
-    prefetch_tile_a_m = params["prefetch_a_m"]
-    prefetch_tile_a_k = params["prefetch_a_k"]
-    prefetch_tile_b_k = params["prefetch_b_k"]
-    prefetch_tile_b_n = params["prefetch_b_n"]
-    k_tile = params["k_tile"]
-
-    if M % wg_tile_m != 0:
-        print_reason("wg_tile_m does not divide M")
-        return False
-    if N % wg_tile_n != 0:
-        print_reason("wg_tile_n does not divide N")
-        return False
-    if wg_tile_m % sg_tile_m != 0:
-        print_reason("sg_tile_m does not divide wg_tile_m")
-        return False
-    if wg_tile_n % sg_tile_n != 0:
-        print_reason("sg_tile_n does not divide wg_tile_n")
-        return False
-    if sg_tile_m % DPAS.M != 0:
-        print_reason("sg_tile_m not multiple of dpas_m")
-        return False
-    if sg_tile_n % DPAS.N != 0:
-        print_reason("sg_tile_n not multiple of dpas_n")
-        return False
-    if k_tile % DPAS.K != 0:
-        print_reason("k_tile not multiple of dpas_k")
-        return False
-
-    # SG level thread layout: [nb_sg_threads_m, nb_sg_threads_n]
-    nb_sg_threads_m = wg_tile_m // sg_tile_m
-    nb_sg_threads_n = wg_tile_n // sg_tile_n
-    nb_sg_threads = nb_sg_threads_m * nb_sg_threads_n
-    if nb_sg_threads > MAX_NB_SG_THREADS:
-        print_reason("too many sg threads")
-        return False
-    if nb_sg_threads < MIN_NB_THREADS:
-        print_reason("too few sg threads")
-        return False
-
-    if sg_tile_m % load_tile_a_m != 0:
-        print_reason("load_tile_a_m does not divide sg_tile_m")
-        return False
-    if k_tile % load_tile_a_k != 0:
-        print_reason("load_tile_a_k does not divide k_tile")
-        return False
-    if k_tile % load_tile_b_k != 0:
-        print_reason("load_tile_b_k does not divide k_tile")
-        return False
-    if sg_tile_n % load_tile_b_n != 0:
-        print_reason("load_tile_b_n does not divide sg_tile_n")
-        return False
-    if load_tile_a_m > LOAD_MAX_ROWS:
-        print_reason("too large load_tile_a_m")
-        return False
-    if load_tile_a_k > LOAD_MAX_COLS:
-        print_reason("too large load_tile_a_k")
-        return False
-    if load_tile_b_k > LOAD_MAX_ROWS:
-        print_reason("too large load_tile_b_k")
-        return False
-    if load_tile_b_n > LOAD_MAX_COLS:
-        print_reason("too large load_tile_b_n")
-        return False
-    if sg_tile_m % prefetch_tile_a_m != 0:
-        print_reason("prefetch_tile_a_m does not divide sg_tile_m")
-        return False
-    if k_tile % prefetch_tile_a_k != 0:
-        print_reason("prefetch_tile_a_k does not divide k_tile")
-        return False
-    if k_tile % prefetch_tile_b_k != 0:
-        print_reason("prefetch_tile_b_k does not divide k_tile")
-        return False
-    if sg_tile_n % prefetch_tile_b_n != 0:
-        print_reason("prefetch_tile_b_n does not divide sg_tile_n")
-        return False
-    if prefetch_tile_a_m > PFETCH_MAX_ROWS:
-        print_reason("too large prefetch_tile_a_m")
-        return False
-    if prefetch_tile_a_k > PFETCH_MAX_COLS:
-        print_reason("too large prefetch_tile_a_k")
-        return False
-    if prefetch_tile_b_k > PFETCH_MAX_ROWS:
-        print_reason("too large prefetch_tile_b_k")
-        return False
-    if prefetch_tile_b_n > PFETCH_MAX_COLS:
-        print_reason("too large prefetch_tile_b_n")
-        return False
-    if prefetch_tile_a_m < PFETCH_MIN_ROWS:
-        print_reason("too small prefetch_tile_a_m")
-        return False
-    if prefetch_tile_a_k < PFETCH_MIN_COLS:
-        print_reason("too small prefetch_tile_a_k")
-        return False
-    if prefetch_tile_b_k < PFETCH_MIN_ROWS:
-        print_reason("too small prefetch_tile_b_k")
-        return False
-    if prefetch_tile_b_n < PFETCH_MIN_COLS:
-        print_reason("too small prefetch_tile_b_n")
-        return False
-    if load_tile_a_m % DPAS.M != 0:
-        print_reason("load_tile_a_m not multiple of dpas_m")
-        return False
-    if load_tile_a_k % DPAS.K != 0:
-        print_reason("load_tile_a_k not multiple of dpas_k")
-        return False
-    if load_tile_b_k % DPAS.K != 0:
-        print_reason("load_tile_b_k not multiple of dpas_k")
-        return False
-    if load_tile_b_n % DPAS.N != 0:
-        print_reason("load_tile_b_n not multiple of dpas_n")
-        return False
-
-    # prefetch A layout
-    nb_prefetch_a_m = wg_tile_m // prefetch_tile_a_m
-    nb_prefetch_a_k = k_tile // prefetch_tile_a_k
-    if nb_prefetch_a_m * nb_prefetch_a_k > MAX_NB_SG_THREADS:
-        print_reason("too many prefetch A tiles")
-        return False
-    if nb_prefetch_a_m * nb_prefetch_a_k < MIN_NB_THREADS:
-        print_reason("too few prefetch A threads")
-        return False
-
-    # prefetch B layout
-    nb_prefetch_b_k = k_tile // prefetch_tile_b_k
-    nb_prefetch_b_n = wg_tile_n // prefetch_tile_b_n
-    if nb_prefetch_b_k * nb_prefetch_b_n > MAX_NB_SG_THREADS:
-        print_reason("too many prefetch B tiles")
-        return False
-    if nb_prefetch_b_k * nb_prefetch_b_n < MIN_NB_THREADS:
-        print_reason("too few prefetch B threads")
-        return False
-
-    return True
-
-
 def get_divisors(n: int, min_tile: int = 32, max_tile: int = 256) -> list[int]:
     p = np.ceil(n / max_tile)
     q = n // min_tile
@@ -271,7 +115,9 @@ def divisible_by(a_list: list, b: int) -> list:
     return [a for a in a_list if a % b == 0]
 
 
-def construct_search_space(M: int, N: int, K: int):
+def construct_search_space(
+    M: int, N: int, K: int, transpose_a: bool, transpose_b: bool, gpu_specs: XeGPUSpecs
+) -> tuple[VariableSet, callable]:
     wg_tile_lim_m = min(max(M // 4, 16), 64), min(M, 256)
     wg_tile_lim_n = min(max(N // 4, 16), 64), min(N, 256)
     sg_tile_lim_m = min(max(M // 8, 16), 32), min(M, 128)
@@ -288,7 +134,7 @@ def construct_search_space(M: int, N: int, K: int):
     def sample_is_valid(sample_params, verbose=False):
         params = {"m": M, "n": N, "k": K}
         params.update(sample_params)
-        return check_constraints(params, verbose=verbose)
+        return check_constraints(params, gpu_specs, verbose=verbose)
 
     var_set = VariableSet(
         [
@@ -312,7 +158,13 @@ def construct_search_space(M: int, N: int, K: int):
     )
 
     def sample_to_dict(sample: list) -> dict:
-        res = {"m": M, "n": N, "k": K}
+        res = {
+            "m": M,
+            "n": N,
+            "k": K,
+            "transpose_a": transpose_a,
+            "transpose_b": transpose_b,
+        }
         res.update(var_set.sample_to_dict(sample))
         return res
 
@@ -327,6 +179,12 @@ if __name__ == "__main__":
         "--dry-run",
         action="store_true",
         help="Check validity of combinations but do not execute kernels.",
+    )
+    parser.add_argument(
+        "--target",
+        choices=["B70", "B50"],
+        default="B70",
+        help="Target GPU device.",
     )
     parser.add_argument(
         "--max-iters",
@@ -348,6 +206,8 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     sizes = args.sizes
+    transpose_a = args.transpose_a
+    transpose_b = args.transpose_b
     has_bias = args.bias
     has_relu = args.relu
     accumulate_c = not args.no_accumulate_c
@@ -368,10 +228,20 @@ if __name__ == "__main__":
         csv_file = "out_gridsearch.csv"
         csv_logger = CSVLogger(csv_file)
 
-    var_set, sample_to_dict = construct_search_space(*sizes)
+    gpu_specs = XeGPUSpecs.get(args.target)
+
+    var_set, sample_to_dict = construct_search_space(
+        *sizes,
+        transpose_a=transpose_a,
+        transpose_b=transpose_b,
+        gpu_specs=gpu_specs,
+    )
     print(f"Matmul problem size: {sizes}")
+    print(f"device={gpu_specs.name}")
     print(f"{ab_type=}")
     print(f"{c_type=}")
+    print(f"{transpose_a=}")
+    print(f"{transpose_b=}")
     print(f"{has_bias=}")
     print(f"{has_relu=}")
     print(f"{accumulate_c=}")
@@ -383,7 +253,7 @@ if __name__ == "__main__":
     tic = perf_counter()
     for sample in product(*var_set.iterables()):
         params = sample_to_dict(sample)
-        if not check_constraints(params, verbose=False):
+        if not check_constraints(params, gpu_specs, verbose=False):
             continue
 
         i += 1
@@ -421,8 +291,8 @@ if __name__ == "__main__":
         sizes_str = "-".join(str(s) for s in sizes)
         relu_str = "_relu" if has_relu else ""
         bias_str = "_bias" if has_bias else ""
+        tra_str = "_tra" if transpose_a else ""
+        trb_str = "_trb" if transpose_b else ""
         acc_str = "_acc" if accumulate_c else ""
-        prefix = (
-            f"matmul_params_{sizes_str}_{ab_type}-{c_type}{bias_str}{relu_str}{acc_str}"
-        )
+        prefix = f"matmul_params_{sizes_str}_{ab_type}-{c_type}{tra_str}{trb_str}{bias_str}{relu_str}{acc_str}"
         dump_configs_json([p for _, p in best_configs], filename_prefix=prefix)

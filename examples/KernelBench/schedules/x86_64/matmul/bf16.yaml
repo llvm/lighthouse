@@ -1,0 +1,14 @@
+# This is an optimizing pipeline for simple GEMM kernels.
+Pipeline:
+  - include: ../matmul-like.yaml {
+                                reg_tile_batch=1
+                                reg_tile_m=8
+                                reg_tile_n=32
+                                reg_tile_k=2
+                                batch=1
+                                reg_unroll_m=1
+                                reg_unroll_n=16
+                                reg_unroll_k=2
+                                fill_tiling=[1,1,1]
+                                generic_tiling=[1,8]
+                              }

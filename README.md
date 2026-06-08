@@ -28,8 +28,8 @@ The upstream _lighthouse_ project needs to keep the three parts restricted to up
 A downstream fork of the _lighthouse_ project could extend any and all of the three parts to reach private repositories and tools, execute downstream schedules, load private dialects, etc.
 
 The main purposes of this project, in chronological order, are:
-1. To **test and validate the existing assumptions in the upstream MLIR repository**, by encoding common ingress paths, transform schedules, pipelines, target differentiation and basic execution.
-2. To help MLIR developers **find common patterns on their pipelines**, and propose actions to merge and reuse upstream code for the same purposes.
+1. ~To **test and validate the existing assumptions in the upstream MLIR repository**, by encoding common ingress paths, transform schedules, pipelines, target differentiation and basic execution.~ ✔️
+2. To help MLIR developers **find common patterns on their pipelines**, and propose actions to merge and reuse upstream code for the same purposes. 🛠️
 3. Once common patterns are detected, to **discuss and agree on dialect design, canonical shapes, and common invariants**, to promote upstream and downstream collaboration on the same grounds.
 4. Build a solid base to guide downstream projects (open or closed source) to **fork this project and build on top of it**, making it easier to separate upstream/downstream parts and make it easier to upstream the delta to MLIR and/or the _lighthouse_.
 5. In time, this could eventually be the **seed for official upstream tooling that uses MLIR in production environments**, like Clang is to LLVM.
@@ -40,21 +40,15 @@ One key point in the proposal was to not hold _"load bearing"_ code in this repo
 
 It should be fine to have schedule descriptions, aggregation transforms and passes that _use_ the upstream MLIR transforms and passes, but we should _not_ add actual transforms, dialects and passes here to _complement_ the MLIR story.
 
-## Testing Framework
-
-This project should have the same initial purpose as the LLVM Test Suite [https://github.com/llvm/llvm-test-suite], but for MLIR.
-
 ## Current Status
 
-Since this is a new project, we're separating the work in branches that will eventually be merged to `main`.
-After the initial period, when we have a reasonable testing infrastructure, we can fork & create pull requests.
+As of June 2026, the project has *achieved the first goal* above (validation or assumptions), and has created key infrastructure to start the second goal: define common pipelines and develop reusable schedules.
 
-The planned work is:
-* **Ingress**: PyTorch to Linalg extraction on branch [TBD].
-* **Harness**: Python harness to bind the MLIR tools, dialects and transforms together on branch [harness](https://github.com/llvm/lighthouse/tree/harness).
-* **Schedule**: MLIR schedules to combine into pipelines and combination strategy on branch [TBD].
-* **Runtime**: Dependencies, tools and environments to run on various hardware on branch [TBD].
-* **Build System**: CMake / Bazel magic to check dependencies, track repositories, run CI on branch [TBD].
+There are four main parts of the project:
+1. **Lighthouse:** The core Python modules that condense all the logic we want to wrap from the existing MLIR Python Bindings' API. This should not create new MLIR interfaces, just use them in a way that guides both Lighthouse user and MLIR developers.
+2. **Tools:** Command line tools that wrap the Lighthouse modules in a convenience, user-facing ways, such as `lh-opt`, `lh-run`, `lh-tune` and `kernel-bench`. This should be the entry point of new users, and the inspiration to developers of other tools using Lighthouse.
+3. **Examples:** Assorted examples that demonstrate how to use MLIR Bindings, Lighthouse, etc. For example, the [KernelBench](./examples/KernelBench/) example that uses the `kernel-bench` tool to go through all [KernelBench](./third_party/KernelBench/) models using various pipelines and supporting different targets.
+4. **Tests:** As with other LLVM tools, this has a LIT test that will test the tools above. Some of the examples also work with LIT tests, so the pre-commit test checks them all.
 
 ## Getting up and running
 

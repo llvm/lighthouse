@@ -50,7 +50,6 @@ class GetTileableConsumersOp(
             linalg.MaxOp,
             linalg.MinOp,
             linalg.FillOp,
-            linalg.MatmulOp,
             linalg.GenericOp,
         ]
         return isinstance(op.opview, tuple(linalg_ops))
