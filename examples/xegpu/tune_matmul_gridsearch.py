@@ -47,6 +47,8 @@ def run_experiment(
             K=params["k"],
             ab_type=ab_type,
             c_type=c_type,
+            transpose_a=params["transpose_a"],
+            transpose_b=params["transpose_b"],
             has_bias=has_bias,
             has_relu=has_relu,
             accumulate_c=accumulate_c,
@@ -114,7 +116,7 @@ def divisible_by(a_list: list, b: int) -> list:
 
 
 def construct_search_space(
-    M: int, N: int, K: int, gpu_specs: XeGPUSpecs
+    M: int, N: int, K: int, transpose_a: bool, transpose_b: bool, gpu_specs: XeGPUSpecs
 ) -> tuple[VariableSet, callable]:
     wg_tile_lim_m = min(max(M // 4, 16), 64), min(M, 256)
     wg_tile_lim_n = min(max(N // 4, 16), 64), min(N, 256)
@@ -156,7 +158,13 @@ def construct_search_space(
     )
 
     def sample_to_dict(sample: list) -> dict:
-        res = {"m": M, "n": N, "k": K}
+        res = {
+            "m": M,
+            "n": N,
+            "k": K,
+            "transpose_a": transpose_a,
+            "transpose_b": transpose_b,
+        }
         res.update(var_set.sample_to_dict(sample))
         return res
 
@@ -198,6 +206,8 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     sizes = args.sizes
+    transpose_a = args.transpose_a
+    transpose_b = args.transpose_b
     has_bias = args.bias
     has_relu = args.relu
     accumulate_c = not args.no_accumulate_c
@@ -220,11 +230,18 @@ if __name__ == "__main__":
 
     gpu_specs = XeGPUSpecs.get(args.target)
 
-    var_set, sample_to_dict = construct_search_space(*sizes, gpu_specs=gpu_specs)
+    var_set, sample_to_dict = construct_search_space(
+        *sizes,
+        transpose_a=transpose_a,
+        transpose_b=transpose_b,
+        gpu_specs=gpu_specs,
+    )
     print(f"Matmul problem size: {sizes}")
     print(f"device={gpu_specs.name}")
     print(f"{ab_type=}")
     print(f"{c_type=}")
+    print(f"{transpose_a=}")
+    print(f"{transpose_b=}")
     print(f"{has_bias=}")
     print(f"{has_relu=}")
     print(f"{accumulate_c=}")
@@ -274,8 +291,8 @@ if __name__ == "__main__":
         sizes_str = "-".join(str(s) for s in sizes)
         relu_str = "_relu" if has_relu else ""
         bias_str = "_bias" if has_bias else ""
+        tra_str = "_tra" if transpose_a else ""
+        trb_str = "_trb" if transpose_b else ""
         acc_str = "_acc" if accumulate_c else ""
-        prefix = (
-            f"matmul_params_{sizes_str}_{ab_type}-{c_type}{bias_str}{relu_str}{acc_str}"
-        )
+        prefix = f"matmul_params_{sizes_str}_{ab_type}-{c_type}{tra_str}{trb_str}{bias_str}{relu_str}{acc_str}"
         dump_configs_json([p for _, p in best_configs], filename_prefix=prefix)

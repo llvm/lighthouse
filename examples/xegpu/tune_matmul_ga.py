@@ -21,6 +21,8 @@ from csv_logger import CSVLogger
 
 def optimize_kernel(
     sizes: list[int],
+    transpose_a: bool,
+    transpose_b: bool,
     has_bias: bool,
     has_relu: bool,
     accumulate_c: bool,
@@ -50,10 +52,17 @@ def optimize_kernel(
 
     gpu_specs = XeGPUSpecs.get(target)
 
-    var_set, sample_to_dict = construct_search_space(*sizes, gpu_specs=gpu_specs)
+    var_set, sample_to_dict = construct_search_space(
+        *sizes,
+        transpose_a=transpose_a,
+        transpose_b=transpose_b,
+        gpu_specs=gpu_specs,
+    )
     print(f"Matmul problem size: {sizes}")
     print(f"{ab_type=}")
     print(f"{c_type=}")
+    print(f"{transpose_a=}")
+    print(f"{transpose_b=}")
     print(f"{has_bias=}")
     print(f"{has_relu=}")
     print(f"{accumulate_c=}")
@@ -103,10 +112,10 @@ def optimize_kernel(
         sizes_str = "-".join(str(s) for s in sizes)
         relu_str = "_relu" if has_relu else ""
         bias_str = "_bias" if has_bias else ""
+        tra_str = "_tra" if transpose_a else ""
+        trb_str = "_trb" if transpose_b else ""
         acc_str = "_acc" if accumulate_c else ""
-        prefix = (
-            f"matmul_params_{sizes_str}_{ab_type}-{c_type}{bias_str}{relu_str}{acc_str}"
-        )
+        prefix = f"matmul_params_{sizes_str}_{ab_type}-{c_type}{tra_str}{trb_str}{bias_str}{relu_str}{acc_str}"
         dump_configs_json(configs, filename_prefix=prefix)
 
 
@@ -155,6 +164,8 @@ if __name__ == "__main__":
 
     optimize_kernel(
         args.sizes,
+        args.transpose_a,
+        args.transpose_b,
         args.bias,
         args.relu,
         not args.no_accumulate_c,
