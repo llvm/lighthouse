@@ -378,18 +378,18 @@ def bundle_xegpu_fused_attention_schedule(
     )
 
     # Next 4 load_nd ops: K layout
-    for i in range(1, 5):
+    for load_op in load_nd_ops[:4]:
         xegpu.set_anchor_layout(
-            load_nd_ops[i],
+            load_op,
             sg_layout=k_sg_layout,
             sg_data=k_sg_data,
             inst_data=k_inst_data,
         )
 
     # Last 4 load_nd ops: V layout
-    for i in range(5, 9):
+    for load_op in load_nd_ops[4:]:
         xegpu.set_anchor_layout(
-            load_nd_ops[i],
+            load_op,
             sg_layout=v_sg_layout,
             sg_data=v_sg_data,
             inst_data=v_inst_data,
@@ -399,8 +399,7 @@ def bundle_xegpu_fused_attention_schedule(
     dpas_ops = match_and_split(gpu_func, ops={"xegpu.dpas"}, nhandles=8)
 
     # Layouts for first 4 dpas ops (Q@K^T):
-    for i in range(4):
-        qk_dpas_op = dpas_ops[i]
+    for qk_dpas_op in dpas_ops[:4]:
         # Index 0: Q layout
         xegpu.set_anchor_layout(
             qk_dpas_op,
@@ -428,8 +427,7 @@ def bundle_xegpu_fused_attention_schedule(
         )
 
     # Layouts for second 4 dpas ops (P@V):
-    for i in range(4, 8):
-        pv_dpas_op = dpas_ops[i]
+    for pv_dpas_op in dpas_ops[4:]:
         # Index 0: QK (attention weights) layout
         xegpu.set_anchor_layout(
             pv_dpas_op,
