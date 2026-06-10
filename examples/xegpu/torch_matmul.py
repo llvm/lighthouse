@@ -163,7 +163,7 @@ def parse_cli_args(description):
     parser.add_argument(
         "--nwarmup",
         type=int,
-        default=20,
+        default=500,
         help="Number of warm-up iterations before benchmarking.",
     )
     parser.add_argument(
@@ -276,7 +276,7 @@ enabled via CLI arguments.
                 model(a, b)
             end = time.perf_counter_ns()
 
-            elapsed = (end - start) / args.nruns / 1e3  # Convert to μs
+            elapsed = (end - start) / args.nruns / 1e3  # Convert to us
             flop_count = 2 * m * n * k
             gflops = flop_count / (elapsed * 1e-6) / 1e9
 
