@@ -255,13 +255,13 @@ def parse_cli():
     parser.add_argument(
         "--nruns",
         type=int,
-        default=1000,
+        default=500,
         help="Number of runs to average the execution time.",
     )
     parser.add_argument(
         "--nwarmup",
         type=int,
-        default=20,
+        default=500,
         help="Number of warm-up iterations before benchmarking.",
     )
     parser.add_argument(
