@@ -67,20 +67,25 @@ def run_experiment(
             argument_access_callback = Runner.get_gpu_argument_access_callback(
                 D_host_copy, arg_index=0
             )
+            host_inputs = wload.get_input_arrays(init_int=True)
             runner.execute(
-                host_input_buffers=wload._initial_host_arrays,
+                host_input_buffers=host_inputs,
                 payload_function_name=wload.payload_function_name,
                 argument_access_callback=argument_access_callback,
             )
-            success = check_results(wload, payload, [D_host_copy], verbose=1)
+            success = check_results(
+                wload,
+                host_inputs,
+                D_host_copy,
+                verbose=1,
+            )
             if not success:
                 raise ValueError("Result mismatch!")
+        host_inputs = wload.get_input_arrays()
         if nruns is None and nwarmup is None:
             # first run to estimate cost
             times = runner.benchmark(
-                host_input_buffers=wload._initial_host_arrays,
-                nruns=10,
-                nwarmup=10,
+                host_input_buffers=host_inputs, nruns=10, nwarmup=10
             )
             # estimate number of runs
             cost = times.mean()
@@ -90,9 +95,7 @@ def run_experiment(
             print(f"{nwarmup=} {nruns=}")
         # benchmark
         times = runner.benchmark(
-            host_input_buffers=wload._initial_host_arrays,
-            nruns=nruns,
-            nwarmup=nwarmup,
+            host_input_buffers=host_inputs, nruns=nruns, nwarmup=nwarmup
         )
 
     times *= 1e6  # convert to microseconds
