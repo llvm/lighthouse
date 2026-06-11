@@ -14,6 +14,8 @@ from .matmul_constraints import (
     check_k_tile,
     check_prefetch_tile_a,
     check_prefetch_tile_b,
+    check_load_tile_a,
+    check_load_tile_b,
 )
 from .matmul_constraints import (
     DPAS,
@@ -190,6 +192,87 @@ def generate_configs(
     return valid_configs
 
 
+def expand_configs_with_load_tiles(
+    param_dicts: list[dict[str, int]],
+    gpu_specs: XeGPUSpecs,
+    load_strategy: str = "dpas",
+    exclude_duplicates: bool = False,
+) -> list[dict[str, int]]:
+    """
+    Expand the parameter configs with different load tile options.
+
+    For every config in param_dicts, generate new configs with different load
+    tile sizes for A and B.
+
+    Returns a new list of parameter configs. If `exclude_duplicates` is True,
+    only add new configs not already in `param_dicts`.
+
+    `load_strategy` defines the load tile selection strategy:
+    - "dpas": use dpas op A/B tile size as load tile
+    - "all": append all valid load tiles for A and B
+    """
+    expanded_configs = []
+    for params in param_dicts:
+        sg_tile = (params["sg_m"], params["sg_n"])
+        k_tile = params["k_tile"]
+        if load_strategy == "all":
+            load_a_list = generate_load_tiles_a(sg_tile, k_tile)
+            load_b_list = generate_load_tiles_b(sg_tile, k_tile)
+        else:
+            load_a_list = [DPAS.A_TILE]
+            load_b_list = [DPAS.B_TILE]
+
+        for la, lb in product(load_a_list, load_b_list):
+            new_params = params.copy()
+            new_params["load_a_m"] = la[0]
+            new_params["load_a_k"] = la[1]
+            new_params["load_b_k"] = lb[0]
+            new_params["load_b_n"] = lb[1]
+            if (
+                check_constraints(new_params, gpu_specs, verbose=False)
+                and new_params not in expanded_configs
+                and (not exclude_duplicates or new_params not in param_dicts)
+            ):
+                expanded_configs.append(new_params)
+
+    return expanded_configs
+
+
+def expand_configs_with_prefetch_depth(
+    param_dicts: list[dict[str, int]],
+    gpu_specs: XeGPUSpecs,
+    max_depth: int = 2,
+    exclude_duplicates: bool = False,
+) -> list[dict[str, int]]:
+    """
+    Expand the parameter configs with different prefetch depth options.
+
+    For every config in param_dicts, generate new configs with different prefetch
+    depth for A and B.
+
+    Returns a new list of parameter configs. If `exclude_duplicates` is True,
+    only add new configs not already in `param_dicts`.
+
+    `max_depth` defines the maximum prefetch depth to explore (inclusive).
+    """
+    pf_depth_list = list(range(1, max_depth + 1))
+
+    expanded_configs = []
+    for params in param_dicts:
+        for a, b in product(pf_depth_list, pf_depth_list):
+            new_params = params.copy()
+            new_params["prefetch_a_nb"] = a
+            new_params["prefetch_b_nb"] = b
+            if (
+                check_constraints(new_params, gpu_specs, verbose=False)
+                and new_params not in expanded_configs
+                and (not exclude_duplicates or new_params not in param_dicts)
+            ):
+                expanded_configs.append(new_params)
+
+    return expanded_configs
+
+
 def generate_prefetch_tiles(
     wg_tile: tuple[int, int],
     k_tile: int,
@@ -250,6 +333,39 @@ def generate_prefetch_tiles(
         prefetch_tiles_b = prefetch_tiles_b[:n]
 
     return prefetch_tiles_a, prefetch_tiles_b
+
+
+def generate_load_tiles(
+    check_func: Callable[[tuple[int, int], tuple[int, int], int], None],
+    sg_tile: tuple[int, int],
+    k_tile: int,
+) -> list[tuple[int, int]]:
+    """Generates valid load tile sizes for A or B based on the check function."""
+    load_elems = [8, 16, 32]
+    load_tiles = []
+    for a, b in product(load_elems, load_elems):
+        tile = (a, b)
+        try:
+            check_func(tile, sg_tile, k_tile)
+            load_tiles.append(tile)
+        except ValueError:
+            pass
+
+    return load_tiles
+
+
+def generate_load_tiles_a(
+    sg_tile: tuple[int, int], k_tile: int
+) -> list[tuple[int, int]]:
+    """Generates valid load tile sizes for A."""
+    return generate_load_tiles(check_load_tile_a, sg_tile, k_tile)
+
+
+def generate_load_tiles_b(
+    sg_tile: tuple[int, int], k_tile: int
+) -> list[tuple[int, int]]:
+    """Generates valid load tile sizes for B."""
+    return generate_load_tiles(check_load_tile_b, sg_tile, k_tile)
 
 
 def estimate_performance(
