@@ -6,6 +6,8 @@
 # RUN: %PYTHON %s --dump-kernel=xegpu-wg --relu | FileCheck %s
 # RUN: %PYTHON %s --dump-kernel=xegpu-wg --bias --relu | FileCheck %s
 # RUN: %PYTHON %s --dump-kernel=xegpu-wg --no-accumulate-c | FileCheck %s
+# RUN: %PYTHON %s --dump-kernel=xegpu-wg --truncate-c | FileCheck %s
+# RUN: %PYTHON %s --dump-kernel=xegpu-wg --bias --truncate-c | FileCheck %s
 # RUN: %PYTHON %s --dump-kernel=xegpu-wg --bias --relu --no-accumulate-c | FileCheck %s
 # CHECK: module attributes {gpu.container_module} {
 
@@ -68,8 +70,14 @@ class XeGPUMatMul:
 
     Computes C = A * B for input matrices A (M x K) and B (K x N).
 
-    Optionally adds a ReLU operation on the result C.
-    Optionally adds a bias term to C (not implemented yet).
+    If `accumulate_c` is True, computes C = A * B + C instead.
+
+    If `transpose_a` is True, treats A as transposed (i.e., K x M) and computes C = A^T * B.
+    If `transpose_b` is True, treats B as transposed (i.e., N x K) and computes C = A * B^T.
+
+    If `has_bias` is True, adds a bias term to the result.
+    If `has_relu` is True, applies ReLU activation to the result (after bias if any).
+    If `truncate_c` is True, truncates the C to A/B data type after accumulation.
     """
 
     payload_function_name: ClassVar[str] = "payload"
@@ -80,11 +88,13 @@ class XeGPUMatMul:
     K: int = 1024
     ab_type: ir.Type | str | None = None
     c_type: ir.Type | str | None = None
+    acc_type: ir.Type | str | None = None
     transpose_a: bool = False
     transpose_b: bool = False
     has_bias: bool = False
     has_relu: bool = False
     accumulate_c: bool = True
+    truncate_c: bool = False
     _input_arrays_cache: dict[bool, list[np.ndarray]] = field(
         default_factory=dict, init=False, repr=False
     )
@@ -94,14 +104,22 @@ class XeGPUMatMul:
             self.ab_type = get_mlir_elem_type(self.ab_type)
         if isinstance(self.c_type, str):
             self.c_type = get_mlir_elem_type(self.c_type)
+        if isinstance(self.acc_type, str):
+            self.acc_type = get_mlir_elem_type(self.acc_type)
         if self.ab_type is None:
             self.ab_type = ir.F16Type.get()
+        if self.acc_type is None:
+            self.acc_type = ir.F32Type.get()
         if self.c_type is None:
-            self.c_type = ir.F32Type.get()
+            self.c_type = self.ab_type if self.truncate_c else self.acc_type
         assert isinstance(self.ab_type, ir.F16Type), (
             "Only f16 type is supported for A and B"
         )
-        assert isinstance(self.c_type, ir.F32Type), "Only f32 type is supported for C"
+        assert isinstance(self.acc_type, ir.F32Type), "Only f32 type is supported for C"
+        if self.truncate_c:
+            assert self.c_type == self.ab_type, (
+                "C type must match A/B type when truncating"
+            )
         self.ab_dtype = mlir_to_numpy_dtype(self.ab_type)
         self.c_dtype = mlir_to_numpy_dtype(self.c_type)
         self.a_shape = (self.M, self.K) if not self.transpose_a else (self.K, self.M)
@@ -161,14 +179,15 @@ class XeGPUMatMul:
             N=self.N,
             K=self.K,
             ab_type=self.ab_type,
-            c_type=self.c_type,
+            c_type=self.acc_type,
+            result_type=self.c_type if not self.truncate_c else self.ab_type,
             transpose_a=self.transpose_a,
             transpose_b=self.transpose_b,
             has_bias=self.has_bias,
             has_relu=self.has_relu,
             accumulate_c=self.accumulate_c,
         )
-        ranks_and_types = [(2, self.ab_type), (2, self.c_type)]
+        ranks_and_types = list(set(((2, self.ab_type), (2, self.c_type))))
         if self.has_bias:
             ranks_and_types.append((1, self.c_type))
         self.memory_manager_class.emit_memory_management_funcs(
@@ -286,6 +305,11 @@ def cli_parser(description):
         "--no-accumulate-c",
         action="store_true",
         help="Compute plain matrix-multiply C=A*B instead of matrix-multiply-accumulate C+=A*B.",
+    )
+    parser.add_argument(
+        "--truncate-c",
+        action="store_true",
+        help="Truncate C to A,B data type after accumulation (e.g., float32 to float16).",
     )
     return parser
 
@@ -480,6 +504,7 @@ enabled via CLI arguments.
             has_bias=args.bias,
             has_relu=args.relu,
             accumulate_c=not args.no_accumulate_c,
+            truncate_c=args.truncate_c,
         )
 
         if args.check_result and not args.init_int:

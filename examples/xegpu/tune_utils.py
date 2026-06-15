@@ -60,6 +60,7 @@ def execute_and_log(
     has_bias: bool = False,
     has_relu: bool = False,
     accumulate_c: bool = True,
+    truncate_c: bool = False,
     timeout: int = 20,
 ) -> tuple[float, float]:
     entry = params.copy()
@@ -77,6 +78,7 @@ def execute_and_log(
             has_bias=has_bias,
             has_relu=has_relu,
             accumulate_c=accumulate_c,
+            truncate_c=truncate_c,
             **params,
         )
         duration = perf_counter() - tic
