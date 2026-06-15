@@ -133,6 +133,7 @@
   initializations: [rnd]
   output_shape: 1024x1024
   gflops: (1024 * 1024) / 1e9
+  pipeline: element_wise
 
 - kernel: level1/21_Sigmoid.py
   input_shapes: [4096x8192]
