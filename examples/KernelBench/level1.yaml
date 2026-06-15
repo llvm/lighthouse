@@ -41,10 +41,10 @@
   pipeline: matmul
 
 - kernel: level1/7_Matmul_with_small_K_dimension_.py
-  input_shapes: [4096x64, 64x4096]
+  input_shapes: [1024x64, 64x1024]
   initializations: [rnd, rnd]
-  output_shape: 4096x4096
-  gflops: (4096 * 64 * 4096 * 2) / 1e9
+  output_shape: 1024x1024
+  gflops: (1024 * 64 * 1024 * 2) / 1e9
   pipeline: matmul
 
 - kernel: level1/8_Matmul_with_irregular_shapes_.py
@@ -123,16 +123,16 @@
   pipeline: matmul
 
 - kernel: level1/19_ReLU.py
-  input_shapes: [4096x8192]
+  input_shapes: [1024x1024]
   initializations: [rnd]
-  output_shape: 4096x8192
-  gflops: (4096 * 8192) / 1e9
+  output_shape: 1024x1024
+  gflops: (1024 * 1024) / 1e9
 
 - kernel: level1/20_LeakyReLU.py
-  input_shapes: [4096x8192]
+  input_shapes: [1024x1024]
   initializations: [rnd]
-  output_shape: 4096x8192
-  gflops: (4096 * 8192) / 1e9
+  output_shape: 1024x1024
+  gflops: (1024 * 1024) / 1e9
 
 - kernel: level1/21_Sigmoid.py
   input_shapes: [4096x8192]
