@@ -10,6 +10,7 @@ from .ops.extract_handle import extract_handle
 from .ops.get_tileable_consumers import get_tileable_consumers
 from .ops.get_tiling_sizes import get_tiling_sizes
 from .ops.update_address_space import update_address_space
+from .ops.replace_with_fused_attention import replace_with_fused_attention
 
 __all__ = [
     "TransformExtensionDialect",
@@ -22,6 +23,7 @@ __all__ = [
     "param_cmp_eq",
     "register_and_load",
     "replace",
+    "replace_with_fused_attention",
     "update_address_space",
     "wrap_in_benching_func",
 ]
