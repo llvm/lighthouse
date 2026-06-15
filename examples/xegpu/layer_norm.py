@@ -119,13 +119,20 @@ class XeGPULayerNorm:
 
     def payload_module(self) -> ir.Module:
         """Generate MLIR module for layer_norm payload."""
-        return generate_gpu_layer_norm_payload(
+        mod = generate_gpu_layer_norm_payload(
             func_name=self.payload_function_name,
             M=self.M,
             N=self.N,
             dtype=self.elem_type,
             eps=self.eps,
         )
+        # Emit the memory management utility functions into the payload
+        # module: the 2D input/output and the 1D gamma/beta bias vectors.
+        ranks_and_types = [(2, self.elem_type), (1, self.elem_type)]
+        self.memory_manager_class.emit_memory_management_funcs(
+            mod, ranks_and_types=ranks_and_types
+        )
+        return mod
 
     def schedule_modules(
         self, stop_at_stage: Optional[str] = None, parameters: Optional[dict] = None
