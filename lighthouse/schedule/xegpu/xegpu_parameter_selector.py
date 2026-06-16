@@ -4,27 +4,10 @@ Utility to choose matmul tile size parameters for XeGPU targets.
 
 import json
 from pathlib import Path
-from .mlp_schedule import DPAS
+from .matmul_costmodel import generate_configs
+from .xegpu_specs import XeGPUSpecs
 
 DEFAULT_JSON_FILE = str(Path(__file__).parent / "matmul_params.json")
-
-DEFAULT_PARAMS = {
-    "wg_m": 128,
-    "wg_n": 128,
-    "sg_m": 32,
-    "sg_n": 32,
-    "k_tile": 32,
-    "load_a_m": DPAS.A_TILE[0],
-    "load_a_k": DPAS.A_TILE[1],
-    "load_b_k": DPAS.B_TILE[0],
-    "load_b_n": DPAS.B_TILE[1],
-    "prefetch_a_m": 16,
-    "prefetch_a_k": 16,
-    "prefetch_b_k": 16,
-    "prefetch_b_n": 32,
-    "prefetch_a_nb": 1,
-    "prefetch_b_nb": 1,
-}
 
 
 def load_param_database(json_file: str = DEFAULT_JSON_FILE) -> dict:
@@ -39,24 +22,49 @@ def load_param_database(json_file: str = DEFAULT_JSON_FILE) -> dict:
     return matmul_param_db
 
 
-matmul_param_db = load_param_database()
+class XeGPUParameterSelector:
+    def __init__(self, device: str | None = None, json_file: str | None = None):
+        if json_file is None:
+            json_file = DEFAULT_JSON_FILE
+        self.device = device if device is not None else "B70"
+        self.gpu_specs = XeGPUSpecs.get(self.device)
+        self.matmul_param_db = load_param_database(json_file)
 
+    def get_parameters(
+        self,
+        shape: tuple[int, int, int],
+        transpose_a: bool = False,
+        transpose_b: bool = False,
+        **kwargs,
+    ) -> dict:
+        m, n, k = shape
+        if shape not in self.matmul_param_db or transpose_a or transpose_b:
+            try:
+                # Use cost model to generate tile sizes and take first config
+                configs = generate_configs(
+                    m,
+                    n,
+                    k,
+                    self.gpu_specs,
+                    transpose_a=transpose_a,
+                    transpose_b=transpose_b,
+                    max_nb_configs=1,
+                    verbose=False,
+                )
+                if not configs:
+                    raise ValueError(
+                        f"Cost model did not return any valid configurations for matmul {shape}."
+                    )
+                params = configs[0][1]
+                return params
+            except Exception as e:
+                msg = f"Error generating parameters for shape {shape} using cost model: {e}"
+                raise ValueError(msg) from e
+        params = self.matmul_param_db[shape]
+        # ensure transpose flags are set
+        params.setdefault("transpose_a", False)
+        params.setdefault("transpose_b", False)
+        return params
 
-def get_matmul_parameters(m: int, n: int, k: int) -> list:
-    shape = (m, n, k)
-    if shape not in matmul_param_db:
-        if m >= 128 and n >= 256 and k >= 64:
-            params = DEFAULT_PARAMS.copy()
-            params["m"] = m
-            params["n"] = n
-            params["k"] = k
-            return params
-        else:
-            raise ValueError(
-                f"Parameter selector: No parameters found for matmul shape {shape}"
-            )
-    return matmul_param_db[shape]
-
-
-def get_parameters_for_layers(shapes: list[tuple[int, int, int]]) -> list:
-    return [get_matmul_parameters(*shape) for shape in shapes]
+    def get_parameters_for_layers(self, param_list: list[dict]) -> list:
+        return [self.get_parameters(**params) for params in param_list]

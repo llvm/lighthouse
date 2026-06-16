@@ -20,10 +20,11 @@ from lighthouse import dialects as lh_dialects
 from lighthouse import schedule as lh_schedule
 from lighthouse.pipeline.driver import TransformDriver
 from lighthouse.utils.mlir import get_mlir_library_path
-from lighthouse.schedule.xegpu import mlp_schedule, xegpu_to_binary
+from lighthouse.schedule.xegpu import (
+    mlp_schedule,
+    xegpu_to_binary,
+)
 from lighthouse.ingress.torch import gpu_backend, TargetDialect
-
-import parameter_selector
 
 
 class Model(nn.Module):
@@ -139,9 +140,14 @@ def parse_cli_args(description):
         help="Tile size for cooperative prefetching of subgroup B matrix",
     )
     parser.add_argument(
-        "--prefetch-nb",
+        "--prefetch-a-nb",
         type=int,
-        help="Number of initial prefetches.",
+        help="Number of initial prefetches for A matrix.",
+    )
+    parser.add_argument(
+        "--prefetch-b-nb",
+        type=int,
+        help="Number of initial prefetches for B matrix.",
     )
     parser.add_argument(
         "--check-result",
@@ -157,12 +163,17 @@ def parse_cli_args(description):
     parser.add_argument(
         "--nwarmup",
         type=int,
-        default=20,
+        default=500,
         help="Number of warm-up iterations before benchmarking.",
     )
     parser.add_argument(
         "--json",
         help="Read problem sizes and tile parameters from a JSON file.",
+    )
+    parser.add_argument(
+        "--target",
+        choices=["B70", "B50"],
+        help="Target GPU device, e.g., B70.",
     )
     args = parser.parse_args()
 
@@ -182,30 +193,14 @@ enabled via CLI arguments.
 
     # Problem size
     m, n, k = args.sizes if args.sizes else (4096, 4096, 4096)
-    # Get default parameters from the database
-    try:
-        params = parameter_selector.get_matmul_parameters(m, n, k)
-    except ValueError:
-        # Initialize with a stub and assume the rest will be populated
-        params = {
-            "m": m,
-            "n": n,
-            "k": k,
-            "wg_m": None,
-            "wg_n": None,
-            "sg_m": None,
-            "sg_n": None,
-            "k_tile": None,
-            "load_a_m": None,
-            "load_a_k": None,
-            "load_b_k": None,
-            "load_b_n": None,
-            "prefetch_a_m": None,
-            "prefetch_a_k": None,
-            "prefetch_b_k": None,
-            "prefetch_b_n": None,
-            "prefetch_nb": None,
-        }
+    # Set required parameters
+    params = {
+        "m": m,
+        "n": n,
+        "k": k,
+    }
+    if args.target:
+        params["device"] = args.target
     if args.json:
         # Override parameters with values from JSON file if provided
         with open(args.json, "r") as f:
@@ -227,8 +222,10 @@ enabled via CLI arguments.
         params["prefetch_a_m"], params["prefetch_a_k"] = args.prefetch_tile_a
     if args.prefetch_tile_b:
         params["prefetch_b_k"], params["prefetch_b_n"] = args.prefetch_tile_b
-    if args.prefetch_nb is not None:
-        params["prefetch_nb"] = args.prefetch_nb
+    if args.prefetch_a_nb is not None:
+        params["prefetch_a_nb"] = args.prefetch_a_nb
+    if args.prefetch_b_nb is not None:
+        params["prefetch_b_nb"] = args.prefetch_b_nb
 
     for param_key, v in params.items():
         if v is None:
@@ -279,7 +276,7 @@ enabled via CLI arguments.
                 model(a, b)
             end = time.perf_counter_ns()
 
-            elapsed = (end - start) / args.nruns / 1e3  # Convert to μs
+            elapsed = (end - start) / args.nruns / 1e3  # Convert to us
             flop_count = 2 * m * n * k
             gflops = flop_count / (elapsed * 1e-6) / 1e9
 

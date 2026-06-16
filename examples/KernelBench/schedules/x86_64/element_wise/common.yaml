@@ -1,0 +1,15 @@
+# This is an optimizing pipeline for kernel_bench element-wise kernels.
+# Assumption: M, N, K % 32 = 0
+Pipeline:
+  # Tries to combine as much as possible into one big generic
+  - pass: "linalg-fuse-elementwise-ops"
+  # Register tiling and unroll to fill the pipeline
+  - schedule: "tiling.py[gen=tile_ops]{target_op=linalg.generic
+                                       tile_sizes=[1,$register_tile]
+                                       unroll_factors=[0,$unroll_factor]}"
+  # Tries to vectorize everything still at tensor level
+  - schedule: vectorization.py[gen=vectorize_all]
+
+  - include: bufferization.yaml
+
+  - include: ../lower.yaml

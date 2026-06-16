@@ -2,6 +2,8 @@ import yaml
 import os
 import re
 
+from lighthouse.utils.types import string_to_type
+
 
 class Descriptor:
     """
@@ -133,33 +135,6 @@ class Descriptor:
         )
 
     @staticmethod
-    def _string_to_type(value: str) -> str | int | float | bool | list:
-        value = str(value)
-        if value == "True":
-            return True
-        elif value == "False":
-            return False
-        try:
-            return int(value)
-        except ValueError:
-            try:
-                return float(value)
-            except ValueError:
-                # List of values, e.g. [val1,val2,...]
-                if value.startswith("[") and value.endswith("]"):
-                    list_str = value[1:-1]
-                # List of values, e.g. val1,val2,...
-                elif value.find(",") != -1:
-                    list_str = value
-                else:
-                    # Something else entirely, return as string
-                    return value
-                # Recursesively parse the list elements
-                return [
-                    Descriptor._string_to_type(v.strip()) for v in list_str.split(",")
-                ]
-
-    @staticmethod
     def _parse_csv(line: str, separator: str = ",") -> dict:
         line = str(line)
         result = {}
@@ -169,9 +144,9 @@ class Descriptor:
                 continue
             if "=" in arg:
                 key, value = arg.split("=")
-                result[key] = Descriptor._string_to_type(value)
+                result[key.strip()] = string_to_type(value.strip())
             else:
-                result[arg] = True
+                result[arg.strip()] = True
         return result
 
     @staticmethod
@@ -188,19 +163,22 @@ class Descriptor:
         options = {}
 
         # Args: [arg1=val1,args2]
-        if m := re.search(r"\[([^]]*)\]", line):
-            args_str = m.group(1)
-            args = Descriptor._parse_csv(args_str, ",")
+        # Note: Lists can occur inside options: { ... val=[1,2,3] ... }
+        # So we make sure the [] is not inside {}
+        if m := re.match(r"[^{]+\[", line):
+            if m := re.search(r"\[([^]]*)\]", line):
+                args_str = m.group(1).strip()
+                args = Descriptor._parse_csv(args_str, ",")
 
         # Opts: {arg1=val1 args2}
         if m := re.search(r"\{([^}]+)\}", line):
-            opts_str = m.group(1)
+            opts_str = m.group(1).strip()
             options = Descriptor._parse_csv(opts_str, " ")
 
         # Cleanup the original string
-        line = Descriptor._remove_args_and_opts(line)
+        basename = Descriptor._remove_args_and_opts(line).strip()
 
-        return [line, args, options]
+        return [basename, args, options]
 
     def __str__(self) -> str:
         """serialize basename + args + opts for transform consumption"""
@@ -249,14 +227,33 @@ class PipelineDescriptor:
                 f"PipelineDescriptor requires a Descriptor as input, got {type(desc)}"
             )
         self.descriptor = desc
+        self.base_path = (
+            os.path.dirname(desc.basename) if desc.basename else desc.base_path
+        )
         with open(desc.basename, "r") as f:
             self.pipeline_desc = yaml.safe_load(f)
+        self._apply_variables()
         self.stages: list[str] = []
         self._parse_stages()
         if not self.stages:
             raise ValueError(
                 f"Pipeline description file {desc.basename} does not contain a valid 'Pipeline'."
             )
+
+    def _apply_variables(self) -> None:
+        """
+        Apply variables to the stages in the pipeline. Variables are defined in the descriptor
+        as opts, and can be used in the stage definitions as $var_name.
+        """
+        pipeline = self.pipeline_desc.get("Pipeline", [])
+        for idx, item in enumerate(pipeline):
+            key, line = next(iter(item.items()))
+            for var, value in self.descriptor.opts.items():
+                var = "$" + var
+                value = str(value).replace(" ", "")
+                if var in line:
+                    line = line.replace(var, value)
+            pipeline[idx] = {key: line}
 
     def _parse_stages(self) -> None:
         """
@@ -270,7 +267,7 @@ class PipelineDescriptor:
 
         for stage in pipeline:
             key, value = next(iter(stage.items()))
-            desc = Descriptor(value, type=key, base_path=self.descriptor.base_path)
+            desc = Descriptor(value, type=key, base_path=self.base_path)
             if desc.is_include():
                 self._include_pipeline(desc)
 

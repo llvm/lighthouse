@@ -49,6 +49,7 @@ def import_model(
     init_args_fn_name: str | None = "get_init_inputs",
     init_kwargs_fn_name: str | None = None,
     model_init_args: Iterable | None = None,
+    model_datatype: torch.dtype | None = None,
     sample_args_fn_name: str = "get_inputs",
     sample_kwargs_fn_name: str | None = None,
     sample_args: Iterable | None = None,
@@ -74,6 +75,8 @@ def import_model(
         model_init_args (Iterable | None, optional): If provided, these are used directly as
             initialization arguments instead of calling ``init_args_fn_name`` from the file.
             Useful for overriding hard-coded sizes in the model file. Defaults to None.
+        model_datatype (torch.dtype | None, optional): If provided, the torch model is cast to this
+            datatype before import. Defaults to None.
         sample_args_fn_name (str, optional): The name of the function in the file that
             returns the sample input arguments for the model. Defaults to "get_inputs".
         sample_kwargs_fn_name (str, optional): The name of the function in the file that
@@ -164,6 +167,8 @@ def import_model(
     )
 
     nn_model: nn.Module = model(*model_init_args, **model_init_kwargs)
+    if model_datatype is not None:
+        nn_model = nn_model.to(model_datatype)
     if state_path is not None:
         state_dict = torch.load(state_path)
         nn_model.load_state_dict(state_dict)
@@ -250,6 +255,7 @@ def import_from_file(
     init_args_fn_name: str | None = "get_init_inputs",
     init_kwargs_fn_name: str | None = None,
     model_init_args: Iterable | None = None,
+    model_datatype: torch.dtype | None = None,
     sample_args_fn_name: str = "get_inputs",
     sample_kwargs_fn_name: str | None = None,
     sample_args: Iterable | None = None,
@@ -276,6 +282,8 @@ def import_from_file(
         model_init_args (Iterable | None, optional): If provided, these are used directly as
             initialization arguments instead of calling ``init_args_fn_name`` from the file.
             Useful for overriding hard-coded sizes in the model file. Defaults to None.
+        model_datatype (torch.dtype | None, optional): If provided, the torch model is cast to this
+            datatype before import. Defaults to None.
         sample_args_fn_name (str, optional): The name of the function in the file that
             returns the sample input arguments for the model. Defaults to "get_inputs".
         sample_kwargs_fn_name (str, optional): The name of the function in the file that
@@ -305,6 +313,7 @@ def import_from_file(
         init_args_fn_name=init_args_fn_name,
         init_kwargs_fn_name=init_kwargs_fn_name,
         model_init_args=model_init_args,
+        model_datatype=model_datatype,
         sample_args_fn_name=sample_args_fn_name,
         sample_kwargs_fn_name=sample_kwargs_fn_name,
         sample_args=sample_args,

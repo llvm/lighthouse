@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 
 import argparse
+import subprocess
 from datetime import datetime
 import sys
 import ml_dtypes
@@ -20,8 +21,45 @@ from lighthouse.ingress.torch import cpu_backend
 from lighthouse.utils.mlir import get_mlir_library_path
 import os
 
+from lighthouse.utils.types import string_to_type
+
 lib_dir = get_mlir_library_path()
 c_runner_lib = os.path.join(lib_dir, "libmlir_c_runner_utils.so")
+
+
+def from_numpy(buf):
+    """
+    Converts a numpy array to a torch tensor.
+    If the numpy array is of type bfloat16, it is first reinterpreted as uint16
+    to be compatible with torch.from_numpy(), and then viewed as bfloat16.
+    """
+    return (
+        torch.from_numpy(buf.view(np.uint16)).view(torch.bfloat16)
+        if buf.dtype == ml_dtypes.bfloat16
+        else torch.from_numpy(buf)
+    )
+
+
+def dump_assembly(args, object_file_path: str):
+    """
+    Dumps the assembly of the object file as an S file
+    next to the original PyTorch module.
+    """
+    asm_file_path = Path(args.kernel_bench_model).stem + ".s"
+    try:
+        result = subprocess.run(
+            ["objdump", "-d", object_file_path],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=True,
+        )
+        with open(asm_file_path, "w") as f:
+            f.write(result.stdout)
+        print(f"Assembly written to {asm_file_path}")
+    except subprocess.CalledProcessError as e:
+        print(f"Error disassembling object file: {e.stderr}", file=sys.stderr)
+        print("'objdump' must be in the path.", file=sys.stderr)
 
 
 def import_torch(
@@ -29,6 +67,7 @@ def import_torch(
     model_class_name: str = "Model",
     sample_args=None,
     model_init_args=None,
+    dtype=torch.float32,
 ) -> torch.nn.Module:
     """
     Imports a PyTorch model from a KernelBench file and returns the PyTorch module.
@@ -40,6 +79,7 @@ def import_torch(
             model_class_name=model_class_name,
             sample_args=sample_args,
             model_init_args=model_init_args,
+            dtype=dtype,
         )
         assert isinstance(model, torch.nn.Module)
         return model, sample_args, sample_kwargs
@@ -105,7 +145,7 @@ def define_compiler_pipeline(
 
         if not pipeline_yaml:
             # Search for the yaml file in the script directory.
-            pipeline_yaml = Path(__file__).parent / "kernel_bench.yaml"
+            pipeline_yaml = Path(__file__).parent / "kernel-bench.yaml"
         if isinstance(pipeline_yaml, list):
             for yaml in pipeline_yaml:
                 desc = Descriptor(yaml)
@@ -117,35 +157,30 @@ def define_compiler_pipeline(
     return driver
 
 
-def parse_inputs_and_outputs(
-    input_shapes_str: str, output_shape_str: str
-) -> tuple[list, list]:
+def parse_module_arguments(
+    input_shapes_str: str, output_shape_str: str, init_args_str: str
+) -> tuple[list, list, tuple]:
     """
     Parses the input and output shape strings to create sample tensors for the inputs and outputs.
     """
     # Empty buffers shortcut (either both or none, ignore either)
     if input_shapes_str is None or output_shape_str is None:
-        return None, None
+        return None, None, None
 
     # Parse input shapes first, to create sample tensors for the inputs only
     buffers = [arg.arg for arg in KernelArgumentParser.parse_all(input_shapes_str)]
     # Build sample torch tensors from input shapes to override hard-coded sizes in get_inputs().
-    # torch.from_numpy() does not support ml_dtypes.bfloat16, so reinterpret as uint16 first.
     if any(buf.dtype == ml_dtypes.bfloat16 for buf in buffers):
         print(
             "Warning: bfloat16 is not natively supported by torch.from_numpy(), \
             so we are reinterpreting the buffers as uint16. This may cause issues if the buffers are modified after creation."
         )
-    sample_tensors = [
-        torch.from_numpy(buf.view(np.uint16)).view(torch.bfloat16)
-        if buf.dtype == ml_dtypes.bfloat16
-        else torch.from_numpy(buf)
-        for buf in buffers
-    ]
+    sample_tensors = [from_numpy(buf) for buf in buffers]
+    init_args = string_to_type(init_args_str)
 
     # Now include the output shape in the buffers
     buffers = [KernelArgumentParser.parse(output_shape_str).arg, *buffers]
-    return buffers, sample_tensors
+    return buffers, sample_tensors, init_args
 
 
 def torch_compile(args, model: torch.nn.Module, sample_tensors: list):
@@ -166,6 +201,10 @@ def torch_compile(args, model: torch.nn.Module, sample_tensors: list):
             print(module)
         return module
 
+    obj_file = ""
+    if args.dump_assembly:
+        obj_file = Path(args.kernel_bench_model).stem + ".o"
+
     # TODO: Implement benchmarking
     if args.benchmark:
         raise NotImplementedError(
@@ -175,9 +214,14 @@ def torch_compile(args, model: torch.nn.Module, sample_tensors: list):
         # Reconfigure the model to be compiled using torch.compile, take the compiled output.
         model.compile(
             dynamic=False,
-            backend=cpu_backend(compiler_pipeline, shared_libs=[c_runner_lib]),
+            backend=cpu_backend(
+                compiler_pipeline, shared_libs=[c_runner_lib], dump_obj_file=obj_file
+            ),
         )
         out = model(*sample_tensors, **sample_kwargs)
+
+        if args.dump_assembly and obj_file:
+            dump_assembly(args, obj_file)
 
     return out
 
@@ -217,7 +261,11 @@ def torch_import(args, model: torch.nn.Module, buffers: list, sample_tensors: li
             host_input_buffers=buffers,
         )
 
-    return torch.from_numpy(buffers[0])
+    if args.dump_assembly:
+        obj_file = Path(args.kernel_bench_model).stem + ".o"
+        dump_assembly(args, runner.dump_object_file(obj_file))
+
+    return from_numpy(buffers[0])
 
 
 def compare_outputs(out_ref, out, tolerance, max_tolerance):
@@ -244,6 +292,15 @@ def compare_outputs(out_ref, out, tolerance, max_tolerance):
     return False, max_tol
 
 
+def get_torch_data_type(dtype_str: str):
+    if dtype_str == "f32":
+        return torch.float32
+    elif dtype_str == "bf16":
+        return ml_dtypes.bfloat16
+    else:
+        raise ValueError(f"Unsupported data type: {dtype_str}")
+
+
 if __name__ == "__main__":
     Parser = argparse.ArgumentParser(
         description="""Kernel Bench importer, optimization and runner."""
@@ -255,15 +312,29 @@ if __name__ == "__main__":
     )
     Parser.add_argument(
         "--input-shapes",
+        type=str,
         help="Shape of the input tensors in format: \
               DIMS(MxNx...)xTYPE(f16/f32/f64/bf16/i8)xINIT(0/1/rnd/id). \
               For multiple inputs, separate by comma.",
     )
     Parser.add_argument(
         "--output-shape",
+        type=str,
         help="Shape of the output tensor in format: \
               DIMS(MxNx...)xTYPE(f16/f32/f64/bf16/i8)xINIT(0/1/rnd/id). \
               Single output shape supported.",
+    )
+    Parser.add_argument(
+        "--init-args",
+        type=str,
+        help="Comma-separated list of arguments to initialize the model.",
+    )
+    Parser.add_argument(
+        "--dtype",
+        type=str,
+        default="f32",
+        choices=["f32", "bf16"],
+        help="Data type. Default f32.",
     )
     Parser.add_argument(
         "--seed",
@@ -337,6 +408,11 @@ if __name__ == "__main__":
         action=argparse.BooleanOptionalAction,
         help="Whether to print the MLIR module after all stages. Default is False.",
     )
+    Parser.add_argument(
+        "--dump-assembly",
+        action=argparse.BooleanOptionalAction,
+        help="Whether to dump the assembly of the compiled object file to a .s file. Default is False.",
+    )
     args = Parser.parse_args()
 
     # Initialize the random seed, for stable tests
@@ -345,6 +421,7 @@ if __name__ == "__main__":
     else:
         np.random.seed(int(datetime.now().timestamp()))
 
+    # Validate input/output/init arguments
     if (
         args.input_shapes is None or args.output_shape is None
     ) and not args.torch_compile:
@@ -352,14 +429,20 @@ if __name__ == "__main__":
             "--input-shapes and --output-shape must be provided together for non-torch-compile mode."
         )
 
+    # Validate data type argument
+    dtype = get_torch_data_type(args.dtype)
+
     # Initialize the device data
-    buffers, sample_tensors = parse_inputs_and_outputs(
-        args.input_shapes, args.output_shape
+    buffers, sample_tensors, init_args = parse_module_arguments(
+        args.input_shapes, args.output_shape, args.init_args
     )
 
     # First, import the model and run the reference numbers
     model, sample_args, sample_kwargs = import_torch(
-        args.kernel_bench_model, sample_args=sample_tensors
+        args.kernel_bench_model,
+        sample_args=sample_tensors,
+        model_init_args=init_args,
+        dtype=dtype,
     )
     if args.validate:
         out_ref = model(*sample_args, **sample_kwargs)

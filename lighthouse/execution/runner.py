@@ -20,7 +20,7 @@ from lighthouse.dialects.transform import transform_ext
 from lighthouse.schedule import schedule_boilerplate
 from lighthouse.utils.memref import to_packed_args
 from lighthouse.utils.mlir import get_mlir_library_path
-from .memory_manager import GPUMemoryManager, MemoryManager
+from .memory_manager import GPUMemoryManager, ExternalMemoryManager, MemoryManager
 
 
 class RunnerCallable(typing.Protocol):
@@ -59,7 +59,9 @@ class Runner:
         if c_runner_lib not in shared_libs:
             shared_libs.append(c_runner_lib)
         self.lib_dir = get_mlir_library_path()
-        self.shared_libs = self._find_shared_libs(shared_libs)
+        shared_libs = self._find_shared_libs(shared_libs)
+        # Remove duplicates, the same library cannot be loaded multiple times.
+        self.shared_libs = list(dict.fromkeys(shared_libs))
         self.opt_level = opt_level
         self.engine = self._get_engine()
 
@@ -99,7 +101,7 @@ class Runner:
 
     def _execute_kernel(
         self,
-        host_input_buffers: list[np.ndarray],
+        host_input_buffers: list,
         payload_function_name: str = "",
         argument_access_callback: Optional[
             Callable[[list[ctypes.Structure], ExecutionEngine, MemoryManager], None]
@@ -128,36 +130,39 @@ class Runner:
             raise ValueError("host_input_buffers must be provided")
 
         if self.mem_manager_cls is None:
+            if any(not isinstance(buf, np.ndarray) for buf in host_input_buffers):
+                raise ValueError(
+                    "host_input_buffers must be numpy arrays when no mem_manager_cls is provided"
+                )
             mem_manager = None
             allocator = partial(self._numpy_to_memref_manager, host_input_buffers)
         elif self.mem_manager_cls is GPUMemoryManager:
             mem_manager = self.mem_manager_cls(self.engine)
             allocator = partial(mem_manager.clone_host_buffers, host_input_buffers)
+        elif issubclass(self.mem_manager_cls, ExternalMemoryManager):
+            mem_manager = self.mem_manager_cls(self.engine)
+            allocator = partial(mem_manager.get_memrefs, host_input_buffers)
         else:
             raise ValueError(
                 f"Unsupported mem_manager_cls type: {self.mem_manager_cls}"
             )
 
-        if benchmark:
-            time_array = np.zeros((nruns,), dtype=np.float64)
-        else:
-            time_array = None
-
-        def _prepare_args(inputs):
-            if benchmark:
-                # allocate buffer for timings and prepare arguments
-                time_memref = get_ranked_memref_descriptor(time_array)
-                return to_packed_args(inputs + [time_memref, nruns, nwarmup])
-            else:
-                return to_packed_args(inputs)
-
         with allocator() as inputs:
-            args = _prepare_args(inputs)
-
             # call function
             if benchmark:
+                # allocate buffer for timings and prepare arguments
+                time_array = np.zeros((nruns,), dtype=np.float64)
+                time_memref = get_ranked_memref_descriptor(time_array)
+                args = to_packed_args(inputs + [time_memref, nruns, nwarmup])
+
+                # Run the benchmark function instead of the main one
                 function_name = self.payload_benchmark_function_name
             else:
+                # No need for extra allocations
+                time_array = None
+                args = to_packed_args(inputs)
+
+                # Run the main function
                 function_name = payload_function_name
 
             # Now lookup and call the function
@@ -175,7 +180,7 @@ class Runner:
 
     def benchmark(
         self,
-        host_input_buffers: list[np.ndarray],
+        host_input_buffers: list,
         argument_access_callback: RunnerCallable = None,
         nruns: int = 100,
         nwarmup: int = 10,
@@ -194,7 +199,7 @@ class Runner:
     def execute(
         self,
         payload_function_name: str,
-        host_input_buffers: list[np.ndarray],
+        host_input_buffers: list,
         argument_access_callback: RunnerCallable = None,
     ) -> None:
         """
@@ -206,6 +211,21 @@ class Runner:
             argument_access_callback=argument_access_callback,
             benchmark=False,
         )
+
+    def dump_object_file(self, file_name: str) -> str:
+        """
+        Dump the compiled object file.
+
+        Args:
+            file_name: Target output file.
+
+        Returns:
+            Name of the dumped file.
+        """
+        if not file_name:
+            raise ValueError("non-empty file_name must be provided")
+        self.engine.dump_to_object_file(file_name)
+        return file_name
 
     @staticmethod
     def get_bench_wrapper_schedule(payload_func: str) -> ir.Module:

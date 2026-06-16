@@ -2,611 +2,512 @@
   input_shapes: [128x64x128x128]
   initializations: [rnd]
   output_shape: 128x128x126x126
-  dtypes: [f32, bf16]
 
 - kernel: level2/2_ConvTranspose2d_BiasAdd_Clamp_Scaling_Clamp_Divide.py
   input_shapes: [128x64x128x128]
   initializations: [rnd]
   output_shape: 128x64x256x256
-  dtypes: [f32, bf16]
 
 - kernel: level2/3_ConvTranspose3d_Sum_LayerNorm_AvgPool_GELU.py
   input_shapes: [32x32x16x32x32]
   initializations: [rnd]
   output_shape: 32x64x16x32x32
-  dtypes: [f32, bf16]
 
 - kernel: level2/4_Conv2d_Mish_Mish.py
   input_shapes: [64x64x256x256]
   initializations: [rnd]
   output_shape: 64x128x254x254
-  dtypes: [f32, bf16]
 
 - kernel: level2/5_ConvTranspose2d_Subtract_Tanh.py
   input_shapes: [32x64x256x256]
   initializations: [rnd]
   output_shape: 32x64x513x513
-  dtypes: [f32, bf16]
 
 - kernel: level2/6_Conv3d_Softmax_MaxPool_MaxPool.py
   input_shapes: [128x3x16x32x32]
   initializations: [rnd]
   output_shape: 128x16x3x7x7
-  dtypes: [f32, bf16]
 
 - kernel: level2/7_Conv3d_ReLU_LeakyReLU_GELU_Sigmoid_BiasAdd.py
   input_shapes: [64x8x32x64x64]
   initializations: [rnd]
   output_shape: 64x32x30x62x62
-  dtypes: [f32, bf16]
 
 - kernel: level2/8_Conv3d_Divide_Max_GlobalAvgPool_BiasAdd_Sum.py
   input_shapes: [128x8x16x64x64]
   initializations: [rnd]
   output_shape: 128x1x1x1
-  dtypes: [f32, bf16]
 
 - kernel: level2/9_Matmul_Subtract_Multiply_ReLU.py
   input_shapes: [1024x8192]
   initializations: [rnd]
   output_shape: 1024x8192
-  dtypes: [f32, bf16]
 
 - kernel: level2/10_ConvTranspose2d_MaxPool_Hardtanh_Mean_Tanh.py
   input_shapes: [128x64x256x256]
   initializations: [rnd]
   output_shape: 128x64x1x1
-  dtypes: [f32, bf16]
 
 - kernel: level2/11_ConvTranspose2d_BatchNorm_Tanh_MaxPool_GroupNorm.py
   input_shapes: [8x64x32x32]
   initializations: [rnd]
   output_shape: 8x128x17x17
-  dtypes: [f32, bf16]
 
 - kernel: level2/12_Gemm_Multiply_LeakyReLU.py
   input_shapes: [1024x8192]
   initializations: [rnd]
   output_shape: 1024x8192
-  dtypes: [f32, bf16]
 
 - kernel: level2/13_ConvTranspose3d_Mean_Add_Softmax_Tanh_Scaling.py
   input_shapes: [16x16x32x128x128]
   initializations: [rnd]
   output_shape: 16x64x1x128x128
-  dtypes: [f32, bf16]
 
 - kernel: level2/14_Gemm_Divide_Sum_Scaling.py
   input_shapes: [1024x8192]
   initializations: [rnd]
   output_shape: 1024x1
-  dtypes: [f32, bf16]
 
 - kernel: level2/15_ConvTranspose3d_BatchNorm_Subtract.py
   input_shapes: [4x16x16x32x32]
   initializations: [rnd]
   output_shape: 4x32x31x63x63
-  dtypes: [f32, bf16]
 
 - kernel: level2/16_ConvTranspose2d_Mish_Add_Hardtanh_Scaling.py
   input_shapes: [128x64x128x128]
   initializations: [rnd]
   output_shape: 128x64x256x256
-  dtypes: [f32, bf16]
 
 - kernel: level2/17_Conv2d_InstanceNorm_Divide.py
   input_shapes: [128x64x128x128]
   initializations: [rnd]
   output_shape: 128x128x126x126
-  dtypes: [f32, bf16]
   warning: "LLVM ERROR: SmallVector unable to grow (93TB! > 4GB)"
 
 - kernel: level2/18_Matmul_Sum_Max_AvgPool_LogSumExp_LogSumExp.py
   input_shapes: [1024x8192]
   initializations: [rnd]
   output_shape: 1024x1
-  dtypes: [f32, bf16]
   warning: "error: failed to legalize operation 'torch.constant.bool'"
 
 - kernel: level2/19_ConvTranspose2d_GELU_GroupNorm.py
   input_shapes: [128x64x256x256]
   initializations: [rnd]
   output_shape: 128x64x258x258
-  dtypes: [f32, bf16]
 
 - kernel: level2/20_ConvTranspose3d_Sum_ResidualAdd_Multiply_ResidualAdd.py
   input_shapes: [16x32x16x32x32]
   initializations: [rnd]
   output_shape: 16x64x32x64x64
-  dtypes: [f32, bf16]
 
 - kernel: level2/21_Conv2d_Add_Scale_Sigmoid_GroupNorm.py
   input_shapes: [128x8x256x256]
   initializations: [rnd]
   output_shape: 128x32x254x254
-  dtypes: [f32, bf16]
 
 - kernel: level2/22_Matmul_Scale_ResidualAdd_Clamp_LogSumExp_Mish.py
   input_shapes: [1024x8192]
   initializations: [rnd]
   output_shape: 1024x1
-  dtypes: [f32, bf16]
   warning: "error: failed to legalize operation 'torch.constant.bool'"
 
 - kernel: level2/23_Conv3d_GroupNorm_Mean.py
   input_shapes: [128x3x24x32x32]
   initializations: [rnd]
   output_shape: 128
-  dtypes: [f32, bf16]
 
 - kernel: level2/24_Conv3d_Min_Softmax.py
   input_shapes: [128x3x24x32x32]
   initializations: [rnd]
   output_shape: 128x24x30x30
-  dtypes: [f32, bf16]
 
 - kernel: level2/25_Conv2d_Min_Tanh_Tanh.py
   input_shapes: [128x16x256x256]
   initializations: [rnd]
   output_shape: 128x1x254x254
-  dtypes: [f32, bf16]
 
 - kernel: level2/26_ConvTranspose3d_Add_HardSwish.py
   input_shapes: [128x32x16x16x16, 128x64x32x32x32]
   initializations: [rnd, rnd]
   output_shape: 128x64x32x32x32
-  dtypes: [f32, bf16]
 
 - kernel: level2/27_Conv3d_HardSwish_GroupNorm_Mean.py
   input_shapes: [1024x3x16x32x32]
   initializations: [rnd]
   output_shape: 1024x16
-  dtypes: [f32, bf16]
 
 - kernel: level2/28_BMM_InstanceNorm_Sum_ResidualAdd_Multiply.py
   input_shapes: [1024x8192, 1024x8192]
   initializations: [rnd, rnd]
   output_shape: 1024x8192
-  dtypes: [f32, bf16]
   warning: "LLVM ERROR: SmallVector unable to grow (93TB! > 4GB) + Input size at dim=1 does not match num_features"
 
 - kernel: level2/29_Matmul_Mish_Mish.py
   input_shapes: [1024x8192]
   initializations: [rnd]
   output_shape: 1024x8192
-  dtypes: [f32, bf16]
 
 - kernel: level2/30_Gemm_GroupNorm_Hardtanh.py
   input_shapes: [1024x8192]
   initializations: [rnd]
   output_shape: 1024x8192
-  dtypes: [f32, bf16]
 
 - kernel: level2/31_Conv2d_Min_Add_Multiply.py
   input_shapes: [128x64x128x128]
   initializations: [rnd]
   output_shape: 128x128x126x126
-  dtypes: [f32, bf16]
 
 - kernel: level2/32_Conv2d_Scaling_Min.py
   input_shapes: [64x64x256x256]
   initializations: [rnd]
   output_shape: 64x1x254x254
-  dtypes: [f32, bf16]
 
 - kernel: level2/33_Gemm_Scale_BatchNorm.py
-  input_shapes: [8x8192]
+  input_shapes: [8x1024]
   initializations: [rnd]
-  output_shape: 8x8192
-  dtypes: [f32, bf16]
+  output_shape: 8x1024
+  init_args: (1024,1024,1024)
 
 - kernel: level2/34_ConvTranspose3d_LayerNorm_GELU_Scaling.py
   input_shapes: [32x32x16x32x32]
   initializations: [rnd]
   output_shape: 32x64x32x64x64
-  dtypes: [f32, bf16]
 
 - kernel: level2/35_Conv2d_Subtract_HardSwish_MaxPool_Mish.py
   input_shapes: [128x64x128x128]
   initializations: [rnd]
   output_shape: 128x128x63x63
-  dtypes: [f32, bf16]
 
 - kernel: level2/36_ConvTranspose2d_Min_Sum_GELU_Add.py
   input_shapes: [16x64x128x128]
   initializations: [rnd]
   output_shape: 16x1x1x256
-  dtypes: [f32, bf16]
 
 - kernel: level2/37_Matmul_Swish_Sum_GroupNorm.py
   input_shapes: [32768x1024]
   initializations: [rnd]
   output_shape: 32768x4096
-  dtypes: [f32, bf16]
 
 - kernel: level2/38_ConvTranspose3d_AvgPool_Clamp_Softmax_Multiply.py
   input_shapes: [32x32x32x64x64]
   initializations: [rnd]
   output_shape: 32x64x32x64x64
-  dtypes: [f32, bf16]
 
 - kernel: level2/39_Gemm_Scale_BatchNorm.py
   input_shapes: [8x4096]
   initializations: [rnd]
   output_shape: 8x4096
-  dtypes: [f32, bf16]
 
 - kernel: level2/40_Matmul_Scaling_ResidualAdd.py
   input_shapes: [16384x4096]
   initializations: [rnd]
   output_shape: 16384x4096
-  dtypes: [f32, bf16]
 
 - kernel: level2/41_Gemm_BatchNorm_GELU_ReLU.py
   input_shapes: [16384x4096]
   initializations: [rnd]
   output_shape: 16384x4096
-  dtypes: [f32, bf16]
 
 - kernel: level2/42_ConvTranspose2d_GlobalAvgPool_BiasAdd_LogSumExp_Sum_Multiply.py
   input_shapes: [16x64x512x512]
   initializations: [rnd]
   output_shape: 16x1
-  dtypes: [f32, bf16]
   warning: "error: failed to legalize operation 'torch.constant.bool'"
 
 - kernel: level2/43_Conv3d_Max_LogSumExp_ReLU.py
   input_shapes: [4x32x32x128x128]
   initializations: [rnd]
   output_shape: 4x1x16x64x64
-  dtypes: [f32, bf16]
   warning: "error: failed to legalize operation 'torch.constant.bool'"
 
 - kernel: level2/44_ConvTranspose2d_Multiply_GlobalAvgPool_GlobalAvgPool_Mean.py
   input_shapes: [16x64x128x128]
   initializations: [rnd]
   output_shape: 16x128x1x1
-  dtypes: [f32, bf16]
 
 - kernel: level2/45_Gemm_Sigmoid_LogSumExp.py
   input_shapes: [16384x2048]
   initializations: [rnd]
   output_shape: 16384
-  dtypes: [f32, bf16]
   warning: "error: failed to legalize operation 'torch.constant.bool'"
 
 - kernel: level2/46_Conv2d_Subtract_Tanh_Subtract_AvgPool.py
   input_shapes: [128x64x128x128]
   initializations: [rnd]
   output_shape: 128x128x63x63
-  dtypes: [f32, bf16]
 
 - kernel: level2/47_Conv3d_Mish_Tanh.py
   input_shapes: [16x32x32x64x64]
   initializations: [rnd]
   output_shape: 16x64x30x62x62
-  dtypes: [f32, bf16]
 
 - kernel: level2/48_Conv3d_Scaling_Tanh_Multiply_Sigmoid.py
   input_shapes: [128x3x16x64x64]
   initializations: [rnd]
   output_shape: 128x16x14x62x62
-  dtypes: [f32, bf16]
 
 - kernel: level2/49_ConvTranspose3d_Softmax_Sigmoid.py
   input_shapes: [16x32x16x32x32]
   initializations: [rnd]
   output_shape: 16x64x32x64x64
-  dtypes: [f32, bf16]
 
 - kernel: level2/50_ConvTranspose3d_Scaling_AvgPool_BiasAdd_Scaling.py
   input_shapes: [128x3x16x32x32]
   initializations: [rnd]
   output_shape: 128x16x15x31x31
-  dtypes: [f32, bf16]
 
 - kernel: level2/51_Gemm_Subtract_GlobalAvgPool_LogSumExp_GELU_ResidualAdd.py
   input_shapes: [2048x8192]
   initializations: [rnd]
   output_shape: 2048x8192
-  dtypes: [f32, bf16]
   warning: "error: failed to legalize operation 'torch.constant.bool'"
 
 - kernel: level2/52_Conv2d_Activation_BatchNorm.py
   input_shapes: [64x64x128x128]
   initializations: [rnd]
   output_shape: 64x128x126x126
-  dtypes: [f32, bf16]
   warning: "error: failed to legalize operation 'torch.operator' that was explicitly marked illegal"
 
 - kernel: level2/53_Gemm_Scaling_Hardtanh_GELU.py
   input_shapes: [2048x8192]
   initializations: [rnd]
   output_shape: 2048x8192
-  dtypes: [f32, bf16]
 
 - kernel: level2/54_Conv2d_Multiply_LeakyReLU_GELU.py
   input_shapes: [64x64x256x256]
   initializations: [rnd]
   output_shape: 64x64x254x254
-  dtypes: [f32, bf16]
 
 - kernel: level2/55_Matmul_MaxPool_Sum_Scale.py
   input_shapes: [128x32768]
   initializations: [rnd]
   output_shape: 128
-  dtypes: [f32, bf16]
 
 - kernel: level2/56_Matmul_Sigmoid_Sum.py
   input_shapes: [128x32768]
   initializations: [rnd]
   output_shape: 128x1
-  dtypes: [f32, bf16]
 
 - kernel: level2/57_Conv2d_ReLU_HardSwish.py
   input_shapes: [128x8x128x128]
   initializations: [rnd]
   output_shape: 128x64x126x126
-  dtypes: [f32, bf16]
 
 - kernel: level2/58_ConvTranspose3d_LogSumExp_HardSwish_Subtract_Clamp.py
   input_shapes: [128x3x16x32x32]
   initializations: [rnd]
   output_shape: 128x1x31x63x63
-  dtypes: [f32, bf16]
   warning: "error: failed to legalize operation 'torch.constant.bool'"
 
 - kernel: level2/59_Matmul_Swish_Scaling.py
   input_shapes: [128x32768]
   initializations: [rnd]
   output_shape: 128x32768
-  dtypes: [f32, bf16]
 
 - kernel: level2/60_ConvTranspose3d_Swish_GroupNorm_HardSwish.py
   input_shapes: [128x3x16x32x32]
   initializations: [rnd]
   output_shape: 128x16x31x63x63
-  dtypes: [f32, bf16]
 
 - kernel: level2/61_ConvTranspose3d_ReLU_GroupNorm.py
   input_shapes: [16x64x32x32x32]
   initializations: [rnd]
   output_shape: 16x128x34x34x34
-  dtypes: [f32, bf16]
 
 - kernel: level2/62_Matmul_GroupNorm_LeakyReLU_Sum.py
   input_shapes: [1024x8192]
   initializations: [rnd]
   output_shape: 1024x8192
-  dtypes: [f32, bf16]
 
 - kernel: level2/63_Gemm_ReLU_Divide.py
   input_shapes: [1024x8192]
   initializations: [rnd]
   output_shape: 1024x8192
-  dtypes: [f32, bf16]
 
 - kernel: level2/64_Gemm_LogSumExp_LeakyReLU_LeakyReLU_GELU_GELU.py
   input_shapes: [1024x8192]
   initializations: [rnd]
   output_shape: 1024x1
-  dtypes: [f32, bf16]
   warning: "error: failed to legalize operation 'torch.constant.bool'"
 
 - kernel: level2/65_Conv2d_AvgPool_Sigmoid_Sum.py
   input_shapes: [128x8x384x384]
   initializations: [rnd]
   output_shape: 128
-  dtypes: [f32, bf16]
 
 - kernel: level2/66_Matmul_Dropout_Softmax.py
   input_shapes: [128x16384]
   initializations: [rnd]
   output_shape: 128x16384
-  dtypes: [f32, bf16]
 
 - kernel: level2/67_Conv2d_GELU_GlobalAvgPool.py
   input_shapes: [128x8x256x256]
   initializations: [rnd]
   output_shape: 128x64
-  dtypes: [f32, bf16]
 
 - kernel: level2/68_Matmul_Min_Subtract.py
   input_shapes: [128x16384]
   initializations: [rnd]
   output_shape: 128x16384
-  dtypes: [f32, bf16]
 
 - kernel: level2/69_Conv2d_HardSwish_ReLU.py
   input_shapes: [128x8x128x128]
   initializations: [rnd]
   output_shape: 128x64x126x126
-  dtypes: [f32, bf16]
 
 - kernel: level2/70_Gemm_Sigmoid_Scaling_ResidualAdd.py
   input_shapes: [1024x8192]
   initializations: [rnd]
   output_shape: 1024x8192
-  dtypes: [f32, bf16]
 
 - kernel: level2/71_Conv2d_Divide_LeakyReLU.py
   input_shapes: [128x8x128x128]
   initializations: [rnd]
   output_shape: 128x64x126x126
-  dtypes: [f32, bf16]
 
 - kernel: level2/72_ConvTranspose3d_BatchNorm_AvgPool_AvgPool.py
   input_shapes: [4x3x32x32x32]
   initializations: [rnd]
   output_shape: 4x16x15x15x15
-  dtypes: [f32, bf16]
 
 - kernel: level2/73_Conv2d_BatchNorm_Scaling.py
   input_shapes: [8x8x128x128]
   initializations: [rnd]
   output_shape: 8x64x126x126
-  dtypes: [f32, bf16]
 
 - kernel: level2/74_ConvTranspose3d_LeakyReLU_Multiply_LeakyReLU_Max.py
   input_shapes: [16x16x16x32x32]
   initializations: [rnd]
   output_shape: 16x32x16x32x32
-  dtypes: [f32, bf16]
 
 - kernel: level2/75_Gemm_GroupNorm_Min_BiasAdd.py
   input_shapes: [1024x8192]
   initializations: [rnd]
   output_shape: 1x8192x1024x1
-  dtypes: [f32, bf16]
 
 - kernel: level2/76_Gemm_Add_ReLU.py
   input_shapes: [1024x8192]
   initializations: [rnd]
   output_shape: 1024x8192
-  dtypes: [f32, bf16]
 
 - kernel: level2/77_ConvTranspose3d_Scale_BatchNorm_GlobalAvgPool.py
   input_shapes: [4x64x16x32x32]
   initializations: [rnd]
   output_shape: 4x128x1x1x1
-  dtypes: [f32, bf16]
 
 - kernel: level2/78_ConvTranspose3d_Max_Max_Sum.py
   input_shapes: [16x32x32x32x32]
   initializations: [rnd]
   output_shape: 16x1x10x10x10
-  dtypes: [f32, bf16]
 
 - kernel: level2/79_Conv3d_Multiply_InstanceNorm_Clamp_Multiply_Max.py
   input_shapes: [128x3x16x32x32]
   initializations: [rnd]
   output_shape: 128x14x30x30
-  dtypes: [f32, bf16]
   warning: "LLVM ERROR: SmallVector unable to grow (93TB! > 4GB)"
 
 - kernel: level2/80_Gemm_Max_Subtract_GELU.py
   input_shapes: [1024x8192]
   initializations: [rnd]
   output_shape: 1024x1
-  dtypes: [f32, bf16]
 
 - kernel: level2/81_Gemm_Swish_Divide_Clamp_Tanh_Clamp.py
   input_shapes: [1024x8192]
   initializations: [rnd]
   output_shape: 1024x8192
-  dtypes: [f32, bf16]
 
 - kernel: level2/82_Conv2d_Tanh_Scaling_BiasAdd_Max.py
   input_shapes: [128x8x256x256]
   initializations: [rnd]
   output_shape: 128x64x63x63
-  dtypes: [f32, bf16]
 
 - kernel: level2/83_Conv3d_GroupNorm_Min_Clamp_Dropout.py
   input_shapes: [128x3x16x64x64]
   initializations: [rnd]
   output_shape: 128x16x14x62x62
-  dtypes: [f32, bf16]
 
 - kernel: level2/84_Gemm_BatchNorm_Scaling_Softmax.py
   input_shapes: [8x8192]
   initializations: [rnd]
   output_shape: 8x8192
-  dtypes: [f32, bf16]
 
 - kernel: level2/85_Conv2d_GroupNorm_Scale_MaxPool_Clamp.py
   input_shapes: [128x8x128x128]
   initializations: [rnd]
   output_shape: 128x64x31x31
-  dtypes: [f32, bf16]
 
 - kernel: level2/86_Matmul_Divide_GELU.py
   input_shapes: [1024x8192]
   initializations: [rnd]
   output_shape: 1024x8192
-  dtypes: [f32, bf16]
 
 - kernel: level2/87_Conv2d_Subtract_Subtract_Mish.py
   input_shapes: [128x8x256x256]
   initializations: [rnd]
   output_shape: 128x64x254x254
-  dtypes: [f32, bf16]
 
 - kernel: level2/88_Gemm_GroupNorm_Swish_Multiply_Swish.py
   input_shapes: [1024x8192]
   initializations: [rnd]
   output_shape: 1024x8192
-  dtypes: [f32, bf16]
 
 - kernel: level2/89_ConvTranspose3d_MaxPool_Softmax_Subtract_Swish_Max.py
   input_shapes: [128x3x16x32x32]
   initializations: [rnd]
   output_shape: 128x16x32x32
-  dtypes: [f32, bf16]
 
 - kernel: level2/90_Conv3d_LeakyReLU_Sum_Clamp_GELU.py
   input_shapes: [128x8x16x64x64]
   initializations: [rnd]
   output_shape: 128x64x14x62x62
-  dtypes: [f32, bf16]
 
 - kernel: level2/91_ConvTranspose2d_Softmax_BiasAdd_Scaling_Sigmoid.py
   input_shapes: [128x64x64x64]
   initializations: [rnd]
   output_shape: 128x128x129x129
-  dtypes: [f32, bf16]
 
 - kernel: level2/92_Conv2d_GroupNorm_Tanh_HardSwish_ResidualAdd_LogSumExp.py
   input_shapes: [128x8x128x128]
   initializations: [rnd]
   output_shape: 128x1x126x126
-  dtypes: [f32, bf16]
   warning: "error: failed to legalize operation 'torch.constant.bool'"
 
 - kernel: level2/93_ConvTranspose2d_Add_Min_GELU_Multiply.py
   input_shapes: [128x64x64x64]
   initializations: [rnd]
   output_shape: 128x128x130x130
-  dtypes: [f32, bf16]
 
 - kernel: level2/94_Gemm_BiasAdd_Hardtanh_Mish_GroupNorm.py
   input_shapes: [1024x8192]
   initializations: [rnd]
   output_shape: 1024x8192
-  dtypes: [f32, bf16]
 
 - kernel: level2/95_Matmul_Add_Swish_Tanh_GELU_Hardtanh.py
   input_shapes: [1024x8192]
   initializations: [rnd]
   output_shape: 1024x8192
-  dtypes: [f32, bf16]
 
 - kernel: level2/96_ConvTranspose3d_Multiply_Max_GlobalAvgPool_Clamp.py
   input_shapes: [128x3x16x32x32]
   initializations: [rnd]
   output_shape: 128x16x1x1x1
-  dtypes: [f32, bf16]
 
 - kernel: level2/97_Matmul_BatchNorm_BiasAdd_Divide_Swish.py
   input_shapes: [8x8192]
   initializations: [rnd]
   output_shape: 8x8192
-  dtypes: [f32, bf16]
 
 - kernel: level2/98_Matmul_AvgPool_GELU_Scale_Max.py
   input_shapes: [1024x8192]
   initializations: [rnd]
   output_shape: 1024
-  dtypes: [f32, bf16]
 
 - kernel: level2/99_Matmul_GELU_Softmax.py
   input_shapes: [1024x8192]
   initializations: [rnd]
   output_shape: 1024x8192
-  dtypes: [f32, bf16]
 
 - kernel: level2/100_ConvTranspose3d_Clamp_Min_Divide.py
   input_shapes: [16x64x24x48x48]
   initializations: [rnd]
   output_shape: 16x128x47x95x95
-  dtypes: [f32, bf16]

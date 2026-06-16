@@ -3,7 +3,7 @@ name = "lighthouse"
 dynamic = ["version"]
 requires-python = ">=3.10,<3.13"  # Bounds are due to torch-mlir's packaging
 dependencies = [
-    "mlir-python-bindings==20260505+c4de38727",
+    "mlir-python-bindings==20260607+baa69e929",
     "pyyaml>=6.0",
 ]
 
@@ -18,7 +18,7 @@ dev = [
 
 [project.optional-dependencies]
 ingress_torch_mlir = [
-    "torch-mlir==20260328.765",
+    "torch-mlir==20260529.826",
     "ml_dtypes",
 ]
 # Additional "targets" which pull in optional dependencies -- use `uv sync --extra TARGET`

@@ -1,5 +1,7 @@
 # RUN: %PYTHON %s --dump-kernel=xegpu-wg | FileCheck %s
 # RUN: %PYTHON %s --dump-kernel=xegpu-wg --hidden-sizes 1024 1024 | FileCheck %s
+# RUN: %PYTHON %s --dump-kernel=xegpu-wg --hidden-sizes 1024 1024 --transpose-a | FileCheck %s
+# RUN: %PYTHON %s --dump-kernel=xegpu-wg --hidden-sizes 1024 1024 --transpose-b | FileCheck %s
 # RUN: %PYTHON %s --dump-kernel=xegpu-wg --hidden-sizes 1024 1024 --relu | FileCheck %s
 # RUN: %PYTHON %s --dump-kernel=xegpu-wg --hidden-sizes 1024 1024 --bias | FileCheck %s
 # RUN: %PYTHON %s --dump-kernel=xegpu-wg --hidden-sizes 1024 1024 --accumulate-c | FileCheck %s
@@ -36,7 +38,6 @@ from lighthouse.ingress.mlir_gen import (
     generate_gpu_mlp_payload,
     get_mlir_elem_type,
 )
-from lighthouse.schedule.xegpu import xegpu_parameter_selector
 
 from matmul import matmul_complexity
 
@@ -47,6 +48,8 @@ def check_correctness(
     ab_dtype: np.dtype,
     has_bias: bool = False,
     has_relu: bool = False,
+    transpose_a: bool = False,
+    transpose_b: bool = False,
     verbose: int = 0,
 ) -> bool:
     output_array, input_array, *rest = initial_host_arrays
@@ -64,7 +67,11 @@ def check_correctness(
     biases = [b.astype(np.float32) for b in biases]
 
     a_array = input_array
+    if transpose_a:
+        a_array = a_array.T
     for i, W in enumerate(weights):
+        if transpose_b:
+            W = W.T
         D_ref = a_array @ W
         if has_bias:
             D_ref += biases[i]
@@ -110,6 +117,8 @@ class XeGPUMLP:
     hidden_layer_sizes: Optional[list[int]] = None
     ab_type: ir.Type | str | None = None
     acc_type: ir.Type | str | None = None
+    transpose_a: bool = False
+    transpose_b: bool = False
     has_bias: bool = False
     has_relu: bool = False
     accumulate_c: bool = False
@@ -136,9 +145,13 @@ class XeGPUMLP:
         if self.hidden_layer_sizes is None:
             self.hidden_layer_sizes = []
         self.input_shape = (self.batch_size, self.input_size)
+        if self.transpose_a:
+            self.input_shape = self.input_shape[::-1]
         self.output_shape = (self.batch_size, self.output_size)
         layer_sizes = [self.input_size] + self.hidden_layer_sizes + [self.output_size]
         self.weight_shapes = list(zip(layer_sizes[:-1], layer_sizes[1:]))
+        if self.transpose_b:
+            self.weight_shapes = [shape[::-1] for shape in self.weight_shapes]
         self.matmul_layers = [(self.batch_size, o, i) for i, o in self.weight_shapes]
         self.bias_shapes = [(o,) for o in layer_sizes[1:]] if self.has_bias else []
 
@@ -151,14 +164,20 @@ class XeGPUMLP:
 
         # use integer values to avoid f16/f32 floating point discrepancies
         def gen_random(shape, dtype):
-            # generate values in range [0, 1)
-            return np.random.rand(*shape).astype(dtype)
+            # generate values in range [-0.5, 0.5]
+            return (np.random.rand(*shape) - 0.5).astype(dtype)
 
         def gen_identity(shape, dtype):
-            # identity matrix, if cols > rows wrap to fill all columns
+            # identity matrix,
             a = np.zeros(shape, dtype=dtype)
             np.fill_diagonal(a, 1)
-            if shape[1] > shape[0]:
+            if self.transpose_b:
+                if shape[0] > shape[1]:
+                    # if rows > cols wrap to fill all rows
+                    second_block = a[shape[1] :, :]
+                    np.fill_diagonal(second_block, 1)
+            elif shape[1] > shape[0]:
+                # if cols > rows wrap to fill all columns
                 second_block = a[:, shape[0] :]
                 np.fill_diagonal(second_block, 1)
             return a
@@ -209,6 +228,8 @@ class XeGPUMLP:
             acc_type=self.acc_type,
             bias_type=self.ab_type,
             result_type=self.ab_type,
+            transpose_a=self.transpose_a,
+            transpose_b=self.transpose_b,
             has_bias=self.has_bias,
             has_relu=self.has_relu,
             accumulate_c=self.accumulate_c,
@@ -281,13 +302,13 @@ def parse_cli():
     parser.add_argument(
         "--nruns",
         type=int,
-        default=1000,
+        default=500,
         help="Number of runs to average the execution time.",
     )
     parser.add_argument(
         "--nwarmup",
         type=int,
-        default=20,
+        default=500,
         help="Number of warm-up iterations before benchmarking.",
     )
     parser.add_argument(
@@ -299,6 +320,16 @@ def parse_cli():
         "--relu",
         action="store_true",
         help="Add ReLU activation function to each layer except the output layer.",
+    )
+    parser.add_argument(
+        "--transpose-a",
+        action="store_true",
+        help="Transpose the input matrix A in the first matmul layer.",
+    )
+    parser.add_argument(
+        "--transpose-b",
+        action="store_true",
+        help="Transpose the weight matrices B in all matmul layers.",
     )
     parser.add_argument(
         "--accumulate-c",
@@ -333,6 +364,11 @@ def parse_cli():
         help="Dump transform schedule.",
     )
     parser.add_argument(
+        "--target",
+        choices=["B70", "B50"],
+        help="Target GPU device, e.g., B70.",
+    )
+    parser.add_argument(
         "--verbose",
         "-v",
         action="count",
@@ -354,6 +390,8 @@ if __name__ == "__main__":
     with ir.Context(), ir.Location.unknown():
         lh_dialects.register_and_load()
 
+        tr_a = args.transpose_a
+        tr_b = args.transpose_b
         wload = XeGPUMLP(
             batch_size=args.batch_size,
             input_size=args.input_size,
@@ -361,6 +399,8 @@ if __name__ == "__main__":
             hidden_layer_sizes=args.hidden_sizes,
             has_bias=args.bias,
             has_relu=args.relu,
+            transpose_a=tr_a,
+            transpose_b=tr_b,
             accumulate_c=args.accumulate_c,
             identity_weights=identity_weights,
         )
@@ -371,7 +411,20 @@ if __name__ == "__main__":
         ab_type = wload.ab_type
         acc_type = wload.acc_type
 
-        params = xegpu_parameter_selector.get_parameters_for_layers(matmuls)
+        # Initialize layer parameters
+        params = []
+        for i, (M, N, K) in enumerate(matmuls):
+            layer_params = {
+                "m": M,
+                "n": N,
+                "k": K,
+                "transpose_a": tr_a if i == 0 else False,
+                "transpose_b": tr_b,
+            }
+            params.append(layer_params)
+        if args.target:
+            for layer_params in params:
+                layer_params["device"] = args.target
 
         if args.dump_kernel or args.dump_schedule:
             pipeline = TransformDriver(
@@ -414,6 +467,8 @@ if __name__ == "__main__":
                     wload.ab_dtype,
                     has_bias=wload.has_bias,
                     has_relu=wload.has_relu,
+                    transpose_a=tr_a,
+                    transpose_b=tr_b,
                     verbose=args.verbose,
                 )
                 if not success:
@@ -439,6 +494,8 @@ if __name__ == "__main__":
                 f"i={args.input_size} "
                 f"o={args.output_size} "
                 f"hs={list2str(hidden_sizes)} "
+                f"ta={int(tr_a)} "
+                f"tb={int(tr_b)} "
                 f"dt={ab_type},{acc_type} "
                 f"time(us): {elapsed:.2f} "
                 f"GFLOPS: {gflops:.2f}"
