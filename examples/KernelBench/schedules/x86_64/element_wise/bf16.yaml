@@ -1,5 +1,6 @@
 Pipeline:
+  # Element-wise is usually done at F32 precision anyway
   - include: common.yaml{
-                          register_tile=32
+                          register_tile=16
                           unroll_factor=16
                         }
