@@ -94,9 +94,7 @@ def bundle_xegpu_layer_norm_schedule(
     # (the elementwise normalize op, which is the only op with 2 parallel iterators).
     all_generics = match(mod, ops={"linalg.generic"})
     # Split: 3 generics in total (mean reduction, var reduction, normalize).
-    gen_ops = transform.split_handle(
-        (anytype,) * 3, all_generics
-    )
+    gen_ops = transform.split_handle((anytype,) * 3, all_generics)
     mean_reduction = gen_ops[0]
     var_reduction = gen_ops[1]
     normalize_op = gen_ops[2]

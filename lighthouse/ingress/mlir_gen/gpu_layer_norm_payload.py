@@ -102,7 +102,14 @@ def generate_gpu_layer_norm_payload(
             @linalg.generic(
                 [input_tensor, mean_sum, var_sum, gamma_tensor, beta_tensor],
                 [out_init],
-                [par_map_2d, red_map_2d, red_map_2d, bias_map_2d, bias_map_2d, par_map_2d],
+                [
+                    par_map_2d,
+                    red_map_2d,
+                    red_map_2d,
+                    bias_map_2d,
+                    bias_map_2d,
+                    par_map_2d,
+                ],
                 [parallel, parallel],
             )
             def normalized(x, m_sum, v_sum, g, b, _out):
