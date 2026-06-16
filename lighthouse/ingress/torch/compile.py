@@ -12,6 +12,7 @@ from mlir import ir
 from mlir.dialects import bufferization
 from mlir.dialects import func
 import torch
+import numpy as np
 
 
 class TargetDialect(Enum):
@@ -82,6 +83,27 @@ class JITFunction:
         self.results = results
         self.n_outputs = n_outputs if n_outputs is not None else len(results)
 
+    def _generate_input_args(
+        self, *args: torch.Tensor
+    ) -> tuple[list[torch.Tensor], list[torch.Tensor]]:
+        """
+        Generate input arguments for the MLIR function.
+
+        Args:
+            args: Input tensors.
+        """
+        # Allocate empty buffers to store results.
+        outs = [
+            torch.empty(res.shape, dtype=res.dtype, device=res.device)
+            for res in self.results
+        ]
+
+        # Prepare arguments according to MLIR backend's calling convention:
+        # input data followed by output storage buffers.
+        all_tensors = [arg.detach() for arg in args]
+        all_tensors.extend(outs)
+        return all_tensors, outs
+
     def __call__(
         self,
         *args: torch.Tensor,
@@ -95,23 +117,32 @@ class JITFunction:
         Returns:
             Result tensors.
         """
-        # Allocate empty buffers to store results.
-        outs = [
-            torch.empty(res.shape, dtype=res.dtype, device=res.device)
-            for res in self.results
-        ]
+        all_tensors, output_tensors = self._generate_input_args(*args)
 
-        # Prepare arguments according to MLIR backend's calling convention:
-        # input data followed by output storage buffers.
-        all_tensors = [arg.detach() for arg in args]
-        all_tensors.extend(outs)
         self.runner.execute(self.entry_func, all_tensors)
 
         # Return only the outputs corresponding to the FX graph's actual return
         # values. torch-mlir may prepend extra results for in-place state
         # mutations (e.g. BatchNorm running statistics), which Dynamo does not
         # expect in the backend callable's return value.
-        return outs[len(self.results) - self.n_outputs :]
+        return output_tensors[len(self.results) - self.n_outputs :]
+
+    def benchmark(
+        self, *args: torch.Tensor, nruns: int = 500, nwarmup: int = 500
+    ) -> np.ndarray:
+        """
+        Benchmark the jitted function.
+
+        Args:
+            args: Input tensors.
+            nruns: Number of benchmark runs.
+            nwarmup: Number of warmup runs.
+
+        Returns:
+            Array of execution times in seconds.
+        """
+        all_tensors, _ = self._generate_input_args(*args)
+        return self.runner.benchmark(all_tensors, nruns=nruns, nwarmup=nwarmup)
 
 
 class MLIRBackend:
@@ -158,6 +189,24 @@ class MLIRBackend:
         self.shared_libs = list(shared_libs)
         self.entry_func = entry_func
         self.dump_obj_file = dump_obj_file
+        self._last_jit_function: JITFunction | None = None
+
+    @property
+    def jit_function(self) -> JITFunction:
+        """
+        Access the last created JITFunction.
+
+        Returns:
+            JITFunction object.
+
+        Raises:
+            ValueError: If no model has been compiled yet.
+        """
+        if self._last_jit_function is None:
+            raise ValueError(
+                "The backend does not have a JITFunction available. Compile the torch model first."
+            )
+        return self._last_jit_function
 
     def get_entry_func(self, module: ir.Module) -> func.FuncOp | None:
         """
@@ -342,7 +391,7 @@ class MLIRBackend:
 
         mlir_mod = self.compile_mlir(mlir_mod)
 
-        return JITFunction(
+        jit_fn = JITFunction(
             mlir_mod,
             results,
             shared_libs=self.shared_libs,
@@ -350,6 +399,8 @@ class MLIRBackend:
             n_outputs=n_fx_outputs,
             dump_obj_file=self.dump_obj_file,
         )
+        self._last_jit_function = jit_fn
+        return jit_fn
 
 
 def cpu_backend(
