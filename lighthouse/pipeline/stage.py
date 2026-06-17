@@ -4,8 +4,8 @@ from enum import Enum
 from mlir import ir
 from mlir.passmanager import PassManager
 from mlir.dialects import transform
-from lighthouse.pipeline.helper import import_mlir_module, import_python_module
 from lighthouse.pipeline.descriptor import Descriptor, PipelineDescriptor
+from lighthouse.utils.importer import import_mlir_module, import_python_module
 
 
 class Pass:
