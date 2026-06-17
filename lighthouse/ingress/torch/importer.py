@@ -1,5 +1,3 @@
-import importlib
-import importlib.util
 from pathlib import Path
 from typing import Iterable, Mapping
 
@@ -7,6 +5,7 @@ from lighthouse.ingress.torch.utils import (
     load_and_run_callable,
     maybe_load_and_run_callable,
 )
+from lighthouse.utils.importer import import_python_module
 
 try:
     import torch
@@ -124,11 +123,8 @@ def import_model(
     """
     if isinstance(filepath, str):
         filepath = Path(filepath)
-    module_name = filepath.stem
 
-    spec = importlib.util.spec_from_file_location(module_name, filepath)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    module = import_python_module(filepath)
 
     model = getattr(module, model_class_name, None)
     if model is None:
