@@ -10,7 +10,15 @@ from mlir import ir
 
 
 def import_mlir_module(path: str, context: ir.Context) -> ir.Module:
-    """Import an MLIR text file into an MLIR module"""
+    """
+    Import an MLIR text file into an MLIR module
+
+    Args:
+        path: Path to the MLIR file
+        context: MLIR context
+    Returns:
+        MLIR module
+    """
     if path is None:
         raise ValueError("Path to the module must be provided.")
     if not os.path.exists(path):
@@ -36,7 +44,14 @@ def _resolve_package(directory: Path) -> tuple[str, str]:
 
 
 def import_python_module(path: str) -> ModuleType:
-    """Import a Python module from a file."""
+    """
+    Import a Python module from a file.
+
+    Args:
+        path: Path to the Python file
+    Returns:
+        Imported Python module
+    """
     if path is None:
         raise ValueError("Path to the module must be provided.")
     if not os.path.exists(path):
