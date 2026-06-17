@@ -1,13 +1,10 @@
 from abc import abstractmethod
-import importlib
 from enum import Enum
-from pathlib import Path
-import os
 
 from mlir import ir
 from mlir.passmanager import PassManager
 from mlir.dialects import transform
-from lighthouse.pipeline.helper import import_mlir_module
+from lighthouse.pipeline.helper import import_mlir_module, import_python_module
 from lighthouse.pipeline.descriptor import Descriptor, PipelineDescriptor
 
 
@@ -170,12 +167,7 @@ class TransformStage(Stage):
         elif transform.type == Transform.Type.Python:
             # For Python transforms, we expect the file to define a function
             # that takes an MLIR module and returns a transformed MLIR module.
-            module_name = Path(os.path.basename(transform.filename)).stem
-            spec = importlib.util.spec_from_file_location(
-                module_name, transform.filename
-            )
-            transform_module = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(transform_module)
+            transform_module = import_python_module(transform.filename)
             if not hasattr(transform_module, transform.generator):
                 raise ValueError(
                     f"Transform module '{transform.filename}' does not define a '{transform.generator}' generator function."
