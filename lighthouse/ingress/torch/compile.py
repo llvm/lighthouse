@@ -133,10 +133,14 @@ class JITFunction:
         """
         Benchmark the jitted function.
 
+        If the model has parameters, the parameter tensors must be passed as
+        the first arguments to the function:
+
+            jit_fn.benchmark(*model.parameters(), *example_inputs, ...)
+
         Args:
-            args: Input tensors.
-            nruns: Number of benchmark runs.
-            nwarmup: Number of warmup runs.
+            args: Torch model weight tensors and input tensors. nruns: Number
+            of benchmark runs. nwarmup: Number of warmup runs.
 
         Returns:
             Array of execution times in seconds.
