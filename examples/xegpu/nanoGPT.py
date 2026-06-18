@@ -39,9 +39,9 @@ memref.transpose -- pure layout, zero compute), and the fused schedule's
 HOW THIS EXAMPLE IS ORGANIZED -- compiling a model to the GPU here happens in
 THREE stages:
 
-  1. PAYLOAD  ("WHAT to compute") -> lighthouse/ingress/mlir_gen/gpu_nanoGPT_payload.py
+  1. PAYLOAD  ("WHAT to compute") -> examples/xegpu/nanoGPT_payload.py
      (the `Builder` class + `build_gpt_fused_payload`). Hardware-agnostic linalg.
-  2. SCHEDULE ("HOW to lower it") -> lighthouse/schedule/xegpu/nanoGPT_schedule.py
+  2. SCHEDULE ("HOW to lower it") -> examples/xegpu/nanoGPT_schedule.py
      (`build_combined_schedule`). A transform-dialect module that tiles each op
      into GPU work-groups, vectorizes, bufferizes, outlines each op into its own
      GPU kernel, and attaches XeGPU layout/target attributes.
@@ -68,9 +68,8 @@ from lighthouse.pipeline.driver import TransformDriver
 from lighthouse.execution.runner import Runner
 from lighthouse.execution import GPUMemoryManager
 from lighthouse.schedule.xegpu import xegpu_to_binary, XeGPUParameterSelector
-from lighthouse.ingress.mlir_gen.gpu_nanoGPT_payload import build_gpt_fused_payload
-from lighthouse.ingress.mlir_gen.gpu_utils import emit_gpu_util_funcs
-from lighthouse.schedule.xegpu.nanoGPT_schedule import build_combined_schedule
+from nanoGPT_payload import build_gpt_fused_payload
+from nanoGPT_schedule import build_combined_schedule
 
 
 # =============================================================================
@@ -184,11 +183,6 @@ def main():
     with ir.Context(), ir.Location.unknown():
         lh_dialects.register_and_load()
         mod, kinds = build_gpt_fused_payload("payload", T, C, hidden, vocab, n_layer, H)
-        with ir.InsertionPoint(mod.body):
-            f32, f16 = ir.F32Type.get(), ir.F16Type.get()
-            emit_gpu_util_funcs(f32, rank=2)
-            emit_gpu_util_funcs(f32, rank=1)
-            emit_gpu_util_funcs(f16, rank=2)
         if dump == "initial":
             print(mod)
             print("KINDS:", kinds)

@@ -3,7 +3,7 @@
 This is STAGE 2 -- the SCHEDULE ("HOW to lower it"). A "schedule" here is itself an
 MLIR module written in the TRANSFORM dialect: a little program of rewrite ops that
 the transform interpreter runs over the payload module (built in
-`lighthouse.ingress.mlir_gen.gpu_nanoGPT_payload`). It does NOT compute anything;
+`nanoGPT_payload`). It does NOT compute anything;
 it REWRITES the payload from high-level linalg ops down to GPU (XeGPU) kernels.
 
   -> `build_combined_schedule` / `_bundle` (the orchestrator) plus the
@@ -55,7 +55,7 @@ from lighthouse.pipeline.helper import (
 )
 from lighthouse.schedule import schedule_boilerplate
 from lighthouse.schedule.xegpu.mlp_schedule import xegpu_wg_annotation_for_mlp_layer
-from lighthouse.ingress.mlir_gen.gpu_nanoGPT_payload import F32
+from nanoGPT_payload import F32
 
 
 def _tile_one_matmul(matmul_op, anytype, mm_params):
