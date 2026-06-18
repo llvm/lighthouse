@@ -29,7 +29,6 @@ from lighthouse.ingress.mlir_gen.utils import (
     parallel,
     reduction,
 )
-from lighthouse.ingress.mlir_gen.gpu_utils import emit_gpu_util_funcs
 from lighthouse.ingress.mlir_gen.named import times_weights
 
 
@@ -453,7 +452,4 @@ def build_gpt_fused_payload(func_name, T, C, hidden, vocab, n_layer, H, eps=1e-5
             for b in bld.to_dealloc:
                 gpu.dealloc(None, [], b)
 
-        emit_gpu_util_funcs(f32, rank=2)
-        emit_gpu_util_funcs(f32, rank=1)
-        emit_gpu_util_funcs(f16, rank=2)
     return mod, bld.kinds
