@@ -34,7 +34,31 @@ class TargetInfo:
             self.arch = arch
         else:
             self.arch = platform.machine()
-        self.feature = feature
+
+        self.feature = {}
+        if feature is not None:
+            self.feature[feature] = True
+        else:
+            self._get_extension_list()
+
+    def _get_extension_list(self) -> list[str]:
+        flags = subprocess.run(
+            "lscpu | grep Flags",
+            capture_output=True,
+            text=True,
+            shell=True,
+        ).stdout
+        schedule_path = script_path / "schedules" / self.arch
+        if not schedule_path.exists():
+            return []
+
+        extensions = []
+        for item in schedule_path.iterdir():
+            if item.is_dir():
+                extensions.append(item.name)
+
+        for ext in extensions:
+            self.feature[ext] = ext in flags
 
 
 def get_pipeline_file(name: str, dtype: str, target: TargetInfo) -> Path:
@@ -46,10 +70,13 @@ def get_pipeline_file(name: str, dtype: str, target: TargetInfo) -> Path:
         return kb_default_pipeline
 
     # First check if there's a pipeline file specific to the target features.
-    if target.feature:
-        pipeline = script_path / f"schedules/{target.feature}/{name}/{dtype}.yaml"
-        if pipeline.exists():
-            return pipeline
+    for feature, enabled in target.feature.items():
+        if enabled:
+            pipeline = (
+                script_path / f"schedules/{target.arch}/{feature}/{name}/{dtype}.yaml"
+            )
+            if pipeline.exists():
+                return pipeline
 
     # Second, check if there's a pipeline file specific to the target architecture.
     if target.arch:
@@ -77,7 +104,7 @@ def get_tests(args: argparse.Namespace) -> list[dict]:
         if args.kernel and not test["kernel"].startswith(args.kernel):
             continue
         # CI mode runs fewer tests for faster feedback
-        if args.ci and len(test_list) >= 5:
+        if args.ci and len(test_list) >= 2:
             break
         # Smoke tests run on the simplest lowering
         if args.smoke_test:

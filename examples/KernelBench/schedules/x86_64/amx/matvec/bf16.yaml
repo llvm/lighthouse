@@ -1,6 +1,6 @@
 Pipeline:
-  - include: common.yaml{
-                          cache_tile=32
+  - include: ../../mat-vec.yaml {
+                          cache_tile=64
                           register_tile=8
                           unroll_factor=4
                         }
