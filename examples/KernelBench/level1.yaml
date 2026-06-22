@@ -20,10 +20,10 @@
   pipeline: batch_matmul
 
 - kernel: level1/4_Matrix_vector_multiplication_.py
-  input_shapes: [2048x1048576, 1048576x1]
+  input_shapes: [2048x8192, 8192x1]
   initializations: [rnd, rnd]
   output_shape: 2048x1
-  gflops: (2048 * 1048576 * 1 * 2) / 1e9
+  gflops: (2048 * 8192 * 1 * 2) / 1e9
   pipeline: matvec
 
 - kernel: level1/5_Matrix_scalar_multiplication.py
