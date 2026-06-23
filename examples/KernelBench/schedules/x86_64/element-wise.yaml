@@ -12,4 +12,4 @@ Pipeline:
 
   - include: bufferization.yaml
 
-  - include: ../lower.yaml
+  - include: lower.yaml

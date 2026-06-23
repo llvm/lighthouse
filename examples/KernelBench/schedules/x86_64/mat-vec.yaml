@@ -26,4 +26,4 @@ Pipeline:
   - pass: "scf-parallel-loop-fusion"
   - pass: "scf-parallel-loop-tiling"
 
-  - include: ../lower.yaml
+  - include: lower.yaml

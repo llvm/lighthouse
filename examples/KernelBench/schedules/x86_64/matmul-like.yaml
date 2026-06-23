@@ -1,6 +1,9 @@
 # This is an optimizing pipeline for kernel_bench matmul-like kernels.
 Pipeline:
-  - include: pack_and_tile.yaml
+  - include: pack_and_tile.yaml {
+                                  block_factors=$block_factors
+                                  tile_size=$tile_size
+                                }
 
   ## CPU specific register tiling (depends on uArch & data type)
   - schedule: "x86/register_tiling.py[gen=matmul_register_tiling] {
