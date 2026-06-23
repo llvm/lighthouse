@@ -235,13 +235,7 @@ if __name__ == "__main__":
             command_line += ["--benchmark"]
             # FIXME: This is here just for quick testing
             # Remove when merging back to main
-            command_line += [
-                "--nwarmup",
-                "5",
-                "--nruns",
-                "10",
-                "--no-validate"
-            ]
+            command_line += ["--nwarmup", "5", "--nruns", "10", "--no-validate"]
 
         # Shape inference or from args.
         if not args.infer_shapes:
