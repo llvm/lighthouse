@@ -11,6 +11,7 @@ from .ops.get_tileable_consumers import get_tileable_consumers
 from .ops.get_tiling_sizes import get_tiling_sizes
 from .ops.update_address_space import update_address_space
 from .ops.replace_with_fused_attention import replace_with_fused_attention
+from .ops.move_offsets_to_subview import move_offsets_to_subview
 
 __all__ = [
     "TransformExtensionDialect",
@@ -20,6 +21,7 @@ __all__ = [
     "get_named_attribute",
     "get_tileable_consumers",
     "get_tiling_sizes",
+    "move_offsets_to_subview",
     "param_cmp_eq",
     "register_and_load",
     "replace",
