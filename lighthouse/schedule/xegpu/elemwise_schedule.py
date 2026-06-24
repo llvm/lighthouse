@@ -1,10 +1,6 @@
 from mlir import ir
-from mlir.dialects.transform import loop
-from mlir.dialects.transform import bufferization
 from mlir.dialects.transform import xegpu
-from mlir.dialects.bufferization import LayoutMapOption
 from mlir.dialects import transform
-from mlir.dialects.transform import structured
 import lighthouse.transform as lh_transform
 from lighthouse.pipeline.helper import (
     apply_registered_pass,
@@ -20,11 +16,13 @@ from lighthouse.dialects.transform import smt_ext as td_smt_ext
 from lighthouse.dialects.transform.tune_ext import KnobValue
 from .xegpu_specs import XeGPUSpecs
 from .xegpu_parameter_selector import XeGPUParameterSelector
+from .lowering_common import (
+    vectorize_bufferize_and_outline_gpu_func,
+    convert_vector_to_xegpu,
+)
 from .matmul_constraints import (
-    NB_WORKITEMS,
     LOAD_MAX_ROWS,
     LOAD_MAX_COLS,
-    MIN_NB_THREADS,
 )
 
 
@@ -71,7 +69,7 @@ def bundle_xegpu_elemwise_schedule(
     params: list[dict[str, int | KnobValue]],
     stop_at_stage: str = "",
 ) -> ir.Value[transform.AnyOpType]:
-    """Schedule for lowering MLP-like payload to xegpu wg level."""
+    """Schedule for lowering elemwise-like payload to xegpu wg level."""
     nlayers = len(params)
 
     if stop_at_stage == "initial":
@@ -79,11 +77,11 @@ def bundle_xegpu_elemwise_schedule(
 
     anytype = transform.AnyOpType.get()
 
-    # fuse all elementwise ops
+    # fuse all elementwise ops first
     mod = apply_registered_pass(mod, "linalg-fuse-elementwise-ops")
 
+    # tile each layer separately
     generic_ops = match_and_split(mod, ops={"linalg.generic"}, nhandles=nlayers)
-
     for generic_op, layer_params in zip(generic_ops, params):
         # wg tiling
         wg_tile = [layer_params["wg_m"], layer_params["wg_n"]]
@@ -102,113 +100,22 @@ def bundle_xegpu_elemwise_schedule(
         deduplicate=True,
     )
     lh_transform.cleanup(func)
-
     if stop_at_stage == "tiled":
         raise PipelineInterrupt()
 
-    # vectorize
-    func = structured.structured_vectorize_children_and_apply_patterns(
-        transform.any_op_t(),
+    mod = vectorize_bufferize_and_outline_gpu_func(
+        mod,
         func,
-        fold_type_extensions_into_contract=True,
+        nlayers=nlayers,
+        gpu_specs=gpu_specs,
+        params=params,
+        stop_at_stage=stop_at_stage,
     )
-
-    if stop_at_stage == "vectorized":
-        raise PipelineInterrupt()
-
-    # bufferize
-
-    # eliminate empty tensors to avoid emitting extra copy ops
-    mod = apply_registered_pass(mod, "eliminate-empty-tensors")
-    identity_layout = LayoutMapOption.IdentityLayoutMap
-    mod = bufferization.OneShotBufferizeOp(
-        mod,
-        allow_return_allocs_from_loops=True,
-        bufferize_function_boundaries=True,
-        function_boundary_type_conversion=identity_layout,
-    ).result
-    # fold memref.subviews into vector.transfer_read/write ops
-    mod = apply_registered_pass(mod, "fold-memref-alias-ops")
-    transform.apply_cse(mod)
-    canonicalize(mod)
-
-    if stop_at_stage == "bufferized":
-        raise PipelineInterrupt()
-
-    # convert forall to parallel
-    wg_loops = match_and_split(mod, ops={"scf.forall"}, nhandles=nlayers)
-    for wg_loop in wg_loops:
-        wg_loop = loop.loop_forall_to_parallel([anytype], wg_loop)
-    func = transform.get_parent_op(anytype, wg_loop)
-
-    # convert to scf.parallel to gpu.launch
-    func = apply_registered_pass(func, "gpu-map-parallel-loops")
-    func = apply_registered_pass(func, "convert-parallel-loops-to-gpu")
-    func = apply_registered_pass(func, "lower-affine")
-    transform.apply_cse(func)
-    canonicalize(func)
-
-    # set correct number of gpu threads
-    launch_ops = match_and_split(mod, ops={"gpu.launch"}, nhandles=nlayers)
-    assert len(launch_ops) == nlayers
-    for launch_op, layer_params in zip(launch_ops, params):
-        # tunable parameters
-        wg_m, wg_n = layer_params["wg_m"], layer_params["wg_n"]
-        sg_m, sg_n = layer_params["sg_m"], layer_params["sg_n"]
-
-        @td_smt_ext.constrain_params(wg_m, wg_n, sg_m, sg_n)
-        def constrain_wg_sg_and_calc_nb_threads(
-            WG_M: int | smt_ext.SMTIntValue,
-            WG_N: int | smt_ext.SMTIntValue,
-            SG_M: int | smt_ext.SMTIntValue,
-            SG_N: int | smt_ext.SMTIntValue,
-        ):
-            # NB: normal asserts in case of concrete values, SMT assert ops for symbolic values.
-            smt_ext.assert_(WG_M % SG_M == 0)
-            smt_ext.assert_(WG_N % SG_N == 0)
-
-            # NB: normal ints in case of concrete values, SMT int values for symbolic values.
-            sg_m_threads = WG_M // SG_M
-            sg_n_threads = WG_N // SG_N
-            sg_threads = sg_m_threads * sg_n_threads
-            smt_ext.assert_(
-                sg_threads <= gpu_specs.max_nb_threads, "too many SG threads"
-            )
-            smt_ext.assert_(sg_threads >= MIN_NB_THREADS, "too few SG threads")
-
-            # number of threads collapsed to 1d layout
-            return sg_threads * NB_WORKITEMS
-
-        nb_threads: int | transform.AnyParamType = (
-            constrain_wg_sg_and_calc_nb_threads.results
-        )
-
-        xegpu.set_gpu_launch_threads(launch_op, threads=[nb_threads, 1, 1])
-
-    # outline gpu func
-    func = apply_registered_pass(func, "lower-affine")
-    canonicalize(func)
-    func = apply_registered_pass(func, "gpu-launch-sink-index-computations")
-    mod = apply_registered_pass(mod, "gpu-kernel-outlining")
-    transform.apply_cse(mod)
-
-    # set xevm target
-    mod = apply_registered_pass(
-        mod,
-        "xevm-attach-target",
-        options={"O": "3", "chip": "bmg"},
-    )
-
-    # convert vector to xegpu
-    gpu_mod_ops = match_and_split(mod, ops={"gpu.module"}, nhandles=nlayers)
-    for gpu_mod in gpu_mod_ops:
-        gpu_func = match(gpu_mod, ops={"gpu.func"})
-        gpu_func = apply_registered_pass(gpu_func, "convert-vector-to-xegpu")
-        transform.apply_cse(gpu_func)
-
+    mod = convert_vector_to_xegpu(mod, nlayers=nlayers)
     if stop_at_stage == "xegpu-initial":
         raise PipelineInterrupt()
 
+    gpu_mod_ops = match_and_split(mod, ops={"gpu.module"}, nhandles=nlayers)
     for gpu_mod, layer_params in zip(gpu_mod_ops, params):
         gpu_func = match(gpu_mod, ops={"gpu.func"})
         xegpu_wg_annotation_for_elemwise_layer(
