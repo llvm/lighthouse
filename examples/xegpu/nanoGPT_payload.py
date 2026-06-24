@@ -3,9 +3,6 @@
 This is STAGE 1 -- the PAYLOAD ("WHAT to compute"): an MLIR module describing
 the GPT payload at linalg level.
 
-The ops are hardware-agnostic, but the buffers they write are device buffers
-(`gpu.alloc`), since the whole module is destined for the GPU.
-
   -> class `Builder` (emits one op at a time) and `build_gpt_fused_payload`
      (assembles ops into ffn / attn / block / full-gpt).
 
