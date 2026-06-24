@@ -1,17 +1,20 @@
-"""Generate MLIR payload for a GPU nano-GPT / GPT-2-style forward pass.
+"""Generate the nano-GPT / GPT-2-style forward pass payload at the linalg level.
 
-This is STAGE 1 -- the PAYLOAD ("WHAT to compute"). It builds an MLIR module
-describing the model math as high-level `linalg` ops (matmul, layernorm, softmax,
-elementwise). It is hardware-agnostic; HOW it lowers to the GPU lives in
-`nanoGPT_schedule`.
+This is STAGE 1 -- the PAYLOAD ("WHAT to compute"): an MLIR module describing
+the GPT payload at linalg level.
+
+The ops are hardware-agnostic, but the buffers they write are device buffers
+(`gpu.alloc`), since the whole module is destined for the GPU.
 
   -> class `Builder` (emits one op at a time) and `build_gpt_fused_payload`
      (assembles ops into ffn / attn / block / full-gpt).
 
+C = n_embd, the embedding/channel width (C=256 in this example).
+
 Architecture: each transformer block is
     a = x + attn_proj( MultiHeadAttention( ln1(x) ) )       # attention sublayer
-    y = a + ffn( ln2(a) )                                    # MLP sublayer
-    ffn(z) = Linear(C, 4C) -> ReLU -> Linear(4C, C)
+    y = a + ffn( ln2(a) )                                    # MLP (feed-forward) sublayer
+    ffn(z) = Linear(C, 4C) -> ReLU -> Linear(4C, C)         # the MLP: two matmuls
 and the full model is
     x = token_emb + pos_emb            # embeddings (done host-side)
     for _ in range(n_layer): x = Block(x)
@@ -42,7 +45,7 @@ def F16():  # 16-bit float (required by the GPU matmul units)
 
 
 # =============================================================================
-# PAYLOAD: describe WHAT to compute (hardware-agnostic linalg ops)
+# PAYLOAD: describe WHAT to compute (high-level linalg ops; no tiling/XeGPU yet)
 # =============================================================================
 # Each Builder method emits ONE high-level op that writes its result into a fresh
 # on-device buffer (`gpu.alloc`), and returns a tensor "view" of that buffer for
