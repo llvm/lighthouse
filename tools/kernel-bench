@@ -21,6 +21,7 @@ from lighthouse.utils.mlir import get_mlir_library_path
 import os
 
 from lighthouse.utils.types import string_to_type
+from lighthouse.utils.sys_config import enable_amx
 
 lib_dir = get_mlir_library_path()
 c_runner_lib = os.path.join(lib_dir, "libmlir_c_runner_utils.so")
@@ -430,6 +431,11 @@ if __name__ == "__main__":
         action=argparse.BooleanOptionalAction,
         help="Whether to dump the assembly of the compiled object file to a .s file. Default is False.",
     )
+    Parser.add_argument(
+        "--enable-amx",
+        action=argparse.BooleanOptionalAction,
+        help="Whether to enable AMX support. Default is False.",
+    )
     args = Parser.parse_args()
 
     # Initialize the random seed, for stable tests
@@ -445,6 +451,11 @@ if __name__ == "__main__":
         raise ValueError(
             "--input-shapes and --output-shape must be provided together for non-torch-compile mode."
         )
+
+    # Enable AMX support if requested
+    # TODO: This should be handled by the runner.
+    if args.enable_amx:
+        enable_amx()
 
     # Validate data type argument
     model_datatype = get_torch_data_type(args.dtype)
