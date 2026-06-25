@@ -9,14 +9,263 @@ import sys
 from csv_logger import CSVLogger
 
 from matmul import cli_parser
-from tune_utils import dump_configs_json, execute_and_log
-from tune_matmul_gridsearch import run_experiment
+from tune_utils import dump_configs_json, execute_and_log, execute_matmul
 from lighthouse.schedule.xegpu.matmul_costmodel import (
     generate_configs,
     expand_configs_with_load_tiles,
     expand_configs_with_prefetch_depth,
 )
 from lighthouse.schedule.xegpu import XeGPUSpecs
+
+
+def optimize_payload(
+    experiment_fn: callable,
+    sizes: list[int],
+    transpose_a: bool,
+    transpose_b: bool,
+    dry_run: bool = False,
+    max_iters: int = None,
+    nruns: int = 500,
+    nwarmup: int = 500,
+    max_nb_configs: int = None,
+    perf_threshold: float = 0.8,
+    prefetch_strategy: str = "all",
+    nb_select_load_tune: int = 4,
+    nb_select_pfnb_tune: int = 8,
+    target: str = "B70",
+):
+    """
+    Optimize parameters of a matmul-like kernel using a cost model informed search.
+
+    The `experiment_fn` is a callable with signature `experiment_fn(nruns,
+    nwarmup, **params) -> tuple[float, float]` that executes the kernel with
+    the given parameters and returns performance metrics as a tuple
+    (elapsed_time [seconds], gflops).
+    """
+    # disable IGC compiler cache
+    os.environ["NEO_CACHE_PERSISTENT"] = "0"
+
+    if nruns is None:
+        # Set both to None to enable timing-based heuristics
+        nwarmup = None
+
+    gpu_specs = XeGPUSpecs.get(target)
+
+    print("\nTuning parameters:")
+    print(f"{max_nb_configs=}")
+    print(f"{perf_threshold=}")
+    print(f"{prefetch_strategy=}")
+    print(f"{nb_select_load_tune=}")
+    print(f"{nb_select_pfnb_tune=}")
+    print(f"{nwarmup=}")
+    print(f"{nruns=}")
+    print(f"device={gpu_specs.name}")
+    sys.stdout.flush()
+
+    configs = generate_configs(
+        *sizes,
+        gpu_specs,
+        transpose_a=transpose_a,
+        transpose_b=transpose_b,
+        perf_threshold=perf_threshold,
+        pf_strategy=prefetch_strategy,
+        max_nb_configs=max_nb_configs,
+    )
+    param_dicts = [params for _, params in configs]
+
+    def eval_configs(param_dicts):
+        print(f"Total complexity: {len(param_dicts)} configurations")
+        i = 0
+        executed_configs = []
+        tic = perf_counter()
+        for params in param_dicts:
+            if max_iters is not None and i >= max_iters:
+                print(f"Reached maximum number of iterations: {max_iters}")
+                break
+            i += 1
+            if dry_run:
+                print(f"Config {i}: {list(params.values())}")
+                continue
+            time, gflops = experiment_fn(nruns=nruns, nwarmup=nwarmup, **params)
+            executed_configs.append((gflops, params))
+
+        duration = perf_counter() - tic
+
+        return executed_configs, duration, i
+
+    def run_tuning_phase(param_dicts, executed_configs, phase_msg):
+        print(f"\n{phase_msg}")
+
+        executed_configs2, time2, iters2 = eval_configs(param_dicts)
+        executed_configs.extend(executed_configs2)
+        # sort by performance
+        executed_configs.sort(key=lambda x: x[0], reverse=True)
+
+        return time2, iters2
+
+    def summarize_phase(executed_configs, time, iters, message, n_print=10):
+        print(f"Time spent in tuning: {timedelta(seconds=time)}")
+        print(f"Number of executed configurations: {iters}")
+        print(message)
+        for gflops, params in executed_configs[:n_print]:
+            assert gflops > 0, f"Invalid GFLOPS value: {gflops}"
+            print(f" GFLOPS: {gflops:.2f}: {list(params.values())}")
+
+    def select_and_expand(executed_configs, nb_select, expand_fn, **expand_kwargs):
+        selected_param_dicts = [c[1] for c in executed_configs[:nb_select]]
+        return expand_fn(selected_param_dicts, gpu_specs, **expand_kwargs)
+
+    executed_configs = []
+    time, iters = run_tuning_phase(
+        param_dicts,
+        executed_configs,
+        "Phase 1: Tuning WG/SG/K tile sizes",
+    )
+    if dry_run:
+        exit(0)
+    summarize_phase(
+        executed_configs,
+        time,
+        iters,
+        "Best configurations found in first tuning phase:",
+    )
+
+    if nb_select_load_tune is not None and nb_select_load_tune > 0:
+        param_dicts = select_and_expand(
+            executed_configs,
+            nb_select_load_tune,
+            expand_configs_with_load_tiles,
+            load_strategy="all",
+            exclude_duplicates=True,
+        )
+        time2, iters2 = run_tuning_phase(
+            param_dicts,
+            executed_configs,
+            f"Phase 2: Tuning load tiles for best {nb_select_load_tune} configurations",
+        )
+        summarize_phase(
+            executed_configs,
+            time2,
+            iters2,
+            "Best configurations found after load tile tuning:",
+        )
+        time += time2
+        iters += iters2
+
+    if nb_select_pfnb_tune is not None and nb_select_pfnb_tune > 0:
+        param_dicts = select_and_expand(
+            executed_configs,
+            nb_select_pfnb_tune,
+            expand_configs_with_prefetch_depth,
+            max_depth=2,
+            exclude_duplicates=True,
+        )
+        time2, iters2 = run_tuning_phase(
+            param_dicts,
+            executed_configs,
+            f"Phase 3: Tuning prefetch depth for best {nb_select_pfnb_tune} configurations",
+        )
+        summarize_phase(
+            executed_configs,
+            time2,
+            iters2,
+            "Best configurations found after prefetch depth tuning:",
+        )
+        time += time2
+        iters += iters2
+
+    print(f"Total duration: {timedelta(seconds=time)}")
+    print(f"Number of executed configurations: {iters}")
+
+    return executed_configs, time, iters
+
+
+def optimize_matmul(
+    sizes: list[int],
+    transpose_a: bool,
+    transpose_b: bool,
+    has_bias: bool,
+    has_relu: bool,
+    accumulate_c: bool,
+    truncate_c: bool,
+    ab_type: str = "f16",
+    c_type: str = "f32",
+    check_result: bool = True,
+    dry_run: bool = False,
+    max_iters: int = None,
+    nruns: int = 500,
+    nwarmup: int = 500,
+    max_nb_configs: int = None,
+    perf_threshold: float = 0.8,
+    prefetch_strategy: str = "all",
+    nb_select_load_tune: int = 4,
+    nb_select_pfnb_tune: int = 8,
+    n_dump_json: int = 0,
+    target: str = "B70",
+):
+    if not dry_run:
+        csv_file = "out_costmodel.csv"
+        csv_logger = CSVLogger(csv_file)
+
+    gpu_specs = XeGPUSpecs.get(target)
+
+    def eval_fn(**kwparams):
+        return execute_and_log(
+            experiment_func=execute_matmul,
+            params=kwparams,
+            csv_logger=csv_logger if not dry_run else None,
+            timeout=50,
+            check_result=check_result,
+            ab_type=ab_type,
+            c_type=c_type,
+            has_bias=has_bias,
+            has_relu=has_relu,
+            accumulate_c=accumulate_c,
+            truncate_c=truncate_c,
+        )
+
+    print(f"\nMatmul problem size: {sizes}")
+    print(f"device={gpu_specs.name}")
+    print(f"{ab_type=}")
+    print(f"{c_type=}")
+    print(f"{transpose_a=}")
+    print(f"{transpose_b=}")
+    print(f"{has_bias=}")
+    print(f"{has_relu=}")
+    print(f"{accumulate_c=}")
+    print(f"{truncate_c=}")
+    sys.stdout.flush()
+
+    executed_configs, _, _ = optimize_payload(
+        eval_fn,
+        sizes,
+        transpose_a,
+        transpose_b,
+        dry_run=dry_run,
+        max_iters=max_iters,
+        nruns=nruns,
+        nwarmup=nwarmup,
+        max_nb_configs=max_nb_configs,
+        perf_threshold=perf_threshold,
+        prefetch_strategy=prefetch_strategy,
+        nb_select_load_tune=nb_select_load_tune,
+        nb_select_pfnb_tune=nb_select_pfnb_tune,
+        target=target,
+    )
+
+    if n_dump_json > 0 and not dry_run:
+        best_configs = [c for c in executed_configs[:n_dump_json]]
+        sizes_str = "-".join(str(s) for s in sizes)
+        sizes_str = "-".join(str(s) for s in sizes)
+        relu_str = "_relu" if has_relu else ""
+        bias_str = "_bias" if has_bias else ""
+        tra_str = "_tra" if transpose_a else ""
+        trb_str = "_trb" if transpose_b else ""
+        acc_str = "_acc" if accumulate_c else ""
+        trunc_str = "_trunc" if truncate_c else ""
+        prefix = f"matmul_params_{sizes_str}_{ab_type}-{c_type}{tra_str}{trb_str}{bias_str}{relu_str}{acc_str}{trunc_str}"
+        dump_configs_json([p for _, p in best_configs], filename_prefix=prefix)
+
 
 if __name__ == "__main__":
     parser = cli_parser(
@@ -121,199 +370,24 @@ to three phases:
     )
     args = parser.parse_args()
 
-    sizes = args.sizes
-    transpose_a = args.transpose_a
-    transpose_b = args.transpose_b
-    has_bias = args.bias
-    has_relu = args.relu
-    accumulate_c = not args.no_accumulate_c
-    truncate_c = args.truncate_c
-    ab_type = "f16"
-    c_type = "f32"
-
-    # timeout for kernel execution in seconds
-    timeout = 50
-
-    nwarmup = args.nwarmup
-    nruns = args.nruns
-    if nruns is None:
-        # Set both to None to enable timing-based heuristics
-        nwarmup = None
-
-    # disable IGC compiler cache
-    os.environ["NEO_CACHE_PERSISTENT"] = "0"
-
-    if not args.dry_run:
-        csv_file = "out_costmodel.csv"
-        csv_logger = CSVLogger(csv_file)
-
-    gpu_specs = XeGPUSpecs.get(args.target)
-
-    print(f"\nMatmul problem size: {sizes}")
-    print(f"device={gpu_specs.name}")
-    print(f"{ab_type=}")
-    print(f"{c_type=}")
-    print(f"{transpose_a=}")
-    print(f"{transpose_b=}")
-    print(f"{has_bias=}")
-    print(f"{has_relu=}")
-    print(f"{accumulate_c=}")
-    print(f"{truncate_c=}")
-    sys.stdout.flush()
-
-    max_nb_configs = args.max_nb_configs
-    perf_threshold = args.perf_threshold
-    prefetch_strategy = args.prefetch_strategy
-    nb_select_load_tune = args.nb_select_load_tune
-    nb_select_pfnb_tune = args.nb_select_pfnb_tune
-
-    print("\nTuning parameters:")
-    print(f"{max_nb_configs=}")
-    print(f"{perf_threshold=}")
-    print(f"{prefetch_strategy=}")
-    print(f"{nb_select_load_tune=}")
-    print(f"{nb_select_pfnb_tune=}")
-    print(f"{nwarmup=}")
-    print(f"{nruns=}")
-    sys.stdout.flush()
-
-    configs = generate_configs(
-        *sizes,
-        gpu_specs,
-        transpose_a=transpose_a,
-        transpose_b=transpose_b,
-        perf_threshold=perf_threshold,
-        pf_strategy=prefetch_strategy,
-        max_nb_configs=max_nb_configs,
+    optimize_matmul(
+        args.sizes,
+        args.transpose_a,
+        args.transpose_b,
+        args.bias,
+        args.relu,
+        not args.no_accumulate_c,
+        args.truncate_c,
+        check_result=not args.no_check_result,
+        dry_run=args.dry_run,
+        max_iters=args.max_iters,
+        nruns=args.nruns,
+        nwarmup=args.nwarmup,
+        max_nb_configs=args.max_nb_configs,
+        perf_threshold=args.perf_threshold,
+        prefetch_strategy=args.prefetch_strategy,
+        nb_select_load_tune=args.nb_select_load_tune,
+        nb_select_pfnb_tune=args.nb_select_pfnb_tune,
+        n_dump_json=args.n_dump_json,
+        target=args.target,
     )
-    param_dicts = [params for _, params in configs]
-
-    def eval_configs(param_dicts):
-        print(f"Total complexity: {len(param_dicts)} configurations")
-        i = 0
-        executed_configs = []
-        tic = perf_counter()
-        for params in param_dicts:
-            if args.max_iters is not None and i >= args.max_iters:
-                print(f"Reached maximum number of iterations: {args.max_iters}")
-                break
-            i += 1
-            if args.dry_run:
-                print(f"Config {i}: {list(params.values())}")
-                continue
-            time, gflops = execute_and_log(
-                run_experiment,
-                csv_logger,
-                nruns,
-                nwarmup,
-                params,
-                check_result=not args.no_check_result,
-                timeout=timeout,
-                ab_type=ab_type,
-                c_type=c_type,
-                has_bias=has_bias,
-                has_relu=has_relu,
-                accumulate_c=accumulate_c,
-                truncate_c=truncate_c,
-            )
-            executed_configs.append((gflops, params))
-
-        duration = perf_counter() - tic
-
-        return executed_configs, duration, i
-
-    def run_tuning_phase(param_dicts, executed_configs, phase_msg):
-        print(f"\n{phase_msg}")
-
-        executed_configs2, time2, iters2 = eval_configs(param_dicts)
-        executed_configs.extend(executed_configs2)
-        # sort by performance
-        executed_configs.sort(key=lambda x: x[0], reverse=True)
-
-        return time2, iters2
-
-    def summarize_phase(executed_configs, time, iters, message, n_print=10):
-        print(f"Time spent in tuning: {timedelta(seconds=time)}")
-        print(f"Number of executed configurations: {iters}")
-        print(message)
-        for gflops, params in executed_configs[:n_print]:
-            print(f" GFLOPS: {gflops:.2f}: {list(params.values())}")
-
-    def select_and_expand(executed_configs, nb_select, expand_fn, **expand_kwargs):
-        selected_param_dicts = [c[1] for c in executed_configs[:nb_select]]
-        return expand_fn(selected_param_dicts, gpu_specs, **expand_kwargs)
-
-    executed_configs = []
-    time, iters = run_tuning_phase(
-        param_dicts,
-        executed_configs,
-        "Phase 1: Tuning WG/SG/K tile sizes",
-    )
-    if args.dry_run:
-        exit(0)
-    summarize_phase(
-        executed_configs,
-        time,
-        iters,
-        "Best configurations found in first tuning phase:",
-    )
-
-    if nb_select_load_tune is not None and nb_select_load_tune > 0:
-        param_dicts = select_and_expand(
-            executed_configs,
-            nb_select_load_tune,
-            expand_configs_with_load_tiles,
-            load_strategy="all",
-            exclude_duplicates=True,
-        )
-        time2, iters2 = run_tuning_phase(
-            param_dicts,
-            executed_configs,
-            f"Phase 2: Tuning load tiles for best {nb_select_load_tune} configurations",
-        )
-        summarize_phase(
-            executed_configs,
-            time2,
-            iters2,
-            "Best configurations found after load tile tuning:",
-        )
-        time += time2
-        iters += iters2
-
-    if nb_select_pfnb_tune is not None and nb_select_pfnb_tune > 0:
-        param_dicts = select_and_expand(
-            executed_configs,
-            nb_select_pfnb_tune,
-            expand_configs_with_prefetch_depth,
-            max_depth=2,
-            exclude_duplicates=True,
-        )
-        time2, iters2 = run_tuning_phase(
-            param_dicts,
-            executed_configs,
-            f"Phase 3: Tuning prefetch depth for best {nb_select_pfnb_tune} configurations",
-        )
-        summarize_phase(
-            executed_configs,
-            time2,
-            iters2,
-            "Best configurations found after prefetch depth tuning:",
-        )
-        time += time2
-        iters += iters2
-
-    print(f"Total duration: {timedelta(seconds=time)}")
-    print(f"Number of executed configurations: {iters}")
-
-    if args.n_dump_json > 0 and not args.dry_run:
-        best_configs = [c for c in executed_configs[: args.n_dump_json]]
-        sizes_str = "-".join(str(s) for s in sizes)
-        sizes_str = "-".join(str(s) for s in sizes)
-        relu_str = "_relu" if has_relu else ""
-        bias_str = "_bias" if has_bias else ""
-        tra_str = "_tra" if transpose_a else ""
-        trb_str = "_trb" if transpose_b else ""
-        acc_str = "_acc" if accumulate_c else ""
-        trunc_str = "_trunc" if truncate_c else ""
-        prefix = f"matmul_params_{sizes_str}_{ab_type}-{c_type}{tra_str}{trb_str}{bias_str}{relu_str}{acc_str}{trunc_str}"
-        dump_configs_json([p for _, p in best_configs], filename_prefix=prefix)

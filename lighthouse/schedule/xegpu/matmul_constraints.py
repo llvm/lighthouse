@@ -58,6 +58,9 @@ def check_sg_tile(
 
 
 def check_k_tile(K: int, k_tile: int):
+    if k_tile >= K:
+        # Lowering relies on a k_tile loop which must not be eliminated.
+        raise ValueError("k_tile must be less than K")
     if K % k_tile != 0:
         raise ValueError("k_tile does not divide K")
     if k_tile % DPAS.K != 0:

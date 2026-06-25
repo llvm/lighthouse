@@ -68,9 +68,9 @@ def params_with_constraints_imposed(
     assert m % wg_m == 0 and wg_m % DPAS.M == 0
     assert min(max(n // 4, 16), 64) <= wg_n <= min(n, 256)
     assert n % wg_n == 0 and wg_n % DPAS.N == 0
-    assert min(max(m // 8, 16), 32) <= sg_m <= min(m, 128)
+    assert 16 <= sg_m <= min(m, 128)
     assert m % sg_m == 0 and sg_m % DPAS.M == 0
-    assert min(max(n // 8, 16), 32) <= sg_n <= min(n, 128)
+    assert 16 <= sg_n <= min(n, 128)
     assert n % sg_n == 0 and sg_n % DPAS.N == 0
     assert 16 <= k_tile <= min(k, 256)
     assert k % k_tile == 0 and k_tile % DPAS.K == 0
@@ -327,7 +327,10 @@ def bundle_xegpu_mlp_schedule(
             smt_ext.assert_(
                 sg_threads <= gpu_specs.max_nb_threads, "too many SG threads"
             )
-            smt_ext.assert_(sg_threads >= MIN_NB_THREADS, "too few SG threads")
+            smt_ext.assert_(
+                sg_threads >= MIN_NB_THREADS,
+                f"too few SG threads: {sg_threads} {WG_M}/{SG_M}*{WG_N}/{SG_N}",
+            )
 
             # number of threads collapsed to 1d layout
             return sg_threads * NB_WORKITEMS
