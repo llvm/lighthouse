@@ -18,8 +18,11 @@ project_root = script_path.parent.parent
 kb_program = project_root / "tools" / "kernel-bench"
 kb_default_pipeline = kb_program.parent / "kernel-bench.yaml"
 kb_path = project_root / "third_party" / "KernelBench" / "KernelBench"
-level1_yaml_path = script_path / "level1.yaml"
-level2_yaml_path = script_path / "level2.yaml"
+yaml_files = [
+    script_path / "level1.yaml",
+    script_path / "level2.yaml",
+    script_path / "level3.yaml",
+]
 
 
 class TargetInfo:
@@ -93,10 +96,9 @@ def get_tests(args: argparse.Namespace) -> list[dict]:
     Returns the list of tests to be executed.
     """
     tests = []
-    with open(level1_yaml_path) as f:
-        tests = yaml.safe_load(f)
-    with open(level2_yaml_path) as f:
-        tests += yaml.safe_load(f)
+    for yaml_file in yaml_files:
+        with open(yaml_file) as f:
+            tests += yaml.safe_load(f)
 
     test_list = []
     for test in tests:
