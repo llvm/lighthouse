@@ -79,22 +79,34 @@ class MoveOffsetsToSubviewOp(
         sizes = [1] * rank_diff
         sizes.extend(vec_type.shape)
         strides = [1] * memref_type.rank
-        offsets = get_indices(target)
+        indices = get_indices(target)
+
+        subview_offsets = []
+        zero_offset = arith.ConstantOp(ir.IndexType.get(), 0)
+        for offset in indices:
+            if not isinstance(offset.owner, arith.ConstantOp):
+                subview_offsets.append(offset)
+            else:
+                subview_offsets.append(zero_offset)
 
         base_subview = memref.subview(
             base_val,
-            offsets,
+            subview_offsets,
             sizes,
             strides,
         )
-        vec_zero_indices = [
-            arith.ConstantOp(ir.IndexType.get(), 0)
-        ] * base_subview.type.rank
+
+        transfer_indices = []
+        for offset in indices:
+            if isinstance(offset.owner, arith.ConstantOp):
+                transfer_indices.append(offset)
+            else:
+                transfer_indices.append(zero_offset)
         transfer_op = (
             vector.transfer_read(
                 vec_type,
                 base_subview,
-                vec_zero_indices,
+                transfer_indices,
                 map_attr,
                 target.padding,
                 get_in_bounds(target),
@@ -104,7 +116,7 @@ class MoveOffsetsToSubviewOp(
                 None,
                 target.valueToStore,
                 base_subview,
-                vec_zero_indices,
+                transfer_indices,
                 map_attr,
                 get_in_bounds(target),
             )
