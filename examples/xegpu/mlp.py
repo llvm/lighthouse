@@ -1,5 +1,6 @@
 # RUN: %PYTHON %s --dump-kernel=xegpu-wg | FileCheck %s
 # RUN: %PYTHON %s --dump-kernel=xegpu-wg --hidden-sizes 1024 1024 | FileCheck %s
+# RUN: %PYTHON %s --dump-kernel=xegpu-wg --hidden-sizes 1024 1024 --ab-type bf16 | FileCheck %s
 # RUN: %PYTHON %s --dump-kernel=xegpu-wg --hidden-sizes 1024 1024 --transpose-a | FileCheck %s
 # RUN: %PYTHON %s --dump-kernel=xegpu-wg --hidden-sizes 1024 1024 --transpose-b | FileCheck %s
 # RUN: %PYTHON %s --dump-kernel=xegpu-wg --hidden-sizes 1024 1024 --relu | FileCheck %s
@@ -133,8 +134,8 @@ class XeGPUMLP:
             self.ab_type = ir.F16Type.get()
         if self.acc_type is None:
             self.acc_type = ir.F32Type.get()
-        assert isinstance(self.ab_type, ir.F16Type), (
-            "Only f16 type is supported for A and B"
+        assert isinstance(self.ab_type, (ir.F16Type, ir.BF16Type)), (
+            "Only f16 and bf16 types are supported for A and B"
         )
         assert isinstance(self.acc_type, ir.F32Type), (
             "Only f32 type is supported for accumulator"
@@ -300,6 +301,13 @@ def parse_cli():
         help="Number of features in each hidden layers.",
     )
     parser.add_argument(
+        "--ab-type",
+        type=str,
+        choices=["f16", "bf16"],
+        default="f16",
+        help="Data type for A and B matrices.",
+    )
+    parser.add_argument(
         "--nruns",
         type=int,
         default=500,
@@ -397,6 +405,7 @@ if __name__ == "__main__":
             input_size=args.input_size,
             output_size=args.output_size,
             hidden_layer_sizes=args.hidden_sizes,
+            ab_type=args.ab_type,
             has_bias=args.bias,
             has_relu=args.relu,
             transpose_a=tr_a,

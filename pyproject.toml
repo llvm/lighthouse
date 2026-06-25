@@ -3,7 +3,7 @@ name = "lighthouse"
 dynamic = ["version"]
 requires-python = ">=3.10,<3.13"  # Bounds are due to torch-mlir's packaging
 dependencies = [
-    "mlir-python-bindings==20260607+baa69e929",
+    "mlir-python-bindings==20260618+b2ffc0d9c",
     "pyyaml>=6.0",
 ]
 
@@ -23,21 +23,19 @@ ingress_torch_mlir = [
 ]
 # Additional "targets" which pull in optional dependencies -- use `uv sync --extra TARGET`
 ingress_torch_cpu = [
-    "torch==v2.9.1+cpu",
+    "torch==v2.12.1+cpu",
     "lighthouse[ingress_torch_mlir]"
 ]
 ingress_torch_nvidia = [
-    "torch==2.9.1",  # Nvidia-enabled version of torch
+    "torch==2.12.1+cu130",  # Nvidia-enabled version of torch
     "lighthouse[ingress_torch_mlir]"
 ]
 ingress_torch_rocm = [
-    "torch==2.9.1+rocm6.4",  # AMD-enabled version of torch
-    "pytorch_triton_rocm",  # Transitive dependency listed explicitly so that we can state which package repository it is supposed to come from
+    "torch==2.12.1+rocm7.2",  # AMD-enabled version of torch
     "lighthouse[ingress_torch_mlir]"
 ]
 ingress_torch_xpu = [
-    "torch==2.9.1+xpu",  # Intel-enabled version of torch
-    "pytorch_triton_xpu",  # Transitive dependency listed explicitly so that we can state which package repository it is supposed to come from
+    "torch==2.12.1+xpu",  # Intel-enabled version of torch
     "lighthouse[ingress_torch_mlir]"
 ]
 runtime_mpich = [
@@ -50,6 +48,7 @@ runtime_impi = [
 ]
 
 [tool.uv]
+index-strategy = "unsafe-best-match"
 # Declare that the following "targets" are mutually exclusive of one another
 conflicts = [
     [
@@ -64,8 +63,6 @@ conflicts = [
 # Bind packages to particular package repositories
 mlir_python_bindings = { index = "eudsl" }
 torch = { index = "pytorch" }
-pytorch_triton_xpu = { index = "pytorch" }
-pytorch_triton_rocm = { index = "pytorch" }
 torch_mlir = { index = "torch_mlir" }
 
 # The following are the different non-Pypi package repositories we depend on
@@ -78,7 +75,6 @@ format = "flat"
 [[tool.uv.index]]
 name = "pytorch"
 url = "https://download.pytorch.org/whl"
-explicit = true
 
 [[tool.uv.index]]
 name = "torch_mlir"

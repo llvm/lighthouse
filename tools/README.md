@@ -14,13 +14,13 @@ The way to use it is demonstrated in the test `test/opt/pipeline-check.mlir`:
 lh-opt --stage=canonicalize file.mlir
 
 // Runs one pass bundle over the file
-lh-opt --stage=BufferizationBundle file.mlir
+lh-opt --stage=bufferization.yaml file.mlir
 
 // Runs one transform over the file
 lh-opt --stage=my-transform.mlir file.mlir
 
 // Runs a whole pipeline on the file
-lh-opt --stage=BufferizationBundle --stage=canonicalize --stage=my-transform.mlir --stage=canonicalize --stage=LLVMLoweringBundle file.mlir
+lh-opt --stage=bufferization.yaml --stage=canonicalize --stage=my-transform.mlir --stage=canonicalize --stage=llvm_lowering.yaml file.mlir
 ```
 
 Note, this basic functionality is for testing purposes.
@@ -33,10 +33,10 @@ The way to use is demonstrated in the test `test/run/pipeline-check.mlir`:
 
 ```
 // Runs module with random inputs
-lh-run --stage=my-pipeline.yaml file.mlir --entry-point=entry --input-shape=256x512,512x1024 --input-type=f32
+lh-run --stage=my-pipeline.yaml file.mlir --entry-point=entry --input-shape=256x512xf32xrnd,512x1024xf32xrnd
 
 // Benchmarks the module above with random inputs
-lh-run --stage=my-pipeline.yaml file.mlir --entry-point=entry --input-shape=256x512,512x1024 --input-type=f32 --benchmark
+lh-run --stage=my-pipeline.yaml file.mlir --entry-point=entry --input-shape=256x512xf32xrnd,512x1024xf32xrnd --benchmark
 ```
 
 Note, this basic functionality is for testing purposes.

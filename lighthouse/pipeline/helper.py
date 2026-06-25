@@ -1,18 +1,6 @@
-import os
-
 from mlir import ir
 from mlir.dialects import transform
 from mlir.dialects.transform import structured
-
-
-def import_mlir_module(path: str, context: ir.Context) -> ir.Module:
-    """Import an MLIR text file into an MLIR module"""
-    if path is None:
-        raise ValueError("Path to the module must be provided.")
-    if not os.path.exists(path):
-        raise ValueError(f"Path to the module does not exist: {path}")
-    with open(path, "r") as f:
-        return ir.Module.parse(f.read(), context=context)
 
 
 def apply_registered_pass(*args, **kwargs):

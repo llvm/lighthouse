@@ -136,10 +136,12 @@ def generate_configs(
     # define search space
     wg_options = [64, 128, 256]
     sg_options = [32, 64, 128]
+    sg_options_m = [16] + sg_options if M < 256 else sg_options
+    sg_options_n = [16] + sg_options if N < 256 else sg_options
     k_tile_options = [16, 32, 64]
 
     wg_tiles = product(wg_options, wg_options)
-    sg_tiles = product(sg_options, sg_options)
+    sg_tiles = product(sg_options_m, sg_options_n)
 
     # grid search
     valid_configs = []
@@ -461,7 +463,7 @@ def estimate_performance(
     if verbose:
         print_header("Subgroup Level", char="-", width=50)
 
-    sg_grid = check_sg_tile(wg_tile, sg_tile, gpu_specs)
+    sg_grid = check_sg_tile(wg_tile, sg_tile, gpu_specs, min_nb_threads=MIN_NB_THREADS)
     nb_sgs = sg_grid[0] * sg_grid[1]
     if verbose:
         print(

@@ -2,8 +2,8 @@ import os
 
 from mlir import ir
 import lighthouse.pipeline.stage as lhs
-from lighthouse.pipeline.helper import import_mlir_module
 from lighthouse.pipeline.descriptor import PipelineDescriptor, Descriptor
+from lighthouse.utils.importer import import_mlir_module
 import lighthouse.dialects as lh_dialects
 
 

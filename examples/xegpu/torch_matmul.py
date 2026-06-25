@@ -8,7 +8,6 @@ import json
 from typing import Optional
 from functools import partial
 import os
-import time
 
 import torch
 import torch.nn as nn
@@ -20,6 +19,7 @@ from lighthouse import dialects as lh_dialects
 from lighthouse import schedule as lh_schedule
 from lighthouse.pipeline.driver import TransformDriver
 from lighthouse.utils.mlir import get_mlir_library_path
+from lighthouse.execution.runner import Runner
 from lighthouse.schedule.xegpu import (
     mlp_schedule,
     xegpu_to_binary,
@@ -48,7 +48,9 @@ def shared_libs() -> list[str]:
     return found_libs
 
 
-def schedule_modules(parameters: Optional[dict] = None) -> list[ir.Module]:
+def schedule_modules(
+    parameters: Optional[dict] = None, benchmark: bool = False, entry_func: str = "main"
+) -> list[ir.Module]:
     assert parameters is not None, "Schedule parameters must be provided"
     schedules = []
 
@@ -59,6 +61,8 @@ def schedule_modules(parameters: Optional[dict] = None) -> list[ir.Module]:
         )
         transform.yield_()
     schedules.append(sched)
+    if benchmark:
+        schedules.append(Runner.get_bench_wrapper_schedule(entry_func))
 
     schedules.append(
         mlp_schedule(
@@ -71,8 +75,17 @@ def schedule_modules(parameters: Optional[dict] = None) -> list[ir.Module]:
     return schedules
 
 
-def lower_to_llvm(module: ir.Module, parameters: Optional[dict] = None) -> ir.Module:
-    pipeline = TransformDriver(schedule_modules(parameters=parameters))
+def lower_to_llvm(
+    module: ir.Module,
+    parameters: Optional[dict] = None,
+    benchmark: bool = False,
+    entry_func: str = "main",
+) -> ir.Module:
+    pipeline = TransformDriver(
+        schedule_modules(
+            parameters=parameters, benchmark=benchmark, entry_func=entry_func
+        )
+    )
     payload = pipeline.apply(module)
     return payload
 
@@ -244,16 +257,18 @@ enabled via CLI arguments.
         out_ref = model(a, b)
         torch.xpu.synchronize()
 
-        fn_compile = partial(lower_to_llvm, parameters=params)
+        benchmark = args.nruns > 0
+        fn_compile = partial(lower_to_llvm, parameters=params, benchmark=benchmark)
+        backend = gpu_backend(
+            fn_compile,
+            device=xpu_device,
+            dialect=TargetDialect.LINALG_ON_TENSORS,
+            ir_context=ctx,
+            shared_libs=shared_libs(),
+        )
         model.compile(
             dynamic=False,
-            backend=gpu_backend(
-                fn_compile,
-                device=xpu_device,
-                dialect=TargetDialect.LINALG_ON_TENSORS,
-                ir_context=ctx,
-                shared_libs=shared_libs(),
-            ),
+            backend=backend,
         )
         out = model(a, b)
         torch.xpu.synchronize()
@@ -263,20 +278,12 @@ enabled via CLI arguments.
         # CHECK: Compile function - result match: True
         print(f"Compile function - result match: {is_match}")
 
-        if args.nruns > 0:
-            # Warmup
-            for _ in range(args.nwarmup):
-                model(a, b)
+        if benchmark:
+            times = backend.jit_function.benchmark(
+                a, b, nruns=args.nruns, nwarmup=args.nwarmup
+            )
 
-            # Benchmark loop.
-            start = time.perf_counter_ns()
-            for i in range(args.nruns):
-                # MLIR synchronizes internally.
-                # No need for extra synchronization here.
-                model(a, b)
-            end = time.perf_counter_ns()
-
-            elapsed = (end - start) / args.nruns / 1e3  # Convert to us
+            elapsed = times.mean() * 1e6  # convert to us
             flop_count = 2 * m * n * k
             gflops = flop_count / (elapsed * 1e-6) / 1e9
 
