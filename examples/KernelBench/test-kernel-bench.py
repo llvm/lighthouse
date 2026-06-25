@@ -212,6 +212,10 @@ if __name__ == "__main__":
             print("No tests to run. Please check your arguments.")
         exit(0)
 
+    target_info = TargetInfo(args.target, args.feature)
+    if target_info.feature.get("amx", False):
+        enable_amx = True
+
     for test in tests:
         kb_kernel = kb_path / test["kernel"]
         command_line = []
@@ -229,6 +233,9 @@ if __name__ == "__main__":
             "--dtype",
             args.dtype,
         ]
+
+        if enable_amx:
+            command_line += ["--enable-amx"]
 
         # Benchmark mode.
         if args.benchmark:
