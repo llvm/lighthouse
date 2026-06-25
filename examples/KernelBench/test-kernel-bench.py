@@ -106,7 +106,7 @@ def get_tests(args: argparse.Namespace) -> list[dict]:
         if args.kernel and not test["kernel"].startswith(args.kernel):
             continue
         # CI mode runs fewer tests for faster feedback
-        if args.ci and len(test_list) >= 2:
+        if args.ci and len(test_list) >= 5:
             break
         # Smoke tests run on the simplest lowering
         if args.smoke_test:

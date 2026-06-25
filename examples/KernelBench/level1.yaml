@@ -27,10 +27,10 @@
   pipeline: matvec
 
 - kernel: level1/5_Matrix_scalar_multiplication.py
-  input_shapes: [65536x16384, "1"]
+  input_shapes: [1024x16384, "1"]
   initializations: [rnd, rnd]
-  output_shape: 65536x16384
-  gflops: (65536 * 16384) / 1e9
+  output_shape: 1024x16384
+  gflops: (1024 * 16384) / 1e9
   pipeline: element_wise
 
 - kernel: level1/6_Matmul_with_large_K_dimension_.py
