@@ -66,18 +66,13 @@ class MoveOffsetsToSubviewOp(
 
         memref_type: ir.MemRefType = base_val.type
         vec_type: ir.VectorType = get_vector_type(target)
-        rank_diff = memref_type.rank - vec_type.rank
-        assert rank_diff >= 0, (
-            "Memref rank must be greater than or equal to vector rank"
-        )
 
         map_attr = get_permutation_map(target)
         map: ir.AffineMap = map_attr.value
         if map != ir.AffineMap.get_minor_identity(map.n_dims, len(map.results)):
             return None
 
-        sizes = [1] * rank_diff
-        sizes.extend(vec_type.shape)
+        sizes = memref_type.shape
         strides = [1] * memref_type.rank
         indices = get_indices(target)
 
