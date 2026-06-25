@@ -1,3 +1,4 @@
+from mlir import ir
 from mlir.dialects import transform
 from mlir.dialects.bufferization import LayoutMapOption
 from mlir.dialects.transform import bufferization
@@ -23,45 +24,56 @@ from .xegpu_specs import XeGPUSpecs
 from .matmul_constraints import NB_WORKITEMS, MIN_NB_THREADS
 
 
+def get_named_func(
+    mod: transform.AnyOpType,
+    func_name: str,
+) -> transform.AnyOpType:
+    """
+    Get the function with the given name from the module.
+
+    Produces a silenceable failure if the function is not found.
+    """
+    return match_and_split(
+        mod,
+        ops={"func.func"},
+        op_attrs={"sym_name": ir.StringAttr.get(func_name)},
+        nhandles=1,
+    )[0]
+
+
 def vectorize_bufferize_and_outline_gpu_func(
     mod: transform.AnyOpType,
-    func: transform.AnyOpType,
+    payload_func_name: str,
     *,
     nlayers: int,
     gpu_specs: XeGPUSpecs,
     params: list[dict[str, int | KnobValue]],
     stop_at_stage: str = "",
 ) -> transform.AnyOpType:
-    """Vectorize, bufferize, emit gpu.launch, and outline to gpu.func."""
-
-    func = vectorize(func)
+    """Vectorizes and bufferizes the payload function and outlines it to gpu.func."""
+    vectorize(mod, payload_func_name=payload_func_name)
     if stop_at_stage == "vectorized":
         raise PipelineInterrupt()
 
     mod = bufferize(mod)
-
-    # match payload function
-    anytype = transform.AnyOpType.get()
-    wg_loops = match(mod, ops={"scf.forall"})
-    func = transform.get_parent_op(
-        anytype, wg_loops, op_name="func.func", deduplicate=True
-    )
-    func = convert_allocs_to_gpu(func)
+    convert_allocs_to_gpu(mod, payload_func_name)
     if stop_at_stage == "bufferized":
         raise PipelineInterrupt()
 
-    func = convert_to_gpu_launch(func, nlayers=nlayers)
-    mod = outline_gpu_function(mod, func, gpu_specs=gpu_specs, params=params)
+    convert_to_gpu_launch(mod, payload_func_name, nlayers=nlayers)
+    mod = outline_gpu_function(
+        mod, payload_func_name, gpu_specs=gpu_specs, params=params
+    )
 
     return mod
 
 
 def vectorize(
-    func: transform.AnyOpType,
+    mod: transform.AnyOpType,
+    payload_func_name: str,
 ) -> transform.AnyOpType:
     """Vectorize and run loop-hoisting cleanup for the payload function."""
-
-    # vectorize
+    func = get_named_func(mod, payload_func_name)
     func = structured.structured_vectorize_children_and_apply_patterns(
         transform.any_op_t(),
         func,
@@ -99,10 +111,12 @@ def bufferize(
 
 
 def convert_allocs_to_gpu(
-    func: transform.AnyOpType,
+    mod: transform.AnyOpType,
+    payload_func_name: str,
 ) -> transform.AnyOpType:
     """Insert deallocs and convert memref alloc/dealloc ops to GPU variants."""
 
+    func = get_named_func(mod, payload_func_name)
     func = apply_registered_pass(func, "buffer-deallocation-pipeline")
     alloc_ops = match(func, ops={"memref.alloc"})
     transform_ext.replace(alloc_ops, "gpu.alloc")
@@ -113,18 +127,18 @@ def convert_allocs_to_gpu(
 
 
 def convert_to_gpu_launch(
-    func: transform.AnyOpType,
+    mod: transform.AnyOpType,
+    payload_func_name: str,
     *,
     nlayers: int,
 ) -> transform.AnyOpType:
     """Convert scf.forall/scf.parallel structure to gpu.launch."""
 
-    anytype = transform.AnyOpType.get()
-
     # convert forall to parallel
+    func = get_named_func(mod, payload_func_name)
     wg_loops = match_and_split(func, ops={"scf.forall"}, nhandles=nlayers)
     for wg_loop in wg_loops:
-        wg_loop = loop.loop_forall_to_parallel([anytype], wg_loop)
+        wg_loop = loop.loop_forall_to_parallel([transform.any_op_t()], wg_loop)
 
     # convert scf.parallel to gpu.launch
     func = apply_registered_pass(func, "gpu-map-parallel-loops")
@@ -138,7 +152,7 @@ def convert_to_gpu_launch(
 
 def outline_gpu_function(
     mod: transform.AnyOpType,
-    func: transform.AnyOpType,
+    payload_func_name: str,
     *,
     gpu_specs: XeGPUSpecs,
     params: list[dict[str, int | KnobValue]],
@@ -187,6 +201,7 @@ def outline_gpu_function(
         xegpu.set_gpu_launch_threads(launch_op, threads=[nb_threads, 1, 1])
 
     # outline gpu func
+    func = get_named_func(mod, payload_func_name)
     func = apply_registered_pass(func, "lower-affine")
     canonicalize(func)
     func = apply_registered_pass(func, "gpu-launch-sink-index-computations")

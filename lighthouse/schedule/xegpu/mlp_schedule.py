@@ -21,6 +21,7 @@ from .xegpu_parameter_selector import XeGPUParameterSelector
 from .lowering_common import (
     vectorize_bufferize_and_outline_gpu_func,
     convert_vector_to_xegpu,
+    get_named_func,
 )
 from .matmul_constraints import (
     DPAS,
@@ -106,6 +107,7 @@ def params_with_constraints_imposed(
 
 def mlp_schedule(
     params: list[dict[str, int | None]],
+    payload_func_name: str = "payload",
     stop_at_stage: str = "",
 ) -> ir.Module:
     """Generate transform schedule module for MLP payload."""
@@ -119,7 +121,7 @@ def mlp_schedule(
     with schedule_boilerplate() as (schedule, named_seq):
         # match the payload module
         anytype = transform.AnyOpType.get()
-        func = match(named_seq.bodyTarget, ops={"func.func"})
+        func = get_named_func(named_seq.bodyTarget, payload_func_name)
         payload_mod = transform.get_parent_op(
             anytype,
             func,
@@ -171,6 +173,7 @@ def mlp_schedule(
         try:
             bundle_xegpu_mlp_schedule(
                 payload_mod,
+                payload_func_name=payload_func_name,
                 gpu_specs=gpu_specs,
                 params=params,
                 stop_at_stage=stop_at_stage,
@@ -185,6 +188,7 @@ def mlp_schedule(
 
 def bundle_xegpu_mlp_schedule(
     mod: ir.Value[transform.AnyOpType],
+    payload_func_name: str,
     gpu_specs: XeGPUSpecs,
     params: list[dict[str, int | KnobValue]],
     stop_at_stage: str = "",
@@ -198,10 +202,11 @@ def bundle_xegpu_mlp_schedule(
     anytype = transform.AnyOpType.get()
 
     # fuse all elementwise ops first
-    mod = apply_registered_pass(mod, "linalg-fuse-elementwise-ops")
+    func = get_named_func(mod, payload_func_name)
+    func = apply_registered_pass(func, "linalg-fuse-elementwise-ops")
 
     # tile each layer separately
-    matmul_ops = match_and_split(mod, ops={"linalg.matmul"}, nhandles=nlayers)
+    matmul_ops = match_and_split(func, ops={"linalg.matmul"}, nhandles=nlayers)
     for matmul_op, layer_params in zip(matmul_ops, params):
         # tunable parameters: wg and k tiling
         wg_tile = [layer_params["wg_m"], layer_params["wg_n"]]
@@ -230,19 +235,13 @@ def bundle_xegpu_mlp_schedule(
             anytype, anytype, transpose_op, k_loop
         )
 
-    func = transform.get_parent_op(
-        anytype,
-        k_loop,
-        op_name="func.func",
-        deduplicate=True,
-    )
     lh_transform.cleanup(func)
     if stop_at_stage == "tiled":
         raise PipelineInterrupt()
 
     mod = vectorize_bufferize_and_outline_gpu_func(
         mod,
-        func,
+        payload_func_name=payload_func_name,
         nlayers=nlayers,
         gpu_specs=gpu_specs,
         params=params,

@@ -209,6 +209,7 @@ class XeGPUMatMul:
 
         schedules.append(
             mlp_schedule(
+                payload_func_name=self.payload_function_name,
                 stop_at_stage=stop_at_stage,
                 params=[parameters],
             )
