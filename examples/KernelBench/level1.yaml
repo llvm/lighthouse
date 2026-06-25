@@ -13,10 +13,10 @@
   pipeline: matmul
 
 - kernel: level1/3_Batched_matrix_multiplication.py
-  input_shapes: [8x512x512, 8x512x512]
+  input_shapes: [3x2048x4096, 3x4096x2048]
   initializations: [rnd, rnd]
-  output_shape: 8x512x512
-  gflops: (8 * 512 * 512 * 512 * 2) / 1e9
+  output_shape: 3x2048x2048
+  gflops: (3 * 2048 * 4096 * 2048 * 2) / 1e9
   pipeline: batch_matmul
 
 - kernel: level1/4_Matrix_vector_multiplication_.py
@@ -55,11 +55,11 @@
   pipeline: matmul
 
 - kernel: level1/9_Tall_skinny_matrix_multiplication_.py
-  input_shapes: [4096x32, 32x4096]
+  input_shapes: [4096x64, 64x4096]
   initializations: [rnd, rnd]
   output_shape: 4096x4096
-  gflops: (4096 * 32 * 4096 * 2) / 1e9
-  pipeline: batch_matmul
+  gflops: (4096 * 64 * 4096 * 2) / 1e9
+  pipeline: matmul
 
 - kernel: level1/10_3D_tensor_matrix_multiplication.py
   input_shapes: [16x4096x2048, 2048x768]

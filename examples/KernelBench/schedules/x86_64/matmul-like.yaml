@@ -1,8 +1,10 @@
 # This is an optimizing pipeline for kernel_bench matmul-like kernels.
 Pipeline:
+  # - schedule: "debug.py[gen=print_ir]"
   - include: pack_and_tile.yaml {
                                   block_factors=$block_factors
                                   tile_size=$tile_size
+                                  leading_batch_dims=$leading_batch_dims
                                 }
 
   ## CPU specific register tiling (depends on uArch & data type)
@@ -23,6 +25,7 @@ Pipeline:
                                                                     reg_unroll_n=$reg_unroll_n
                                                                     reg_unroll_k=$reg_unroll_k
                                                                   }"
+  - pass: "linalg-morph-ops{named-to-category generic-to-named}"
   - schedule: "tiling.py[gen=tile_ops]{target_op=linalg.fill tile_sizes=$fill_tiling}"
   - schedule: "tiling.py[gen=tile_ops]{target_op=linalg.generic tile_sizes=$generic_tiling}"
 
