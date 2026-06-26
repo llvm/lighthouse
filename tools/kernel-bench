@@ -74,13 +74,15 @@ def import_torch(
     Imports a PyTorch model from a KernelBench file and returns the PyTorch module.
     The Python file must define a Kernel Bench module file.
     """
+    if dtype == ml_dtypes.bfloat16:
+        dtype = torch.bfloat16
     try:
         model, sample_args, sample_kwargs = lh_ingress.torch.import_model(
             filepath=filepath,
             model_class_name=model_class_name,
             sample_args=sample_args,
             model_init_args=model_init_args,
-            dtype=dtype,
+            model_datatype=dtype,
         )
         assert isinstance(model, torch.nn.Module)
         return model, sample_args, sample_kwargs
