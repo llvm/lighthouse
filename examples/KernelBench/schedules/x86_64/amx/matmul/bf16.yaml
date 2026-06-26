@@ -13,5 +13,6 @@ Pipeline:
                                 reg_unroll_k=32
                                 fill_tiling=[1]
                                 generic_tiling=[1,1,1,8]
+                                2D_generic_tiling=[1,8]
                                 leading_batch_dims=0
                               }
