@@ -12,11 +12,13 @@ from .ops.get_tiling_sizes import get_tiling_sizes
 from .ops.update_address_space import update_address_space
 from .ops.replace_with_fused_attention import replace_with_fused_attention
 from .ops.move_offsets_to_subview import move_offsets_to_subview
+from .ops.filter_num_loops import filter_num_loops
 
 __all__ = [
     "TransformExtensionDialect",
     "convert_func_results_to_args",
     "extract_handle",
+    "filter_num_loops",
     "get_named_attribute",
     "get_named_attribute",
     "get_tileable_consumers",
