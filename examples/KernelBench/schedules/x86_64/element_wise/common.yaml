@@ -6,7 +6,8 @@ Pipeline:
   # Register tiling and unroll to fill the pipeline
   - schedule: "tiling.py[gen=tile_ops]{target_op=linalg.generic
                                        tile_sizes=[1,$register_tile]
-                                       unroll_factors=[0,$unroll_factor]}"
+                                       unroll_factors=[0,$unroll_factor]
+                                       filter_ops=True}"
   # Tries to vectorize everything still at tensor level
   - schedule: vectorization.py[gen=vectorize_all]
 
