@@ -66,6 +66,7 @@ def schedule_modules(
 
     schedules.append(
         mlp_schedule(
+            payload_func_name="main",
             params=[parameters],
         )
     )
