@@ -139,8 +139,9 @@ class JITFunction:
             jit_fn.benchmark(*model.parameters(), *example_inputs, ...)
 
         Args:
-            args: Torch model weight tensors and input tensors. nruns: Number
-            of benchmark runs. nwarmup: Number of warmup runs.
+            args: Torch model parameters and input tensors.
+            nruns: Number of benchmark runs.
+            nwarmup: Number of warmup runs.
 
         Returns:
             Array of execution times in seconds.
