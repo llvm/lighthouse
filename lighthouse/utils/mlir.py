@@ -108,7 +108,12 @@ def inspect_payload(payload_module: ir.Module) -> dict:
                             outputs = op.outputs
                             assert len(outputs) == 1, "Expected only one output"
                             out_shape = outputs[0].type.shape
-                            layers["elemwise"].append({"shape": out_shape})
+                            layers["elemwise"].append(
+                                {
+                                    "shape": out_shape,
+                                    "elemtype": str(outputs[0].type.element_type),
+                                }
+                            )
                         case linalg.MatmulOp():
                             inputs = op.inputs
                             outputs = op.outputs
@@ -125,9 +130,17 @@ def inspect_payload(payload_module: ir.Module) -> dict:
                                 _, k = a_shape
                             except Exception:
                                 k, _ = b_shape
+                            a_etype, b_etype = [
+                                str(d.type.element_type) for d in inputs
+                            ]
+                            assert a_etype == b_etype, "Input element types must match"
+                            ab_etype = a_etype
+                            acc_etype = str(outputs[0].type.element_type)
                             layers["matmul"].append(
                                 {
                                     "shape": (m, n, k),
+                                    "ab_elemtype": ab_etype,
+                                    "acc_elemtype": acc_etype,
                                     "transpose_a": input_is_transpose[0],
                                     "transpose_b": input_is_transpose[1],
                                 }
