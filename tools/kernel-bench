@@ -5,6 +5,7 @@ import subprocess
 from datetime import datetime
 import sys
 import numpy as np
+import ml_dtypes
 from pathlib import Path
 import torch
 
@@ -35,7 +36,7 @@ def from_numpy(buf):
     """
     return (
         torch.from_numpy(buf.view(np.uint16)).view(torch.bfloat16)
-        if buf.dtype == torch.bfloat16
+        if buf.dtype in [ml_dtypes.bfloat16, torch.bfloat16]
         else torch.from_numpy(buf)
     )
 
@@ -174,10 +175,11 @@ def parse_module_arguments(
     # Parse input shapes first, to create sample tensors for the inputs only
     buffers = [arg.arg for arg in KernelArgumentParser.parse_all(input_shapes_str)]
     # Build sample torch tensors from input shapes to override hard-coded sizes in get_inputs().
-    if any(buf.dtype == torch.bfloat16 for buf in buffers):
+    if any(buf.dtype in [ml_dtypes.bfloat16, torch.bfloat16] for buf in buffers):
         print(
-            "Warning: bfloat16 is not natively supported by torch.from_numpy(), \
-            so we are reinterpreting the buffers as uint16. This may cause issues if the buffers are modified after creation."
+            "Warning: bfloat16 is not natively supported by torch.from_numpy(), "
+            "so we are reinterpreting the buffers as uint16. This may cause issues if "
+            "the buffers are modified after creation."
         )
     sample_tensors = [from_numpy(buf) for buf in buffers]
     init_args = string_to_type(init_args_str)
@@ -364,7 +366,7 @@ if __name__ == "__main__":
         "--pipeline",
         type=str,
         action="append",
-        help="A descriptor file (YAML) with the pipeline stages to apply. Minimal passes always apply.",
+        help="A descriptor file (YAML) with the pipeline stages to apply.",
     )
     Parser.add_argument(
         "-O",
