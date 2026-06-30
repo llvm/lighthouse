@@ -23,6 +23,9 @@ yaml_files = [
     script_path / "level2.yaml",
     script_path / "level3.yaml",
 ]
+ci_files = [
+    script_path / "ci.yaml",
+]
 
 
 class TargetInfo:
@@ -96,7 +99,8 @@ def get_tests(args: argparse.Namespace) -> list[dict]:
     Returns the list of tests to be executed.
     """
     tests = []
-    for yaml_file in yaml_files:
+    test_files = ci_files if args.ci else yaml_files
+    for yaml_file in test_files:
         with open(yaml_file) as f:
             tests += yaml.safe_load(f)
 
@@ -105,9 +109,6 @@ def get_tests(args: argparse.Namespace) -> list[dict]:
         # If a specific kernel is specified, only include that kernel
         if args.kernel and not test["kernel"].startswith(args.kernel):
             continue
-        # CI mode runs fewer tests for faster feedback
-        if args.ci and len(test_list) >= 5:
-            break
         # Smoke tests run on the simplest lowering
         if args.smoke_test:
             test["pipeline"] = str(kb_default_pipeline)
