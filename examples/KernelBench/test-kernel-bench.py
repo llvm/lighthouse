@@ -18,8 +18,13 @@ project_root = script_path.parent.parent
 kb_program = project_root / "tools" / "kernel-bench"
 kb_default_pipeline = kb_program.parent / "kernel-bench.yaml"
 kb_path = project_root / "third_party" / "KernelBench" / "KernelBench"
-level1_yaml_path = script_path / "level1.yaml"
-level2_yaml_path = script_path / "level2.yaml"
+yaml_files = [
+    script_path / "level1.yaml",
+    script_path / "level2.yaml",
+]
+ci_files = [
+    script_path / "ci.yaml",
+]
 
 
 class TargetInfo:
@@ -66,19 +71,16 @@ def get_tests(args: argparse.Namespace) -> list[dict]:
     Returns the list of tests to be executed.
     """
     tests = []
-    with open(level1_yaml_path) as f:
-        tests = yaml.safe_load(f)
-    with open(level2_yaml_path) as f:
-        tests += yaml.safe_load(f)
+    test_files = ci_files if args.ci else yaml_files
+    for yaml_file in test_files:
+        with open(yaml_file) as f:
+            tests += yaml.safe_load(f)
 
     test_list = []
     for test in tests:
         # If a specific kernel is specified, only include that kernel
         if args.kernel and not test["kernel"].startswith(args.kernel):
             continue
-        # CI mode runs fewer tests for faster feedback
-        if args.ci and len(test_list) >= 5:
-            break
         # Smoke tests run on the simplest lowering
         if args.smoke_test:
             test["pipeline"] = str(kb_default_pipeline)
@@ -265,9 +267,6 @@ if __name__ == "__main__":
         # Smoke tests try to run as much as possible.
         if not args.smoke_test:
             assert result.returncode == 0, "Execution failed"
-
-# CHECK: 1_Square_matrix_multiplication_.py
-# CHECK: Success: The output of the compiled model matches the reference output.
 
 # CHECK: 2_Standard_matrix_multiplication_.py
 # CHECK: Success: The output of the compiled model matches the reference output.
