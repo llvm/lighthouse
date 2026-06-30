@@ -17,7 +17,7 @@ from lighthouse.pipeline.driver import PipelineDriver, make_function_callable
 from lighthouse.schedule import convert_function_results
 from lighthouse import dialects as lh_dialects
 from lighthouse import ingress as lh_ingress
-from lighthouse.ingress.torch import cpu_backend
+from lighthouse.ingress.torch import cpu_backend, gpu_backend
 from lighthouse.utils.mlir import get_mlir_library_path
 import os
 
@@ -211,21 +211,31 @@ def torch_compile(args, model: torch.nn.Module, sample_tensors: list):
     if args.dump_assembly:
         obj_file = Path(args.kernel_bench_model).stem + ".o"
 
-    # TODO: Support GPU backend
-    backend = cpu_backend(
-        compiler_pipeline, shared_libs=[c_runner_lib], dump_obj_file=obj_file
-    )
+    shared_libs = [c_runner_lib]
+    if args.target == "xegpu":
+        shared_libs.append("libmlir_levelzero_runtime.so")
+        backend = gpu_backend(
+            compiler_pipeline,
+            device=torch.device("xpu"),
+            shared_libs=shared_libs,
+            dump_obj_file=obj_file,
+        )
+    else:
+        backend = cpu_backend(
+            compiler_pipeline, shared_libs=shared_libs, dump_obj_file=obj_file
+        )
 
     # Reconfigure the model to be compiled using torch.compile, take the compiled output.
     model.compile(dynamic=False, backend=backend)
     out = model(*sample_tensors, **sample_kwargs)
+    out = out.to("cpu")
 
     if args.dump_assembly and obj_file:
         dump_assembly(args, obj_file)
 
     if args.benchmark:
         time_array = backend.jit_function.benchmark(
-            *sample_tensors, nruns=args.nruns, nwarmup=args.nwarmup
+            *model.parameters(), *sample_tensors, nruns=args.nruns, nwarmup=args.nwarmup
         )
         print(f"{len(time_array)} runs: {np.mean(time_array)} seconds")
 
@@ -236,6 +246,7 @@ def torch_import(args, model: torch.nn.Module, buffers: list, sample_tensors: li
     """
     Imports the model to MLIR and compiles with a custom MLIR backend.
     """
+    assert args.target != "xegpu", "xegpu target is not supported for torch_import."
     # Import the model with the custom sample inputs from the command line.
     mlir_module = import_mlir(model, sample_args=sample_tensors)
     if args.print_original_module:
@@ -436,7 +447,7 @@ if __name__ == "__main__":
     Parser.add_argument(
         "--target",
         type=str,
-        help="Specify a particular target architecture (x86_64, arm64, etc.). Default is to auto-detect.",
+        help="Specify a particular target architecture (x86_64, arm64, xegpu,etc.). Default is to auto-detect.",
     )
     Parser.add_argument(
         "--feature",
@@ -479,8 +490,15 @@ if __name__ == "__main__":
         model_init_args=init_args,
         model_datatype=model_datatype,
     )
+    if args.target == "xegpu":
+        assert torch.xpu.is_available(), "XPU backend is not available."
+        sample_tensors = [t.to("xpu") for t in sample_tensors]
+        for k, v in sample_kwargs.items():
+            if isinstance(v, torch.Tensor):
+                sample_kwargs[k] = v.to("xpu")
     if args.validate:
         out_ref = model(*sample_args, **sample_kwargs)
+        out_ref = out_ref.to("cpu")
         if args.print_output:
             print(f"Reference output:\n{out_ref}")
 
