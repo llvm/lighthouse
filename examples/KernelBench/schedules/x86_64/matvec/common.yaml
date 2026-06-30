@@ -4,18 +4,22 @@ Pipeline:
   # Pre-ops parallel 2D tiling
   - schedule: "tiling.py[gen=tile_ops]{target_op=linalg.fill
                                        tile_sizes=[$cache_tile,$cache_tile]
-                                       use_forall=True}"
+                                       use_forall=True
+                                       filter_ops=True}"
   # Matvec outer parallel M tiling
   - schedule: "tiling.py[gen=tile_ops]{target_op=linalg.matmul
                                        tile_sizes=[$cache_tile,1]
-                                       use_forall=True}"
+                                       use_forall=True
+                                       filter_ops=True}"
   # Matvec inner sequential K tiling
   - schedule: "tiling.py[gen=tile_ops]{target_op=linalg.matmul
-                                       tile_sizes=[0,0,$cache_tile]}"
+                                       tile_sizes=[0,0,$cache_tile]
+                                       filter_ops=True}"
   # Register tiling and unroll to fill the pipeline
   - schedule: "tiling.py[gen=tile_ops]{target_op=linalg.matmul
                                        tile_sizes=[1,1,$register_tile]
-                                       unroll_factors=[0,$unroll_factor]}"
+                                       unroll_factors=[0,$unroll_factor]
+                                       filter_ops=True}"
   # Tries to vectorize everything still at tensor level
   - schedule: vectorization.py[gen=vectorize_all]
 

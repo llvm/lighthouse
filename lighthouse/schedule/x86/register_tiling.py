@@ -47,6 +47,7 @@ def matmul_register_tiling(
         tile_sizes=tile_sizes,
         tile_interchange=tile_interchange,
         peel_loops=reg_peel_loops,
+        filter_ops=True,
     )
 
 
@@ -92,4 +93,5 @@ def matmul_register_unroll(
         target_op=target,
         tile_sizes=tile_sizes,
         unroll_factors=reg_unroll_factors,
+        filter_ops=True,
     )

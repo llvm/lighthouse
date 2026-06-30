@@ -20,8 +20,8 @@ Pipeline:
                                                                     reg_unroll_n=$reg_unroll_n
                                                                     reg_unroll_k=$reg_unroll_k
                                                                   }"
-  - schedule: "tiling.py[gen=tile_ops]{target_op=linalg.fill tile_sizes=$fill_tiling}"
-  - schedule: "tiling.py[gen=tile_ops]{target_op=linalg.generic tile_sizes=$generic_tiling}"
+  - schedule: "tiling.py[gen=tile_ops]{target_op=linalg.fill tile_sizes=$fill_tiling filter_ops=True}"
+  - schedule: "tiling.py[gen=tile_ops]{target_op=linalg.generic tile_sizes=$generic_tiling filter_ops=True}"
 
   - include: vectorize.yaml
 

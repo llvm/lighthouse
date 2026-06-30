@@ -3,6 +3,7 @@ from mlir.dialects import transform
 from mlir.dialects.transform.structured import MatchInterfaceEnum
 
 from lighthouse.schedule.builders import schedule_boilerplate
+from lighthouse.dialects.transform import transform_ext
 import lighthouse.transform as lh_transform
 
 
@@ -14,6 +15,7 @@ def tile_ops(
     peel_loops: list[int] = [],
     unroll_factors: list[int] = [],
     use_forall: bool = False,
+    filter_ops: bool = False,
 ) -> ir.Module:
     """
     Tile all matching op.
@@ -37,11 +39,14 @@ def tile_ops(
         unroll_factors: Unroll factors for each loop.
             Unrolling is applied from the innermost loop.
             Skipped if None. Exclusive with peeling.
+        filter_ops: Whether to filter ops by number of tileable dimensions.
     Returns:
         Schedule
     """
     with schedule_boilerplate() as (schedule, named_seq):
         ops = lh_transform.match_op(named_seq.bodyTarget, target_op)
+        if filter_ops:
+            ops = transform_ext.filter_num_loops(ops, len(tile_sizes))
         with lh_transform.foreach(ops) as op:
             lh_transform.tile(
                 op,
