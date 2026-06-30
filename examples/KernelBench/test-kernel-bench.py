@@ -215,8 +215,7 @@ if __name__ == "__main__":
         exit(0)
 
     target_info = TargetInfo(args.target, args.feature)
-    if target_info.feature.get("amx", False):
-        enable_amx = True
+    enable_amx = target_info.feature.get("amx", False)
 
     for test in tests:
         kb_kernel = kb_path / test["kernel"]
