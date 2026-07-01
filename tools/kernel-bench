@@ -432,9 +432,14 @@ if __name__ == "__main__":
         help="Whether to dump the assembly of the compiled object file to a .s file. Default is False.",
     )
     Parser.add_argument(
-        "--enable-amx",
-        action=argparse.BooleanOptionalAction,
-        help="Whether to enable AMX support. Default is False.",
+        "--target",
+        type=str,
+        help="Specify a particular target architecture (x86_64, arm64, etc.). Default is to auto-detect.",
+    )
+    Parser.add_argument(
+        "--feature",
+        type=str,
+        help="Specify a particular target feature (amx, avx512, etc.).",
     )
     args = Parser.parse_args()
 
@@ -454,7 +459,7 @@ if __name__ == "__main__":
 
     # Enable AMX support if requested
     # TODO: This should be handled by the runner.
-    if args.enable_amx:
+    if "amx" in args.feature:
         enable_amx()
 
     # Validate data type argument

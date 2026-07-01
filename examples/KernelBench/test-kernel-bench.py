@@ -188,7 +188,6 @@ if __name__ == "__main__":
         exit(0)
 
     target_info = TargetInfo(args.target, args.feature)
-    enable_amx = target_info.feature and "amx" in target_info.feature
 
     for test in tests:
         kb_kernel = kb_path / test["kernel"]
@@ -206,10 +205,11 @@ if __name__ == "__main__":
             test["pipeline"],
             "--dtype",
             args.dtype,
+            "--target",
+            target_info.arch,
+            "--feature",
+            target_info.feature if target_info.feature else "",
         ]
-
-        if enable_amx:
-            command_line += ["--enable-amx"]
 
         # Benchmark mode.
         if args.benchmark:
