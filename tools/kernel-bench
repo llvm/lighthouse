@@ -459,7 +459,7 @@ if __name__ == "__main__":
 
     # Enable AMX support if requested
     # TODO: This should be handled by the runner.
-    if "amx" in args.feature:
+    if args.feature and "amx" in args.feature:
         enable_amx()
 
     # Validate data type argument

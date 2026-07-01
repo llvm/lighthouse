@@ -205,11 +205,13 @@ if __name__ == "__main__":
             test["pipeline"],
             "--dtype",
             args.dtype,
-            "--target",
-            target_info.arch,
-            "--feature",
-            target_info.feature if target_info.feature else "",
         ]
+
+        if target_info.arch:
+            command_line += ["--target", target_info.arch]
+
+        if target_info.feature:
+            command_line += ["--feature", target_info.feature]
 
         # Benchmark mode.
         if args.benchmark:
