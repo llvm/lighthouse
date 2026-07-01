@@ -226,9 +226,6 @@ def import_from_model(
         ...     model, sample_input, dialect="tosa", ir_context=ir_context
         ... )
     """
-    # Suppress FutureWarnings from the torch-mlir import
-    warnings.filterwarnings("ignore", category=FutureWarning)
-
     if dialect == "linalg":
         raise ValueError(
             "Dialect 'linalg' is not supported. Did you mean 'linalg-on-tensors'?"
@@ -238,9 +235,12 @@ def import_from_model(
         sample_kwargs = {}
 
     model.eval()
-    module = fx.export_and_import(
-        model, *sample_args, output_type=dialect, **sample_kwargs, **kwargs
-    )
+    # Suppress FutureWarnings from the torch-mlir import
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", category=FutureWarning)
+        module = fx.export_and_import(
+            model, *sample_args, output_type=dialect, **sample_kwargs, **kwargs
+        )
 
     text_module = str(module)
     if ir_context is None:
