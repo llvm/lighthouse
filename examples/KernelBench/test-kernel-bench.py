@@ -187,6 +187,8 @@ if __name__ == "__main__":
             print("No tests to run. Please check your arguments.")
         exit(0)
 
+    target_info = TargetInfo(args.target, args.feature)
+
     for test in tests:
         kb_kernel = kb_path / test["kernel"]
         command_line = []
@@ -204,6 +206,12 @@ if __name__ == "__main__":
             "--dtype",
             args.dtype,
         ]
+
+        if target_info.arch:
+            command_line += ["--target", target_info.arch]
+
+        if target_info.feature:
+            command_line += ["--feature", target_info.feature]
 
         # Benchmark mode.
         if args.benchmark:
