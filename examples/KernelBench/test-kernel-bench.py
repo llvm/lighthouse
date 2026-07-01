@@ -85,6 +85,16 @@ def get_tests(args: argparse.Namespace) -> list[dict]:
         if args.smoke_test:
             test["pipeline"] = str(kb_default_pipeline)
 
+        if args.pipeline:
+            pipeline = args.pipeline
+        else:
+            pipeline = str(
+                get_pipeline_file(
+                    test.get("pipeline", ""),
+                    args.dtype,
+                    TargetInfo(args.target, args.feature),
+                )
+            )
         test_list.append(
             {
                 "kernel": test["kernel"],
@@ -99,13 +109,7 @@ def get_tests(args: argparse.Namespace) -> list[dict]:
                 "gflops": eval(test["gflops"])
                 if "gflops" in test and args.benchmark
                 else None,
-                "pipeline": str(
-                    get_pipeline_file(
-                        test.get("pipeline", ""),
-                        args.dtype,
-                        TargetInfo(args.target, args.feature),
-                    )
-                ),
+                "pipeline": pipeline,
                 "warning": test.get("warning", None),
             }
         )
@@ -130,6 +134,11 @@ if __name__ == "__main__":
         type=str,
         default="f32",
         help="Data type. Default f32.",
+    )
+    Parser.add_argument(
+        "--pipeline",
+        type=str,
+        help="A descriptor file (YAML) with the pipeline stages to apply.",
     )
     Parser.add_argument(
         "--benchmark",

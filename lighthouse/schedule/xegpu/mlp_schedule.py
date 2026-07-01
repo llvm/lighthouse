@@ -105,13 +105,28 @@ def params_with_constraints_imposed(
     }
 
 
+def matmul_schedule(
+    payload_func_name: str = "payload",
+    stop_at_stage: str = "",
+    **layer_params,
+) -> ir.Module:
+    """Generate transform schedule module for a single matmul layer."""
+    return mlp_schedule(
+        params=[layer_params],
+        payload_func_name=payload_func_name,
+        stop_at_stage=stop_at_stage,
+    )
+
+
 def mlp_schedule(
     params: list[dict[str, int | None]],
     payload_func_name: str = "payload",
     stop_at_stage: str = "",
 ) -> ir.Module:
     """Generate transform schedule module for MLP payload."""
-    assert params is not None and len(params) > 0, "params must be provided."
+    assert params is not None and isinstance(params, list) and len(params) > 0, (
+        "params must be provided."
+    )
     devices = {p.get("device") for p in params if "device" in p}
     assert len(devices) <= 1, f"Multiple devices specified in params list: {devices}"
     device = devices.pop() if devices else None
