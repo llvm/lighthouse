@@ -4,6 +4,7 @@ import argparse
 import subprocess
 from datetime import datetime
 import sys
+import ml_dtypes
 import numpy as np
 from pathlib import Path
 import torch
@@ -35,7 +36,7 @@ def from_numpy(buf):
     """
     return (
         torch.from_numpy(buf.view(np.uint16)).view(torch.bfloat16)
-        if buf.dtype == torch.bfloat16
+        if buf.dtype in [ml_dtypes.bfloat16, torch.bfloat16]
         else torch.from_numpy(buf)
     )
 
