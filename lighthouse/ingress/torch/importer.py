@@ -1,5 +1,6 @@
 from pathlib import Path
 from typing import Iterable, Mapping
+import warnings
 
 from lighthouse.ingress.torch.utils import (
     load_and_run_callable,
@@ -225,6 +226,9 @@ def import_from_model(
         ...     model, sample_input, dialect="tosa", ir_context=ir_context
         ... )
     """
+    # Suppress FutureWarnings from the torch-mlir import
+    warnings.filterwarnings("ignore", category=FutureWarning)
+
     if dialect == "linalg":
         raise ValueError(
             "Dialect 'linalg' is not supported. Did you mean 'linalg-on-tensors'?"
