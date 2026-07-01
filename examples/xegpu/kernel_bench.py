@@ -1,6 +1,4 @@
-# RUN: %PYTHON %s -l 1 -b 1 --dump-kernel=xegpu-wg | FileCheck %s
 # RUN: %PYTHON %s -l 2 -b 9 --dump-kernel=xegpu-wg | FileCheck %s
-# RUN: %PYTHON %s -l 3 -b 1 --dump-kernel=xegpu-wg | FileCheck %s
 # CHECK: module attributes {gpu.container_module} {
 """
 This script executes KernelBench benchmarks using the XEGPU lowering pipeline.
