@@ -4,8 +4,8 @@ import argparse
 import subprocess
 from datetime import datetime
 import sys
-import numpy as np
 import ml_dtypes
+import numpy as np
 from pathlib import Path
 import torch
 
