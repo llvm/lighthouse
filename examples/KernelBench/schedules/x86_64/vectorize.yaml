@@ -4,4 +4,3 @@ Pipeline:
   - schedule: "vectorization.py[gen=vectorize_linalg]"
   - schedule: "hoisting.py[gen=hoist_loops]"
   - schedule: "vectorization.py[gen=simplify_vector_ops]"
-  - schedule: "vectorization.py[gen=x86_vectorization]"
