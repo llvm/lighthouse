@@ -4,6 +4,7 @@ Pipeline:
   - pass: "canonicalize"
   - pass: "convert-vector-to-scf"
   - pass: "lower-affine"
+  - pass: "finalize-memref-to-llvm"
   - pass: "convert-scf-to-cf"
   - pass: "convert-vector-to-llvm"
   - pass: "convert-math-to-llvm"

@@ -3,6 +3,7 @@ Pipeline:
   ## Bufferization
   - include: bufferization.yaml
   - include: bufferization_cleanup.yaml
+  - schedule: "omp.py[gen=parallelize]"
 
   ## Buffer vectorization (gets rid of all the rest)
   - schedule: "x86/amx_move_offsets.py[gen=amx_move_offsets]"
