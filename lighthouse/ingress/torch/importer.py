@@ -1,5 +1,6 @@
 from pathlib import Path
 from typing import Iterable, Mapping
+import warnings
 
 from lighthouse.ingress.torch.utils import (
     load_and_run_callable,
@@ -234,9 +235,12 @@ def import_from_model(
         sample_kwargs = {}
 
     model.eval()
-    module = fx.export_and_import(
-        model, *sample_args, output_type=dialect, **sample_kwargs, **kwargs
-    )
+    # Suppress FutureWarnings from the torch-mlir import
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", category=FutureWarning)
+        module = fx.export_and_import(
+            model, *sample_args, output_type=dialect, **sample_kwargs, **kwargs
+        )
 
     text_module = str(module)
     if ir_context is None:
