@@ -36,7 +36,7 @@ def from_numpy(buf):
     """
     return (
         torch.from_numpy(buf.view(np.uint16)).view(torch.bfloat16)
-        if buf.dtype in [ml_dtypes.bfloat16, torch.bfloat16]
+        if buf.dtype == ml_dtypes.bfloat16
         else torch.from_numpy(buf)
     )
 
