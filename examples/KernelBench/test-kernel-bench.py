@@ -109,9 +109,6 @@ def get_tests(args: argparse.Namespace) -> list[dict]:
         # If a specific kernel is specified, only include that kernel
         if args.kernel and not test["kernel"].startswith(args.kernel):
             continue
-        # CI mode runs fewer tests for faster feedback
-        if args.ci and len(test_list) >= 5:
-            break
         # Smoke tests run on the simplest lowering
         if args.smoke_test:
             pipeline = str(kb_default_pipeline)
