@@ -5,6 +5,7 @@ import subprocess
 from datetime import datetime
 import sys
 import numpy as np
+import ml_dtypes
 from pathlib import Path
 import torch
 
@@ -16,7 +17,7 @@ from lighthouse.pipeline.driver import PipelineDriver, make_function_callable
 from lighthouse.schedule import convert_function_results
 from lighthouse import dialects as lh_dialects
 from lighthouse import ingress as lh_ingress
-from lighthouse.ingress.torch import cpu_backend
+from lighthouse.ingress.torch import cpu_backend, gpu_backend
 from lighthouse.utils.mlir import get_mlir_library_path
 import os
 
@@ -35,7 +36,7 @@ def from_numpy(buf):
     """
     return (
         torch.from_numpy(buf.view(np.uint16)).view(torch.bfloat16)
-        if buf.dtype == torch.bfloat16
+        if buf.dtype == ml_dtypes.bfloat16
         else torch.from_numpy(buf)
     )
 
@@ -174,10 +175,11 @@ def parse_module_arguments(
     # Parse input shapes first, to create sample tensors for the inputs only
     buffers = [arg.arg for arg in KernelArgumentParser.parse_all(input_shapes_str)]
     # Build sample torch tensors from input shapes to override hard-coded sizes in get_inputs().
-    if any(buf.dtype == torch.bfloat16 for buf in buffers):
+    if any(buf.dtype in [ml_dtypes.bfloat16, torch.bfloat16] for buf in buffers):
         print(
-            "Warning: bfloat16 is not natively supported by torch.from_numpy(), \
-            so we are reinterpreting the buffers as uint16. This may cause issues if the buffers are modified after creation."
+            "Warning: bfloat16 is not natively supported by torch.from_numpy(), "
+            "so we are reinterpreting the buffers as uint16. This may cause issues if "
+            "the buffers are modified after creation."
         )
     sample_tensors = [from_numpy(buf) for buf in buffers]
     init_args = string_to_type(init_args_str)
@@ -209,21 +211,31 @@ def torch_compile(args, model: torch.nn.Module, sample_tensors: list):
     if args.dump_assembly:
         obj_file = Path(args.kernel_bench_model).stem + ".o"
 
-    # TODO: Support GPU backend
-    backend = cpu_backend(
-        compiler_pipeline, shared_libs=[c_runner_lib], dump_obj_file=obj_file
-    )
+    shared_libs = [c_runner_lib]
+    if args.target == "xegpu":
+        shared_libs.append("libmlir_levelzero_runtime.so")
+        backend = gpu_backend(
+            compiler_pipeline,
+            device=torch.device("xpu"),
+            shared_libs=shared_libs,
+            dump_obj_file=obj_file,
+        )
+    else:
+        backend = cpu_backend(
+            compiler_pipeline, shared_libs=shared_libs, dump_obj_file=obj_file
+        )
 
     # Reconfigure the model to be compiled using torch.compile, take the compiled output.
     model.compile(dynamic=False, backend=backend)
     out = model(*sample_tensors, **sample_kwargs)
+    out = out.to("cpu")
 
     if args.dump_assembly and obj_file:
         dump_assembly(args, obj_file)
 
     if args.benchmark:
         time_array = backend.jit_function.benchmark(
-            *sample_tensors, nruns=args.nruns, nwarmup=args.nwarmup
+            *model.parameters(), *sample_tensors, nruns=args.nruns, nwarmup=args.nwarmup
         )
         print(f"{len(time_array)} runs: {np.mean(time_array)} seconds")
 
@@ -234,6 +246,7 @@ def torch_import(args, model: torch.nn.Module, buffers: list, sample_tensors: li
     """
     Imports the model to MLIR and compiles with a custom MLIR backend.
     """
+    assert args.target != "xegpu", "xegpu target is not supported for torch_import."
     # Import the model with the custom sample inputs from the command line.
     mlir_module = import_mlir(model, sample_args=sample_tensors)
     if args.print_original_module:
@@ -364,7 +377,7 @@ if __name__ == "__main__":
         "--pipeline",
         type=str,
         action="append",
-        help="A descriptor file (YAML) with the pipeline stages to apply. Minimal passes always apply.",
+        help="A descriptor file (YAML) with the pipeline stages to apply.",
     )
     Parser.add_argument(
         "-O",
@@ -434,7 +447,7 @@ if __name__ == "__main__":
     Parser.add_argument(
         "--target",
         type=str,
-        help="Specify a particular target architecture (x86_64, arm64, etc.). Default is to auto-detect.",
+        help="Specify a particular target architecture (x86_64, arm64, xegpu,etc.). Default is to auto-detect.",
     )
     Parser.add_argument(
         "--feature",
@@ -477,8 +490,15 @@ if __name__ == "__main__":
         model_init_args=init_args,
         model_datatype=model_datatype,
     )
+    if args.target == "xegpu":
+        assert torch.xpu.is_available(), "XPU backend is not available."
+        sample_tensors = [t.to("xpu") for t in sample_tensors]
+        for k, v in sample_kwargs.items():
+            if isinstance(v, torch.Tensor):
+                sample_kwargs[k] = v.to("xpu")
     if args.validate:
         out_ref = model(*sample_args, **sample_kwargs)
+        out_ref = out_ref.to("cpu")
         if args.print_output:
             print(f"Reference output:\n{out_ref}")
 

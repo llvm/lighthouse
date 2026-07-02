@@ -1,5 +1,5 @@
 from .xegpu_to_binary import xegpu_to_binary
-from .mlp_schedule import mlp_schedule
+from .mlp_schedule import mlp_schedule, matmul_schedule
 from .elemwise_schedule import elemwise_schedule
 from .softmax_schedule import softmax_schedule
 from .layer_norm_schedule import layer_norm_schedule
@@ -26,6 +26,7 @@ __all__ = [
     "elemwise_schedule",
     "fused_attention_schedule",
     "layer_norm_schedule",
+    "matmul_schedule",
     "mlp_schedule",
     "outline_gpu_function",
     "softmax_schedule",
