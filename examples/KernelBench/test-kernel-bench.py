@@ -83,9 +83,8 @@ def get_tests(args: argparse.Namespace) -> list[dict]:
             continue
         # Smoke tests run on the simplest lowering
         if args.smoke_test:
-            test["pipeline"] = str(kb_default_pipeline)
-
-        if args.pipeline:
+            pipeline = str(kb_default_pipeline)
+        elif args.pipeline:
             pipeline = args.pipeline
         else:
             pipeline = str(
