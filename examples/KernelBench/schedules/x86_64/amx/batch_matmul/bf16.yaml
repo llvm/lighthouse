@@ -1,18 +1,18 @@
 # This is an optimizing pipeline for simple GEMM kernels.
 Pipeline:
-  - include: ../matmul-like.yaml {
+  - include: ../../matmul-like.yaml {
                                 block_factors=[32,32,32]
                                 tile_size=32
                                 reg_tile_batch=1
-                                reg_tile_m=8
+                                reg_tile_m=32
                                 reg_tile_n=32
-                                reg_tile_k=2
+                                reg_tile_k=32
                                 batch=1
-                                reg_unroll_m=1
+                                reg_unroll_m=16
                                 reg_unroll_n=16
-                                reg_unroll_k=1
+                                reg_unroll_k=32
                                 fill_tiling=[1]
-                                generic_tiling=[1,1,1,8]
+                                generic_tiling=[1,1,1,1,8]
                                 2D_generic_tiling=[1,8]
-                                leading_batch_dims=0
+                                leading_batch_dims=1
                               }

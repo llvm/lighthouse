@@ -21,6 +21,7 @@ kb_path = project_root / "third_party" / "KernelBench" / "KernelBench"
 yaml_files = [
     script_path / "level1.yaml",
     script_path / "level2.yaml",
+    script_path / "level3.yaml",
 ]
 ci_files = [
     script_path / "ci.yaml",
@@ -39,7 +40,32 @@ class TargetInfo:
             self.arch = arch
         else:
             self.arch = platform.machine()
-        self.feature = feature
+
+        self.feature = []
+        if feature is not None:
+            self.feature = feature.split(",")
+        else:
+            self._get_extension_list()
+
+    def _get_extension_list(self) -> list[str]:
+        flags = subprocess.run(
+            "lscpu | grep Flags",
+            capture_output=True,
+            text=True,
+            shell=True,
+        ).stdout
+        schedule_path = script_path / "schedules" / self.arch
+        if not schedule_path.exists():
+            return []
+
+        extensions = []
+        for item in schedule_path.iterdir():
+            if item.is_dir():
+                extensions.append(item.name)
+
+        for ext in extensions:
+            if ext in flags:
+                self.feature.append(ext)
 
 
 def get_pipeline_file(name: str, dtype: str, target: TargetInfo) -> Path:
@@ -51,8 +77,10 @@ def get_pipeline_file(name: str, dtype: str, target: TargetInfo) -> Path:
         return kb_default_pipeline
 
     # First check if there's a pipeline file specific to the target features.
-    if target.feature:
-        pipeline = script_path / f"schedules/{target.feature}/{name}/{dtype}.yaml"
+    for feature in target.feature:
+        pipeline = (
+            script_path / f"schedules/{target.arch}/{feature}/{name}/{dtype}.yaml"
+        )
         if pipeline.exists():
             return pipeline
 
@@ -219,11 +247,14 @@ if __name__ == "__main__":
             command_line += ["--target", target_info.arch]
 
         if target_info.feature:
-            command_line += ["--feature", target_info.feature]
+            command_line += ["--feature", ",".join(target_info.feature)]
 
         # Benchmark mode.
         if args.benchmark:
             command_line += ["--benchmark"]
+            # FIXME: This is here just for quick testing
+            # Remove when merging back to main
+            command_line += ["--nwarmup", "5", "--nruns", "10", "--no-validate"]
 
         # Shape inference or from args.
         if not args.infer_shapes:

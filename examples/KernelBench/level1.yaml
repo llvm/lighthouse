@@ -1,36 +1,36 @@
 - kernel: level1/1_Square_matrix_multiplication_.py
-  input_shapes: [1024x1024, 1024x1024]
+  input_shapes: [4096x4096, 4096x4096]
   initializations: [rnd, id]
-  output_shape: 1024x1024
-  gflops: (1024 * 1024 * 1024 * 2) / 1e9
+  output_shape: 4096x4096
+  gflops: (4096 * 4096 * 4096 * 2) / 1e9
   pipeline: matmul
 
 - kernel: level1/2_Standard_matrix_multiplication_.py
-  input_shapes: [512x1024, 1024x512]
+  input_shapes: [2048x8192, 8192x4096]
   initializations: [rnd, rnd]
-  output_shape: 512x512
-  gflops: (512 * 1024 * 512 * 2) / 1e9
+  output_shape: 2048x4096
+  gflops: (2048 * 8192 * 4096 * 2) / 1e9
   pipeline: matmul
 
 - kernel: level1/3_Batched_matrix_multiplication.py
-  input_shapes: [8x64x32, 8x32x64]
+  input_shapes: [3x2048x4096, 3x4096x2048]
   initializations: [rnd, rnd]
-  output_shape: 8x64x64
-  gflops: (8 * 64 * 32 * 64 * 2) / 1e9
+  output_shape: 3x2048x2048
+  gflops: (3 * 2048 * 4096 * 2048 * 2) / 1e9
   pipeline: batch_matmul
 
 - kernel: level1/4_Matrix_vector_multiplication_.py
-  input_shapes: [1024x1024, 1024x1]
+  input_shapes: [2048x8192, 8192x1]
   initializations: [rnd, rnd]
-  output_shape: 1024x1
-  gflops: (1024 * 1024 * 1 * 2) / 1e9
+  output_shape: 2048x1
+  gflops: (2048 * 8192 * 1 * 2) / 1e9
   pipeline: matvec
 
 - kernel: level1/5_Matrix_scalar_multiplication.py
-  input_shapes: [1024x1024, "1"]
+  input_shapes: [1024x16384, "1"]
   initializations: [rnd, rnd]
-  output_shape: 1024x1024
-  gflops: (1024 * 1024) / 1e9
+  output_shape: 1024x16384
+  gflops: (1024 * 16384) / 1e9
   pipeline: element_wise
 
 - kernel: level1/6_Matmul_with_large_K_dimension_.py
@@ -41,10 +41,10 @@
   pipeline: matmul
 
 - kernel: level1/7_Matmul_with_small_K_dimension_.py
-  input_shapes: [1024x64, 64x1024]
+  input_shapes: [4096x64, 64x4096]
   initializations: [rnd, rnd]
-  output_shape: 1024x1024
-  gflops: (1024 * 64 * 1024 * 2) / 1e9
+  output_shape: 4096x4096
+  gflops: (4096 * 64 * 4096 * 2) / 1e9
   pipeline: matmul
 
 - kernel: level1/8_Matmul_with_irregular_shapes_.py
@@ -55,17 +55,17 @@
   pipeline: matmul
 
 - kernel: level1/9_Tall_skinny_matrix_multiplication_.py
-  input_shapes: [1024x32, 32x1024]
+  input_shapes: [4096x64, 64x4096]
   initializations: [rnd, rnd]
-  output_shape: 1024x1024
-  gflops: (1024 * 32 * 1024 * 2) / 1e9
-  pipeline: batch_matmul
+  output_shape: 4096x4096
+  gflops: (4096 * 64 * 4096 * 2) / 1e9
+  pipeline: matmul
 
 - kernel: level1/10_3D_tensor_matrix_multiplication.py
-  input_shapes: [16x1024x2048, 2048x768]
+  input_shapes: [16x4096x2048, 2048x768]
   initializations: [rnd, rnd]
-  output_shape: 16x1024x768
-  gflops: (16 * 1024 * 2048 * 768 * 2) / 1e9
+  output_shape: 16x4096x768
+  gflops: (16 * 4096 * 2048 * 768 * 2) / 1e9
   pipeline: batch_matmul
 
 - kernel: level1/11_4D_tensor_matrix_multiplication.py
@@ -123,89 +123,89 @@
   pipeline: matmul
 
 - kernel: level1/19_ReLU.py
-  input_shapes: [1024x1024]
+  input_shapes: [4096x8192]
   initializations: [rnd]
-  output_shape: 1024x1024
-  gflops: (1024 * 1024) / 1e9
+  output_shape: 4096x8192
+  gflops: (1 * 4096 * 8192) / 1e9
 
 - kernel: level1/20_LeakyReLU.py
-  input_shapes: [1024x1024]
+  input_shapes: [4096x8192]
   initializations: [rnd]
-  output_shape: 1024x1024
-  gflops: (1024 * 1024) / 1e9
+  output_shape: 4096x8192
+  gflops: (2 * 4096 * 8192) / 1e9
   pipeline: element_wise
 
 - kernel: level1/21_Sigmoid.py
   input_shapes: [4096x8192]
   initializations: [rnd]
   output_shape: 4096x8192
-  gflops: (4096 * 8192) / 1e9
+  gflops: (4 * 4096 * 8192) / 1e9
 
 - kernel: level1/22_Tanh.py
   input_shapes: [4096x8192]
   initializations: [rnd]
   output_shape: 4096x8192
-  gflops: (4096 * 8192) / 1e9
+  gflops: (2 * 4096 * 8192) / 1e9
 
 - kernel: level1/23_Softmax.py
   input_shapes: [4096x8192]
   initializations: [rnd]
   output_shape: 4096x8192
-  gflops: (4096 * 8192) / 1e9
+  gflops: (5 * 4096 * 8192) / 1e9
 
 - kernel: level1/24_LogSoftmax.py
   input_shapes: [4096x8192]
   initializations: [rnd]
   output_shape: 4096x8192
-  gflops: (4096 * 8192) / 1e9
+  gflops: (5 * 4096 * 8192) / 1e9
 
 - kernel: level1/25_Swish.py
   input_shapes: [4096x8192]
   initializations: [rnd]
   output_shape: 4096x8192
-  gflops: (4096 * 8192) / 1e9
+  gflops: (5 * 4096 * 8192) / 1e9
 
 - kernel: level1/26_GELU_.py
   input_shapes: [4096x8192]
   initializations: [rnd]
   output_shape: 4096x8192
-  gflops: (4096 * 8192) / 1e9
+  gflops: (8 * 4096 * 8192) / 1e9
 
 - kernel: level1/27_SELU_.py
   input_shapes: [4096x8192]
   initializations: [rnd]
   output_shape: 4096x8192
-  gflops: (4096 * 8192) / 1e9
+  gflops: (2 * 4096 * 8192) / 1e9
 
 - kernel: level1/28_HardSigmoid.py
   input_shapes: [4096x8192]
   initializations: [rnd]
   output_shape: 4096x8192
-  gflops: (4096 * 8192) / 1e9
+  gflops: (2 * 4096 * 8192) / 1e9
 
 - kernel: level1/29_Softplus.py
   input_shapes: [4096x8192]
   initializations: [rnd]
   output_shape: 4096x8192
-  gflops: (4096 * 8192) / 1e9
+  gflops: (4 * 4096 * 8192) / 1e9
 
 - kernel: level1/30_Softsign.py
   input_shapes: [4096x8192]
   initializations: [rnd]
   output_shape: 4096x8192
-  gflops: (4096 * 8192) / 1e9
+  gflops: (2 * 4096 * 8192) / 1e9
 
 - kernel: level1/31_ELU.py
   input_shapes: [4096x8192]
   initializations: [rnd]
   output_shape: 4096x8192
-  gflops: (4096 * 8192) / 1e9
+  gflops: (2 * 4096 * 8192) / 1e9
 
 - kernel: level1/32_HardTanh.py
   input_shapes: [4096x8192]
   initializations: [rnd]
   output_shape: 4096x8192
-  gflops: (4096 * 8192) / 1e9
+  gflops: (1 * 4096 * 8192) / 1e9
 
 - kernel: level1/33_BatchNorm.py
   input_shapes: [64x64x32x32]

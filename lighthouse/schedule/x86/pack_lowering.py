@@ -56,9 +56,9 @@ def lower_unpacks_for_vectorization(
         tiled_unpack = structured.TileUsingForOp(
             unpack_op, sizes=unpack_tile_sizes
         ).tiled_linalg_op
-        if vector_tile_sizes:
+        for size in vector_tile_sizes:
             tiled_unpack = structured.TileUsingForOp(
-                tiled_unpack, sizes=vector_tile_sizes
+                tiled_unpack, sizes=[size]
             ).tiled_linalg_op
         structured.structured_lower_unpack(
             transform.OperationType.get("tensor.empty"),
@@ -72,36 +72,50 @@ def lower_unpacks_for_vectorization(
         transform.yield_()
 
 
-def lower_packs_unpacks(tile_size: int) -> ir.Module:
+def lower_packs_unpacks(tile_size: int, leading_batch_dims: int = 0) -> ir.Module:
     """
     Lower pack and unpack ops into hardware-friendly shapes.
 
     Args:
         tile_size: Target shape for sub-tiling pack and unpack ops' inner tiles
+        leading_batch_dims: Number of leading batch dimensions for extra tiling
     Returns:
         Schedule
     """
+    batch_tile_sizes = [1] * leading_batch_dims
     with schedule_boilerplate() as (schedule, named_seq):
         pack_unpack_vector_m = max(8, tile_size)
         pack_unpack_vector_n = min(64, tile_size)
         packs = lh_transform.match_op(named_seq.bodyTarget, "linalg.pack")
         lower_packs_for_vectorization(
             pack_ops=packs,
-            pack_tile_sizes=[1, 1],
-            vector_tile_sizes=[1, 1, pack_unpack_vector_m, pack_unpack_vector_n],
-            vector_unroll_factors=[tile_size // pack_unpack_vector_n],
+            pack_tile_sizes=batch_tile_sizes + [1, 1],
+            vector_tile_sizes=batch_tile_sizes
+            + [1, 1, pack_unpack_vector_m, pack_unpack_vector_n],
+            vector_unroll_factors=batch_tile_sizes
+            + [tile_size // pack_unpack_vector_n],
         )
         lh_transform.cleanup(named_seq.bodyTarget)
 
         unpacks = lh_transform.match_op(named_seq.bodyTarget, "linalg.unpack")
         lower_unpacks_for_vectorization(
             unpack_ops=unpacks,
-            unpack_tile_sizes=[tile_size, tile_size],
-            vector_tile_sizes=[1],
+            unpack_tile_sizes=batch_tile_sizes + [tile_size, tile_size],
+            vector_tile_sizes=batch_tile_sizes + [1],
         )
         transposes = lh_transform.match_op(named_seq.bodyTarget, "linalg.transpose")
         with lh_transform.foreach(transposes) as tranpose:
+            tranpose = structured.TileUsingForOp(
+                tranpose, sizes=batch_tile_sizes + [1, 1, 1]
+            ).tiled_linalg_op
             structured.structured_vectorize(tranpose, [])
+            transform.yield_()
+        copies = lh_transform.match_op(named_seq.bodyTarget, "linalg.copy")
+        with lh_transform.foreach(copies) as copy:
+            copy = structured.TileUsingForOp(
+                copy, sizes=batch_tile_sizes + [1]
+            ).tiled_linalg_op
+            structured.structured_vectorize(copy, [])
             transform.yield_()
 
         # Cleanup.
