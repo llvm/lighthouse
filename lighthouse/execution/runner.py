@@ -20,6 +20,7 @@ from lighthouse.dialects.transform import transform_ext
 from lighthouse.schedule import schedule_boilerplate
 from lighthouse.utils.memref import to_packed_args
 from lighthouse.utils.mlir import get_mlir_library_path
+from lighthouse.utils.lib_finder import find_openmp_library
 from .memory_manager import GPUMemoryManager, ExternalMemoryManager, MemoryManager
 
 
@@ -65,6 +66,24 @@ class Runner:
         self.opt_level = opt_level
         self.engine = self._get_engine()
 
+    def _uses_openmp(self) -> bool:
+        """
+        Return True if the payload contains OpenMP dialect operations.
+
+        Their presence means the jitted code must be linked against an OpenMP library.
+        """
+        found = False
+
+        def match(op: ir.Operation) -> ir.WalkResult:
+            nonlocal found
+            if op.name.startswith("omp."):
+                found = True
+                return ir.WalkResult.INTERRUPT
+            return ir.WalkResult.ADVANCE
+
+        self.payload.operation.walk(match)
+        return found
+
     def _find_shared_libs(self, shared_libs: list[str]) -> list[str]:
         """
         Find the shared libraries in the given directory that match the names in self.shared_libs.
@@ -80,6 +99,18 @@ class Runner:
             if not os.path.isfile(so_path):
                 raise ValueError(f"Could not find shared library {so_path}")
             found_libs.append(so_path)
+
+        # The OpenMP runtime lives outside the MLIR library directory and must
+        # be located on the host when the payload was parallelized with OpenMP.
+        if self._uses_openmp():
+            omp_lib = find_openmp_library()
+            if omp_lib is None:
+                raise RuntimeError(
+                    "Payload requires the OpenMP runtime but no OpenMP library "
+                    "could be found on the system."
+                )
+            found_libs.append(omp_lib)
+
         return found_libs
 
     def _get_engine(self) -> ExecutionEngine:
