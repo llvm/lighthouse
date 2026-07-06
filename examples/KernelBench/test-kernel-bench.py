@@ -1,5 +1,5 @@
 # RUN: python %s --ci | FileCheck %s
-# RUN: python %s --ci --torch-compile | FileCheck %s
+# RUN: python %s --ci --no-torch-compile | FileCheck %s
 
 # REQUIRES: torch
 # REQUIRES: kernel_bench

@@ -411,7 +411,8 @@ if __name__ == "__main__":
     Parser.add_argument(
         "--torch-compile",
         action=argparse.BooleanOptionalAction,
-        help="Whether to use TorchScript compilation. Default is False.",
+        default=True,
+        help="Whether to use TorchScript compilation. Default is True.",
     )
     Parser.add_argument(
         "--print-original-module",
