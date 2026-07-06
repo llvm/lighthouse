@@ -13,6 +13,7 @@ from .vectorization import vectorize_all
 from .vectorization import x86_vectorization
 from .bufferization import bufferize
 from .debug import print_ir
+from .omp import parallelize
 
 __all__ = [
     "block_pack_matmuls",
@@ -23,6 +24,7 @@ __all__ = [
     "flatten_vector_ops",
     "hoist_loops",
     "linalg_contract_fold_unit_dims",
+    "parallelize",
     "print_ir",
     "schedule_boilerplate",
     "simplify_vector_ops",
