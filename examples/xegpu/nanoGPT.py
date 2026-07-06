@@ -1,8 +1,8 @@
 # RUN: %PYTHON %s --dump xegpu-wg --gpt-layers 1 | FileCheck %s
 # CHECK: module attributes {gpu.container_module} {
 
-"""nano-GPT / GPT-2-style forward pass on the Intel GPU (XeGPU), with
-FLASH multi-head attention -- the DRIVER ("run it") entry point.
+"""nano-GPT / GPT-2-style forward pass on the Intel GPU (XeGPU), with fused
+flash multi-head attention -- the driver ("run it") entry point.
 
 This is a nanoGPT block stack: each transformer block is
     a = x + attn_proj( MultiHeadAttention( ln1(x) ) )       # attention sublayer
@@ -12,45 +12,49 @@ and the full model is
     x = token_emb + pos_emb            # embeddings (done host-side)
     for _ in range(n_layer): x = Block(x)
     x = ln_f(x); logits = x @ lm_head
-TRUE multi-head: H heads of head_size = C/H = 64, computed by ONE
-fused flash-attention kernel per block.
+Multi-head attention uses H heads of head_size = C/H, computed by one fused
+flash-attention kernel per block.
 
-The attention is the FLASH/FUSED kernel : standard
-attention is built on 4D tensors (Z, H, n_ctx, head_size) at the linalg level,
-then a transform-dialect schedule rewrites the whole Q@K^T -> softmax -> @V region
-into ONE kernel that tiles the K/V reduction dim and carries a running max/sum (the
-flash-attention online-softmax), so the full T x T scores matrix is never
-materialized. Everything else (layernorm, the q/k/v/proj/ffn/lm_head matmuls, the
-casts/bias/residual elementwise ops) is lowered as its own XeGPU kernel; the whole
-model is ONE MLIR module with on-device buffers handing off between kernels.
+The attention kernel is fused: the attention math is built on 4D tensors
+(batch, num_heads, seq_len, head_size) at the linalg level, then a
+transform-dialect schedule rewrites the whole Q@K^T -> softmax -> @V region into
+one kernel that tiles the K/V reduction dim and carries a running max/sum (the
+flash-attention online-softmax), so the full seq_len x seq_len scores matrix is
+never materialized. Everything else (layernorm, the q/k/v/proj/ffn/lm_head
+matmuls, the cast/bias/residual elementwise ops) is lowered as its own XeGPU
+kernel.
 
-Config: n_layer=6, C=256, H=4 (head_size=64), hidden=1024, vocab=256, T=256.
+Config (this example): n_layer=6, T=256, C=256, H=4, hidden=1024, vocab=256.
+These map onto the attention 4D shape (batch, num_heads, seq_len, head_size) as
+batch=1, num_heads=H=4, seq_len=T=256, head_size=C/H=64.
 
-Builds the FULL model (n_layer blocks -> ln_f -> lm_head), with FUSED multi-head
-NON-CAUSAL attention per block.
+Builds the full model (n_layer blocks -> ln_f -> lm_head), with fused multi-head
+non-causal attention per block.
 
 Bridging the model's 2D (T,C) activations to the fused kernel's multi-head
-(H,T,hs) layout uses NO on-device transpose kernel: each q/k/v projection buffer
-is presented as a (H,T,hs) STRIDED memref VIEW (memref.expand_shape +
+(H,T,hs) layout uses no on-device transpose kernel: each q/k/v projection buffer
+is presented as a (H,T,hs) strided memref view (memref.expand_shape +
 memref.transpose -- pure layout, zero compute), and the fused schedule's
-(1,wg_rows,0,0) tiling peels the head dim into the work-group GRID so each wg reads
-2D strided slices -> 2D load_nd .
+(1,wg_rows,0,0) tiling peels the head dim into the work-group grid so each
+work-group reads 2D strided slices -> 2D load_nd.
 
-HOW THIS EXAMPLE IS ORGANIZED -- compiling a model to the GPU here happens in
-THREE stages:
+How this example is organized -- compiling the model to the GPU happens in three
+stages:
 
-  1. PAYLOAD  ("WHAT to compute") -> examples/xegpu/nanoGPT_payload.py
-     (the `Builder` class + `build_gpt_fused_payload`). Hardware-agnostic linalg.
-  2. SCHEDULE ("HOW to lower it") -> examples/xegpu/nanoGPT_schedule.py
+  1. Payload  ("what to compute") -> examples/xegpu/nanoGPT_payload.py
+     (the `Builder` class + `build_gpt_fused_payload`). Linalg-level ops that
+     write into device (gpu.alloc) buffers; no tiling or XeGPU layout yet.
+  2. Schedule ("how to lower it") -> examples/xegpu/nanoGPT_schedule.py
      (`build_combined_schedule`). A transform-dialect module that tiles each op
      into GPU work-groups, vectorizes, bufferizes, outlines each op into its own
      GPU kernel, and attaches XeGPU layout/target attributes.
-  3. DRIVER   ("run it") -> this file. `main()` applies the schedule to the payload
+  3. Driver   ("run it") -> this file. `main()` applies the schedule to the payload
      (TransformDriver), JIT-compiles + runs it on the GPU (Runner), and checks the
      result against the plain-numpy reference below.
 
-KEY IDEA -- one module, many separate kernels: the whole model is ONE MLIR module,
-but each op becomes its OWN GPU kernel (no cross-op fusion). Data passes between
+One module, many kernels: we generate one MLIR function that evaluates the entire
+model. After tiling, each work-group-level scf.forall loop (e.g. a matmul with
+its fused post-ops) is outlined into a separate gpu kernel. Data passes between
 kernels through device buffers (`gpu.alloc`) that stay on the GPU -- no round-trip
 to the host between ops.
 
@@ -59,7 +63,7 @@ Run:
   .venv/bin/python examples/xegpu/nanoGPT.py [--dump STAGE]
 """
 
-import sys
+import argparse
 import numpy as np
 from mlir import ir
 
@@ -132,31 +136,56 @@ def numpy_ref_gpt_fused(x, layer_w, gf_g, gf_b, lmw, lmb, H, eps=1e-5):
 
 
 def main():
-    """Entry point. Builds the FULL gpt model (n_layer blocks -> ln_f -> lm_head),
-    flash multi-head NON-CAUSAL attention per block. Flags:
-      --gpt-layers N               : number of transformer layers (default 6)
-      --check                      : run on the GPU and compare to the numpy reference
-      --dump STAGE                 : print IR at a stage and exit, one of
-                                     initial | schedule | tiled | vectorized |
-                                     bufferized | inner-tiled | gpu-outlining |
-                                     xegpu-initial | xegpu-wg | final
+    """Entry point. Builds the full gpt model (n_layer blocks -> ln_f -> lm_head),
+    with fused multi-head non-causal attention per block.
 
     Flow: build payload module -> build combined schedule (which folds in the fused
     attention rewrite) -> TransformDriver lowers it to XeGPU + xegpu_to_binary makes
     the GPU binary -> Runner JIT-runs it -> compare to the numpy reference."""
-    dump = None
-    check = "--check" in sys.argv
-    if "--dump" in sys.argv:
-        dump = sys.argv[sys.argv.index("--dump") + 1]
+    parser = argparse.ArgumentParser(
+        description="nano-GPT / GPT-2-style forward pass on the Intel GPU (XeGPU).",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    parser.add_argument(
+        "--gpt-layers",
+        type=int,
+        default=1,
+        help="Number of transformer layers (the full model uses 6).",
+    )
+    parser.add_argument(
+        "--check",
+        action="store_true",
+        help="Run on the GPU and compare the result against the numpy reference.",
+    )
+    parser.add_argument(
+        "--dump",
+        type=str,
+        default=None,
+        choices=[
+            "initial",
+            "schedule",
+            "tiled",
+            "vectorized",
+            "bufferized",
+            "inner-tiled",
+            "gpu-outlining",
+            "xegpu-initial",
+            "xegpu-wg",
+            "final",
+        ],
+        help="Print the IR at the given stage and exit.",
+    )
+    args = parser.parse_args()
+    dump = args.dump
+    check = args.check
+    n_layer = args.gpt_layers
 
-    # Kernel-friendly shapes: T=C=256 (q/k/v/proj matmuls),
-    # hidden=1024, vocab=256, n_layer=6. True multi-head: H heads of
-    # head_size=C/H=64 -- the fused flash kernel handles head_size=64 fine.
+    # Kernel-friendly shapes: T=C=256 (q/k/v/proj matmuls), hidden=1024,
+    # vocab=256. True multi-head: H heads of head_size=C/H=64 -- the fused flash
+    # kernel handles head_size=64 fine.
     T, C, hidden = 256, 256, 1024
-    vocab, n_layer = 256, 6
+    vocab = 256
     H = 4  # attention heads (hs = C/H = 64)
-    if "--gpt-layers" in sys.argv:
-        n_layer = int(sys.argv[sys.argv.index("--gpt-layers") + 1])
     # mm/sm params drive the non-attention kernels (matmul, layernorm); fa_params
     # drives the fused attention kernel.
     param_selector = XeGPUParameterSelector()

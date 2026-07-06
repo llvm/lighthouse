@@ -1,7 +1,7 @@
 """Generate the nano-GPT / GPT-2-style forward pass payload at the linalg level.
 
-This is STAGE 1 -- the PAYLOAD ("WHAT to compute"): an MLIR module describing
-the GPT payload at linalg level.
+This is stage 1 -- the payload ("what to compute"): an MLIR module describing the
+GPT forward pass with linalg-level ops that write into device (gpu.alloc) buffers.
 
   -> class `Builder` (emits one op at a time) and `build_gpt_fused_payload`
      (assembles ops into ffn / attn / block / full-gpt).
@@ -16,21 +16,22 @@ and the full model is
     x = token_emb + pos_emb            # embeddings (done host-side)
     for _ in range(n_layer): x = Block(x)
     x = ln_f(x); logits = x @ lm_head
-TRUE multi-head: H heads of head_size = C/H = 64, computed by ONE fused
-flash-attention kernel per block (NON-CAUSAL for now).
+Multi-head attention uses H heads of head_size = C/H = 64, computed by one fused
+flash-attention kernel per block (non-causal for now).
 """
 
 from mlir import ir
-from mlir.dialects import linalg, bufferization, tensor, arith, math, gpu, memref
+from mlir.dialects import linalg, bufferization, tensor, arith, gpu, memref
 
 from lighthouse.ingress.mlir_gen.utils import (
     emit_buf_to_tensor,
     affine_map,
     parallel,
-    reduction,
 )
 from lighthouse.ingress.mlir_gen.gpu_utils import emit_gpu_util_funcs
+from lighthouse.ingress.mlir_gen.gpu_layer_norm_payload import emit_layer_norm_generics
 from lighthouse.ingress.mlir_gen.named import times_weights
+from lighthouse.utils.mlir import func_cif
 
 
 def F32():  # 32-bit float (used for accumulation / norms)
@@ -44,10 +45,10 @@ def F16():  # 16-bit float (required by the GPU matmul units)
 # =============================================================================
 # PAYLOAD: describe WHAT to compute (high-level linalg ops; no tiling/XeGPU yet)
 # =============================================================================
-# Each Builder method emits ONE high-level op that writes its result into a fresh
+# Each Builder method emits one high-level op that writes its result into a fresh
 # on-device buffer (`gpu.alloc`), and returns a tensor "view" of that buffer for
 # the next op to read. Because each op writes a distinct device buffer, each will
-# become its OWN GPU kernel later; the buffers are the on-device handoff between
+# become its own GPU kernel later; the buffers are the on-device handoff between
 # kernels (kernel N writes buffer B, kernel N+1 reads B -- no host round-trip).
 #
 # dtype convention: the GPU matmul (DPAS) hardware needs f16 inputs and produces
@@ -62,7 +63,7 @@ class Builder:
     each kernel correctly. Classes:
       'mm'  = matmul (linalg.matmul)          -> DPAS systolic-array kernel
       'ln'  = layernorm (3 generics + 2 fills) -> reduction kernel (uses shared mem)
-      'fa'  = flash multi-head attention -> ONE kernel (QK^T->softmax->@V,
+      'fa'  = flash multi-head attention -> one kernel (QK^T->softmax->@V,
               online-softmax over K/V tiles); see attention_4d + the fused-attention
               schedule helpers. (Softmax lives INSIDE this kernel, not as its own.)
       'ew'  = elementwise (cast / bias / relu / residual) -> simple row-parallel kernel
@@ -105,58 +106,13 @@ class Builder:
 
     # ---- layernorm(x (M,N) f32, gamma,beta (N,)) -> (M,N) f32 buffer ----
     def layernorm(self, x, gamma, beta, M, N, eps=1e-5):
-        # LayerNorm normalizes each ROW (length N) to mean 0 / variance 1, then
-        # scales by gamma and shifts by beta. Built from 3 linalg.generic ops:
-        #   (1) mean_sum[i] = sum_j x[i,j]                 (row reduction)
-        #   (2) var_sum[i]  = sum_j (x[i,j]-mean_i)^2      (row reduction)
-        #   (3) out[i,j]    = (x[i,j]-mean_i)*rsqrt(var_i+eps)*gamma[j] + beta[j]
-        # Affine maps describe each operand's access pattern:
-        #   par2  (d0,d1)->(d0,d1) : full 2-D elementwise
-        #   red2  (d0,d1)->(d0)    : reduce over j -> one value per row
-        #   bias2 (d0,d1)->(d1)    : gamma/beta indexed by column only
-        f32 = self.f32
-        par2, red2 = self._par(), affine_map(2, [ir.AffineDimExpr.get(0)])
-        bias2 = affine_map(2, [ir.AffineDimExpr.get(1)])
-        inv_n = arith.constant(f32, 1.0 / float(N))
-        eps_c = arith.constant(f32, eps)
-        zero = arith.constant(f32, 0.0)
-        # (1) row sums -> mean_sum (linalg.fill zeroes the accumulator first)
-        mean_acc = linalg.fill(zero, outs=[tensor.empty((M,), f32)])
-
-        @linalg.generic([x], [mean_acc], [par2, red2], [parallel, reduction])
-        def mean_sum(v, acc):
-            return arith.AddFOp(v, acc)
-
-        # (2) sum of squared deviations -> var_sum (mean_i = mean_sum_i / N)
-        var_acc = linalg.fill(zero, outs=[tensor.empty((M,), f32)])
-
-        @linalg.generic(
-            [x, mean_sum], [var_acc], [par2, red2, red2], [parallel, reduction]
-        )
-        def var_sum(v, m_sum, acc):
-            mean = arith.MulFOp(m_sum, inv_n).result
-            c = arith.SubFOp(v, mean).result
-            return arith.AddFOp(arith.MulFOp(c, c).result, acc)
-
-        # (3) normalize + scale + shift -> output
-        buf = self._buf((M, N), f32)
+        # Row-wise LayerNorm: normalize each row to mean 0 / var 1, scale by gamma,
+        # shift by beta. The 3-generic core (mean/var reductions + normalize) is
+        # shared with the standalone gpu_layer_norm payload; here we just wrap it
+        # to write into a device (gpu.alloc) buffer and record the kernel kind.
+        buf = self._buf((M, N), self.f32)
         out_t = emit_buf_to_tensor(buf, restrict=True, writable=True)
-
-        @linalg.generic(
-            [x, mean_sum, var_sum, gamma, beta],
-            [out_t],
-            [par2, red2, red2, bias2, bias2, par2],
-            [parallel, parallel],
-        )
-        def normed(v, m_sum, v_sum, g, b, _o):
-            mean = arith.MulFOp(m_sum, inv_n).result
-            var = arith.MulFOp(v_sum, inv_n).result
-            inv_std = math.rsqrt(arith.AddFOp(var, eps_c).result)
-            c = arith.SubFOp(v, mean).result
-            return arith.AddFOp(
-                arith.MulFOp(arith.MulFOp(c, inv_std).result, g).result, b
-            )
-
+        normed = emit_layer_norm_generics(x, gamma, beta, out_t, N, self.f32, eps)
         bufferization.materialize_in_destination(
             None, normed, buf, restrict=True, writable=True
         )
@@ -238,7 +194,7 @@ class Builder:
         self.kinds.append("ew")
         return buf
 
-    # ---- view a (T, H*hs) MEMREF as (H, T, hs) -- NO kernel, NO data move ----
+    # ---- view a (T, H*hs) memref as (H, T, hs) -- no kernel, no data move ----
     def _heads_view_of(self, buf2d, T, H, hs):
         #  We present the 2D
         # (T, H*hs) projection buffer as a (H,T,hs) STRIDED memref VIEW:
@@ -271,9 +227,9 @@ class Builder:
         # Emits the SAME linalg op sequence as generate_gpu_attention_payload
         # (batch_matmul QK^T -> scale-mul -> softmax -> batch_matmul @V), so the
         # fused-attention schedule's matchers/rewrite apply verbatim. After the
-        # per-region fused tiling, ALL these ops fuse into ONE scf.forall -> ONE
+        # per-region fused tiling, all these ops fuse into one scf.forall -> one
         # GPU kernel (the flash/online-softmax kernel). Counts as one 'fa'.
-        # Inputs Qh/Kh/Vh are (H,T,hs) f16 strided VIEWS (heads_view); the @V result
+        # Inputs Qh/Kh/Vh are (H,T,hs) f16 strided views (heads_view); the @V result
         # is materialized into `out_view`, a (H,T,hs) strided view of a (T,C) buffer,
         # so the merge back to 2D is also a free view (no from_heads kernel).
         f16 = self.f16
@@ -303,9 +259,9 @@ class Builder:
         )
         self.kinds.append("fa")
 
-    # ---- fused multi-head attention(ln_f32 (T,C) f32) -> (T,C) f16, NON-CAUSAL ----
+    # ---- fused multi-head attention(ln_f32 (T,C) f32) -> (T,C) f16, non-causal ----
     def fused_attention(self, x, wq, wk, wv, T, C, H):
-        # True multi-head attention via the flash kernel, with NO on-device
+        # True multi-head attention via the flash kernel, with no on-device
         # head-transpose kernel. Flow:
         #   x(f32) -cast-> f16 -q/k/v proj-> (T,C) f16 buffers -heads_view (free)->
         #   (H,T,hs) strided views -> attention_4d (fused flash kernel) -> @V written
@@ -341,8 +297,8 @@ class Builder:
 
 
 def _emit_block_fused(bld, x, w, T, C, hidden, H, eps, out_buf=None):
-    """Emit ONE transformer block whose attention sublayer is the FUSED multi-head
-    flash kernel (NON-CAUSAL, no mask). `w` weight keys: g1,b1n, wq,wk,wv, wp,bp,
+    """Emit one transformer block whose attention sublayer is the fused multi-head
+    flash kernel (non-causal, no mask). `w` weight keys: g1,b1n, wq,wk,wv, wp,bp,
     g2,b2n, w1,bb1,w2,bb2. wq/wk/wv/wp are full (C,C)."""
     # ---- attention sublayer: a = x + proj(fused_attn(ln1(x))) ----
     ln1 = bld.layernorm(x, w["g1"], w["b1n"], T, C, eps)
@@ -362,8 +318,8 @@ def _emit_block_fused(bld, x, w, T, C, hidden, H, eps, out_buf=None):
 
 
 def build_gpt_fused_payload(func_name, T, C, hidden, vocab, n_layer, H, eps=1e-5):
-    """Full nanoGPT forward as ONE module, with FUSED multi-head attention per block.
-    Multi-head (H heads, flash attention), NON-CAUSAL (no mask), wq/wk/wv/wp are
+    """Full nanoGPT forward as one module, with fused multi-head attention per block.
+    Multi-head (H heads, flash attention), non-causal (no mask), wq/wk/wv/wp are
     (C,C). Embeddings done host-side. Returns (module, kinds)."""
     f32, f16 = F32(), F16()
     mod = ir.Module.create()
@@ -380,7 +336,7 @@ def build_gpt_fused_payload(func_name, T, C, hidden, vocab, n_layer, H, eps=1e-5
     lmw_t = ir.MemRefType.get((C, vocab), f16)  # lm_head weight (256,256) f16
     lmb_t = ir.MemRefType.get((vocab,), f32)  # lm_head bias (256,) f32
     out_t = ir.MemRefType.get((T, vocab), f32)  # output logits (256,256) f32
-    # per-layer arg types: g1,b1n, wq,wk,wv, wp,bp, g2,b2n, w1,bb1,w2,bb2 (13) -- NO mask.
+    # per-layer arg types: g1,b1n, wq,wk,wv, wp,bp, g2,b2n, w1,bb1,w2,bb2 (13) -- no mask.
     per_layer = [
         g_t,
         g_t,
@@ -396,7 +352,6 @@ def build_gpt_fused_payload(func_name, T, C, hidden, vocab, n_layer, H, eps=1e-5
         w2_t,
         bvec_t,
     ]
-    from lighthouse.utils.mlir import func_cif
 
     fargs = [out_t, x_t]
     for _ in range(n_layer):

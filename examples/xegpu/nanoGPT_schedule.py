@@ -1,21 +1,21 @@
-"""Transform-dialect SCHEDULE for the GPU nano-GPT forward pass.
+"""Transform-dialect schedule for the GPU nano-GPT forward pass.
 
-This is STAGE 2 -- the SCHEDULE ("HOW to lower it"). A "schedule" here is itself an
-MLIR module written in the TRANSFORM dialect: a little program of rewrite ops that
+This is stage 2 -- the schedule ("how to lower it"). A "schedule" here is itself an
+MLIR module written in the transform dialect: a small program of rewrite ops that
 the transform interpreter runs over the payload module (built in
-`nanoGPT_payload`). It does NOT compute anything;
-it REWRITES the payload from high-level linalg ops down to GPU (XeGPU) kernels.
+`nanoGPT_payload`). It does not compute anything;
+it rewrites the payload from high-level linalg ops down to GPU (XeGPU) kernels.
 
   -> `build_combined_schedule` / `_bundle` (the orchestrator) plus the
      `_tile_one_matmul` / `_tile_one_layernorm` / `_tile_one_fused_attention_region`
      helpers.
 
 We can't reuse the repo's per-op schedules (layer_norm_schedule, mlp_schedule,
-softmax_schedule) directly, because each assumes the module contains ONLY its op.
+softmax_schedule) directly, because each assumes the module contains only its op.
 The nanoGPT module is mixed (matmul + layernorm + softmax + elementwise), so we
-build ONE COMBINED schedule that handles all op classes. The strategy:
+build one combined schedule that handles all op classes. The strategy:
 
-  (a) TILE each op into its own parallel loop nest (`scf.forall` = the GPU
+  (a) Tile each op into its own parallel loop nest (`scf.forall` = the GPU
       work-group grid). Different op classes tile differently:
         - matmul   -> `_tile_one_matmul`  (work-group tile + k-loop tile; the
                        DPAS tile sizes come from `mm_params`)
@@ -24,10 +24,10 @@ build ONE COMBINED schedule that handles all op classes. The strategy:
         - fused attn-> `_tile_one_fused_attention_region` (tile @V batch_matmul into
                        a forall, fuse QK^T/scale/softmax/@V in; flash rewrite later)
         - elementwise -> a single `structured_tile_using_forall` over rows
-  (b) SHARED TAIL (same for every kernel): vectorize -> bufferize (tensors ->
-      memrefs) -> convert the forall grids to `gpu.launch` -> OUTLINE each into
+  (b) Shared tail (same for every kernel): vectorize -> bufferize (tensors ->
+      memrefs) -> convert the forall grids to `gpu.launch` -> outline each into
       its own `gpu.module`/`gpu.func` kernel -> attach the XeVM target.
-  (c) ANNOTATE each kernel with XeGPU layout attributes (how data maps to
+  (c) Annotate each kernel with XeGPU layout attributes (how data maps to
       sub-groups / DPAS tiles).
 
 `kinds` (from the Builder) tells the schedule the class and order of every kernel,
@@ -36,7 +36,7 @@ so steps (a) and (c) can treat each one correctly.
 
 from mlir import ir
 from mlir.dialects import transform
-from mlir.dialects.transform import structured, loop, xegpu
+from mlir.dialects.transform import structured, xegpu
 from mlir.dialects.transform import bufferization as transform_bufferization
 from mlir.dialects.transform.vector import (
     apply_patterns_vector_cast_away_vector_leading_one_dim,
@@ -54,12 +54,13 @@ from lighthouse.pipeline.helper import (
     PipelineInterrupt,
 )
 from lighthouse.schedule import schedule_boilerplate
+from lighthouse.schedule.xegpu.lowering_common import convert_to_gpu_launch
 from lighthouse.schedule.xegpu.mlp_schedule import xegpu_wg_annotation_for_mlp_layer
 from nanoGPT_payload import F32
 
 
 def _tile_one_matmul(matmul_op, anytype, mm_params):
-    """Tile ONE matmul for DPAS: a work-group `forall` tile (wg_m x wg_n) with any
+    """Tile one matmul for DPAS: a work-group `forall` tile (wg_m x wg_n) with any
     elementwise consumer fused in, then an inner reduction (k) loop. Tile sizes
     come from `mm_params` (chosen by xegpu_parameter_selector for the GPU)."""
     wg_tile = [mm_params["wg_m"], mm_params["wg_n"]]
@@ -76,8 +77,75 @@ def _tile_one_matmul(matmul_op, anytype, mm_params):
     lh_transform.tile(wg_matmul, tile_sizes=[0, 0, mm_params["k_tile"]])
 
 
+def _tile_one_layernorm(
+    mod, anytype, wg_rows, rss, mean_red, var_red, normalize, ln_untiled, n_mm, T_ROWS
+):
+    """Tile one layernorm into its own forall, using preserved handles to its 3
+    generics (mean_red, var_red, normalize). Handles to other ops stay valid.
+
+    The 2 accumulator fills are matched by their producer relationship: we match
+    all fills and fuse the ones that feed this ln. To avoid touching matmul fills,
+    we rely on fuse_into_containing pulling only genuine producers of the forall.
+    """
+    _, ln_forall = structured.structured_tile_using_forall(
+        anytype,
+        anytype,
+        normalize,
+        num_threads=[],
+        tile_sizes=[],
+        static_tile_sizes=(wg_rows,),
+    )
+    _, ln_forall = structured.structured_fuse_into_containing_op(
+        anytype, anytype, producer_op=var_red, containing_op=ln_forall
+    )
+    _, ln_forall = structured.structured_fuse_into_containing_op(
+        anytype, anytype, producer_op=mean_red, containing_op=ln_forall
+    )
+    # Fuse this ln's 2 accumulator fills into the forall. Robustly select ONLY the
+    # layernorm accumulator fills (NOT matmul fills) by filtering on result type:
+    # ln accumulators are rank-1 tensor<T x f32>; matmul accumulators are rank-2.
+    # This avoids fragile positional counting across the whole block. There are
+    # 2*ln_untiled such rank-1 fills (this ln + other untiled lns); this ln's are
+    # the FIRST 2 in IR order.
+    ln_func = transform.get_parent_op(
+        anytype, ln_forall, op_name="func.func", deduplicate=True
+    )
+    reduce_t = ir.RankedTensorType.get((T_ROWS,), F32())  # ln accumulator type (T,)
+    fill_match = structured.MatchOp(
+        anytype, ln_func, ops=["linalg.fill"], filter_result_type=reduce_t
+    )
+    n_ln_fills = 2 * ln_untiled
+    fills = transform.split_handle((anytype,) * n_ln_fills, fill_match.results[0])
+    _, ln_forall = structured.structured_fuse_into_containing_op(
+        anytype, anytype, producer_op=fills[1], containing_op=ln_forall
+    )
+    _, ln_forall = structured.structured_fuse_into_containing_op(
+        anytype, anytype, producer_op=fills[0], containing_op=ln_forall
+    )
+    # Fusion leaves the full-size original fills DEAD at func scope (fusion only
+    # slices a copy inside the forall). They must be removed or the next ln finds
+    # too many. Use canonicalize (which does DCE of the dead originals) at func
+    # scope, but never apply_cse at func scope -- CSE would merge the identical
+    # live zero-fills across layernorms. CSE the duplicate generics inside the
+    # forall only (scoped), so the re-match below finds exactly 3.
+    transform.apply_cse(ln_forall)
+    canonicalize(ln_func)
+    # tile this ln's reductions+normalize (now inside the forall). Re-match the
+    # 3 generics INSIDE the forall (scoped to ln_forall, so unambiguous: exactly 3).
+    g2 = match_and_split(ln_forall, ops={"linalg.generic"}, nhandles=3)
+    structured.TileUsingForOp(g2[2], sizes=[0, rss])
+    structured.structured_tile_reduction_using_for(
+        [anytype], anytype, anytype, anytype, target=g2[1], tile_sizes=[0, rss]
+    )
+    structured.structured_tile_reduction_using_for(
+        [anytype], anytype, anytype, anytype, target=g2[0], tile_sizes=[0, rss]
+    )
+    transform.apply_cse(ln_forall)
+    canonicalize(ln_forall)
+
+
 def _tile_one_fused_attention_region(anytype, qkt_bmm, pv_bmm, softmax_op, fa_params):
-    """Tile + fuse ONE attention region (QK^T -> scale -> softmax -> @V) into a
+    """Tile + fuse one attention region (QK^T -> scale -> softmax -> @V) into a
     SINGLE scf.forall, so it vectorizes/bufferizes into one kernel body that
     `replace_with_fused_attention` later rewrites into the flash loop.
 
@@ -154,7 +222,7 @@ def _tile_one_fused_attention_region(anytype, qkt_bmm, pv_bmm, softmax_op, fa_pa
 
 
 def _fuse_attention_in_region(anytype, forall, fa_params):
-    """After the shared bufferize+vectorize, rewrite ONE attention region's
+    """After the shared bufferize+vectorize, rewrite one attention region's
     vector.contract pair (QK^T, @V) into the flash loop via the transform
     op. Scoped to `forall` so counts are exact at any multiplicity."""
     contract_ops = match_and_split(forall, ops={"vector.contract"}, nhandles=2)
@@ -183,7 +251,7 @@ def _fuse_attention_in_region(anytype, forall, fa_params):
 
 
 def xegpu_fa_annotation(gf, anytype, fa_params):
-    """Attach XeGPU layouts to ONE fused-attention gpu.func."""
+    """Attach XeGPU layouts to one fused-attention gpu.func."""
     num_subgroups = fa_params["wg_rows"] // fa_params["sg_rows"]
     n_head = fa_params["n_head"]
     q_sg_layout = [num_subgroups, 1]
@@ -343,10 +411,10 @@ def _bundle(
         raise PipelineInterrupt()
 
     # ===== TILE each op-class into its own forall =====
-    # KEY PROBLEM: match(linalg.generic) is NOT scoped -- once an op is tiled into
-    # a forall, its generic is STILL matched (it's just nested), so we can't
-    # re-match "the remaining bare generics" by count. SOLUTION: split ALL generic
-    # handles ONCE up front (their build order is deterministic), then tile each
+    # Key problem: match(linalg.generic) is not scoped -- once an op is tiled into
+    # a forall, its generic is still matched (it's just nested), so we can't
+    # re-match "the remaining bare generics" by count. Solution: split all generic
+    # handles once up front (their build order is deterministic), then tile each
     # using its preserved handle. A handle to op X stays valid across tiling of
     # OTHER ops. We tile the simple EW generics first (no fusion/cleanup, so ln
     # handles survive), then the layernorms (which fuse + cleanup).
@@ -411,11 +479,11 @@ def _bundle(
     for mm in mms:
         _tile_one_matmul(mm, anytype, mm_params)
 
-    # 5) Fused-attention regions. Done LAST so the generic pre-split above ran while
-    #    each fa softmax was still ONE linalg.softmax (its decomposition generics
+    # 5) Fused-attention regions. Done last so the generic pre-split above ran while
+    #    each fa softmax was still one linalg.softmax (its decomposition generics
     #    don't exist yet, so they can't inflate ngen_total). Pre-split the 2*n_fa
     #    batch_matmuls (build order [QK^T, @V] per region) + n_fa softmaxes by count,
-    #    then tile+fuse each region into ONE forall (decompose happens in-region).
+    #    then tile+fuse each region into one forall (decompose happens in-region).
     if n_fa:
         fa_bmms = match_and_split(mod, ops={"linalg.batch_matmul"}, nhandles=2 * n_fa)
         fa_softmaxes = match_and_split(mod, ops={"linalg.softmax"}, nhandles=n_fa)
@@ -485,15 +553,8 @@ def _bundle(
     if stop_at_stage == "inner-tiled":
         raise PipelineInterrupt()
 
-    wg_loops = match_and_split(mod, ops={"scf.forall"}, nhandles=nkernels)
-    for wg_loop in wg_loops:
-        loop.loop_forall_to_parallel([anytype], wg_loop)
-    func = match(mod, ops={"func.func"})
-    func = apply_registered_pass(func, "gpu-map-parallel-loops")
-    func = apply_registered_pass(func, "convert-parallel-loops-to-gpu")
-    func = apply_registered_pass(func, "lower-affine")
-    transform.apply_cse(func)
-    canonicalize(func)
+    # Shared with the per-op xegpu schedules: forall -> scf.parallel -> gpu.launch.
+    func = convert_to_gpu_launch(mod, "payload", nlayers=nkernels)
 
     # launch threads per kernel, in IR (build) order = `kinds`.
     launches = match_and_split(mod, ops={"gpu.launch"}, nhandles=nkernels)
@@ -541,9 +602,13 @@ def _bundle(
             transform_ext.update_address_space(allocas, address_space=3)
         gf = apply_registered_pass(gf, "convert-vector-to-xegpu")
         transform.apply_cse(gf)
-        if kind == "fa":
-            # flash kernel carries state in iter_args (no SLM); hoist invariants.
-            gf = apply_registered_pass(gf, "loop-invariant-code-motion")
+        # Hoist loop invariants out of the kernel loops (e.g. the flash kernel
+        # carries state in iter_args). apply_licm targets a loop op, so match the
+        # kernel's scf.for loops and hoist each; foreach no-ops for loopless
+        # (elementwise) kernels.
+        with lh_transform.foreach(match(gf, ops={"scf.for"})) as k_loop:
+            transform.apply_licm(k_loop)
+            transform.yield_()
     transform.apply_cse(mod)
     canonicalize(mod)
     if stop_at_stage == "xegpu-initial":
@@ -577,70 +642,3 @@ def _bundle(
     if stop_at_stage == "xegpu-wg":
         raise PipelineInterrupt()
     return mod
-
-
-def _tile_one_layernorm(
-    mod, anytype, wg_rows, rss, mean_red, var_red, normalize, ln_untiled, n_mm, T_ROWS
-):
-    """Tile ONE layernorm into its own forall, using PRESERVED handles to its 3
-    generics (mean_red, var_red, normalize). Handles to other ops stay valid.
-
-    The 2 accumulator fills are matched by their producer relationship: we match
-    all fills and fuse the ones that feed this ln. To avoid touching matmul fills,
-    we rely on fuse_into_containing pulling only genuine producers of the forall.
-    """
-    _, ln_forall = structured.structured_tile_using_forall(
-        anytype,
-        anytype,
-        normalize,
-        num_threads=[],
-        tile_sizes=[],
-        static_tile_sizes=(wg_rows,),
-    )
-    _, ln_forall = structured.structured_fuse_into_containing_op(
-        anytype, anytype, producer_op=var_red, containing_op=ln_forall
-    )
-    _, ln_forall = structured.structured_fuse_into_containing_op(
-        anytype, anytype, producer_op=mean_red, containing_op=ln_forall
-    )
-    # Fuse this ln's 2 accumulator fills into the forall. Robustly select ONLY the
-    # layernorm accumulator fills (NOT matmul fills) by filtering on result type:
-    # ln accumulators are rank-1 tensor<T x f32>; matmul accumulators are rank-2.
-    # This avoids fragile positional counting across the whole block. There are
-    # 2*ln_untiled such rank-1 fills (this ln + other untiled lns); this ln's are
-    # the FIRST 2 in IR order.
-    ln_func = transform.get_parent_op(
-        anytype, ln_forall, op_name="func.func", deduplicate=True
-    )
-    reduce_t = ir.RankedTensorType.get((T_ROWS,), F32())  # ln accumulator type (T,)
-    fill_match = structured.MatchOp(
-        anytype, ln_func, ops=["linalg.fill"], filter_result_type=reduce_t
-    )
-    n_ln_fills = 2 * ln_untiled
-    fills = transform.split_handle((anytype,) * n_ln_fills, fill_match.results[0])
-    _, ln_forall = structured.structured_fuse_into_containing_op(
-        anytype, anytype, producer_op=fills[1], containing_op=ln_forall
-    )
-    _, ln_forall = structured.structured_fuse_into_containing_op(
-        anytype, anytype, producer_op=fills[0], containing_op=ln_forall
-    )
-    # Fusion leaves the full-size original fills DEAD at func scope (fusion only
-    # slices a copy inside the forall). They must be removed or the next ln finds
-    # too many. Use canonicalize (which does DCE of the dead originals) at FUNC
-    # scope, but NEVER apply_cse at func scope -- CSE would merge the identical
-    # live zero-fills ACROSS layernorms. CSE the duplicate GENERICS inside the
-    # forall only (scoped), so the re-match below finds exactly 3.
-    transform.apply_cse(ln_forall)
-    canonicalize(ln_func)
-    # tile this ln's reductions+normalize (now inside the forall). Re-match the
-    # 3 generics INSIDE the forall (scoped to ln_forall, so unambiguous: exactly 3).
-    g2 = match_and_split(ln_forall, ops={"linalg.generic"}, nhandles=3)
-    structured.TileUsingForOp(g2[2], sizes=[0, rss])
-    structured.structured_tile_reduction_using_for(
-        [anytype], anytype, anytype, anytype, target=g2[1], tile_sizes=[0, rss]
-    )
-    structured.structured_tile_reduction_using_for(
-        [anytype], anytype, anytype, anytype, target=g2[0], tile_sizes=[0, rss]
-    )
-    transform.apply_cse(ln_forall)
-    canonicalize(ln_forall)
