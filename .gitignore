@@ -1,5 +1,6 @@
 # Lighthouse's inter-component cache
 cache
+build
 
 # Python caches
 __pycache__/
