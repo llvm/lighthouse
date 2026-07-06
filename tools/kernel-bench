@@ -64,7 +64,7 @@ def dump_assembly(obj_file, asm_file):
     except subprocess.CalledProcessError as e:
         print(f"Error disassembling object file: {e.stderr}", file=sys.stderr)
         print("'objdump' must be in the path.", file=sys.stderr)
-        raise ()
+        raise e
 
 
 def import_torch(
