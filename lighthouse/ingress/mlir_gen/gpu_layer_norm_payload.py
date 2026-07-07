@@ -12,6 +12,81 @@ from lighthouse.ingress.mlir_gen.utils import (
 )
 
 
+def emit_layer_norm_generics(
+    input_tensor, gamma_tensor, beta_tensor, out_init, N, dtype, eps=1e-5
+):
+    """Emit the 3 linalg.generic ops of a row-wise layer_norm and return the
+    normalized result tensor.
+
+    Computes, over iteration space (i, j) reducing on j:
+        mean_i    = (1/N) * sum_j x[i, j]
+        var_i     = (1/N) * sum_j (x[i, j] - mean_i)^2
+        out[i, j] = (x[i, j] - mean_i) * rsqrt(var_i + eps) * gamma[j] + beta[j]
+
+    `out_init` is the destination tensor for the final (normalize) generic; the
+    two reduction accumulators are allocated internally and zero-filled. This is
+    the payload core shared by the standalone gpu_layer_norm payload and the
+    nanoGPT combined payload.
+    """
+    par_map_2d = affine_map(2, [ir.AffineDimExpr.get(0), ir.AffineDimExpr.get(1)])
+    red_map_2d = affine_map(2, [ir.AffineDimExpr.get(0)])
+    bias_map_2d = affine_map(2, [ir.AffineDimExpr.get(1)])
+
+    zero = arith.constant(dtype, 0.0)
+    inv_n_const = arith.constant(dtype, 1.0 / float(N))
+    eps_const = arith.constant(dtype, eps)
+
+    # Reduction accumulators are rank-1 (M,), inferred from the destination row count.
+    reduce_shape = (ir.RankedTensorType(out_init.type).shape[0],)
+
+    # 1) Mean reduction: mean_sum[i] = sum_j x[i, j]
+    mean_acc = linalg.fill(zero, outs=[tensor.empty(reduce_shape, dtype)])
+
+    @linalg.generic(
+        [input_tensor],
+        [mean_acc],
+        [par_map_2d, red_map_2d],
+        [parallel, reduction],
+    )
+    def mean_sum(x, acc):
+        return arith.AddFOp(x, acc)
+
+    # 2) Variance reduction: var_sum[i] = sum_j (x[i, j] - mean_i)^2
+    var_acc = linalg.fill(zero, outs=[tensor.empty(reduce_shape, dtype)])
+
+    @linalg.generic(
+        [input_tensor, mean_sum],
+        [var_acc],
+        [par_map_2d, red_map_2d, red_map_2d],
+        [parallel, reduction],
+    )
+    def var_sum(x, m_sum, acc):
+        mean = arith.MulFOp(m_sum, inv_n_const).result
+        centered = arith.SubFOp(x, mean).result
+        sq = arith.MulFOp(centered, centered).result
+        return arith.AddFOp(sq, acc)
+
+    # 3) Final elementwise: out[i, j] = (x[i, j] - mean_i) * rsqrt(var_i + eps)
+    #                                   * gamma[j] + beta[j]
+    @linalg.generic(
+        [input_tensor, mean_sum, var_sum, gamma_tensor, beta_tensor],
+        [out_init],
+        [par_map_2d, red_map_2d, red_map_2d, bias_map_2d, bias_map_2d, par_map_2d],
+        [parallel, parallel],
+    )
+    def normalized(x, m_sum, v_sum, g, b, _out):
+        mean = arith.MulFOp(m_sum, inv_n_const).result
+        var = arith.MulFOp(v_sum, inv_n_const).result
+        var_eps = arith.AddFOp(var, eps_const).result
+        inv_std = math.rsqrt(var_eps)
+        centered = arith.SubFOp(x, mean).result
+        scaled = arith.MulFOp(centered, inv_std).result
+        weighted = arith.MulFOp(scaled, g).result
+        return arith.AddFOp(weighted, b)
+
+    return normalized
+
+
 def generate_gpu_layer_norm_payload(
     func_name: str,
     M: int,
@@ -39,18 +114,9 @@ def generate_gpu_layer_norm_payload(
     """
     mod = ir.Module.create()
     shape = (M, N)
-    reduce_shape = (M,)
     bias_shape = (N,)
     memref_t = ir.MemRefType.get(shape, dtype)
     bias_memref_t = ir.MemRefType.get(bias_shape, dtype)
-
-    # Affine maps used by the linalg.generic ops below.
-    # Iteration space is (i, j); reductions reduce over j.
-    par_map_2d = affine_map(2, [ir.AffineDimExpr.get(0), ir.AffineDimExpr.get(1)])
-    red_map_2d = affine_map(2, [ir.AffineDimExpr.get(0)])
-    bias_map_2d = affine_map(2, [ir.AffineDimExpr.get(1)])
-
-    inv_N = 1.0 / float(N)
 
     with ir.InsertionPoint(mod.body):
         # Function signature: payload(output, input, gamma, beta)
@@ -61,67 +127,15 @@ def generate_gpu_layer_norm_payload(
             gamma_tensor = emit_buf_to_tensor(gamma_arg, restrict=True)
             beta_tensor = emit_buf_to_tensor(beta_arg, restrict=True)
 
-            zero = arith.constant(dtype, 0.0)
-            inv_n_const = arith.constant(dtype, inv_N)
-            eps_const = arith.constant(dtype, eps)
-
-            # 1) Mean reduction: mean_sum[i, 0] = sum_j x[i, j]
-            mean_init = tensor.empty(reduce_shape, dtype)
-            mean_acc = linalg.fill(zero, outs=[mean_init])
-
-            @linalg.generic(
-                [input_tensor],
-                [mean_acc],
-                [par_map_2d, red_map_2d],
-                [parallel, reduction],
+            normalized = emit_layer_norm_generics(
+                input_tensor,
+                gamma_tensor,
+                beta_tensor,
+                tensor.empty(shape, dtype),
+                N,
+                dtype,
+                eps,
             )
-            def mean_sum(x, acc):
-                return arith.AddFOp(x, acc)
-
-            # 2) Variance reduction: var_sum[i, 0] = sum_j (x[i, j] - mean_i)^2
-            #    where mean_i = mean_sum[i, 0] * (1/N)
-            var_init = tensor.empty(reduce_shape, dtype)
-            var_acc = linalg.fill(zero, outs=[var_init])
-
-            @linalg.generic(
-                [input_tensor, mean_sum],
-                [var_acc],
-                [par_map_2d, red_map_2d, red_map_2d],
-                [parallel, reduction],
-            )
-            def var_sum(x, m_sum, acc):
-                mean = arith.MulFOp(m_sum, inv_n_const).result
-                centered = arith.SubFOp(x, mean).result
-                sq = arith.MulFOp(centered, centered).result
-                return arith.AddFOp(sq, acc)
-
-            # 3) Final elementwise:
-            #    out[i, j] = (x[i, j] - mean_i) * rsqrt(var_i + eps) * gamma[j] + beta[j]
-            out_init = tensor.empty(shape, dtype)
-
-            @linalg.generic(
-                [input_tensor, mean_sum, var_sum, gamma_tensor, beta_tensor],
-                [out_init],
-                [
-                    par_map_2d,
-                    red_map_2d,
-                    red_map_2d,
-                    bias_map_2d,
-                    bias_map_2d,
-                    par_map_2d,
-                ],
-                [parallel, parallel],
-            )
-            def normalized(x, m_sum, v_sum, g, b, _out):
-                mean = arith.MulFOp(m_sum, inv_n_const).result
-                var = arith.MulFOp(v_sum, inv_n_const).result
-                var_eps = arith.AddFOp(var, eps_const).result
-                inv_std = math.rsqrt(var_eps)
-                centered = arith.SubFOp(x, mean).result
-                scaled = arith.MulFOp(centered, inv_std).result
-                weighted = arith.MulFOp(scaled, g).result
-                return arith.AddFOp(weighted, b)
-
             bufferization.materialize_in_destination(
                 None, normalized, output, restrict=True, writable=True
             )
