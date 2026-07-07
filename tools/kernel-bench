@@ -41,26 +41,30 @@ def from_numpy(buf):
     )
 
 
-def dump_assembly(args, object_file_path: str):
+def dump_assembly(obj_file, asm_file):
     """
     Dumps the assembly of the object file as an S file
-    next to the original PyTorch module.
     """
-    asm_file_path = Path(args.kernel_bench_model).stem + ".s"
+    if asm_file == "" or obj_file == "":
+        raise ValueError("Both object file and assembly file must be provided.")
+    if not Path(obj_file).exists():
+        raise FileNotFoundError(f"Object file {obj_file} does not exist.")
+
     try:
         result = subprocess.run(
-            ["objdump", "-d", object_file_path],
+            ["objdump", "-d", obj_file],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
             check=True,
         )
-        with open(asm_file_path, "w") as f:
+        with open(asm_file, "w") as f:
             f.write(result.stdout)
-        print(f"Assembly written to {asm_file_path}")
+        print(f"Assembly written to {asm_file}")
     except subprocess.CalledProcessError as e:
         print(f"Error disassembling object file: {e.stderr}", file=sys.stderr)
         print("'objdump' must be in the path.", file=sys.stderr)
+        raise e
 
 
 def import_torch(
@@ -207,10 +211,6 @@ def torch_compile(args, model: torch.nn.Module, sample_tensors: list):
             print(module)
         return module
 
-    obj_file = ""
-    if args.dump_assembly:
-        obj_file = Path(args.kernel_bench_model).stem + ".o"
-
     shared_libs = [c_runner_lib]
     if args.target == "xegpu":
         shared_libs.append("libmlir_levelzero_runtime.so")
@@ -218,11 +218,11 @@ def torch_compile(args, model: torch.nn.Module, sample_tensors: list):
             compiler_pipeline,
             device=torch.device("xpu"),
             shared_libs=shared_libs,
-            dump_obj_file=obj_file,
+            dump_obj_file=args.object_file,
         )
     else:
         backend = cpu_backend(
-            compiler_pipeline, shared_libs=shared_libs, dump_obj_file=obj_file
+            compiler_pipeline, shared_libs=shared_libs, dump_obj_file=args.object_file
         )
 
     # Reconfigure the model to be compiled using torch.compile, take the compiled output.
@@ -230,8 +230,8 @@ def torch_compile(args, model: torch.nn.Module, sample_tensors: list):
     out = model(*sample_tensors, **sample_kwargs)
     out = out.to("cpu")
 
-    if args.dump_assembly and obj_file:
-        dump_assembly(args, obj_file)
+    if args.object_file and args.assembly_file:
+        dump_assembly(args.object_file, args.assembly_file)
 
     if args.benchmark:
         time_array = backend.jit_function.benchmark(
@@ -280,9 +280,9 @@ def torch_import(args, model: torch.nn.Module, buffers: list, sample_tensors: li
             host_input_buffers=buffers,
         )
 
-    if args.dump_assembly:
-        obj_file = Path(args.kernel_bench_model).stem + ".o"
-        dump_assembly(args, runner.dump_object_file(obj_file))
+    if args.object_file and args.assembly_file:
+        runner.dump_object_file(args.object_file)
+        dump_assembly(args.object_file, args.assembly_file)
 
     return from_numpy(buffers[0])
 
@@ -446,6 +446,18 @@ if __name__ == "__main__":
         help="Whether to dump the assembly of the compiled object file to a .s file. Default is False.",
     )
     Parser.add_argument(
+        "--object-file",
+        type=str,
+        default="",
+        help=r"Filename to dump the compiled object file into. Default is '\$kernel_name.o'.",
+    )
+    Parser.add_argument(
+        "--assembly-file",
+        type=str,
+        default="",
+        help=r"Filename to disassemble the compiled object file into. Default is '\$kernel_name.s'.",
+    )
+    Parser.add_argument(
         "--target",
         type=str,
         help="Specify a particular target architecture (x86_64, arm64, xegpu,etc.). Default is to auto-detect.",
@@ -502,6 +514,14 @@ if __name__ == "__main__":
         out_ref = out_ref.to("cpu")
         if args.print_output:
             print(f"Reference output:\n{out_ref}")
+
+    # Normalize object / assembly dump arguments
+    if args.dump_assembly and args.assembly_file == "" and args.object_file == "":
+        args.assembly_file = str(Path(args.kernel_bench_model).with_suffix(".s").name)
+    if args.assembly_file == "" and args.object_file != "":
+        args.assembly_file = str(Path(args.object_file).with_suffix(".s"))
+    elif args.object_file == "" and args.assembly_file != "":
+        args.object_file = str(Path(args.assembly_file).with_suffix(".o"))
 
     # Now run the MLIR compiler on either imported or Dynamo plugin
     if sample_tensors is None:
