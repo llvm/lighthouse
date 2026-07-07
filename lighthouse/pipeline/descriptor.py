@@ -98,13 +98,8 @@ class Descriptor:
             * The path of the Lighthouse schedule module, where all the standard pipelines are located.
         """
         # If absolute path, check if it exists and return.
-        if os.path.isabs(self.basename):
-            if os.path.exists(self.basename):
-                return self.basename
-            else:
-                raise ValueError(
-                    f"Included pipeline descriptor file does not exist: {self.basename}"
-                )
+        if os.path.exists(os.path.abspath(self.basename)):
+            return self.basename
 
         # First look in the same directory as the including file, to allow for relative includes.
         filename = self._remove_args_and_opts(self.basename)
