@@ -22,9 +22,9 @@ def lower_packs_for_vectorization(
         vector_unroll_factors: Unroll factors for each vector loop.
     """
     with lh_transform.foreach(pack_ops) as pack_op:
-        tiled_pack = structured.TileUsingForOp(
-            pack_op, sizes=pack_tile_sizes
-        ).tiled_linalg_op
+        tiled_pack = structured.TileUsingForallOp(
+            pack_op, tile_sizes=pack_tile_sizes
+        ).tiled_op
         _, _, transpose = structured.structured_lower_pack(
             transform.OperationType.get("tensor.pad"),
             transform.OperationType.get("tensor.expand_shape"),
@@ -53,9 +53,9 @@ def lower_unpacks_for_vectorization(
         vector_tile_sizes: Target vector shapes
     """
     with lh_transform.foreach(unpack_ops) as unpack_op:
-        tiled_unpack = structured.TileUsingForOp(
-            unpack_op, sizes=unpack_tile_sizes
-        ).tiled_linalg_op
+        tiled_unpack = structured.TileUsingForallOp(
+            unpack_op, tile_sizes=unpack_tile_sizes
+        ).tiled_op
         for size in vector_tile_sizes:
             tiled_unpack = structured.TileUsingForOp(
                 tiled_unpack, sizes=[size]

@@ -26,7 +26,7 @@ Pipeline:
                                                                   }"
   - pass: "linalg-morph-ops{named-to-category generic-to-named}"
   - schedule: "tiling.py[gen=tile_ops]{target_op=linalg.fill tile_sizes=$fill_tiling filter_ops=True}"
-  - schedule: "tiling.py[gen=tile_ops]{target_op=linalg.generic tile_sizes=$generic_tiling filter_ops=True}"
+  - schedule: "tiling.py[gen=tile_ops]{target_op=linalg.generic tile_sizes=$generic_tiling filter_ops=True use_forall=True}"
   - schedule: "tiling.py[gen=tile_ops]{target_op=linalg.generic tile_sizes=$2D_generic_tiling filter_ops=True}"
 
   - include: vectorize.yaml
