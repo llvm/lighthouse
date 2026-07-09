@@ -165,16 +165,22 @@ def xegpu_wg_annotation_for_elemwise_layer(
 
     def add_load_layout(load_ops, layout_load, layout_dpas):
         xegpu.set_anchor_layout(load_ops, **layout_load)
-        result_tile = transform.get_result(anyvalue, load_ops, [0])
-        xegpu.convert_layout(
-            result_tile,
-            input_sg_layout=layout_load["sg_layout"],
-            input_sg_data=layout_load["sg_data"],
-            input_inst_data=layout_load["inst_data"],
-            target_sg_layout=layout_dpas["sg_layout"],
-            target_sg_data=layout_dpas["sg_data"],
-            target_inst_data=layout_dpas["inst_data"],
-        )
+        # Elemwise kernels (e.g. A+B) may have several xegpu.load_nd ops, so
+        # ``load_ops`` can be an aggregate handle. ``xegpu.convert_layout``
+        # requires exactly one target value handle, so process each load op
+        # individually.
+        with lh_transform.foreach(load_ops) as load_op:
+            result_tile = transform.get_result(anyvalue, load_op, [0])
+            xegpu.convert_layout(
+                result_tile,
+                input_sg_layout=layout_load["sg_layout"],
+                input_sg_data=layout_load["sg_data"],
+                input_inst_data=layout_load["inst_data"],
+                target_sg_layout=layout_dpas["sg_layout"],
+                target_sg_data=layout_dpas["sg_data"],
+                target_inst_data=layout_dpas["inst_data"],
+            )
+            transform.yield_()
 
     # load layout
     layout_load = {
