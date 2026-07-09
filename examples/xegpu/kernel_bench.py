@@ -63,7 +63,12 @@ from lighthouse.utils.mlir import inspect_payload
 from lighthouse.execution.runner import Runner
 from lighthouse.schedule.xegpu import XeGPUParameterSelector
 from lighthouse.pipeline.driver import TransformDriver
-from lighthouse.schedule.xegpu import mlp_schedule, elemwise_schedule, xegpu_to_binary
+from lighthouse.schedule.xegpu import (
+    mlp_schedule,
+    elemwise_schedule,
+    xegpu_to_binary,
+    softmax_schedule,
+)
 from lighthouse.pipeline.helper import PipelineInterrupt
 from lighthouse.ingress.torch import gpu_backend, TargetDialect
 from lighthouse.ingress.torch.compile import TorchMemoryManager
@@ -103,10 +108,12 @@ def infer_parameters(mod: ir.Module, verbose: int = 0) -> tuple[dict, str, list[
                 f"  {i}: shape={input_type.shape}, element_type={input_type.element_type}"
             )
 
-    # get tile size parameters for each matmul layer
+    # Keep layer order in metadata and derive kind-specific views when needed.
     layer_metadata = func_metadata["layers"]
-    matmuls = layer_metadata["matmul"]
-    elemwise = layer_metadata["elemwise"]
+    matmuls = [layer for layer in layer_metadata if layer["kind"] == "matmul"]
+    elemwise = [layer for layer in layer_metadata if layer["kind"] == "elemwise"]
+    reduction = [layer for layer in layer_metadata if layer["kind"] == "reduction"]
+    print(layer_metadata)
     elemtype_bytes = {
         "f16": 2,
         "bf16": 2,
@@ -134,18 +141,18 @@ def infer_parameters(mod: ir.Module, verbose: int = 0) -> tuple[dict, str, list[
             # assuming result is also cast to ab type
             ab_elemtype = mmul["ab_elemtype"]
             ab_bytes = elemtype_bytes[ab_elemtype]
-            read_bytes += (np.prod(a_shape) + np.prod(b_shape)) * ab_bytes
-            write_bytes += np.prod(c_shape) * ab_bytes
+            read_bytes += int(np.prod(a_shape) + np.prod(b_shape)) * ab_bytes
+            write_bytes += int(np.prod(c_shape)) * ab_bytes
 
         schedule_kind = "mlp"
-    elif len(elemwise) > 0:
+    elif len(elemwise) > 0 and len(reduction) == 0:
         # TODO estimate flops in a reliable way, now assuming 1 flop per element
         shape = elemwise[0]["shape"]
         res_elemtype = elemwise[0]["elemtype"]
-        total_flops = np.prod(shape)
+        total_flops = int(np.prod(shape))
         res_bytes = elemtype_bytes[res_elemtype]
-        read_bytes = np.prod(shape) * res_bytes
-        write_bytes = np.prod(shape) * res_bytes
+        read_bytes = int(np.prod(shape)) * res_bytes
+        write_bytes = int(np.prod(shape)) * res_bytes
 
         # Use fixed tile sizes for now
         layer_params = {
@@ -159,10 +166,29 @@ def infer_parameters(mod: ir.Module, verbose: int = 0) -> tuple[dict, str, list[
         # NOTE assume all elemwise layers will be fused to a single layer
         schedule_params = [layer_params]
         schedule_kind = "elemwise"
+    elif len(elemwise) > 0 and len(reduction) == 2:
+        # assume this is softmax
+        shape = elemwise[-1]["shape"]
+        res_elemtype = elemwise[-1]["elemtype"]
+        # Note this is scaled by factor in the flop scaling dict
+        total_flops = int(np.prod(shape))
+        res_bytes = elemtype_bytes[res_elemtype]
+        read_bytes = int(np.prod(shape)) * res_bytes
+        write_bytes = int(np.prod(shape)) * res_bytes
+
+        layer_params = {
+            "sizes": shape,
+            "wg_rows": 64,
+            "sg_rows": 8,
+            "subgroup_size": 16,
+            "reduction_step_size": 32,
+        }
+        schedule_params = layer_params  # NOTE this is a dict not list of dicts
+        schedule_kind = "softmax"
     else:
         print("Layers:")
-        for k, v in layer_metadata.items():
-            print(f"  {k}: {v}")
+        for layer in layer_metadata:
+            print(f"  {layer}")
         raise ValueError("Unsupported payload type")
     func_metadata["total_flops"] = total_flops
     func_metadata["read_bytes"] = read_bytes
@@ -197,6 +223,28 @@ def copy_module(module: ir.Module) -> ir.Module:
     """
     copied_module = ir.Module.parse(str(module), context=module.context)
     return copied_module
+
+
+def is_caused_by_pipeline_interrupt(exc: BaseException) -> bool:
+    """Return True if PipelineInterrupt appears anywhere in the exception chain."""
+    pending = [exc]
+    visited = set()
+
+    while pending:
+        current = pending.pop()
+        if current is None:
+            continue
+        if current in visited:
+            continue
+        visited.add(current)
+
+        if isinstance(current, PipelineInterrupt):
+            return True
+
+        pending.append(getattr(current, "__cause__", None))
+        pending.append(getattr(current, "__context__", None))
+
+    return False
 
 
 def tune_matmul_layer(
@@ -301,7 +349,7 @@ def infer_params_and_lower(
     # store for external use
     kernel_metadata.update(func_metadata)
 
-    matmuls = func_metadata["layers"]["matmul"]
+    matmuls = [layer for layer in func_metadata["layers"] if layer["kind"] == "matmul"]
     if enable_tuning and len(matmuls) == 1 and schedule_kind == "mlp":
         # runtime tuning for matmul kernels
         if os.path.isfile(params_cache_json):
@@ -333,7 +381,10 @@ def infer_params_and_lower(
         print(mod)
     if verbose > 1:
         print(f"Applying '{schedule_kind}' schedule with params:")
-        for i, param_dict in enumerate(schedule_params):
+        param_list = (
+            schedule_params if isinstance(schedule_params, list) else [schedule_params]
+        )
+        for i, param_dict in enumerate(param_list):
             print(f" Parameters for layer {i}:")
             for k, v in param_dict.items():
                 print(f"  {k}: {v}")
@@ -377,6 +428,11 @@ def lower_to_llvm(
         schedule = elemwise_schedule(
             params=schedule_params,
             payload_func_name=payload_func_name,
+            stop_at_stage=stop_at_stage,
+        )
+    elif schedule_kind == "softmax":
+        schedule = softmax_schedule(
+            parameters=schedule_params,
             stop_at_stage=stop_at_stage,
         )
     else:
@@ -492,7 +548,7 @@ def lower_and_execute_benchmark(
             gm, _ = dynamo.export(torch_model)(*torch_inputs)
             backend(gm, list(torch_inputs))
         except dynamo.exc.BackendCompilerFailed as e:
-            if debug:
+            if debug and not is_caused_by_pipeline_interrupt(e):
                 raise e
         return {}
 
@@ -580,11 +636,11 @@ def lower_and_execute_benchmark(
     print(f"{total_flops=}")
 
     layers = kernel_metadata["layers"]
-    if "matmul" in layers and len(layers["matmul"]) > 0:
-        matmuls = layers["matmul"]
-        shape_str = " ".join(str(shape) for shape in matmuls)
-    elif "elemwise" in layers and len(layers["elemwise"]) > 0:
-        elemwise = layers["elemwise"]
+    matmuls = [layer for layer in layers if layer["kind"] == "matmul"]
+    elemwise = [layer for layer in layers if layer["kind"] == "elemwise"]
+    if len(matmuls) > 0:
+        shape_str = " ".join(str(mmul["shape"]) for mmul in matmuls)
+    elif len(elemwise) > 0:
         shape_str = elemwise[0]["shape"] if len(elemwise) > 0 else ""
     else:
         shape_str = ""
@@ -728,12 +784,12 @@ if __name__ == "__main__":
     else:
         csv_logger = None
 
-    for id, bench_path in bench_list:
+    for bench_id, bench_path in bench_list:
         short_path = bench_path.parent.name + "/" + bench_path.name
         print("-" * 80)
         print(f"Executing benchmark: {short_path}", flush=True)
         entry = {
-            "id": id,
+            "id": bench_id,
             "file": bench_path.name,
             "shapes": "",
             "flops": 0,
@@ -750,7 +806,7 @@ if __name__ == "__main__":
             results = run_experiment(
                 filepath=str(bench_path),
                 level=kb_level,
-                id=id,
+                id=bench_id,
                 datatype=args.datatype,
                 nruns=args.nruns,
                 nwarmup=args.nwarmup,
