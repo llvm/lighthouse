@@ -316,11 +316,11 @@ class PipelineDescriptor:
 
         # If no name or target is provided, can't find the pipeline file.
         if not pipeline or not target:
-            return "", ""
+            return None, None
 
         # If arch directory doesn't exist, can't find the pipeline file.
         if not os.path.exists(os.path.join(base_path, target.arch)):
-            return "", ""
+            return None, None
 
         # Filter feature list based on available sub-directories in the base_dir
         available_features = [
@@ -344,4 +344,4 @@ class PipelineDescriptor:
             if pipeline_path.exists():
                 return str(pipeline_path), ""
 
-        return "", ""
+        return None, None
