@@ -311,8 +311,17 @@ class PipelineDescriptor:
             str: The full path to the pipeline descriptor file, or the default pipeline (possibly empty) if not found.
             str: The feature that was used to find the pipeline file, or an empty string if no feature-specific file was found.
         """
+        if not os.path.exists(base_path):
+            raise ValueError(
+                f"Base path for pipeline descriptor does not exist: {base_path}"
+            )
+
         # If no name or target is provided, return the default pipeline.
         if not pipeline or not target:
+            return default_pipeline, ""
+
+        # If arch directory doesn't exist, return the default pipeline.
+        if not os.path.exists(os.path.join(base_path, target.arch)):
             return default_pipeline, ""
 
         # Filter feature list based on available sub-directories in the base_dir
