@@ -7,10 +7,12 @@
 import argparse
 import re
 import subprocess
-import platform
 from pathlib import Path
 
 import yaml
+
+from lighthouse.execution.target import TargetInfo
+from lighthouse.pipeline.descriptor import PipelineDescriptor
 
 script_path = Path(__file__).parent
 project_root = script_path.parent.parent
@@ -27,73 +29,7 @@ ci_files = [
 ]
 
 
-class TargetInfo:
-    """
-    Struct to hold target architecture and feature information.
-    Since this is used in a JIT context, we can safely assume the host
-    architecture is the target architecture if not specified.
-    """
-
-    def __init__(self, arch: str = None, feature: str = None):
-        if arch is not None:
-            self.arch = arch
-        else:
-            self.arch = platform.machine()
-
-        self.feature = []
-        if feature is not None:
-            self.feature = feature.split(",")
-        else:
-            self._get_extension_list()
-
-    def _get_extension_list(self) -> list[str]:
-        flags = subprocess.run(
-            "lscpu | grep Flags",
-            capture_output=True,
-            text=True,
-            shell=True,
-        ).stdout
-        schedule_path = script_path / "schedules" / self.arch
-        if not schedule_path.exists():
-            return []
-
-        extensions = []
-        for item in schedule_path.iterdir():
-            if item.is_dir():
-                extensions.append(item.name)
-
-        for ext in extensions:
-            if ext in flags:
-                self.feature.append(ext)
-
-
-def get_pipeline_file(name: str, dtype: str, target: TargetInfo) -> Path:
-    """
-    Returns the appropriate pipeline file for a given kernel.
-    """
-    # If no name is provided, return the default pipeline.
-    if not name:
-        return kb_default_pipeline
-
-    # First check if there's a pipeline file specific to the target features.
-    for feature in target.feature:
-        pipeline = (
-            script_path / f"schedules/{target.arch}/{feature}/{name}/{dtype}.yaml"
-        )
-        if pipeline.exists():
-            return pipeline
-
-    # Second, check if there's a pipeline file specific to the target architecture.
-    if target.arch:
-        pipeline = script_path / f"schedules/{target.arch}/{name}/{dtype}.yaml"
-        if pipeline.exists():
-            return pipeline
-
-    # Otherwise, just return the safe option
-    return kb_default_pipeline
-
-
-def get_tests(args: argparse.Namespace) -> list[dict]:
+def get_tests(args: argparse.Namespace, target_info: TargetInfo) -> list[dict]:
     """
     Returns the list of tests to be executed.
     """
@@ -109,18 +45,20 @@ def get_tests(args: argparse.Namespace) -> list[dict]:
         if args.kernel and not test["kernel"].startswith(args.kernel):
             continue
         # Smoke tests run on the simplest lowering
+        feature = ""
         if args.smoke_test:
             pipeline = str(kb_default_pipeline)
         elif args.pipeline:
             pipeline = args.pipeline
         else:
-            pipeline = str(
-                get_pipeline_file(
-                    test.get("pipeline", ""),
-                    args.dtype,
-                    TargetInfo(args.target, args.feature),
-                )
+            pipeline, feature = PipelineDescriptor.find_pipeline_file(
+                target_info,
+                script_path / "schedules",
+                test.get("pipeline", ""),
+                args.dtype,
             )
+            if not pipeline:
+                pipeline = str(kb_default_pipeline)
         test_list.append(
             {
                 "kernel": test["kernel"],
@@ -137,6 +75,7 @@ def get_tests(args: argparse.Namespace) -> list[dict]:
                 else None,
                 "pipeline": pipeline,
                 "warning": test.get("warning", None),
+                "feature": feature,
             }
         )
     return test_list
@@ -212,7 +151,8 @@ if __name__ == "__main__":
         Parser.print_help()
         exit(1)
 
-    tests = get_tests(args)
+    target_info = TargetInfo(args.target, args.feature)
+    tests = get_tests(args, target_info)
     if len(tests) == 0:
         if args.kernel:
             print(
@@ -221,8 +161,6 @@ if __name__ == "__main__":
         else:
             print("No tests to run. Please check your arguments.")
         exit(0)
-
-    target_info = TargetInfo(args.target, args.feature)
 
     for test in tests:
         kb_kernel = kb_path / test["kernel"]
@@ -237,11 +175,14 @@ if __name__ == "__main__":
             args.dtype,
         ]
 
+        # Target should always exist.
         if target_info.arch:
             command_line += ["--target", target_info.arch]
 
-        if target_info.feature:
-            command_line += ["--feature", ",".join(target_info.feature)]
+        # The feature that was found for the pipeline descriptor file.
+        # Could be different per test.
+        if test.get("feature"):
+            command_line += ["--feature", test["feature"]]
 
         # Benchmark mode.
         if args.benchmark:

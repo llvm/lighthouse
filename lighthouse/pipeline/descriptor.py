@@ -3,6 +3,7 @@ import os
 import re
 
 from lighthouse.utils.types import string_to_type
+from lighthouse.execution.target import TargetInfo
 
 
 class Descriptor:
@@ -285,3 +286,62 @@ class PipelineDescriptor:
     def get_stages(self) -> list[str]:
         """Returns the list of stages in the pipeline."""
         return self.stages
+
+    @staticmethod
+    def find_pipeline_file(
+        target: TargetInfo,
+        base_path: str,
+        pipeline: str,
+        dtype: str = "f32",
+    ) -> tuple[str, str]:
+        """
+        Find a pipeline descriptor file with the given filename in the specified base path.
+        Uses target information to complete the following directory structure:
+         - base_path/<arch>/<feature>/<pipeline>/<dtype>.yaml
+         - base_path/<arch>/<pipeline>/<dtype>.yaml
+
+        Args:
+            target (TargetInfo): Target information to complete the directory structure.
+            base_path (str): The base directory to search for the pipeline file.
+            pipeline (str): The name of the pipeline descriptor file to find.
+
+        Returns:
+            str: The full path to the pipeline descriptor file, or the default pipeline (possibly empty) if not found.
+            str: The feature that was used to find the pipeline file, or an empty string if no feature-specific file was found.
+        """
+        if not os.path.exists(base_path):
+            raise ValueError(
+                f"Base path for pipeline descriptor does not exist: {base_path}"
+            )
+
+        # If no name or target is provided, can't find the pipeline file.
+        if not pipeline or not target:
+            return None, None
+
+        # If arch directory doesn't exist, can't find the pipeline file.
+        if not os.path.exists(os.path.join(base_path, target.arch)):
+            return None, None
+
+        # Filter feature list based on available sub-directories in the base_dir
+        available_features = [
+            name
+            for name in os.listdir(os.path.join(base_path, target.arch))
+            if os.path.isdir(os.path.join(base_path, target.arch, name))
+        ]
+        features = target.has_features(available_features)
+
+        # First check if there's a pipeline file specific to the target features.
+        for feature in features:
+            pipeline_path = (
+                base_path / f"{target.arch}/{feature}/{pipeline}/{dtype}.yaml"
+            )
+            if pipeline_path.exists():
+                return str(pipeline_path), feature
+
+        # Second, check if there's a pipeline file specific to the target architecture.
+        if target.arch:
+            pipeline_path = base_path / f"{target.arch}/{pipeline}/{dtype}.yaml"
+            if pipeline_path.exists():
+                return str(pipeline_path), ""
+
+        return None, None
