@@ -24,6 +24,8 @@ import subprocess
 import sys
 
 from lighthouse.tools.xeas import xeas
+from lighthouse import dialects as _lh_dialects
+from mlir import ir
 
 
 def parse_args(argv=None):
@@ -243,16 +245,18 @@ def main(argv=None):
     params = build_params(args)
 
     try:
-        library = xeas(
-            source,
-            args.entry_point,
-            params,
-            input_shape=args.input_shape,
-            assume_in_bounds=args.assume_in_bounds,
-            xegpu_op_level=args.xegpu_op_level,
-            large_register_file=args.large_register_file,
-            opt_level=args.O,
-        )
+        with ir.Context():
+            _lh_dialects.register_and_load()
+            library = xeas(
+                source,
+                args.entry_point,
+                params,
+                input_shape=args.input_shape,
+                assume_in_bounds=args.assume_in_bounds,
+                xegpu_op_level=args.xegpu_op_level,
+                large_register_file=args.large_register_file,
+                opt_level=args.O,
+            )
     except subprocess.CalledProcessError as exc:
         # The failing tool already printed its diagnostics to stderr.
         sys.exit(exc.returncode)
