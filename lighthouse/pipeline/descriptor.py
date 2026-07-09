@@ -314,11 +314,11 @@ class PipelineDescriptor:
                 f"Base path for pipeline descriptor does not exist: {base_path}"
             )
 
-        # If no name or target is provided, return the default pipeline.
+        # If no name or target is provided, can't find the pipeline file.
         if not pipeline or not target:
             return "", ""
 
-        # If arch directory doesn't exist, return the default pipeline.
+        # If arch directory doesn't exist, can't find the pipeline file.
         if not os.path.exists(os.path.join(base_path, target.arch)):
             return "", ""
 
@@ -344,5 +344,4 @@ class PipelineDescriptor:
             if pipeline_path.exists():
                 return str(pipeline_path), ""
 
-        # Otherwise, just return the safe option
         return "", ""
