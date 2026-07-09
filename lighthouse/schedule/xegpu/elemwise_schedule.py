@@ -166,7 +166,7 @@ def xegpu_wg_annotation_for_elemwise_layer(
         "inst_data": load_tile,
     }
 
-    # add layout to load ops. ``load_ops``
+    # add layout to load ops
     load_ops = match(gpu_func, ops={"xegpu.load_nd"})
     xegpu.set_anchor_layout(load_ops, **layout_load)
 
