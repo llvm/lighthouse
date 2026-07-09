@@ -11,8 +11,6 @@ from functools import partial
 from collections.abc import Callable
 
 from mlir import ir
-from mlir.dialects import transform
-from mlir.dialects.transform import structured
 from mlir.execution_engine import ExecutionEngine
 from mlir.runtime.np_to_memref import get_ranked_memref_descriptor
 
@@ -20,6 +18,7 @@ from lighthouse.execution.target import TargetInfo
 from lighthouse.utils.sys_config import enable_amx
 from lighthouse.dialects.transform import transform_ext
 from lighthouse.schedule import schedule_boilerplate
+from lighthouse.schedule import bench_wrapper_schedule
 from lighthouse.utils.memref import to_packed_args
 from lighthouse.utils.mlir import get_mlir_library_path
 from lighthouse.utils.lib_finder import find_openmp_library
@@ -53,6 +52,7 @@ class Runner:
         shared_libs: list[str] | None = None,
         opt_level: int = 3,
         target: TargetInfo = None,
+        benchmark_function_name: str | None = None,
     ):
         self.payload = module
         self.target = target if target else TargetInfo()
@@ -68,6 +68,8 @@ class Runner:
         # Remove duplicates, the same library cannot be loaded multiple times.
         self.shared_libs = list(dict.fromkeys(shared_libs))
         self.opt_level = opt_level
+        if benchmark_function_name is not None:
+            self.payload_benchmark_function_name = benchmark_function_name
         self.engine = self._get_engine()
         self._configure_system()
 
@@ -136,12 +138,41 @@ class Runner:
         execution_engine.initialize()
         return execution_engine
 
+    @staticmethod
+    def _host_buffer_to_memref(buf) -> ctypes.Structure:
+        """
+        Convert a single host buffer to a memref descriptor.
+
+        Supports numpy arrays and torch tensors, dispatching to the repo
+        utility that builds the descriptor with the correct shape, offset and
+        element strides for each (numpy expresses strides in bytes, torch in
+        elements).
+        """
+        if isinstance(buf, np.ndarray):
+            return get_ranked_memref_descriptor(buf)
+        # torch is an optional dependency, so only import it when a non-numpy
+        # buffer is actually passed.
+        try:
+            import torch
+        except ImportError:
+            torch = None
+        if torch is not None and isinstance(buf, torch.Tensor):
+            from lighthouse.utils.torch import to_memref as torch_to_memref
+
+            return torch_to_memref(buf)
+
+        raise ValueError(
+            "host_input_buffers must be numpy arrays or torch tensors when no "
+            f"mem_manager_cls is provided, got {type(buf)}"
+        )
+
     @contextmanager
-    def _numpy_to_memref_manager(self, inputs):
+    def _host_to_memref_manager(self, inputs):
         """
-        Context manager that yields memref descriptors for the given numpy input buffers.
+        Context manager that yields memref descriptors for the given host input
+        buffers (numpy arrays or torch tensors).
         """
-        yield [get_ranked_memref_descriptor(a) for a in inputs]
+        yield [self._host_buffer_to_memref(buf) for buf in inputs]
 
     def _execute_kernel(
         self,
@@ -175,12 +206,8 @@ class Runner:
             raise ValueError("host_input_buffers must be provided")
 
         if self.mem_manager_cls is None:
-            if any(not isinstance(buf, np.ndarray) for buf in host_input_buffers):
-                raise ValueError(
-                    "host_input_buffers must be numpy arrays when no mem_manager_cls is provided"
-                )
             mem_manager = None
-            allocator = partial(self._numpy_to_memref_manager, host_input_buffers)
+            allocator = partial(self._host_to_memref_manager, host_input_buffers)
         elif self.mem_manager_cls is GPUMemoryManager:
             mem_manager = self.mem_manager_cls(self.engine)
             allocator = partial(mem_manager.clone_host_buffers, host_input_buffers)
@@ -279,24 +306,9 @@ class Runner:
         The function name is defined in Runner and will be used by the runner benchmark method.
         This schedule must apply to the module before any other in an optimizing pipeline.
         """
-        with ir.Location.unknown():
-            with schedule_boilerplate(result_types=[transform.any_op_t()]) as (
-                schedule,
-                named_seq,
-            ):
-                named_func = structured.structured_match(
-                    transform.AnyOpType.get(),
-                    target=named_seq.bodyTarget,
-                    ops={"func.func"},
-                    op_attrs={"sym_name": ir.StringAttr.get(payload_func)},
-                )
-                bench_func = transform_ext.wrap_in_benching_func(
-                    named_func, bench_name=Runner.payload_benchmark_function_name
-                )
-                transform.yield_([bench_func])
-
-        schedule.body.operations[0].verify()
-        return schedule
+        return bench_wrapper_schedule(
+            payload_func, bench_name=Runner.payload_benchmark_function_name
+        )
 
     @staticmethod
     def get_gpu_argument_access_callback(
@@ -328,3 +340,119 @@ class Runner:
                 if func.sym_name.value == func_name:
                     func.attributes["llvm.emit_c_interface"] = ir.UnitAttr.get()
                     break
+
+class SharedLibraryEngine:
+    """Minimal ``ExecutionEngine``-compatible loader for a prebuilt shared library.
+
+    Exposes the ``lookup``/``invoke`` subset of ``mlir.ExecutionEngine`` that
+    :class:`Runner` and the memory managers rely on, resolving MLIR C-interface
+    symbols (``_mlir_ciface_<name>``) from the shared library instead of
+    JIT-compiling a module. Loading the library does not initialize the GPU
+    runtime; it is only exercised when a looked-up function is actually called.
+
+    The library's own runtime dependencies (GPU runtime, c-runner-utils) are
+    expected to be loaded automatically as recorded in its ``DT_NEEDED`` entries.
+    """
+
+    def __init__(self, shared_library: str):
+        self.lib = ctypes.CDLL(shared_library)
+        # Cache the unloader now so __del__ works even during interpreter
+        # shutdown, when module globals (ctypes) may already be torn down.
+        self._dlclose = ctypes.CDLL(None).dlclose
+        self._dlclose.argtypes = [ctypes.c_void_p]
+
+    def __del__(self):
+        """Unload the shared library, running its ELF finalizers.
+
+        The library registers a destructor (``kernels_unload``) that calls
+        ``zeModuleDestroy`` through the Level Zero runtime. Left to run at
+        process exit, it can fault because the Level Zero driver may already
+        have been torn down by a coexisting framework (e.g. ``torch.xpu``).
+        The engine is only referenced by its runner, so dropping the runner
+        unloads the library here, running that finalizer while the GPU
+        runtime is still alive rather than at process exit.
+        """
+        lib = getattr(self, "lib", None)
+        if lib is None:
+            return
+        handle = getattr(lib, "_handle", None)
+        if handle is not None:
+            self._dlclose(handle)
+        self.lib = None
+
+    def _ciface(self, name: str):
+        """Return the raw ``_mlir_ciface_<name>`` symbol from the library.
+
+        A statically compiled library only exports the *unpacked* C interface
+        (``llvm.emit_c_interface``): memref arguments/results are passed by
+        pointer and scalar arguments by value. Unlike the JIT, it has no
+        ``packFunctionArguments`` ``void**`` wrapper.
+        """
+        try:
+            func = getattr(self.lib, "_mlir_ciface_" + name)
+        except AttributeError:
+            raise RuntimeError("Unknown function " + name)
+        func.restype = None
+        return func
+
+    def lookup(self, name: str):
+        """Return a callable compatible with ``ExecutionEngine.lookup``.
+
+        ``Runner`` calls the looked-up function with a single packed ``void**``
+        argument array (the ABI of the JIT's generated wrapper). The static
+        library only exposes the unpacked ``_mlir_ciface_<name>``, so this
+        adapter unpacks the array the same way the JIT's
+        ``packFunctionArguments`` does -- loading each argument from its slot --
+        and forwards to the unpacked symbol. The executed payloads take their
+        arguments by pointer (memref descriptors), so every slot holds a
+        pointer.
+        """
+        ciface = self._ciface(name)
+
+        def call(packed_args):
+            args = [
+                ctypes.cast(
+                    ctypes.c_void_p(packed_args[i]),
+                    ctypes.POINTER(ctypes.c_void_p),
+                ).contents
+                for i in range(len(packed_args))
+            ]
+            ciface(*args)
+
+        return call
+
+    def invoke(self, name: str, *ctypes_args):
+        """Invoke ``name`` through the unpacked C interface.
+
+        Callers pass each argument as a pointer to its storage (a memref
+        descriptor pointer, or a pointer to a scalar). Dereferencing once
+        (``.contents``) yields exactly the by-pointer/by-value arguments the
+        unpacked ``_mlir_ciface_<name>`` expects -- the same load the JIT's
+        packed wrapper performs.
+        """
+        self._ciface(name)(*[arg.contents for arg in ctypes_args])
+
+
+class SharedLibraryRunner(Runner):
+    """:class:`Runner` variant that executes a prebuilt shared library.
+
+    Instead of JIT-compiling an MLIR module, it loads a shared library (such as
+    the one produced by ``tools/xeas``) and calls its MLIR C-interface symbols.
+    The library must export the entry/benchmark function and, when a GPU memory
+    manager is used, the ``gpu_alloc``/``gpu_copy``/``gpu_dealloc`` helpers.
+
+    All execution and benchmarking behaviour is inherited from :class:`Runner`;
+    only engine construction differs (no ExecutionEngine, JIT, or extra shared
+    libraries are needed).
+    """
+
+    def __init__(
+        self,
+        shared_library: str,
+        mem_manager_cls: type = None,
+        benchmark_function_name: str | None = None,
+    ):
+        self.mem_manager_cls = mem_manager_cls
+        self.engine = SharedLibraryEngine(shared_library)
+        if benchmark_function_name is not None:
+            self.payload_benchmark_function_name = benchmark_function_name

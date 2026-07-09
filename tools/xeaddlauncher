@@ -1,0 +1,116 @@
+#!/scratch/fschlimb/github/lighthouse/.venv/bin/python
+"""xeaddlauncher - add the host launcher for a GPU kernel (command line interface).
+
+Generates the host-side entry function (`func.func` launching the kernel via
+`gpu.launch_func`, marked `llvm.emit_c_interface`) for IR that contains an
+outlined GPU kernel but no host launcher. Run this before `xeas`.
+
+The transformation itself lives in the importable
+:mod:`lighthouse.tools.xeaddlauncher` module (``xeaddlauncher`` /
+``add_launchers``); this executable only owns the command-line interface.
+
+Examples:
+    # add the launcher to a kernel-only module, then assemble it
+    xeaddlauncher kernel.mlir --wg-tile 256 256 | xeas - --entry-point payload ...
+
+    # read from stdin, write to a file, pick the entry name
+    cat kernel.mlir | xeaddlauncher -o with_launcher.mlir --entry-point payload
+
+    # set the block size when the kernel has no known_block_size attribute
+    xeaddlauncher kernel.mlir --wg-tile 256 256 --block 256 1 1
+
+    # also add a benchmarking wrapper around the launcher
+    xeaddlauncher kernel.mlir --wg-tile 256 256 --benchmark=benchit
+"""
+
+import argparse
+import sys
+
+from lighthouse.tools.xeaddlauncher import (
+    DEFAULT_BLOCK,
+    xeaddlauncher,
+)
+
+
+def parse_args(argv=None):
+    parser = argparse.ArgumentParser(
+        prog="xeaddlauncher",
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument(
+        "input",
+        nargs="?",
+        default="-",
+        help="Input MLIR file. Reads from stdin if '-' or omitted.",
+    )
+    parser.add_argument(
+        "-o",
+        "--output",
+        default="-",
+        help="Output MLIR file. Writes to stdout if '-' (default).",
+    )
+    parser.add_argument(
+        "--entry-point",
+        help="Name for the generated host launcher. Defaults to the kernel name "
+        "without a trailing '_kernel'. Requires a single kernel in the input.",
+    )
+    parser.add_argument(
+        "--wg-tile",
+        type=int,
+        nargs=2,
+        metavar=("M", "N"),
+        help="Work-group tile size M N. The launch grid is computed in the IR "
+        "as ceil(output_size / wg-tile). Falls back to the kernel's "
+        "'known_grid_size' annotation when omitted.",
+    )
+    parser.add_argument(
+        "--block",
+        type=int,
+        nargs=3,
+        default=DEFAULT_BLOCK,
+        metavar=("X", "Y", "Z"),
+        help="Thread block size X Y Z. Used when the kernel has no "
+        "'known_block_size' annotation. Default: 512 1 1.",
+    )
+    parser.add_argument(
+        "--benchmark",
+        default=False,
+        help="Also wrap the launcher in a benchmarking function that calls it "
+        "in a timed loop. Requires a single kernel in the input.",
+    )
+    return parser.parse_args(argv)
+
+
+def main(argv=None):
+    args = parse_args(argv)
+
+    text = sys.stdin.read() if args.input == "-" else open(args.input).read()
+
+    try:
+        result = xeaddlauncher(
+            text,
+            entry_point=args.entry_point,
+            block=args.block,
+            wg_tile=args.wg_tile,
+            benchmark=args.benchmark,
+        )
+    except Exception as exc:
+        src = "stdin" if args.input == "-" else args.input
+        print(
+            f"xeaddlauncher: error: adding host launcher to {src} failed: "
+            f"{type(exc).__name__}: {exc}",
+            file=sys.stderr,
+        )
+        return 1
+
+    if args.output == "-":
+        sys.stdout.write(result)
+    else:
+        with open(args.output, "w") as f:
+            f.write(result)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

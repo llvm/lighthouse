@@ -414,6 +414,7 @@ def parse_cli_args(description):
             "tiled",
             "vectorized",
             "bufferized",
+            "outlined",
             "xegpu-initial",
             "xegpu-wg",
             "final",

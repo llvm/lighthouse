@@ -122,8 +122,16 @@ def mlp_schedule(
     params: list[dict[str, int | None]],
     payload_func_name: str = "payload",
     stop_at_stage: str = "",
+    start_at_stage: str = "",
 ) -> ir.Module:
-    """Generate transform schedule module for MLP payload."""
+    """Generate transform schedule module for MLP payload.
+
+    `start_at_stage` allows resuming the schedule from a partially lowered
+    payload. Currently only `"outlined"` is supported, which assumes the input
+    payload has already been vectorized, bufferized and outlined to gpu.func
+    (i.e. the IR produced by the `"outlined"` dump stage), and applies only the
+    XeGPU-level lowering (convert-vector-to-xegpu and WG annotations) onwards.
+    """
     assert params is not None and isinstance(params, list) and len(params) > 0, (
         "params must be provided."
     )
@@ -192,6 +200,7 @@ def mlp_schedule(
                 gpu_specs=gpu_specs,
                 params=params,
                 stop_at_stage=stop_at_stage,
+                start_at_stage=start_at_stage,
             )
         except PipelineInterrupt:
             pass
@@ -207,61 +216,73 @@ def bundle_xegpu_mlp_schedule(
     gpu_specs: XeGPUSpecs,
     params: list[dict[str, int | KnobValue]],
     stop_at_stage: str = "",
+    start_at_stage: str = "",
 ) -> ir.Value[transform.AnyOpType]:
-    """Schedule for lowering MLP-like payload to xegpu wg level."""
+    """Schedule for lowering MLP-like payload to xegpu wg level.
+
+    When `start_at_stage == "outlined"`, the front of the schedule (elementwise
+    fusion, tiling, vectorization, bufferization and gpu outlining) is skipped
+    and `mod` is assumed to already be at the `"outlined"` stage.
+    """
     nlayers = len(params)
-
-    if stop_at_stage == "initial":
-        raise PipelineInterrupt()
-
     anytype = transform.AnyOpType.get()
 
-    # fuse all elementwise ops first
-    func = get_named_func(mod, payload_func_name)
-    func = apply_registered_pass(func, "linalg-fuse-elementwise-ops")
+    if start_at_stage not in ("", "outlined"):
+        raise ValueError(f"Unsupported start_at_stage: {start_at_stage!r}")
 
-    # tile each layer separately
-    matmul_ops = match_and_split(func, ops={"linalg.matmul"}, nhandles=nlayers)
-    for matmul_op, layer_params in zip(matmul_ops, params):
-        # tunable parameters: wg and k tiling
-        wg_tile = [layer_params["wg_m"], layer_params["wg_n"]]
-        k_tile = layer_params["k_tile"]
+    if start_at_stage != "outlined":
+        if stop_at_stage == "initial":
+            raise PipelineInterrupt()
 
-        # find the last tileable consumer of the matmul
-        consumers = transform_ext.get_tileable_consumers(matmul_op)
-        leaf_consumer_op = transform_ext.extract_handle(consumers, -1)
+        # fuse all elementwise ops first
+        func = get_named_func(mod, payload_func_name)
+        func = apply_registered_pass(func, "linalg-fuse-elementwise-ops")
 
-        # wg tiling
-        _, [wg_loop], _ = lh_transform.tile(
-            leaf_consumer_op,
-            tile_sizes=wg_tile,
-            fuse_producers=True,
-            use_forall=True,
-            apply_cleanup=False,
+        # tile each layer separately
+        matmul_ops = match_and_split(func, ops={"linalg.matmul"}, nhandles=nlayers)
+        for matmul_op, layer_params in zip(matmul_ops, params):
+            # tunable parameters: wg and k tiling
+            wg_tile = [layer_params["wg_m"], layer_params["wg_n"]]
+            k_tile = layer_params["k_tile"]
+
+            # find the last tileable consumer of the matmul
+            consumers = transform_ext.get_tileable_consumers(matmul_op)
+            leaf_consumer_op = transform_ext.extract_handle(consumers, -1)
+
+            # wg tiling
+            _, [wg_loop], _ = lh_transform.tile(
+                leaf_consumer_op,
+                tile_sizes=wg_tile,
+                fuse_producers=True,
+                use_forall=True,
+                apply_cleanup=False,
+            )
+
+            # k loop tiling
+            wg_matmul = match(wg_loop, ops={"linalg.matmul"})
+            _, [k_loop], _ = lh_transform.tile(wg_matmul, tile_sizes=[0, 0, k_tile])
+            lh_transform.cleanup(wg_loop)
+            # if there's a transpose op fuse it into the k loop
+            transpose_op = match(wg_loop, ops={"linalg.transpose"})
+            structured.structured_fuse_into_containing_op(
+                anytype, anytype, transpose_op, k_loop
+            )
+
+        lh_transform.cleanup(func)
+        if stop_at_stage == "tiled":
+            raise PipelineInterrupt()
+
+        mod = vectorize_bufferize_and_outline_gpu_func(
+            mod,
+            payload_func_name=payload_func_name,
+            nlayers=nlayers,
+            gpu_specs=gpu_specs,
+            params=params,
+            stop_at_stage=stop_at_stage,
         )
+        if stop_at_stage == "outlined":
+            raise PipelineInterrupt()
 
-        # k loop tiling
-        wg_matmul = match(wg_loop, ops={"linalg.matmul"})
-        _, [k_loop], _ = lh_transform.tile(wg_matmul, tile_sizes=[0, 0, k_tile])
-        lh_transform.cleanup(wg_loop)
-        # if there's a transpose op fuse it into the k loop
-        transpose_op = match(wg_loop, ops={"linalg.transpose"})
-        structured.structured_fuse_into_containing_op(
-            anytype, anytype, transpose_op, k_loop
-        )
-
-    lh_transform.cleanup(func)
-    if stop_at_stage == "tiled":
-        raise PipelineInterrupt()
-
-    mod = vectorize_bufferize_and_outline_gpu_func(
-        mod,
-        payload_func_name=payload_func_name,
-        nlayers=nlayers,
-        gpu_specs=gpu_specs,
-        params=params,
-        stop_at_stage=stop_at_stage,
-    )
     mod = convert_vector_to_xegpu(mod, nlayers=nlayers)
     if stop_at_stage == "xegpu-initial":
         raise PipelineInterrupt()
