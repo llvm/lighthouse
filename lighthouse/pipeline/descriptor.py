@@ -289,23 +289,21 @@ class PipelineDescriptor:
 
     @staticmethod
     def find_pipeline_file(
+        target: TargetInfo,
         base_path: str,
         pipeline: str,
-        target: TargetInfo = None,
-        default_pipeline: str = "",
+        dtype: str = "f32",
     ) -> tuple[str, str]:
         """
         Find a pipeline descriptor file with the given filename in the specified base path.
         Uses target information to complete the following directory structure:
-         - base_path/<arch>/<feature>/<pipeline>.yaml
-         - base_path/<arch>/<pipeline>.yaml
-         - <default_pipeline>
+         - base_path/<arch>/<feature>/<pipeline>/<dtype>.yaml
+         - base_path/<arch>/<pipeline>/<dtype>.yaml
 
         Args:
+            target (TargetInfo): Target information to complete the directory structure.
             base_path (str): The base directory to search for the pipeline file.
             pipeline (str): The name of the pipeline descriptor file to find.
-            target (TargetInfo, optional): Optional target information to complete the directory structure.
-            default_pipeline (str): The default pipeline file to use if the specified pipeline is not found.
 
         Returns:
             str: The full path to the pipeline descriptor file, or the default pipeline (possibly empty) if not found.
@@ -318,11 +316,11 @@ class PipelineDescriptor:
 
         # If no name or target is provided, return the default pipeline.
         if not pipeline or not target:
-            return default_pipeline, ""
+            return "", ""
 
         # If arch directory doesn't exist, return the default pipeline.
         if not os.path.exists(os.path.join(base_path, target.arch)):
-            return default_pipeline, ""
+            return "", ""
 
         # Filter feature list based on available sub-directories in the base_dir
         available_features = [
@@ -334,15 +332,17 @@ class PipelineDescriptor:
 
         # First check if there's a pipeline file specific to the target features.
         for feature in features:
-            pipeline = base_path / f"{target.arch}/{feature}/{pipeline}.yaml"
-            if pipeline.exists():
-                return pipeline, feature
+            pipeline_path = (
+                base_path / f"{target.arch}/{feature}/{pipeline}/{dtype}.yaml"
+            )
+            if pipeline_path.exists():
+                return str(pipeline_path), feature
 
         # Second, check if there's a pipeline file specific to the target architecture.
         if target.arch:
-            pipeline = base_path / f"{target.arch}/{pipeline}.yaml"
-            if pipeline.exists():
-                return pipeline, ""
+            pipeline_path = base_path / f"{target.arch}/{pipeline}/{dtype}.yaml"
+            if pipeline_path.exists():
+                return str(pipeline_path), ""
 
         # Otherwise, just return the safe option
-        return default_pipeline, ""
+        return "", ""

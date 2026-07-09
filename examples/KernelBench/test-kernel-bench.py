@@ -52,11 +52,13 @@ def get_tests(args: argparse.Namespace, target_info: TargetInfo) -> list[dict]:
             pipeline = args.pipeline
         else:
             pipeline, feature = PipelineDescriptor.find_pipeline_file(
+                target_info,
                 script_path / "schedules",
                 test.get("pipeline", ""),
-                target_info,
-                str(kb_default_pipeline),
+                args.dtype,
             )
+            if not pipeline:
+                pipeline = str(kb_default_pipeline)
         test_list.append(
             {
                 "kernel": test["kernel"],
