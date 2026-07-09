@@ -1,4 +1,7 @@
 # RUN: %PYTHON %s -l 2 -b 9 --dump-kernel=xegpu-wg | FileCheck %s
+
+# REQUIRES: torch-xpu
+
 # CHECK: module attributes {gpu.container_module} {
 """
 This script executes KernelBench benchmarks using the XEGPU lowering pipeline.
