@@ -143,7 +143,6 @@ def xegpu_wg_annotation_for_elemwise_layer(
     Should be applied after the payload has been converted to XeGPU using
     the convert-vector-to-xegpu pass.
     """
-    anyvalue = transform.AnyValueType.get()
 
     @td_smt_ext.constrain_params(wg_m, wg_n, sg_m, sg_n, load_m, load_n)
     def calc_sg_layout(WG_M, WG_N, SG_M, SG_N, LD_M, LD_N):
@@ -160,35 +159,17 @@ def xegpu_wg_annotation_for_elemwise_layer(
     sg_tile = [sg_m, sg_n]
     load_tile = [load_m, load_n]
 
-    # add layouts to load ops
-    load_ops = match(gpu_func, ops={"xegpu.load_nd"})
-
-    def add_load_layout(load_ops, layout_load, layout_dpas):
-        xegpu.set_anchor_layout(load_ops, **layout_load)
-        result_tile = transform.get_result(anyvalue, load_ops, [0])
-        xegpu.convert_layout(
-            result_tile,
-            input_sg_layout=layout_load["sg_layout"],
-            input_sg_data=layout_load["sg_data"],
-            input_inst_data=layout_load["inst_data"],
-            target_sg_layout=layout_dpas["sg_layout"],
-            target_sg_data=layout_dpas["sg_data"],
-            target_inst_data=layout_dpas["inst_data"],
-        )
-
     # load layout
     layout_load = {
         "sg_layout": sg_layout,
         "sg_data": sg_tile,
         "inst_data": load_tile,
     }
-    # inst layout
-    layout_dpas = layout_load.copy()
-    add_load_layout(
-        load_ops,
-        layout_load,
-        layout_dpas,
-    )
+
+    # add layout to load ops
+    load_ops = match(gpu_func, ops={"xegpu.load_nd"})
+    xegpu.set_anchor_layout(load_ops, **layout_load)
+
     # add layout to store ops
     store_ops = match(gpu_func, ops={"xegpu.store_nd"})
     xegpu.set_anchor_layout(store_ops, **layout_load)
