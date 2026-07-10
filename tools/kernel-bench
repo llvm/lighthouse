@@ -12,10 +12,7 @@ import torch
 from mlir import ir
 from lighthouse.execution.runner import Runner
 from lighthouse.execution.init import KernelArgumentParser
-from lighthouse.pipeline.descriptor import Descriptor
-from lighthouse.pipeline.driver import PipelineDriver, make_function_callable
-from lighthouse.schedule import convert_function_results
-from lighthouse import dialects as lh_dialects
+from lighthouse.pipeline.driver import BenchmarkDriver
 from lighthouse import ingress as lh_ingress
 from lighthouse.ingress.torch import cpu_backend, gpu_backend
 from lighthouse.utils.mlir import get_mlir_library_path
@@ -125,45 +122,23 @@ def import_mlir(
 def define_compiler_pipeline(
     args: argparse.Namespace,
     module: ir.Module,
-    pipeline_yaml: str | None,
-    benchmark: bool = False,
     convert_results: bool = False,
 ) -> None:
     """
     Defines the compiler pipeline by adding stages to the driver.
     The stages can be defined in a YAML file, or added manually in this function.
     """
-    driver = PipelineDriver(module.context)
+    if not args.pipeline:
+        # Search for the yaml file in the script directory.
+        args.pipeline = Path(__file__).parent / "kernel-bench.yaml"
 
-    with module.context:
-        lh_dialects.register_and_load()
-        if convert_results:
-            driver.add_transform(convert_function_results(args.entry_point))
-
-        # The entry point must always be callable: the torch.compile backend's
-        # JITFunction calls it directly on every `model(...)` invocation, even in
-        # benchmark mode (where benchmarking goes through a separate wrapper).
-        make_function_callable(module, args.entry_point)
-
-        if benchmark:
-            # Additionally emit the benchmark wrapper, called by the runner's
-            # benchmark method. This wraps, but does not replace, the entry point.
-            # FIXME: Eliminate this cross-dependency between the Runner and the Driver.
-            bench_wrapper = Runner.get_bench_wrapper_schedule(args.entry_point)
-            driver.add_transform(bench_wrapper)
-
-        if not pipeline_yaml:
-            # Search for the yaml file in the script directory.
-            pipeline_yaml = Path(__file__).parent / "kernel-bench.yaml"
-        if isinstance(pipeline_yaml, list):
-            for yaml in pipeline_yaml:
-                desc = Descriptor(yaml)
-                driver.add_stage(desc)
-        else:
-            desc = Descriptor(str(pipeline_yaml))
-            driver.add_stage(desc)
-
-    return driver
+    return BenchmarkDriver(
+        module,
+        args.entry_point,
+        args.pipeline,
+        result_to_args=convert_results,
+        single_run=not args.benchmark,
+    )
 
 
 def parse_module_arguments(
@@ -205,7 +180,7 @@ def torch_compile(args, model: torch.nn.Module, sample_tensors: list):
         # The pipeline is fixed and cannot be modified after the first run, to avoid accidentally modifying the pipeline after it has been run.
         if args.print_original_module:
             print(module)
-        driver = define_compiler_pipeline(args, module, args.pipeline, args.benchmark)
+        driver = define_compiler_pipeline(args, module, convert_results=False)
         driver.apply(module, print_after_all=args.print_mlir_after_all)
         if args.print_optimized_module:
             print(module)
@@ -253,9 +228,7 @@ def torch_import(args, model: torch.nn.Module, buffers: list, sample_tensors: li
         print(mlir_module)
 
     # Create the driver and run the pipeline.
-    driver = define_compiler_pipeline(
-        args, mlir_module, args.pipeline, args.benchmark, convert_results=True
-    )
+    driver = define_compiler_pipeline(args, mlir_module, convert_results=True)
 
     # Run the pipeline to get the optimized module.
     optimized_module = driver.apply(

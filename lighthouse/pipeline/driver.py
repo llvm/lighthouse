@@ -1,8 +1,10 @@
 import os
 
 from mlir import ir
+from lighthouse.execution.runner import Runner
 import lighthouse.pipeline.stage as lhs
 from lighthouse.pipeline.descriptor import PipelineDescriptor, Descriptor
+from lighthouse.schedule.func import convert_function_results
 from lighthouse.utils.importer import import_mlir_module
 import lighthouse.dialects as lh_dialects
 
@@ -118,6 +120,60 @@ class TransformDriver(PipelineDriver):
 
         for s in schedules:
             self.add_transform(s)
+
+
+class BenchmarkDriver(PipelineDriver):
+    """
+    A pipeline driver for benchmarking kernels.
+    This is a thin wrapper around PipelineDriver that adds benchmarking stages to the pipeline.
+    """
+
+    def __init__(
+        self,
+        module: ir.Module,
+        entry_point: str,
+        schedule: str | list[str] | ir.Module,
+        result_to_args: bool = False,
+        single_run: bool = False,
+    ):
+        if not isinstance(module, ir.Module):
+            raise ValueError("Module must be an ir.Module")
+        if not isinstance(schedule, (str, ir.Module, list)):
+            raise ValueError(
+                "Schedule must be a string, a list of strings, or an ir.Module"
+            )
+        if not entry_point:
+            raise ValueError("Entry point must be a valid function name")
+        super().__init__(module.context)
+
+        with module.context:
+            lh_dialects.register_and_load()
+            if result_to_args:
+                self.add_transform(convert_function_results(entry_point))
+
+            # The entry point must always be callable: the torch.compile backend's
+            # JITFunction calls it directly on every `model(...)` invocation, even in
+            # benchmark mode (where benchmarking goes through a separate wrapper).
+            make_function_callable(module, entry_point)
+
+            if not single_run:
+                # Additionally emit the benchmark wrapper, called by the runner's
+                # benchmark method. This wraps, but does not replace, the entry point.
+                # FIXME: Eliminate this cross-dependency between the Runner and the Driver.
+                self.add_transform(Runner.get_bench_wrapper_schedule(entry_point))
+
+            # Add the schedule(s) to the pipeline.
+            if isinstance(schedule, ir.Module):
+                self.add_transform(schedule)
+            elif isinstance(schedule, list):
+                for yaml in schedule:
+                    if not os.path.exists(yaml):
+                        raise ValueError(f"Schedule file '{yaml}' does not exist.")
+                    self.add_stage(Descriptor(yaml))
+            else:
+                if not os.path.exists(schedule):
+                    raise ValueError(f"Schedule file '{schedule}' does not exist.")
+                self.add_stage(Descriptor(str(schedule)))
 
 
 class CompilerDriver:
