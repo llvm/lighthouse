@@ -419,8 +419,15 @@ def xegpu_wg_annotation_for_mlp_layer(
     sg_tile_b = [k_tile, sg_n]
 
     # add layouts to DPAS op operands
-    k_loop = match(gpu_func, ops={"scf.for"})
-    dpas_op = match(k_loop, ops={"xegpu.dpas"})
+    # Anchor on the dpas and derive the reduction loop as its nearest scf.for
+    # parent. Matching scf.for directly would over-match when an outer loop
+    # wraps the reduction loop (e.g. the grid-stride loop of a persistent
+    # kernel), yielding a multi-op handle that the single-target ops below
+    # (get_operand/get_load_op) reject.
+    dpas_op = match(gpu_func, ops={"xegpu.dpas"})
+    k_loop = transform.get_parent_op(
+        anytype, dpas_op, op_name="scf.for", deduplicate=True
+    )
     load_op_a = xegpu.get_load_op(transform.get_operand(anyvalue, dpas_op, [0]))
     load_op_b = xegpu.get_load_op(transform.get_operand(anyvalue, dpas_op, [1]))
 
