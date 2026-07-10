@@ -137,7 +137,6 @@ class BackendDriver(PipelineDriver):
             # The entry point must always be callable: the torch.compile backend's
             # JITFunction calls it directly on every `model(...)` invocation, even in
             # benchmark mode (where benchmarking goes through a separate wrapper).
-            # FIXME: Can we move this to the Runner?
             Runner.make_function_callable(module, entry_point)
 
             # Convert results to arguments to allow Python buffers to be passed in
