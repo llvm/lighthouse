@@ -3,8 +3,9 @@
 from mlir import ir
 from mlir.dialects import transform
 from mlir.dialects.transform import structured, loop, xegpu
-from mlir.dialects.transform import bufferization as transform_bufferization
+from mlir.dialects.transform import bufferization
 from mlir.dialects.bufferization import LayoutMapOption
+import lighthouse.transform as lh_transform
 
 from lighthouse.pipeline.helper import (
     apply_registered_pass,
@@ -80,100 +81,114 @@ def bundle_xegpu_softmax_schedule(
     if stop_at_stage == "initial":
         raise PipelineInterrupt()
 
-    anytype = transform.AnyOpType.get()
-
-    # Match linalg.softmax operation
-    # We have only 1 operation: linalg.softmax
-    softmax_op = structured.structured_match(
-        transform.AnyOpType.get(), mod, ops=["linalg.softmax"]
-    )
-
-    # Tile the softmax operation using tile_using_forall
-    tiled_op, for_op = structured.structured_tile_using_forall(
-        anytype,
-        anytype,
-        softmax_op,
-        num_threads=[],
-        tile_sizes=[],
-        static_tile_sizes=(parameters["wg_rows"],),
-    )
-
-    func = transform.get_parent_op(
-        anytype,
-        for_op,
-        op_name="func.func",
-        deduplicate=True,
-    )
-    # Decompose softmax into linalg.generic operations
-    softmax_ops = structured.structured_match(
-        transform.AnyOpType.get(), func, ops=["linalg.softmax"]
-    )
-    structured.structured_decompose_interface(anytype, softmax_ops)
-
-    linalg_ops = match_and_split(
-        func, ops={"linalg.generic", "linalg.fill"}, nhandles=6
-    )
-    max_reduction = linalg_ops[1]
-    max_center_and_exp_op = linalg_ops[2]
-    sum_reduction = linalg_ops[4]
-    div_op = linalg_ops[5]
-
     reduction_step_size = parameters["reduction_step_size"]
 
-    # Tile the division op first.
-    _, div_loop = structured.TileUsingForOp(
-        div_op, sizes=[0, reduction_step_size]
-    ).results
+    anytype = transform.AnyOpType.get()
 
-    # Fuse max_center_and_exp_op into the div loop
-    _, fused_loop = structured.structured_fuse_into_containing_op(
-        anytype,
-        anytype,
-        producer_op=max_center_and_exp_op,
-        containing_op=div_loop,
-    )
+    # Match linalg.softmax operation if any and decompose it into generic ops
+    softmax_ops = structured.structured_match(anytype, mod, ops=["linalg.softmax"])
+    structured.structured_decompose_interface(anytype, softmax_ops)
 
-    # Tile the sum reduction.
-    _, _, _, sum_loop = structured.structured_tile_reduction_using_for(
-        [anytype],
-        anytype,
-        anytype,
-        anytype,
-        target=sum_reduction,
-        tile_sizes=[0, reduction_step_size],
-    )
-
+    # Match payload function
+    # TODO match with given function name instead?
+    generic_ops = structured.structured_match(anytype, mod, ops=["linalg.generic"])
     func = transform.get_parent_op(
         anytype,
-        fused_loop,
+        generic_ops,
         op_name="func.func",
         deduplicate=True,
     )
 
-    # Re-match and split linalg generic ops, there are 5 at this point
-    linalg_ops = match_and_split(func, ops={"linalg.generic"}, nhandles=5)
-    max_center_and_exp_op = linalg_ops[1]
+    # Normalize possible singleton dimensions so tile+fuse logic works.
+    with ir.InsertionPoint(transform.apply_patterns(func).patterns):
+        structured.apply_patterns_linalg_fold_unit_extent_dims_via_slices()
+    transform_ext.fold_singleton_extract_slice(func)
+    lh_transform.cleanup(func)
 
-    # Fuse max_center_and_exp_op into the sum reduction loop
-    _, fused_sum_loop = structured.structured_fuse_into_containing_op(
-        anytype,
-        anytype,
-        producer_op=max_center_and_exp_op,
-        containing_op=sum_loop,
+    # Fuse elementwise ops, also removes unused linalg op results (if any).
+    func = apply_registered_pass(func, "linalg-fuse-elementwise-ops")
+    lh_transform.cleanup(func)
+
+    # WG row tiling
+    generic_ops = structured.structured_match(anytype, mod, ops=["linalg.generic"])
+    leaf_generic = transform_ext.extract_handle(generic_ops, -1)
+    _, [wg_loop], _ = lh_transform.tile(
+        leaf_generic,
+        tile_sizes=(parameters["wg_rows"],),
+        fuse_producers=True,
+        use_forall=True,
+        apply_cleanup=False,
     )
+    lh_transform.cleanup(func)
+    wg_loop = match_and_split(func, ops={"scf.forall"}, nhandles=1)[0]
 
-    # Tile the max reduction.
-    max_reduction = linalg_ops[0]
-    structured.structured_tile_reduction_using_for(
-        [anytype],
-        anytype,
-        anytype,
-        anytype,
-        target=max_reduction,
-        tile_sizes=[0, reduction_step_size],
-    )
+    # Reduction dimension tiling.
+    # 1a. Find the leaf elemwise linalg.generic op and tile it
+    # 1b. Find its elemwise linalg.generic producers and fuse them into the leaf loop
+    # 2. Find the last sum reduction linalg.generic op and tile it, fuse all elemwise producers into the parallel loop.
+    # 3. Find the first max reduction linalg.generic op and tile it, fuse all elemwise producers into the parallel loop.
 
-    # Cleanup after tiling and fusion
+    def fuse_elemwise_producers_to_loop(target, parent_loop):
+        """Fuses all elementwise producer ops of `target` into `parent_loop`."""
+        producers = transform_ext.trace_producers(target)
+        elemwise_producers = transform_ext.filter_elementwise(producers)
+        elemwise_producers = transform_ext.filter_by_name(
+            elemwise_producers,
+            "linalg.generic",
+        )
+        _, fused_loop = structured.structured_fuse_into_containing_op(
+            anytype,
+            anytype,
+            producer_op=elemwise_producers,
+            containing_op=parent_loop,
+        )
+        return fused_loop
+
+    generic_ops = match(wg_loop, ops={"linalg.generic"})
+    elemwise_ops = transform_ext.filter_elementwise(generic_ops)
+    leaf_elemwise = transform_ext.extract_handle(elemwise_ops, -1)
+    reduction_ops = transform_ext.filter_reduction_ops(generic_ops)
+
+    reduction_tile_size = [0, reduction_step_size]
+
+    # Tile trailing elemwise op first.
+    tiled_elemwise, tile_loop = structured.TileUsingForOp(
+        leaf_elemwise, sizes=reduction_tile_size
+    ).results
+    # Fuse all elemwise producers into the tiled leaf loop.
+    fuse_elemwise_producers_to_loop(tiled_elemwise, tile_loop)
+
+    def tile_and_fuse_reduction(reduction_op, tile_sizes):
+        # Tile the reduction op.
+        _, tiled_op, _, tile_loop = structured.structured_tile_reduction_using_for(
+            [anytype],
+            anytype,
+            anytype,
+            anytype,
+            target=reduction_op,
+            tile_sizes=tile_sizes,
+        )
+        # Fuse all elemwise producers into the tiled leaf loop.
+        fuse_elemwise_producers_to_loop(tiled_op, tile_loop)
+
+    # Tile and fuse reduction ops in reverse order.
+    # Start with the last reduction op, sum reduction.
+    last_reduction_op = transform_ext.extract_handle(reduction_ops, 1)
+    tile_and_fuse_reduction(last_reduction_op, reduction_tile_size)
+
+    # Cleanup redundant ops. Required before the next tile-and-fuse transform.
+    lh_transform.cleanup(wg_loop)
+    generic_ops = match(wg_loop, ops={"linalg.generic"})
+    reduction_ops = transform_ext.filter_reduction_ops(generic_ops)
+
+    # Tile and fuse the first reduction op, max reduction.
+    first_reduction_op = transform_ext.extract_handle(reduction_ops, 0)
+    tile_and_fuse_reduction(first_reduction_op, reduction_tile_size)
+
+    # Fuse all sibling elementwise ops in scf.for loops.
+    func = apply_registered_pass(func, "linalg-fuse-elementwise-ops")
+
+    # Cleanup after tiling and fusion.
     transform.apply_cse(func)
     canonicalize(func)
 
@@ -194,7 +209,7 @@ def bundle_xegpu_softmax_schedule(
     # bufferize
     mod = apply_registered_pass(mod, "eliminate-empty-tensors")
     identity_layout = LayoutMapOption.IdentityLayoutMap
-    mod = transform_bufferization.OneShotBufferizeOp(
+    mod = bufferization.OneShotBufferizeOp(
         mod,
         allow_return_allocs_from_loops=True,
         bufferize_function_boundaries=True,
