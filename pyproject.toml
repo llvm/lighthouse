@@ -90,7 +90,7 @@ build-backend = "setuptools.build_meta"
 include = ["lighthouse*"]
 
 [tool.setuptools.package-data]
-"lighthouse" = ["*.yaml"]
+"lighthouse" = ["**/*.yaml"]
 
 [tool.setuptools.dynamic]
 version = {attr = "lighthouse.__version__"}
