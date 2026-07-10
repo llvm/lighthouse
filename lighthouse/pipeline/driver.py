@@ -9,20 +9,6 @@ from lighthouse.utils.importer import import_mlir_module
 import lighthouse.dialects as lh_dialects
 
 
-def make_function_callable(module: ir.Module, func_name: str) -> None:
-    """
-    Set the 'llvm.emit_c_interface' attribute of the given function in the module.
-    This is required to make the function callable from the execution engine.
-    It has to be called on a @func.func (not an @llvm.func), so should be called
-    before the LLVM lowering stages are added to the pipeline.
-    """
-    with module.context:
-        for func in module.body.operations:
-            if func.sym_name.value == func_name:
-                func.attributes["llvm.emit_c_interface"] = ir.UnitAttr.get()
-                break
-
-
 class PipelineDriver:
     """
     A simple driver that runs the optimization pipeline on a given workload.
@@ -122,58 +108,49 @@ class TransformDriver(PipelineDriver):
             self.add_transform(s)
 
 
-class BenchmarkDriver(PipelineDriver):
+class BackendDriver(PipelineDriver):
     """
-    A pipeline driver for benchmarking kernels.
-    This is a thin wrapper around PipelineDriver that adds benchmarking stages to the pipeline.
+    A pipeline driver for running kernels through a back-end (of various compilers).
+    This is a thin wrapper around PipelineDriver that prepares the kernel for execution.
+
+    Needs module to be able to in-place transform the entry point function to make it
+    callable from the execution engine. By the point the module gets to the runner,
+    it may already be too late.
     """
 
     def __init__(
         self,
         module: ir.Module,
         entry_point: str,
-        schedule: str | list[str] | ir.Module,
         result_to_args: bool = False,
-        single_run: bool = False,
+        benchmark: bool = False,
     ):
         if not isinstance(module, ir.Module):
             raise ValueError("Module must be an ir.Module")
-        if not isinstance(schedule, (str, ir.Module, list)):
-            raise ValueError(
-                "Schedule must be a string, a list of strings, or an ir.Module"
-            )
         if not entry_point:
             raise ValueError("Entry point must be a valid function name")
         super().__init__(module.context)
 
         with module.context:
             lh_dialects.register_and_load()
-            if result_to_args:
-                self.add_transform(convert_function_results(entry_point))
 
             # The entry point must always be callable: the torch.compile backend's
             # JITFunction calls it directly on every `model(...)` invocation, even in
             # benchmark mode (where benchmarking goes through a separate wrapper).
-            make_function_callable(module, entry_point)
+            # FIXME: Can we move this to the Runner?
+            Runner.make_function_callable(module, entry_point)
 
-            if not single_run:
-                # Additionally emit the benchmark wrapper, called by the runner's
-                # benchmark method. This wraps, but does not replace, the entry point.
-                # FIXME: Eliminate this cross-dependency between the Runner and the Driver.
+            # Convert results to arguments to allow Python buffers to be passed in
+            # for output, allowing the memmory manager to "read the output" directly.
+            # Torch.compile already does that, but not all back-ends do that.
+            if result_to_args:
+                self.add_transform(convert_function_results(entry_point))
+
+            # Additionally emit the benchmark wrapper, called by the runner's
+            # benchmark method. This wraps, but does not replace, the entry point.
+            # FIXME: Eliminate this cross-dependency between the Runner and the Driver.
+            if benchmark:
                 self.add_transform(Runner.get_bench_wrapper_schedule(entry_point))
-
-            # Add the schedule(s) to the pipeline.
-            if isinstance(schedule, ir.Module):
-                self.add_transform(schedule)
-            elif isinstance(schedule, list):
-                for yaml in schedule:
-                    if not os.path.exists(yaml):
-                        raise ValueError(f"Schedule file '{yaml}' does not exist.")
-                    self.add_stage(Descriptor(yaml))
-            else:
-                if not os.path.exists(schedule):
-                    raise ValueError(f"Schedule file '{schedule}' does not exist.")
-                self.add_stage(Descriptor(str(schedule)))
 
 
 class CompilerDriver:

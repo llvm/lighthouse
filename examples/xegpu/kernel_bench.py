@@ -67,7 +67,6 @@ from lighthouse.schedule.xegpu import mlp_schedule, elemwise_schedule, xegpu_to_
 from lighthouse.pipeline.helper import PipelineInterrupt
 from lighthouse.ingress.torch import gpu_backend, TargetDialect
 from lighthouse.ingress.torch.compile import TorchMemoryManager
-from lighthouse.pipeline.driver import make_function_callable
 from tune_matmul_costmodel import optimize_payload, dump_configs_json
 from tune_utils import run_with_timeout
 from csv_logger import CSVLogger
@@ -367,7 +366,7 @@ def lower_to_llvm(
     payload_func_name: str,
 ) -> ir.Module:
     """Lower payload module to LLVM using the specified schedule and parameters."""
-    make_function_callable(mod, payload_func_name)
+    Runner.make_function_callable(mod, payload_func_name)
     if schedule_kind == "mlp":
         schedule = mlp_schedule(
             params=schedule_params,

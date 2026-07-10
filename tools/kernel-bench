@@ -12,7 +12,8 @@ import torch
 from mlir import ir
 from lighthouse.execution.runner import Runner
 from lighthouse.execution.init import KernelArgumentParser
-from lighthouse.pipeline.driver import BenchmarkDriver
+from lighthouse.pipeline.descriptor import Descriptor
+from lighthouse.pipeline.driver import BackendDriver
 from lighthouse import ingress as lh_ingress
 from lighthouse.ingress.torch import cpu_backend, gpu_backend
 from lighthouse.utils.mlir import get_mlir_library_path
@@ -128,17 +129,24 @@ def define_compiler_pipeline(
     Defines the compiler pipeline by adding stages to the driver.
     The stages can be defined in a YAML file, or added manually in this function.
     """
-    if not args.pipeline:
-        # Search for the yaml file in the script directory.
-        args.pipeline = Path(__file__).parent / "kernel-bench.yaml"
-
-    return BenchmarkDriver(
+    driver = BackendDriver(
         module,
         args.entry_point,
-        args.pipeline,
         result_to_args=convert_results,
-        single_run=not args.benchmark,
+        benchmark=args.benchmark,
     )
+
+    stages = (
+        args.pipeline
+        if args.pipeline
+        else [Path(__file__).parent / "kernel-bench.yaml"]
+    )
+
+    # Add the schedule(s) to the pipeline.
+    for stage in stages:
+        driver.add_stage(Descriptor(stage))
+
+    return driver
 
 
 def parse_module_arguments(
