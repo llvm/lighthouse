@@ -136,14 +136,10 @@ def define_compiler_pipeline(
         benchmark=args.benchmark,
     )
 
-    stages = (
-        args.pipeline
-        if args.pipeline
-        else [Path(__file__).parent / "kernel-bench.yaml"]
-    )
+    args.pipeline = args.pipeline if args.pipeline else ["linalg-to-loops.yaml"]
 
     # Add the schedule(s) to the pipeline.
-    for stage in stages:
+    for stage in args.pipeline:
         driver.add_stage(Descriptor(stage))
 
     return driver
@@ -189,6 +185,8 @@ def torch_compile(args, model: torch.nn.Module, sample_tensors: list):
         if args.print_original_module:
             print(module)
         driver = define_compiler_pipeline(args, module, convert_results=False)
+        if args.print_mlir_after_all:
+            print(f"Pipeline file: {args.pipeline}")
         driver.apply(module, print_after_all=args.print_mlir_after_all)
         if args.print_optimized_module:
             print(module)
@@ -239,6 +237,8 @@ def torch_import(args, model: torch.nn.Module, buffers: list, sample_tensors: li
     driver = define_compiler_pipeline(args, mlir_module, convert_results=True)
 
     # Run the pipeline to get the optimized module.
+    if args.print_mlir_after_all:
+        print(f"Pipeline file: {args.pipeline}")
     optimized_module = driver.apply(
         mlir_module, print_after_all=args.print_mlir_after_all
     )
