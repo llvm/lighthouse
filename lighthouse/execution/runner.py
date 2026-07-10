@@ -300,3 +300,17 @@ class Runner:
             memory_manager.copy(inputs[arg_index], host_buffer)
 
         return argument_access_callback
+
+    @staticmethod
+    def make_function_callable(module: ir.Module, func_name: str) -> None:
+        """
+        Set the 'llvm.emit_c_interface' attribute of the given function in the module.
+        This is required to make the function callable from the execution engine.
+        It has to be called on a @func.func (not an @llvm.func), so should be called
+        before the LLVM lowering stages are added to the pipeline.
+        """
+        with module.context:
+            for func in module.body.operations:
+                if func.sym_name.value == func_name:
+                    func.attributes["llvm.emit_c_interface"] = ir.UnitAttr.get()
+                    break
