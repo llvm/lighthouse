@@ -17,6 +17,7 @@ from .ops.filter_num_loops import filter_num_loops
 from .ops.filter_elementwise import filter_elementwise
 from .ops.get_leading_unit_tile_sizes import get_leading_unit_tile_sizes
 from .ops.move_offsets_to_subview import move_offsets_to_subview
+from .ops.fold_singleton_extract_slice import fold_singleton_extract_slice
 
 __all__ = [
     "TransformExtensionDialect",
@@ -26,6 +27,7 @@ __all__ = [
     "filter_elementwise",
     "filter_num_loops",
     "get_leading_unit_tile_sizes",
+    "fold_singleton_extract_slice",
     "get_named_attribute",
     "get_named_attribute",
     "get_tile_sizes",
