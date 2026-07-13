@@ -55,4 +55,4 @@ class TargetInfo:
         e.g., AMX or AVX512.
         """
         hw_extension = hw_extension.lower()
-        return any(hw_extension in feature for feature in self.features)
+        return any(feature.startswith(hw_extension) for feature in self.features)
