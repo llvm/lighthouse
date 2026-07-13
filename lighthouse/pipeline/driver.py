@@ -124,6 +124,7 @@ class BackendDriver(PipelineDriver):
         entry_point: str,
         result_to_args: bool = False,
         benchmark: bool = False,
+        reload_dialects: bool = False,
     ):
         if not isinstance(module, ir.Module):
             raise ValueError("Module must be an ir.Module")
@@ -132,7 +133,7 @@ class BackendDriver(PipelineDriver):
         super().__init__(module.context)
 
         with module.context:
-            lh_dialects.register_and_load()
+            lh_dialects.register_and_load(reload=reload_dialects)
 
             # The entry point must always be callable: the torch.compile backend's
             # JITFunction calls it directly on every `model(...)` invocation, even in
