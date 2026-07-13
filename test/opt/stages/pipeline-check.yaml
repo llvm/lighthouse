@@ -6,5 +6,5 @@ Pipeline:
   - pass: convert-linalg-to-loops
   - include: cleanup.yaml
   - transform: x86/tile_and_vector_matmul.py
-  - include: llvm_lowering.yaml
+  - include: llvm-lowering.yaml
   - pass: canonicalize

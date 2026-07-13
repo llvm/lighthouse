@@ -136,7 +136,7 @@ def define_compiler_pipeline(
         benchmark=args.benchmark,
     )
 
-    args.pipeline = args.pipeline if args.pipeline else ["linalg-to-loops.yaml"]
+    args.pipeline = args.pipeline if args.pipeline else ["scalar-lowering.yaml"]
 
     # Add the schedule(s) to the pipeline.
     for stage in args.pipeline:
