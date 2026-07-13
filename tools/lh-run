@@ -101,7 +101,7 @@ if __name__ == "__main__":
 
     # Add the necessary LLVM lowering stages to ensure the module can be executed by the ExecutionEngine.
     driver.add_stage(Descriptor("convert-linalg-to-loops"))
-    driver.add_stage(Descriptor("llvm_lowering.yaml"))
+    driver.add_stage(Descriptor("llvm-lowering.yaml"))
 
     # Run the pipeline to get the optimized module.
     optimized_module = driver.run(print_after_all=args.print_mlir_after_all)

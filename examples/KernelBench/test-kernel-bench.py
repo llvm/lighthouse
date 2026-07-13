@@ -17,7 +17,6 @@ from lighthouse.pipeline.descriptor import PipelineDescriptor
 script_path = Path(__file__).parent
 project_root = script_path.parent.parent
 kb_program = project_root / "tools" / "kernel-bench"
-kb_default_pipeline = kb_program.parent / "kernel-bench.yaml"
 kb_path = project_root / "third_party" / "KernelBench" / "KernelBench"
 yaml_files = [
     script_path / "level1.yaml",
@@ -47,7 +46,7 @@ def get_tests(args: argparse.Namespace, target_info: TargetInfo) -> list[dict]:
         # Smoke tests run on the simplest lowering
         feature = ""
         if args.smoke_test:
-            pipeline = str(kb_default_pipeline)
+            pipeline = None
         elif args.pipeline:
             pipeline = args.pipeline
         else:
@@ -57,8 +56,6 @@ def get_tests(args: argparse.Namespace, target_info: TargetInfo) -> list[dict]:
                 test.get("pipeline", ""),
                 args.dtype,
             )
-            if not pipeline:
-                pipeline = str(kb_default_pipeline)
         test_list.append(
             {
                 "kernel": test["kernel"],
@@ -169,11 +166,13 @@ if __name__ == "__main__":
         command_line += [
             str(kb_program),
             str(kb_kernel),
-            "--pipeline",
-            test["pipeline"],
             "--dtype",
             args.dtype,
         ]
+
+        # kernel-bench picks its own default if not specified.
+        if test.get("pipeline", None):
+            command_line += ["--pipeline", test["pipeline"]]
 
         # Target should always exist.
         if target_info.arch:

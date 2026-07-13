@@ -12,4 +12,4 @@ Pipeline:
   - schedule: "vectorization.py[gen=flatten_vector_ops]"
 
   ## Lower to LLVM
-  - include: llvm_lowering.yaml
+  - include: llvm-lowering.yaml

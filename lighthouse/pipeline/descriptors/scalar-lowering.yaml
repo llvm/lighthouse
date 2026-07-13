@@ -1,0 +1,7 @@
+# This is a basic Linalg pipeline, producing slow scalar code.
+# Good for verification, smoke tests and pipe-cleaning infrastructure.
+Pipeline:
+  - pass: tosa-to-linalg-pipeline
+  - include: bufferization.yaml
+  - pass: convert-linalg-to-loops
+  - include: llvm-lowering.yaml

@@ -39,7 +39,7 @@ def lower_to_llvm(module: ir.Module) -> ir.Module:
     pm.add("convert-linalg-to-loops")
 
     # Lower to LLVM.
-    add_bundle(pm, "llvm_lowering.yaml")
+    add_bundle(pm, "llvm-lowering.yaml")
     add_bundle(pm, "cleanup.yaml")
 
     # IR is transformed in-place.

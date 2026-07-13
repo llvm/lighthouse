@@ -33,7 +33,7 @@ def create_schedule(skip_llvm=False) -> ir.Module:
             mod = apply_bundle(mod, "cleanup.yaml")
 
             if not skip_llvm:
-                mod = apply_bundle(mod, "llvm_lowering.yaml")
+                mod = apply_bundle(mod, "llvm-lowering.yaml")
             transform.YieldOp()
 
     return schedule_module

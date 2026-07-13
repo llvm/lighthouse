@@ -20,7 +20,7 @@ lh-opt --stage=bufferization.yaml file.mlir
 lh-opt --stage=my-transform.mlir file.mlir
 
 // Runs a whole pipeline on the file
-lh-opt --stage=bufferization.yaml --stage=canonicalize --stage=my-transform.mlir --stage=canonicalize --stage=llvm_lowering.yaml file.mlir
+lh-opt --stage=bufferization.yaml --stage=canonicalize --stage=my-transform.mlir --stage=canonicalize --stage=llvm-lowering.yaml file.mlir
 ```
 
 Note, this basic functionality is for testing purposes.
