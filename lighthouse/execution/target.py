@@ -48,3 +48,11 @@ class TargetInfo:
             if ext in filter:
                 compatible.append(ext)
         return compatible
+
+    def is_supported(self, hw_extension: str) -> bool:
+        """
+        Return True if the target supports the given hardware extension
+        e.g., AMX or AVX512.
+        """
+        hw_extension = hw_extension.lower()
+        return any(hw_extension in feature for feature in self.features)
