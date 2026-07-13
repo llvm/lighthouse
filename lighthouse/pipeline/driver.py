@@ -133,12 +133,7 @@ class BackendDriver(PipelineDriver):
         super().__init__(module.context)
 
         with module.context:
-            try:
-                lh_dialects.register_and_load(reload=reload_dialects)
-            except RuntimeError as e:
-                raise RuntimeError(
-                    "Lighthouse dialects must be loaded in the same context as the module."
-                ) from e
+            lh_dialects.register_and_load(reload=reload_dialects)
 
             # The entry point must always be callable: the torch.compile backend's
             # JITFunction calls it directly on every `model(...)` invocation, even in
