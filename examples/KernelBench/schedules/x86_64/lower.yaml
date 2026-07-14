@@ -2,7 +2,7 @@
 Pipeline:
   ## Bufferization
   - include: bufferization.yaml
-  - include: bufferization_cleanup.yaml
+  - include: bufferization-cleanup.yaml
   - schedule: "omp.py[gen=parallelize]"
 
   ## Buffer vectorization (gets rid of all the rest)

@@ -28,7 +28,7 @@ def create_schedule(skip_llvm=False) -> ir.Module:
                 deduplicate=True,
             )
             mod = apply_bundle(mod, "bufferization.yaml")
-            mod = apply_bundle(mod, "bufferization_cleanup.yaml")
+            mod = apply_bundle(mod, "bufferization-cleanup.yaml")
             mod = apply_registered_pass(mod, "convert-linalg-to-loops")
             mod = apply_bundle(mod, "cleanup.yaml")
 
