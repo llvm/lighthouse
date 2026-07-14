@@ -13,3 +13,13 @@ repos:
       args: [ --fix ]
     # Run the formatter.
     - id: ruff-format
+
+# YAML filename convention check.
+# Enforces hyphenated filenames (kebab-case).
+- repo: local
+  hooks:
+    - id: yaml-filename-convention
+      name: YAML file naming
+      entry: scripts/check_yaml_filenames.py
+      language: script
+      files: \.ya?ml$

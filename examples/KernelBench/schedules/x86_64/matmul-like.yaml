@@ -1,6 +1,6 @@
 # This is an optimizing pipeline for kernel_bench matmul-like kernels.
 Pipeline:
-  - include: pack_and_tile.yaml {
+  - include: pack-and-tile.yaml {
                                   block_factors=$block_factors
                                   tile_size=$tile_size
                                   leading_batch_dims=$leading_batch_dims

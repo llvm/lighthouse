@@ -33,7 +33,7 @@ def lower_to_llvm(module: ir.Module) -> ir.Module:
 
     # Bufferize.
     add_bundle(pm, "bufferization.yaml")
-    add_bundle(pm, "bufferization_cleanup.yaml")
+    add_bundle(pm, "bufferization-cleanup.yaml")
 
     # Middle-end lowering.
     pm.add("convert-linalg-to-loops")
