@@ -10,6 +10,7 @@ up registered in every context it was requested for.
 """
 
 import gc
+import weakref
 
 from mlir import ir
 import lighthouse.dialects as lh_dialects
@@ -101,27 +102,41 @@ def test_return_to_previous_context_is_noop():
     )
 
 
-# CHECK-LABEL: Test: test_context_gc_then_reload
+# CHECK-LABEL: Test: test_registry_holds_contexts_weakly
 @run
-def test_context_gc_then_reload():
-    """A garbage-collected context must not block loading into a new one.
+def test_registry_holds_contexts_weakly():
+    """The loaded-context registry must hold contexts weakly (no leak).
 
-    Loaded contexts are tracked weakly, so once a context is collected it drops
-    out of the registry without leaking and without leaving stale state.
+    Without weak references the registry would pin every context ever loaded and
+    accumulate them across repeated compilations.
     """
 
-    def load_once():
-        c = ir.Context()
-        with c:
+    def load_fresh_context():
+        ctx = ir.Context()
+        with ctx:
             lh_dialects.register_and_load()
+        return ctx
 
-    load_once()
+    ctx_a = load_fresh_context()
+    ref_a = weakref.ref(ctx_a)
+
+    # A later load re-emits the extensions into ctx_b, releasing the loader's
+    # strong reference to ctx_a's module (its only non-weak referrer).
+    ctx_b = load_fresh_context()
+
+    # Drop the last strong reference to ctx_a; only the weak registry remains.
+    del ctx_a
     gc.collect()
-    ctx = ir.Context()
-    with ctx:
-        lh_dialects.register_and_load()
+    # CHECK: dead context collected: True
+    print("dead context collected:", ref_a() is None, flush=True)
+    # Keep ctx_b referenced past the collection check above.
+    # CHECK: alive context preserved: True
+    print("alive context preserved:", ctx_b is not None, flush=True)
+
+    # Loading into a new context still works after an earlier one was collected.
+    ctx_c = load_fresh_context()
     # CHECK: reload after gc ok: True
-    print("reload after gc ok:", ctx.is_registered_operation(PROBE_OP), flush=True)
+    print("reload after gc ok:", ctx_c.is_registered_operation(PROBE_OP), flush=True)
 
 
 # CHECK-LABEL: Test: test_explicit_reload_flag_is_safe
