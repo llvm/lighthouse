@@ -8,8 +8,8 @@ Please review the [kernel-bench](../../../tools/README.md#kernel-bench)'s own do
 
 There are three core components of this example:
 1. The lists of kernels, arguments, performance, etc (`level1.yaml`, `level2.yaml`).
-2. A `schedules` directory with descriptor files that are used with the kernels above.
-3. The `test-kernel-bench` tool that uses the kernel arguments and the schedules to run kernels.
+2. A set of descriptor files that are used with the kernels above, packaged inside Lighthouse's `lighthouse/pipeline/descriptors` directory.
+3. The `test-kernel-bench` tool that uses the kernel arguments and the descriptors to run kernels.
 
 Example:
 ```bash
@@ -97,15 +97,16 @@ The key arguments in `test-kernel-bench` are:
 * `init_args`: Arguments to initialize the module with (before compilation).
 * `initializations`: What type to initialize the inputs (`rnd`, `id`, `0`)
 * `gflops`: Calculation on how to get the number of floating point operations in this kernel (for performance measurement).
-* `pipeline`: Name of the sub-dir, replaces: `schedules/$target/$pipeline/$dtype.yaml`.
+* `pipeline`: Name of the sub-dir, replaces: `descriptors/$target/$pipeline/$dtype.yaml`.
 
 ### Schedules
 
-The descriptor schedules (YAML format) are stored in the root `schedules` directory.
+The descriptor schedules (YAML format) are stored in Lighthouse's `lighthouse/pipeline/descriptors` directory, so they ship with the package whether Lighthouse is used locally as a repository or installed as a package.
+The pipeline finder searches this directory by default, but external base paths can still be provided to look up descriptors elsewhere; those are searched first, falling back to the packaged descriptors when no match is found.
 
 They are organized in the following way:
 * Target agnostic schedules live in the root directory.
-* Target specific schedules, but not kernel specific, live in the target directory (`schedules/$target`).
+* Target specific schedules, but not kernel specific, live in the target directory (`descriptors/$target`).
 * Kernel specific schedules live inside a kernel type name (ex. `matmul`) inside a particular target.
   Different targets would have different schedules (parameters) for the same logic anyway.
 * Inside the target directory, there are multiple YAML files, one per datatype (ex. `f32.yaml`, `bf16.yaml`, etc).
@@ -155,7 +156,7 @@ Benchmarks a kernel with its default options
 ```bash
 $ uv run examples/KernelBench/test-kernel-bench.py --kernel level1/1_ --benchmark
 
-Running command: /home/rengolin/devel/llvm/lighthouse/tools/kernel-bench /home/rengolin/devel/llvm/lighthouse/third_party/KernelBench/KernelBench/level1/1_Square_matrix_multiplication_.py --pipeline /home/rengolin/devel/llvm/lighthouse/examples/KernelBench/schedules/x86_64/matmul/f32.yaml --benchmark --input-shapes 1024x1024xf32xrnd,1024x1024xf32xid --output-shape 1024x1024xf32x0 --init-args None
+Running command: /home/rengolin/devel/llvm/lighthouse/tools/kernel-bench /home/rengolin/devel/llvm/lighthouse/third_party/KernelBench/KernelBench/level1/1_Square_matrix_multiplication_.py --pipeline /home/rengolin/devel/llvm/lighthouse/lighthouse/pipeline/descriptors/x86_64/matmul/f32.yaml --benchmark --input-shapes 1024x1024xf32xrnd,1024x1024xf32xid --output-shape 1024x1024xf32x0 --init-args None
 
 STDOUT:
 Running the benchmark...
