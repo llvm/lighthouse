@@ -3,7 +3,7 @@ from .dialect_base import DialectExtension
 __all__ = ["DialectExtension"]
 
 
-def register_and_load(reload: bool = False, **kwargs):
+def register_and_load(**kwargs):
     """Register and load custom extensions into the current MLIR context.
 
     Loading is idempotent per-context: extensions already loaded in the current
@@ -11,11 +11,6 @@ def register_and_load(reload: bool = False, **kwargs):
     are automatically re-emitted for the current one (see
     ``DialectExtension.load``). Callers therefore do not need to reason about
     whether a reload is required.
-
-    Args:
-        reload: Force a reload even if the extension was already loaded. Normally
-            unnecessary as reloading is detected automatically.
-        **kwargs: Additional keyword arguments to pass to the extensions' load methods.
     """
     from . import smt_ext
     from .transform import transform_ext
@@ -24,4 +19,4 @@ def register_and_load(reload: bool = False, **kwargs):
 
     dialects = [smt_ext, transform_ext, td_smt_ext, tune_ext]
     for dialect in dialects:
-        dialect.register_and_load(reload=reload, **kwargs)
+        dialect.register_and_load(**kwargs)
