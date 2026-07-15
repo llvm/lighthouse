@@ -11,6 +11,7 @@ import torch
 
 from mlir import ir
 from lighthouse.execution.runner import Runner
+from lighthouse.execution.target import TargetInfo
 from lighthouse.execution.init import KernelArgumentParser
 from lighthouse.pipeline.descriptor import Descriptor
 from lighthouse.pipeline.driver import BackendDriver
@@ -20,7 +21,6 @@ from lighthouse.utils.mlir import get_mlir_library_path
 import os
 
 from lighthouse.utils.types import string_to_type
-from lighthouse.utils.sys_config import enable_amx
 
 lib_dir = get_mlir_library_path()
 c_runner_lib = os.path.join(lib_dir, "libmlir_c_runner_utils.so")
@@ -246,7 +246,10 @@ def torch_import(args, model: torch.nn.Module, buffers: list, sample_tensors: li
         print(optimized_module)
 
     # Create the runner and execute/benchmark the module.
-    runner = Runner(optimized_module, opt_level=args.O)
+    target = TargetInfo(
+        arch=args.target, features=args.feature.split(",") if args.feature else None
+    )
+    runner = Runner(optimized_module, opt_level=args.O, target=target)
 
     if args.benchmark:
         print("Running the benchmark...")
@@ -463,11 +466,6 @@ if __name__ == "__main__":
         raise ValueError(
             "--input-shapes and --output-shape must be provided together for non-torch-compile mode."
         )
-
-    # Enable AMX support if requested
-    # TODO: This should be handled by the runner.
-    if args.feature and "amx" in args.feature:
-        enable_amx()
 
     # Validate data type argument
     model_datatype = get_torch_data_type(args.dtype)
