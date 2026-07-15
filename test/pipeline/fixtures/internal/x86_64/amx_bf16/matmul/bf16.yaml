@@ -1,0 +1,5 @@
+# Fixture for the mocked "internal" (packaged) descriptor repository.
+# Feature-specific entry: x86_64/amx_bf16/matmul/bf16.yaml.
+# Only its existence matters for the discovery test.
+Pipeline:
+  - pass: canonicalize

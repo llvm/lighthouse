@@ -12,7 +12,7 @@ from pathlib import Path
 import yaml
 
 from lighthouse.execution.target import TargetInfo
-from lighthouse.pipeline.descriptor import PipelineDescriptor
+from lighthouse.pipeline import find_pipeline_file
 
 script_path = Path(__file__).parent
 project_root = script_path.parent.parent
@@ -50,9 +50,8 @@ def get_tests(args: argparse.Namespace, target_info: TargetInfo) -> list[dict]:
         elif args.pipeline:
             pipeline = args.pipeline
         else:
-            pipeline, feature = PipelineDescriptor.find_pipeline_file(
+            pipeline, feature = find_pipeline_file(
                 target_info,
-                script_path / "schedules",
                 test.get("pipeline", ""),
                 args.dtype,
             )
