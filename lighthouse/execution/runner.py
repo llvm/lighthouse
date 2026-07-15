@@ -16,6 +16,8 @@ from mlir.dialects.transform import structured
 from mlir.execution_engine import ExecutionEngine
 from mlir.runtime.np_to_memref import get_ranked_memref_descriptor
 
+from lighthouse.execution.target import TargetInfo
+from lighthouse.utils.sys_config import enable_amx
 from lighthouse.dialects.transform import transform_ext
 from lighthouse.schedule import schedule_boilerplate
 from lighthouse.utils.memref import to_packed_args
@@ -50,8 +52,10 @@ class Runner:
         mem_manager_cls: type = None,
         shared_libs: list[str] = None,
         opt_level: int = 3,
+        target: TargetInfo = None,
     ):
         self.payload = module
+        self.target = target if target else TargetInfo()
         self.mem_manager_cls = mem_manager_cls
         if shared_libs is None:
             shared_libs = []
@@ -65,6 +69,15 @@ class Runner:
         self.shared_libs = list(dict.fromkeys(shared_libs))
         self.opt_level = opt_level
         self.engine = self._get_engine()
+        self._configure_system()
+
+    def _configure_system(self):
+        """
+        Apply target-specific configurations.
+        """
+        # Enable AMX register support.
+        if self.target.is_supported("amx"):
+            enable_amx()
 
     def _uses_openmp(self) -> bool:
         """

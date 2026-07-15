@@ -148,7 +148,9 @@ if __name__ == "__main__":
         Parser.print_help()
         exit(1)
 
-    target_info = TargetInfo(args.target, args.feature)
+    target_info = TargetInfo(
+        args.target, args.feature.split(",") if args.feature else None
+    )
     tests = get_tests(args, target_info)
     if len(tests) == 0:
         if args.kernel:
