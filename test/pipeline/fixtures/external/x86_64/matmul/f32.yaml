@@ -1,0 +1,5 @@
+# Fixture for the mocked "external" base_path descriptor repository.
+# Provides x86_64/matmul/f32.yaml to exercise external precedence over the
+# internal repository. Only its existence matters for the discovery test.
+Pipeline:
+  - pass: canonicalize

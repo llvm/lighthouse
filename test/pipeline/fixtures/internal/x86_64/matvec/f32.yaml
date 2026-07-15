@@ -1,0 +1,6 @@
+# Fixture for the mocked "internal" (packaged) descriptor repository.
+# Architecture-level entry used by the external-miss fallback case:
+# x86_64/matvec/f32.yaml exists internally but not in the external fixture.
+# Only its existence matters for the discovery test.
+Pipeline:
+  - pass: canonicalize
