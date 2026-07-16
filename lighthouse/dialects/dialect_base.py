@@ -31,6 +31,10 @@ class DialectExtension(ext.Dialect, name="base_extension"):
         # context it was loaded into, so interleaving contexts requires tracking
         # all of them. Contexts are held weakly so they remain garbage
         # collectable.
+        #
+        # FIXME: It is a workaround to simplify dialect loading.
+        #        Ideally, the `ext.Dialect` base class would handle this automatically.
+        #        See issue: #229
         loaded_contexts = cls.__dict__.get("_loaded_contexts")
         if loaded_contexts is None:
             loaded_contexts = weakref.WeakSet()
