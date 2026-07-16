@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from enum import Enum
 
 from lighthouse import utils as lh_utils
+import lighthouse.dialects as lh_dialects
 from lighthouse.ingress.torch import import_from_model
 from lighthouse.execution.runner import Runner
 from lighthouse.execution import ExternalMemoryManager
@@ -191,6 +192,8 @@ class MLIRBackend:
         self.fn_compile = fn_compile
         self.dialect = dialect
         self.ctx = ir_context if ir_context is not None else ir.Context()
+        with self.ctx:
+            lh_dialects.register_and_load()
         self.shared_libs = list(shared_libs)
         self.entry_func = entry_func
         self.dump_obj_file = dump_obj_file
