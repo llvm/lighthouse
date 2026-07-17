@@ -112,6 +112,7 @@ select = [
   "E", # Error
   "F", # Pyflakes
   "PERF", # Perflint
+  "RUF013", # ban implicit optional
   "RUF018", # assignment in assert
   "RUF022", # __all__ is not sorted
   "RUF030", # print() call in assert

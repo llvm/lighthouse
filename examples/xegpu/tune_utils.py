@@ -121,8 +121,8 @@ def execute_and_log(
 def execute_matmul(
     ab_type: str = "f16",
     c_type: str = "f32",
-    nruns: int = None,
-    nwarmup: int = None,
+    nruns: int | None = None,
+    nwarmup: int | None = None,
     check_result: bool = False,
     has_bias: bool = False,
     has_relu: bool = False,
