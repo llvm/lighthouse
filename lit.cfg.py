@@ -8,7 +8,8 @@ import lit.formats
 from lit.TestingConfig import TestingConfig
 
 # Imagine that, all your variables defined and with type information!
-assert isinstance(config := eval("config"), TestingConfig)
+config = eval("config")
+assert isinstance(config, TestingConfig)
 
 
 def find_filecheck() -> str:
