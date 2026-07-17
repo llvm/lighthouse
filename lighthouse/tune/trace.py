@@ -292,7 +292,8 @@ def trace_tune_and_smt_ops(op: ir.Operation, env: Optional[dict] = None) -> dict
 
             env[op] = Predicate(lambda *args: all(args), child_predicates)
 
-            assert isinstance(smt_yield := op.body.operations[-1], smt.YieldOp)
+            smt_yield = op.body.operations[-1]
+            assert isinstance(smt_yield, smt.YieldOp)
 
             # Map the op's results to the nodes already associated to the
             # corresponding values yielded by the region/block's terminator.
