@@ -5,7 +5,7 @@ from itertools import islice
 
 from operator import eq, ge, gt, le, lt, ne, mul, mod, floordiv, add
 
-from typing import Callable, Generator, Sequence, Optional
+from collections.abc import Callable, Generator, Sequence
 
 from mlir import ir
 from mlir.dialects import transform, smt
@@ -60,11 +60,11 @@ class Knob(Tuneable):
 
     Intended to represent the `Value` associated with a tuneable knob in IR."""
 
-    options: Optional[Sequence[int]] = None
-    lower_bound: Optional[int] = None
-    upper_bound: Optional[int] = None
-    divisible_by: Optional[int] = None
-    divides: Optional[int] = None
+    options: Sequence[int] | None = None
+    lower_bound: int | None = None
+    upper_bound: int | None = None
+    divisible_by: int | None = None
+    divides: int | None = None
 
     def __post_init__(self):
         assert self.options or (None not in (self.lower_bound, self.upper_bound)), (
@@ -203,7 +203,7 @@ def trace_smt_op(op: ir.Operation, env: dict) -> dict:
     return env
 
 
-def trace_tune_and_smt_ops(op: ir.Operation, env: Optional[dict] = None) -> dict:
+def trace_tune_and_smt_ops(op: ir.Operation, env: dict | None = None) -> dict:
     """Recursively add mapping from transform(.tune) and SMT ops to representative Nodes to env."""
 
     env = env if env is not None else {}  # TODO: nested scopes

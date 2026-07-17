@@ -306,7 +306,7 @@ def infer_params_and_lower(
         # runtime tuning for matmul kernels
         if os.path.isfile(params_cache_json):
             print(f"Loading cached parameters from {params_cache_json}")
-            with open(params_cache_json, "r") as f:
+            with open(params_cache_json) as f:
                 params_dict = json.load(f)
             schedule_params = [params_dict]
         else:

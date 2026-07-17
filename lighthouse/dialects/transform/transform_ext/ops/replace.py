@@ -1,4 +1,4 @@
-from typing import Sequence, Optional
+from collections.abc import Sequence
 
 from mlir import ir
 from mlir.dialects import ext, transform
@@ -113,7 +113,7 @@ def replace(
     target: ir.Value,
     op_kind: str | ir.StringAttr,
     *new_operands: ir.Value,
-    new_result_types: Optional[ir.TupleType | Sequence[ir.Type]] = None,
+    new_result_types: ir.TupleType | Sequence[ir.Type] | None = None,
     new_attrs=None,
 ) -> ir.Value:
     if not isinstance(op_kind, ir.StringAttr):

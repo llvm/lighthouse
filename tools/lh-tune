@@ -2,7 +2,7 @@
 
 import sys
 import argparse
-from typing import Mapping
+from collections.abc import Mapping
 
 from mlir import ir
 from mlir.dialects import transform
@@ -22,7 +22,7 @@ parser.add_argument(
 )
 args = parser.parse_args()
 
-file = sys.stdin if args.file == "-" else open(args.file, "r")
+file = sys.stdin if args.file == "-" else open(args.file)
 with ir.Context() as ctx, ir.Location.unknown():
     lh_dialects.register_and_load()
 

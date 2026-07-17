@@ -1,4 +1,5 @@
-from typing import TypeVar, Generic, Callable
+from typing import TypeVar, Generic
+from collections.abc import Callable
 
 from collections.abc import Mapping
 

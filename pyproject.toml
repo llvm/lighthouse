@@ -117,6 +117,7 @@ select = [
   "RUF034", # useless if-else
   "RUF047", # empty else
   "RUF200", # invalid pyproject.toml
+  "UP", # upgrade syntax to target version
   "W", # Warning
 ]
 ignore = [

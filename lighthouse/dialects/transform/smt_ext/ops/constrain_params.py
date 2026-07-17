@@ -1,4 +1,5 @@
-from typing import overload, Sequence, Callable
+from typing import overload
+from collections.abc import Sequence, Callable
 
 from mlir import ir
 from mlir.dialects import ext, smt, transform

@@ -4,7 +4,7 @@ estimation for XeGPU targets.
 """
 
 from itertools import product
-from typing import Callable
+from collections.abc import Callable
 
 from .xegpu_specs import XeGPUSpecs
 from .matmul_constraints import (

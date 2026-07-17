@@ -1,7 +1,5 @@
 """Generate MLIR transform schedule for XeGPU softmax operation."""
 
-from typing import Optional
-
 from mlir import ir
 from mlir.dialects import transform
 from mlir.dialects.transform import structured, loop, xegpu
@@ -20,8 +18,8 @@ from lighthouse.dialects.transform import transform_ext
 
 
 def softmax_schedule(
-    stop_at_stage: Optional[str] = None,
-    parameters: Optional[dict] = None,
+    stop_at_stage: str | None = None,
+    parameters: dict | None = None,
 ) -> ir.Module:
     """
     Generate transform schedule for softmax operation.

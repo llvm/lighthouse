@@ -1,4 +1,4 @@
-from typing import Mapping
+from collections.abc import Mapping
 
 from mlir import ir
 from mlir.dialects.transform import tune as transform_tune

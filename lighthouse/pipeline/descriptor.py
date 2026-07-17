@@ -225,7 +225,7 @@ class PipelineDescriptor:
         self.base_path = (
             os.path.dirname(desc.basename) if desc.basename else desc.base_path
         )
-        with open(desc.basename, "r") as f:
+        with open(desc.basename) as f:
             self.pipeline_desc = yaml.safe_load(f)
         self._apply_variables()
         self.stages: list[str] = []
