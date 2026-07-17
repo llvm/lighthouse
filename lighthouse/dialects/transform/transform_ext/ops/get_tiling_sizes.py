@@ -1,4 +1,4 @@
-from typing import Sequence, Optional
+from collections.abc import Sequence
 
 from mlir import ir
 from mlir.dialects import ext, transform, linalg
@@ -28,7 +28,7 @@ class GetTilingSizesOp(TransformExtensionDialect.Operation, name="get_tiling_siz
     """
 
     target: ext.Operand[transform.AnyOpType]
-    tile_dim: Optional[ext.Operand[transform.AnyParamType]] = None
+    tile_dim: ext.Operand[transform.AnyParamType] | None = None
     tile_sizes_param: ext.Result[transform.AnyParamType[()]] = ext.infer_result()
 
     @classmethod

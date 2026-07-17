@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import Iterable, Mapping
+from collections.abc import Iterable, Mapping
 import warnings
 
 from lighthouse.ingress.torch.utils import (

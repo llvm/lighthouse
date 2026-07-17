@@ -24,7 +24,7 @@ def find_filecheck() -> str:
         return "FileCheck"  # Avoid full path when none is needed
     # Otherwise, search for FileCheck in the system and return the newest one.
     for version in range(21, 0, -1):
-        path = shutil.which("FileCheck-{}".format(version))
+        path = shutil.which(f"FileCheck-{version}")
         if path:
             return path
     # If not found, raise an error.

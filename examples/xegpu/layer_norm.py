@@ -6,7 +6,6 @@ XeGPU layer_norm benchmark.
 """
 
 import argparse
-from typing import Optional
 from functools import cached_property
 
 import numpy as np
@@ -135,7 +134,7 @@ class XeGPULayerNorm:
         return mod
 
     def schedule_modules(
-        self, stop_at_stage: Optional[str] = None, parameters: Optional[dict] = None
+        self, stop_at_stage: str | None = None, parameters: dict | None = None
     ) -> list[ir.Module]:
         """Generate transform schedule for layer_norm."""
         schedules = []

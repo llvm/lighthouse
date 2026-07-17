@@ -12,7 +12,7 @@ DEFAULT_JSON_FILE = str(Path(__file__).parent / "matmul_params.json")
 
 def load_param_database(json_file: str = DEFAULT_JSON_FILE) -> dict:
     matmul_param_db = {}
-    with open(json_file, "r") as f:
+    with open(json_file) as f:
         data = json.load(f)
         for entry in data:
             M = entry["m"]

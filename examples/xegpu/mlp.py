@@ -19,7 +19,7 @@ lowered and executed.
 
 import argparse
 from dataclasses import dataclass
-from typing import Optional, ClassVar
+from typing import ClassVar
 from functools import cached_property
 import warnings
 
@@ -115,7 +115,7 @@ class XeGPUMLP:
     batch_size: int = 1024
     input_size: int = 1024
     output_size: int = 1024
-    hidden_layer_sizes: Optional[list[int]] = None
+    hidden_layer_sizes: list[int] | None = None
     ab_type: ir.Type | str | None = None
     acc_type: ir.Type | str | None = None
     transpose_a: bool = False
@@ -244,7 +244,7 @@ class XeGPUMLP:
         return mod
 
     def schedule_modules(
-        self, stop_at_stage: Optional[str] = None, parameters: Optional[dict] = None
+        self, stop_at_stage: str | None = None, parameters: dict | None = None
     ) -> list[ir.Module]:
         assert parameters is not None, "Schedule parameters must be provided"
         schedules = []
