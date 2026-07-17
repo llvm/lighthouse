@@ -1,44 +1,36 @@
 """xeas - Xe assembler (importable implementation).
 
-Compiles an "outlined" MLIR payload (the IR produced by the matmul example's
-`--dump-kernel=outlined` stage) down to a linkable shared library (.so) using
-the same Xe pipeline as the matmul example. The library contains the embedded
-GPU binary together with the host-side entry function, so an external program
-can link/load against it and call the entry function.
+Compiles an "outlined" MLIR payload down to a serialized GPU kernel binary blob.
 
-The entry function is exposed through the LLVM C interface, i.e. an external
-caller invokes `_mlir_ciface_<entry-point>`.
+The input is an outlined kernel: a ``gpu.module`` containing a single
+``gpu.func`` (the vectorized kernel body), and nothing else -- no host
+``func.func`` and no ``gpu.launch_func`` launcher. This is the IR produced by
+the XeGPU pipeline's ``outlined`` stage.
 
-This module is the importable Python API for the assembler; the command line
-tool lives in the ``tools/xeas`` executable. The high-level entry point is
-:func:`xeas`, which lowers a payload and returns the compiled shared library as
-bytes:
+xeas resumes the XeGPU pipeline from that stage and lowers the kernel to a
+``gpu.binary`` op, then returns the embedded device object -- the exact byte
+string the Level Zero runtime loads at run time (``mgpuModuleLoad``). ``xerun``
+launches the kernel directly from this blob, so no host-side launcher or shared
+library is produced.
+
+Lowering parameters that cannot be recovered from the IR are passed in via
+``params`` (e.g. the matmul sizes ``m``/``n``/``k`` and any XeGPU tile
+overrides); matmul sizes are inferred from the kernel signature when omitted.
+
+This module is the importable Python API; the command line tool lives in the
+``tools/xeas`` executable. The high-level entry point is :func:`xeas`:
 
     from lighthouse.tools.xeas import xeas
 
-    params = {"m": 4096, "n": 4096, "k": 4096}
-    so_bytes = xeas(source_text, entry_point="payload", params=params)
-
-The entry point, schedule kind and matmul problem sizes are inferred from the
-payload when not supplied, so the minimal call is simply
-``xeas(source_text)``; any values passed override the inferred defaults.
-
-:func:`lower_payload` (MLIR text -> LLVM-dialect text) and
-:func:`compile_shared_library` (LLVM-dialect text -> .so bytes) are available
-if finer-grained control is needed.
+    blob = xeas(outlined_mlir, params={"m": 2048, "n": 4096, "k": 8192})
 """
 
-import shutil
-import subprocess
 import sys
-import tempfile
-from dataclasses import dataclass
-from pathlib import Path
 
 from mlir import ir
-from mlir.dialects import memref
+from mlir.dialects import func, gpu
 
-from lighthouse.pipeline.driver import TransformDriver, make_function_callable
+from lighthouse.pipeline.driver import TransformDriver
 from lighthouse.schedule.xegpu import (
     ELEMWISE_SCHEDULE,
     MLP_SCHEDULE,
@@ -46,13 +38,50 @@ from lighthouse.schedule.xegpu import (
     build_payload_schedule,
     xegpu_to_binary,
 )
-from lighthouse.utils.mlir import get_mlir_library_path
+
+# The XeGPU schedule locates the payload module by matching a top-level
+# ``func.func`` by name. The outlined input has none (only a ``gpu.func``), so a
+# throwaway function under this name is injected for the schedule to anchor on.
+_SCHEDULE_ANCHOR = "__xeas_schedule_anchor"
+
+# Tile parameters consumed by the XeGPU WG annotation stage. When only some of
+# these are supplied, the schedule's own selector would overwrite them all, so
+# the full set is pre-filled from the selector and the overrides re-applied.
+_TILE_PARAM_NAMES = (
+    "wg_m",
+    "wg_n",
+    "sg_m",
+    "sg_n",
+    "k_tile",
+    "load_a_m",
+    "load_a_k",
+    "load_b_k",
+    "load_b_n",
+    "prefetch_a_m",
+    "prefetch_a_k",
+    "prefetch_b_k",
+    "prefetch_b_n",
+    "prefetch_a_nb",
+    "prefetch_b_nb",
+)
+
+
+def _get_gpu_funcs(module: ir.Module) -> list:
+    """Return every ``gpu.func`` op nested in a ``gpu.module`` of the module."""
+    gpu_funcs = []
+    for op in module.body.operations:
+        if op.operation.name != "gpu.module":
+            continue
+        for inner in op.regions[0].blocks[0].operations:
+            if inner.operation.name == "gpu.func":
+                gpu_funcs.append(inner)
+    return gpu_funcs
 
 
 def _parse_input_shape(spec: str) -> list[tuple[list[int], str]]:
     """Parse DIMSxTYPE descriptors into (dims, type) tuples.
 
-    Format: comma-separated descriptors, each `D1xD2x...xTYPE`.
+    Format: comma-separated descriptors, each ``D1xD2x...xTYPE``.
     """
     parsed = []
     for raw in spec.split(","):
@@ -129,7 +158,7 @@ def _set_function_arg_types(func_op, new_input_types):
 def _rewrite_function_with_static_shapes(
     func_op, shape_desc: list[tuple[list[int], str]]
 ):
-    """Rewrite function argument memrefs to static shapes from --input-shape.
+    """Rewrite a kernel's argument memrefs to static shapes from --input-shape.
 
     Every use of each argument is rewired to the new static argument. Feeding
     static memrefs into the body (rather than casting back to the original
@@ -153,125 +182,126 @@ def _rewrite_function_with_static_shapes(
     _set_function_arg_types(func_op, new_types)
 
 
-def _walk_func_calls(func_op):
-    """Return every ``func.call`` op nested anywhere inside ``func_op``."""
-    calls = []
-
-    def visit(op):
-        if op.operation.name == "func.call":
-            calls.append(op)
-        for region in op.operation.regions:
-            for block in region.blocks:
-                for inner in block.operations:
-                    visit(inner)
-
-    for region in func_op.operation.regions:
+def _contains_op(root, op_name: str) -> bool:
+    """Return True if ``root`` contains an op named ``op_name`` anywhere."""
+    for region in root.operation.regions:
         for block in region.blocks:
-            for inner in block.operations:
-                visit(inner)
-    return calls
+            for op in block.operations:
+                if op.operation.name == op_name or _contains_op(op, op_name):
+                    return True
+    return False
 
 
-def _find_callers(module: ir.Module, callee_name: str):
-    """Return ``(caller_func_op, call_op)`` for every call to ``callee_name``."""
-    callers = []
-    for op in module.body.operations:
-        if op.operation.name != "func.func":
-            continue
-        for call in _walk_func_calls(op):
-            if ir.FlatSymbolRefAttr(call.attributes["callee"]).value == callee_name:
-                callers.append((op, call))
-    return callers
+def _detect_schedule_kind(gpu_funcs: list) -> str:
+    """Infer the schedule kind from the outlined kernel body.
 
-
-def _reconcile_call_site(caller_op, call_op, target_types) -> bool:
-    """Make a call site's operands match the callee's (static) parameter types.
-
-    For each operand whose type differs from the callee parameter it feeds: if
-    the operand is a block argument of ``caller_op``, that argument is scheduled
-    to become the static type (propagating the shape to the caller's boundary);
-    otherwise a ``memref.cast`` refines the locally produced value in place.
-    Returns True when the caller's own boundary was made static (so callers of
-    ``caller_op`` must be visited in turn).
+    A ``vector.contract`` in the kernel identifies a matmul/MLP payload;
+    otherwise it is treated as an elementwise payload.
     """
-    caller_args = list(caller_op.regions[0].blocks[0].arguments)
-    caller_name = ir.StringAttr(caller_op.attributes["sym_name"]).value
-    boundary_updates = {}
-    casts = []
-    for i, operand in enumerate(call_op.operands):
-        want = target_types[i]
-        if str(operand.type) == str(want):
-            continue
-        arg_index = next(
-            (j for j, arg in enumerate(caller_args) if operand == arg), None
-        )
-        if arg_index is None:
-            casts.append((i, want))
-            continue
-        previous = boundary_updates.get(arg_index)
-        if previous is not None and str(previous) != str(want):
+    for gpu_func in gpu_funcs:
+        if _contains_op(gpu_func, "vector.contract"):
+            return MLP_SCHEDULE
+    return ELEMWISE_SCHEDULE
+
+
+def _static_2d_shape(type_) -> list[int] | None:
+    """Return the static 2D shape of a memref type, or ``None`` otherwise."""
+    try:
+        memref_type = ir.MemRefType(type_)
+    except (ValueError, TypeError):
+        return None
+    if memref_type.rank != 2:
+        return None
+    shape = list(memref_type.shape)
+    if any(ir.ShapedType.is_dynamic_size(dim) for dim in shape):
+        return None
+    return shape
+
+
+def _infer_matmul_sizes(gpu_func) -> tuple[int, int, int, bool, bool] | None:
+    """Infer ``(m, n, k, transpose_a, transpose_b)`` from the kernel signature.
+
+    The outlined matmul kernel follows the ``kernel(C, A, B)`` convention, where
+    ``C`` is ``M x N`` and ``A``/``B`` are the (possibly transposed) operands.
+    ``M`` and ``N`` come from ``C``; ``K`` and the transpose flags are recovered
+    by matching ``A``/``B`` against the derived ``M``/``N``. Returns ``None``
+    when the signature does not match a static 2D matmul.
+    """
+    func_type = ir.FunctionType(ir.TypeAttr(gpu_func.attributes["function_type"]).value)
+    inputs = list(func_type.inputs)
+    if len(inputs) < 3:
+        return None
+    c_shape = _static_2d_shape(inputs[0])
+    a_shape = _static_2d_shape(inputs[1])
+    b_shape = _static_2d_shape(inputs[2])
+    if not (c_shape and a_shape and b_shape):
+        return None
+
+    m, n = c_shape
+    # A is (M, K) when not transposed, (K, M) when transposed.
+    if a_shape[0] == m:
+        k, transpose_a = a_shape[1], False
+    elif a_shape[1] == m:
+        k, transpose_a = a_shape[0], True
+    else:
+        return None
+    # Validate B against the derived K and N.
+    if b_shape == [k, n]:
+        transpose_b = False
+    elif b_shape == [n, k]:
+        transpose_b = True
+    else:
+        return None
+    return m, n, k, transpose_a, transpose_b
+
+
+def _prepare_mlp_params(gpu_funcs: list, params: dict) -> dict:
+    """Complete the matmul lowering parameters for the MLP schedule.
+
+    Missing ``m``/``n``/``k`` (and the transpose flags) are inferred from the
+    kernel signature. A partial set of tile parameters is completed from the
+    parameter selector while preserving the caller's overrides, so a partial
+    override is not discarded by the schedule's own selection step.
+    """
+    params = dict(params)
+    if not all(dim in params for dim in ("m", "n", "k")):
+        sizes = _infer_matmul_sizes(gpu_funcs[0])
+        if sizes is None:
             raise ValueError(
-                f"cannot propagate static shapes: argument {arg_index} of "
-                f"'{caller_name}' is passed with conflicting static shapes"
+                "could not infer the matmul sizes from the kernel signature; "
+                "pass m, n and k in params"
             )
-        boundary_updates[arg_index] = want
+        m, n, k, transpose_a, transpose_b = sizes
+        params.setdefault("m", m)
+        params.setdefault("n", n)
+        params.setdefault("k", k)
+        params.setdefault("transpose_a", transpose_a)
+        params.setdefault("transpose_b", transpose_b)
+    params.setdefault("transpose_a", False)
+    params.setdefault("transpose_b", False)
 
-    for operand_index, want in casts:
-        with ir.InsertionPoint(call_op):
-            refined = memref.cast(want, call_op.operands[operand_index])
-        call_op.operands[operand_index] = refined
-
-    if not boundary_updates:
-        return False
-
-    new_types = list(
-        ir.FunctionType(ir.TypeAttr(caller_op.attributes["function_type"]).value).inputs
-    )
-    for arg_index, want in boundary_updates.items():
-        new_types[arg_index] = want
-    _set_function_arg_types(caller_op, new_types)
-    return True
-
-
-def _propagate_static_args_to_callers(module: ir.Module, func_op):
-    """Propagate a function's static argument types upward to its callers.
-
-    Starting at ``func_op`` (the host launcher, whose memref arguments were just
-    made static), every ``func.call`` reaching it anywhere in the module is
-    reconciled with the new static parameter types. When a caller forwards one
-    of its own arguments, that caller's boundary is made static as well and
-    propagation continues transitively to its callers.
-    """
-    worklist = [func_op]
-    processed = set()
-    while worklist:
-        callee = worklist.pop()
-        callee_name = ir.StringAttr(callee.attributes["sym_name"]).value
-        if callee_name in processed:
-            continue
-        processed.add(callee_name)
-        target_types = list(
-            ir.FunctionType(
-                ir.TypeAttr(callee.attributes["function_type"]).value
-            ).inputs
+    overrides = {name: params[name] for name in _TILE_PARAM_NAMES if name in params}
+    if overrides and not all(name in params for name in _TILE_PARAM_NAMES):
+        selector = XeGPUParameterSelector(device=params.get("device"))
+        filled = selector.get_parameters(
+            (params["m"], params["n"], params["k"]),
+            params["transpose_a"],
+            params["transpose_b"],
         )
-        for caller_op, call_op in _find_callers(module, callee_name):
-            if _reconcile_call_site(caller_op, call_op, target_types):
-                worklist.append(caller_op)
+        params = {**params, **filled, **overrides}
+    return params
 
 
 def _mark_transfers_in_bounds(module: ir.Module) -> int:
-    """Force vector.transfer_read/write ops to be fully in_bounds.
+    """Force ``vector.transfer_read``/``transfer_write`` ops to be in_bounds.
 
     convert-vector-to-xegpu only lowers transfer ops to XeGPU block
     loads/stores when every dimension is in-bounds; otherwise they stay as
-    vector ops and later stages (e.g. the WG anchor-layout annotation that
-    expects an xegpu.load producing each dpas operand) fail. Parsed transfer
-    ops carry an explicit ``in_bounds`` array that defaults to all-false (the
-    all-false form is elided when printed), so we overwrite it with all-true.
-    The Xe block-load path assumes in-bounds accesses (boundary_check = false),
-    so this is consistent with the rest of the pipeline. Returns the number of
-    ops updated.
+    vector ops and later stages fail. Parsed transfer ops carry an explicit
+    ``in_bounds`` array that defaults to all-false (elided when printed), so it
+    is overwritten with all-true. The Xe block-load path assumes in-bounds
+    accesses, so this is consistent with the rest of the pipeline. Returns the
+    number of ops updated.
     """
     count = 0
 
@@ -302,327 +332,119 @@ def _mark_transfers_in_bounds(module: ir.Module) -> int:
     return count
 
 
-def _get_entry_func(module: ir.Module, entry_point: str):
-    for op in module.body.operations:
-        if (
-            op.operation.name == "func.func"
-            and ir.StringAttr(op.attributes["sym_name"]).value == entry_point
-        ):
-            return op
-    return None
+def _inject_schedule_anchor(module: ir.Module) -> str:
+    """Insert a throwaway ``func.func`` for the XeGPU schedule to anchor on.
 
-
-def _get_gpu_funcs(module: ir.Module):
-    gpu_funcs = []
-    for op in module.body.operations:
-        if op.operation.name != "gpu.module":
-            continue
-        for inner in op.regions[0].blocks[0].operations:
-            if inner.operation.name == "gpu.func":
-                gpu_funcs.append(inner)
-    return gpu_funcs
-
-
-@dataclass
-class OutlinedPayloadInfo:
-    """Information inferred from an outlined MLIR payload.
-
-    Every field may be ``None`` when it cannot be recovered from the IR; callers
-    are expected to supply the missing values explicitly (and may override any
-    inferred value).
+    The outlined input contains only a ``gpu.module``/``gpu.func`` and no host
+    ``func.func``, but the XeGPU schedule locates the payload module by matching
+    a ``func.func`` by name. This adds an empty function it can grab; the
+    function is never called and is lowered to a dead, empty ``llvm.func`` by
+    the binary lowering (only the ``gpu.binary`` object is extracted).
     """
-
-    entry_point: str | None = None
-    schedule_kind: str | None = None
-    m: int | None = None
-    n: int | None = None
-    k: int | None = None
-    transpose_a: bool = False
-    transpose_b: bool = False
-
-    def default_params(self) -> dict:
-        """Return the schedule parameters implied by the inferred payload.
-
-        Only fully determined matmul sizes are returned; an empty dict is
-        returned when the sizes could not be inferred.
-        """
-        if None in (self.m, self.n, self.k):
-            return {}
-        return {
-            "m": self.m,
-            "n": self.n,
-            "k": self.k,
-            "transpose_a": self.transpose_a,
-            "transpose_b": self.transpose_b,
-        }
+    with ir.InsertionPoint(module.body):
+        anchor = func.FuncOp(_SCHEDULE_ANCHOR, ([], []))
+        with ir.InsertionPoint(anchor.add_entry_block()):
+            func.ReturnOp([])
+    return _SCHEDULE_ANCHOR
 
 
-def _contains_op(root, op_name: str) -> bool:
-    """Return True if ``root`` contains an op named ``op_name`` anywhere."""
-    for region in root.operation.regions:
-        for block in region.blocks:
-            for op in block.operations:
-                if op.operation.name == op_name or _contains_op(op, op_name):
-                    return True
-    return False
+def _select_gpu_object(objects: ir.ArrayAttr, large_register_file: bool):
+    """Pick the ``#gpu.object`` matching the large-register-file setting.
 
-
-def _find_entry_point(module: ir.Module) -> str | None:
-    """Infer the host entry function of an outlined payload.
-
-    The entry function is the ``func.func`` that launches the kernel, i.e. the
-    one containing a ``gpu.launch_func`` op. When the launcher cannot be
-    identified unambiguously, ``None`` is returned.
+    With a single object the choice is unambiguous; otherwise the object whose
+    target carries (or omits) the ``-ze-opt-large-register-file`` IGC option is
+    selected to match ``large_register_file``, falling back to the first object.
     """
-    candidates = [
-        ir.StringAttr(op.attributes["sym_name"]).value
-        for op in module.body.operations
-        if op.operation.name == "func.func" and _contains_op(op, "gpu.launch_func")
+    if len(objects) == 1:
+        return gpu.ObjectAttr(objects[0])
+
+    def uses_lrf(obj) -> bool:
+        return "large-register-file" in str(gpu.ObjectAttr(obj).target)
+
+    for obj in objects:
+        if uses_lrf(obj) == large_register_file:
+            return gpu.ObjectAttr(obj)
+    return gpu.ObjectAttr(objects[0])
+
+
+def extract_gpu_binary(module: ir.Module, *, large_register_file: bool = True) -> bytes:
+    """Extract the serialized GPU kernel binary from a lowered module.
+
+    The XeGPU-to-binary pipeline embeds the device kernel in a ``gpu.binary`` op
+    as one or more ``#gpu.object`` attributes (one per target attached to the
+    ``gpu.module``). This returns the raw object bytes -- the blob the Level Zero
+    runtime loads at run time via ``mgpuModuleLoad``.
+
+    When several objects are present (e.g. a plain target and one built with the
+    large register file IGC option), the object matching ``large_register_file``
+    is returned.
+    """
+    binaries = [
+        op for op in module.body.operations if op.operation.name == "gpu.binary"
     ]
-    return candidates[0] if len(candidates) == 1 else None
-
-
-def _detect_schedule_kind(module: ir.Module) -> str | None:
-    """Infer the schedule kind from the outlined kernel body.
-
-    A ``vector.contract`` in the kernel identifies a matmul/MLP payload;
-    otherwise the presence of a ``gpu.func`` indicates an elementwise payload.
-    Returns ``None`` when no kernel is found.
-    """
-    gpu_funcs = _get_gpu_funcs(module)
-    if not gpu_funcs:
-        return None
-    for gpu_func in gpu_funcs:
-        if _contains_op(gpu_func, "vector.contract"):
-            return MLP_SCHEDULE
-    return ELEMWISE_SCHEDULE
-
-
-def _static_2d_shape(type_) -> list[int] | None:
-    """Return the static 2D shape of a memref type, or ``None`` otherwise."""
-    try:
-        memref_type = ir.MemRefType(type_)
-    except (ValueError, TypeError):
-        return None
-    if memref_type.rank != 2:
-        return None
-    shape = list(memref_type.shape)
-    if any(ir.ShapedType.is_dynamic_size(dim) for dim in shape):
-        return None
-    return shape
-
-
-def _infer_matmul_sizes(entry_func) -> tuple[int, int, int, bool, bool] | None:
-    """Infer ``(m, n, k, transpose_a, transpose_b)`` from the entry signature.
-
-    The outlined matmul launcher follows the ``payload(C, A, B)`` convention,
-    where ``C`` is ``M x N`` and ``A``/``B`` are the (possibly transposed)
-    operands. ``M`` and ``N`` come from ``C``; ``K`` and the transpose flags are
-    recovered by matching ``A``/``B`` against the derived ``M``/``N``. Returns
-    ``None`` when the signature does not match a static 2D matmul.
-    """
-    func_type = ir.FunctionType(
-        ir.TypeAttr(entry_func.attributes["function_type"]).value
-    )
-    inputs = list(func_type.inputs)
-    if len(inputs) < 3:
-        return None
-    c_shape = _static_2d_shape(inputs[0])
-    a_shape = _static_2d_shape(inputs[1])
-    b_shape = _static_2d_shape(inputs[2])
-    if not (c_shape and a_shape and b_shape):
-        return None
-
-    m, n = c_shape
-    # A is (M, K) when not transposed, (K, M) when transposed.
-    if a_shape[0] == m:
-        k, transpose_a = a_shape[1], False
-    elif a_shape[1] == m:
-        k, transpose_a = a_shape[0], True
-    else:
-        return None
-    # Validate B against the derived K and N.
-    if b_shape == [k, n]:
-        transpose_b = False
-    elif b_shape == [n, k]:
-        transpose_b = True
-    else:
-        return None
-    return m, n, k, transpose_a, transpose_b
-
-
-def inspect_outlined_payload(module: ir.Module) -> OutlinedPayloadInfo:
-    """Inspect an outlined MLIR payload and infer its schedule metadata.
-
-    Recovers the entry point, schedule kind and (for matmul payloads) the
-    problem sizes and transpose flags directly from the IR, so callers do not
-    need to restate information already encoded in the payload.
-    """
-    entry_point = _find_entry_point(module)
-    schedule_kind = _detect_schedule_kind(module)
-    info = OutlinedPayloadInfo(entry_point=entry_point, schedule_kind=schedule_kind)
-    if entry_point is not None and schedule_kind == MLP_SCHEDULE:
-        entry_func = _get_entry_func(module, entry_point)
-        sizes = _infer_matmul_sizes(entry_func) if entry_func is not None else None
-        if sizes is not None:
-            info.m, info.n, info.k, info.transpose_a, info.transpose_b = sizes
-    return info
-
-
-# Tile parameters consumed by the XeGPU WG annotation stage. When only some of
-# these are supplied, the schedule's own selector would overwrite them all, so
-# we pre-fill the full set from the selector and re-apply the overrides.
-_TILE_PARAM_NAMES = (
-    "wg_m",
-    "wg_n",
-    "sg_m",
-    "sg_n",
-    "k_tile",
-    "load_a_m",
-    "load_a_k",
-    "load_b_k",
-    "load_b_n",
-    "prefetch_a_m",
-    "prefetch_a_k",
-    "prefetch_b_k",
-    "prefetch_b_n",
-    "prefetch_a_nb",
-    "prefetch_b_nb",
-)
-
-
-def _resolve_mlp_tile_params(params: dict) -> dict:
-    """Complete a partial set of matmul tile parameters.
-
-    If the caller provided some (but not all) tile parameters, fill the missing
-    ones from the parameter selector and re-apply the caller's overrides, so a
-    partial override is not discarded by the schedule's own selection step.
-    Fully specified or empty tile-parameter sets are returned unchanged.
-    """
-    overrides = {name: params[name] for name in _TILE_PARAM_NAMES if name in params}
-    if not overrides or all(name in params for name in _TILE_PARAM_NAMES):
-        return params
-    selector = XeGPUParameterSelector(device=params.get("device"))
-    filled = selector.get_parameters(
-        (params["m"], params["n"], params["k"]),
-        params.get("transpose_a", False),
-        params.get("transpose_b", False),
-    )
-    return {**params, **filled, **overrides}
-
-
-def _llvm_tool(name):
-    """Return the path to an LLVM tool from the install that provides the MLIR
-    Python bindings (``<install>/bin``)."""
-    tool = Path(get_mlir_library_path()).parent / "bin" / name
-    if not tool.is_file():
-        raise RuntimeError(f"could not find '{name}' in {tool.parent}")
-    return str(tool)
-
-
-# GPU runtime libraries the generated kernel calls into (mgpuLaunchKernel,
-# rtclock, the gpu alloc/copy helpers, ...). They are recorded as dependencies
-# of the .so so it loads standalone instead of relying on its loader to already
-# provide these symbols.
-RUNTIME_LIBS = ["libmlir_levelzero_runtime.so", "libmlir_c_runner_utils.so"]
-
-
-def _runtime_libs():
-    """Resolve the runtime dependency libraries to absolute paths in the MLIR
-    library directory."""
-    lib_dir = Path(get_mlir_library_path())
-    resolved = []
-    for name in RUNTIME_LIBS:
-        path = lib_dir / name
-        if not path.is_file():
-            raise RuntimeError(f"could not find runtime library {path}")
-        resolved.append(str(path))
-    return resolved
+    if not binaries:
+        raise ValueError("no 'gpu.binary' op found in the lowered module")
+    if len(binaries) > 1:
+        raise ValueError(f"expected a single 'gpu.binary' op, found {len(binaries)}")
+    objects = ir.ArrayAttr(binaries[0].attributes["objects"])
+    if len(objects) == 0:
+        raise ValueError("'gpu.binary' op has no embedded objects")
+    return _select_gpu_object(objects, large_register_file).object
 
 
 def lower_payload(
     source: str,
-    entry_point: str | None = None,
     params: dict | None = None,
     *,
     input_shape: str | None = None,
     assume_in_bounds: bool = True,
     xegpu_op_level: str = "workgroup",
     large_register_file: bool = True,
-) -> str:
-    """Lower an outlined MLIR payload to an LLVM-dialect module (as text).
+) -> ir.Module:
+    """Lower an outlined MLIR kernel to a module containing its ``gpu.binary``.
 
-    Resumes the Xe pipeline from the 'outlined' stage and lowers the kernel all
-    the way to an embedded GPU binary inside an LLVM-dialect module. This is the
-    context-bound part of :func:`xeas`; see it for a description of the
-    ``input_shape`` and ``assume_in_bounds`` behaviour.
-
-    The entry point, schedule kind and matmul problem sizes are inferred from
-    the payload when not supplied; any value passed in ``entry_point`` or
-    ``params`` overrides the inferred default.
+    Resumes the XeGPU pipeline from the ``outlined`` stage (a ``gpu.module`` with
+    a single ``gpu.func``) and lowers it to an embedded GPU binary. This is the
+    context-bound part of :func:`xeas` and must run inside an active MLIR
+    context.
 
     Args:
-        source: MLIR text at the 'outlined' stage.
-        entry_point: Name of the entry function to expose (callable as
-            ``_mlir_ciface_<entry-point>``). Inferred from the payload's kernel
-            launcher when ``None``.
-        params: Schedule parameter dict. Missing matmul sizes are inferred from
-            the payload; provided values override the inferred ones.
-        input_shape: Optional comma-separated ``DIMSxTYPE`` descriptors used to
-            rewrite launcher/kernel argument memrefs to static shapes.
-        assume_in_bounds: Mark transfer ops omitting ``in_bounds`` as fully
-            in-bounds so they lower to XeGPU block loads/stores.
+        source: MLIR text at the ``outlined`` stage.
+        params: Lowering parameters. For a matmul/MLP kernel this holds the
+            problem sizes ``m``/``n``/``k`` (inferred from the kernel signature
+            when omitted) plus optional transpose flags, ``device`` and XeGPU
+            tile overrides.
+        input_shape: Optional comma-separated ``DIMSxTYPE`` descriptors, one per
+            kernel argument in order. When given, the ``gpu.func`` kernel's
+            (possibly dynamically shaped) memref arguments are rewritten to
+            these static shapes.
+        assume_in_bounds: Mark ``vector.transfer`` ops omitting ``in_bounds`` as
+            fully in-bounds so they lower to XeGPU block loads/stores.
         xegpu_op_level: Initial XeGPU operation level for the lowering pipeline.
         large_register_file: Enable the large register file IGC option.
 
     Returns:
-        The lowered LLVM-dialect module as text.
+        The lowered module containing the embedded ``gpu.binary`` kernel.
     """
+    params = dict(params or {})
     with ir.Location.unknown():
         module = ir.Module.parse(source)
 
-        # Recover entry point, schedule kind and matmul sizes from the payload,
-        # then let caller-provided values override the inferred defaults.
-        info = inspect_outlined_payload(module)
-        if entry_point is None:
-            entry_point = info.entry_point
-        if entry_point is None:
-            raise ValueError(
-                "could not infer the entry point from the payload; pass "
-                "entry_point explicitly"
-            )
-        schedule_kind = info.schedule_kind
-        if schedule_kind is None:
-            raise ValueError(
-                "could not infer the schedule kind from the payload; the "
-                "module does not contain a gpu kernel"
-            )
-        params = {**info.default_params(), **(params or {})}
-        if schedule_kind == MLP_SCHEDULE:
-            if not all(params.get(dim) for dim in ("m", "n", "k")):
-                raise ValueError(
-                    "could not infer the matmul sizes (m, n, k) from the "
-                    "payload; pass them explicitly"
-                )
-            params = _resolve_mlp_tile_params(params)
+        gpu_funcs = _get_gpu_funcs(module)
+        if not gpu_funcs:
+            raise ValueError("input IR contains no 'gpu.func' kernel to lower")
 
         if input_shape:
             try:
                 shapes = _parse_input_shape(input_shape)
-                entry_func = _get_entry_func(module, entry_point)
-                if entry_func is None:
-                    raise ValueError(
-                        f"entry function '{entry_point}' was not found for "
-                        "--input-shape rewriting"
-                    )
-                _rewrite_function_with_static_shapes(entry_func, shapes)
-                for gpu_func in _get_gpu_funcs(module):
+                for gpu_func in gpu_funcs:
                     _rewrite_function_with_static_shapes(gpu_func, shapes)
-                # Start at the host launcher and push the static argument types
-                # transitively up to every caller in the module.
-                _propagate_static_args_to_callers(module, entry_func)
             except Exception as exc:
                 raise ValueError(f"invalid --input-shape rewrite: {exc}") from exc
+
+        schedule_kind = _detect_schedule_kind(gpu_funcs)
+        if schedule_kind == MLP_SCHEDULE:
+            params = _prepare_mlp_params(gpu_funcs, params)
 
         if assume_in_bounds:
             marked = _mark_transfers_in_bounds(module)
@@ -632,16 +454,13 @@ def lower_payload(
                     file=sys.stderr,
                 )
 
-        # Expose the entry function before LLVM lowering so a C-interface
-        # wrapper (_mlir_ciface_<entry-point>) is emitted and the symbol is
-        # linkable from an external program.
-        make_function_callable(module, entry_point)
+        anchor = _inject_schedule_anchor(module)
 
         schedules = [
             build_payload_schedule(
                 schedule_kind,
                 [params],
-                payload_func_name=entry_point,
+                payload_func_name=anchor,
                 start_at_stage="outlined",
             ),
             xegpu_to_binary(
@@ -649,122 +468,44 @@ def lower_payload(
                 large_register_file=large_register_file,
             ),
         ]
-        lowered = TransformDriver(schedules).apply(module)
-        return str(lowered)
-
-
-def compile_shared_library(llvm_dialect_text: str, opt_level: int = 3) -> bytes:
-    """Turn an LLVM-dialect MLIR module into shared library bytes (.so).
-
-    The LLVM steps use binaries from the LLVM install that provides the MLIR
-    Python bindings:
-        mlir-translate : LLVM-dialect MLIR -> LLVM IR
-        llc            : LLVM IR          -> relocatable object
-    The object is then linked into a shared library with the system C compiler
-    (cc); this LLVM install ships no linker of its own. The GPU runtime
-    libraries are linked in (and rpath'd) so the kernel's runtime symbols
-    (mgpu*, rtclock, ...) resolve when the library is loaded.
-
-    A static toolchain is used on purpose (rather than the MLIR JIT) so the GPU
-    runtime is never loaded into this process: the JIT would load and later
-    tear down the device module, which crashes on hosts without a usable GPU.
-
-    Returns:
-        The compiled shared library as bytes.
-    """
-    mlir_translate = _llvm_tool("mlir-translate")
-    llc = _llvm_tool("llc")
-    cc = shutil.which("cc") or shutil.which("gcc")
-    if not cc:
-        raise RuntimeError("could not find 'cc' or 'gcc' on $PATH")
-    runtime_libs = _runtime_libs()
-
-    llvm_ir = subprocess.run(
-        [mlir_translate, "--mlir-to-llvmir"],
-        input=llvm_dialect_text.encode(),
-        stdout=subprocess.PIPE,
-        check=True,
-    )
-
-    with tempfile.TemporaryDirectory() as tmp:
-        obj = Path(tmp) / "xeas.o"
-        subprocess.run(
-            [
-                llc,
-                f"-O{opt_level}",
-                "-filetype=obj",
-                "-relocation-model=pic",
-                "-o",
-                str(obj),
-                "-",
-            ],
-            input=llvm_ir.stdout,
-            check=True,
-        )
-
-        # The linker seeks within its output file, so it cannot write directly
-        # to a pipe: always link into a seekable temporary file and return its
-        # bytes.
-        out_path = Path(tmp) / "xeas.so"
-        lib_dir = str(Path(get_mlir_library_path()))
-        # '--as-needed' records a NEEDED dependency only for the runtime
-        # libraries the kernel actually references, not all of them.
-        subprocess.run(
-            [cc, "-shared", "-o", str(out_path), str(obj), "-Wl,--as-needed"]
-            + runtime_libs
-            + [f"-Wl,-rpath,{lib_dir}"],
-            check=True,
-        )
-        return out_path.read_bytes()
+        return TransformDriver(schedules).apply(module)
 
 
 def xeas(
     source: str,
-    entry_point: str | None = None,
     params: dict | None = None,
     *,
     input_shape: str | None = None,
     assume_in_bounds: bool = True,
     xegpu_op_level: str = "workgroup",
     large_register_file: bool = True,
-    opt_level: int = 3,
 ) -> bytes:
-    """Compile an outlined MLIR payload into a shared library (.so).
+    """Compile an outlined MLIR kernel into a GPU kernel binary blob.
 
-    This is the high-level, importable counterpart of the command line tool: it
-    lowers ``source`` with :func:`lower_payload` and compiles the result with
-    :func:`compile_shared_library`, returning the library bytes.
-
-    The entry point, schedule kind and matmul problem sizes are inferred from
-    the payload when not supplied; any value passed in ``entry_point`` or
-    ``params`` overrides the inferred default.
+    Lowers ``source`` with :func:`lower_payload` and extracts the embedded
+    device kernel with :func:`extract_gpu_binary`, returning the blob bytes --
+    the exact byte string the Level Zero runtime loads at run time
+    (``mgpuModuleLoad``). ``xerun`` launches the kernel directly from it.
 
     Args:
-        source: MLIR text at the 'outlined' stage.
-        entry_point: Name of the entry function to expose (callable as
-            ``_mlir_ciface_<entry-point>``). Inferred from the payload's kernel
-            launcher when ``None``.
-        params: Schedule parameter dict. Programmatic callers can pass a dict
-            such as ``{"m": M, "n": N, "k": K}`` plus any tile overrides; any
-            values not supplied are inferred from the payload.
+        source: MLIR text at the ``outlined`` stage.
+        params: Lowering parameters (see :func:`lower_payload`).
         input_shape: Optional comma-separated ``DIMSxTYPE`` descriptors used to
-            rewrite launcher/kernel argument memrefs to static shapes.
+            rewrite the ``gpu.func`` kernel's memref arguments to static shapes.
         assume_in_bounds: Mark transfer ops omitting ``in_bounds`` as fully
             in-bounds so they lower to XeGPU block loads/stores.
         xegpu_op_level: Initial XeGPU operation level for the lowering pipeline.
         large_register_file: Enable the large register file IGC option.
-        opt_level: Optimization level for the generated code.
 
     Returns:
-        The compiled shared library as bytes.
+        The serialized GPU kernel binary as bytes.
     """
-    llvm_dialect_text = lower_payload(
+    module = lower_payload(
         source,
-        entry_point,
         params,
         input_shape=input_shape,
         assume_in_bounds=assume_in_bounds,
         xegpu_op_level=xegpu_op_level,
         large_register_file=large_register_file,
     )
-    return compile_shared_library(llvm_dialect_text, opt_level)
+    return extract_gpu_binary(module, large_register_file=large_register_file)

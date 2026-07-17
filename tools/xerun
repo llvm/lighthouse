@@ -1,33 +1,34 @@
 #!/scratch/fschlimb/github/lighthouse/.venv/bin/python
-"""xerun - run a prebuilt Xe shared library (command line interface).
+"""xerun - launch a Xe kernel blob (command line interface).
 
-Loads a shared library (.so) such as the one produced by `xeas` and runs its
-entry function once. Compilation (IR -> .so) and execution are fully decoupled,
-so the same library can be run repeatedly without recompiling.
+Loads a serialized GPU kernel binary blob (such as the one produced by `xeas`)
+into the Level Zero runtime and launches its kernel once. Compilation
+(IR -> blob) and execution are fully decoupled, so the same blob can be run
+repeatedly without recompiling.
 
-A bare .so carries no information about the kernel's argument buffers, so their
-shapes and element types are described on the command line with `--input-shape`,
-using the same "DIMSxTYPE" format as `xeas` (e.g. `1024x1024xf32,1024x1024xf16`).
-The buffers are passed in the order the entry function expects them and are
-zero-initialized.
+The blob carries no information about the kernel's argument buffers, the launch
+grid or the kernel symbol name, so these are provided on the command line. The
+buffer shapes and element types use the same "DIMSxTYPE" format as `xeas` (e.g.
+`1024x1024xf32,1024x1024xf16`); the buffers are passed in the order the kernel
+expects them and are zero-initialized.
 
-The execution itself lives in the importable :mod:`lighthouse.tools.xerun`
-module (``xerun``); this executable only owns the command-line interface.
+The launch itself lives in the importable :mod:`lighthouse.tools.xerun` module
+(``xerun``); this executable only owns the command-line interface.
 
 Examples:
-    # run a matmul library once (C, A, B buffers)
-    xerun payload.so \\
+    # launch a matmul kernel once (C, A, B buffers)
+    xerun payload.bin --kernel-name payload_kernel \\
+        --grid 8 4 1 --block 256 1 1 \\
         --input-shape 4096x4096xf32,4096x4096xf16,4096x4096xf16
 
-    # pipe the library straight from xeas (read from stdin)
-    xeas kernel.mlir --entry-point payload --sizes 4096 4096 4096 | xerun \\
+    # pipe the blob straight from xeas (read from stdin)
+    xeas kernel.mlir --sizes 4096 4096 4096 | xerun \
+        --kernel-name payload_kernel --grid 8 4 1 --block 256 1 1 \\
         --input-shape 4096x4096xf32,4096x4096xf16,4096x4096xf16
 """
 
 import argparse
-import contextlib
 import sys
-import tempfile
 
 from lighthouse.execution.init import KernelArgumentParser
 from lighthouse.tools.xerun import xerun
@@ -40,72 +41,49 @@ def parse_args(argv=None):
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument(
-        "library",
+        "blob",
         nargs="?",
         default="-",
-        help="Prebuilt shared library (.so) to run, e.g. the output of xeas. "
-        "Reads the library from stdin if '-' or omitted.",
+        help="GPU kernel binary blob to launch, e.g. the output of xeas. "
+        "Reads the blob from stdin if '-' or omitted.",
     )
     parser.add_argument(
         "--input-shape",
         required=True,
         help="Comma-separated buffer descriptors in DIMSxTYPE format, in "
-        "the order the entry function expects them. DIMS is MxNx... , TYPE is "
+        "the order the kernel expects them. DIMS is MxNx... , TYPE is "
         "one of f16/f32/f64/bf16/i8/i16/i32/i64. Buffers are zero-initialized.",
     )
     parser.add_argument(
-        "--entry-point",
-        default="payload",
-        help="Name of the entry function to run.",
+        "--kernel-name",
+        default="payload_kernel",
+        help="Name of the kernel symbol inside the blob to launch.",
     )
     parser.add_argument(
-        "--benchmark",
-        nargs="?",
-        const="__benchmark",
-        default=None,
-        help="Optional benchmark wrapper function name to run instead of the entry point. "
-        "When provided without a value, '__benchmark' is used.",
-    )
-    parser.add_argument(
-        "--nruns",
+        "--grid",
         type=int,
-        default=100,
-        help="Number of timed benchmark iterations.",
+        nargs=3,
+        required=True,
+        metavar=("X", "Y", "Z"),
+        help="Launch grid (number of blocks) as three dimensions X Y Z.",
     )
     parser.add_argument(
-        "--nwarmup",
+        "--block",
         type=int,
-        default=10,
-        help="Number of warmup iterations before timing.",
-    )
-    parser.add_argument(
-        "--flops",
-        type=int,
-        default=None,
-        help="Optional floating-point operation count used to print GFLOPS.",
+        nargs=3,
+        required=True,
+        metavar=("X", "Y", "Z"),
+        help="Thread block size as three dimensions X Y Z.",
     )
     return parser.parse_args(argv)
 
 
-@contextlib.contextmanager
-def resolve_library(library):
-    """Yield a filesystem path to the shared library.
-
-    ``ctypes`` can only load a library from a file, so when the library is read
-    from stdin ('-' or omitted) it is spilled to a temporary file for the
-    duration of the run.
-    """
-    if library != "-":
-        yield library
-        return
-    data = sys.stdin.buffer.read()
-    with tempfile.TemporaryDirectory() as tmp:
-        # A unique name avoids dlopen returning a cached handle for a library
-        # that was loaded under the same path earlier in the process.
-        with tempfile.NamedTemporaryFile(dir=tmp, suffix=".so", delete=False) as f:
-            f.write(data)
-            path = f.name
-        yield path
+def read_blob(blob):
+    """Read the kernel blob bytes from a file, or from stdin when '-'."""
+    if blob == "-":
+        return sys.stdin.buffer.read()
+    with open(blob, "rb") as f:
+        return f.read()
 
 
 def main(argv=None):
@@ -125,26 +103,24 @@ def main(argv=None):
         return 1
 
     try:
-        with resolve_library(args.library) as library:
-            xerun(
-                library,
-                args.entry_point,
-                buffers,
-                benchmark=args.benchmark,
-                nruns=args.nruns,
-                nwarmup=args.nwarmup,
-                flops=args.flops,
-            )
+        blob = read_blob(args.blob)
+        xerun(
+            blob,
+            args.kernel_name,
+            buffers,
+            tuple(args.grid),
+            tuple(args.block),
+        )
     except Exception as exc:
-        src = "stdin" if args.library == "-" else args.library
+        src = "stdin" if args.blob == "-" else args.blob
         print(
-            f"xerun: error: running '{args.entry_point}' from {src} failed: "
+            f"xerun: error: launching '{args.kernel_name}' from {src} failed: "
             f"{type(exc).__name__}: {exc}",
             file=sys.stderr,
         )
         return 1
 
-    print(f"xerun: '{args.entry_point}' completed successfully", file=sys.stderr)
+    print(f"xerun: '{args.kernel_name}' completed successfully", file=sys.stderr)
     return 0
 
 

@@ -1,26 +1,32 @@
 #!/scratch/fschlimb/github/lighthouse/.venv/bin/python
 """xeas - Xe assembler (command line interface).
 
-Compiles an "outlined" MLIR payload down to a linkable shared library (.so).
+Compiles an "outlined" MLIR payload down to a serialized GPU kernel binary blob
+(the device kernel embedded by the Xe pipeline in a ``gpu.binary`` op). The blob
+is the exact byte string the Level Zero runtime loads at run time, so ``xerun``
+can launch the kernel directly from it without any host-side launcher.
+
 The compilation itself lives in the importable :mod:`lighthouse.tools.xeas`
-module (``xeas``/``lower_payload``/``compile_shared_library``); this executable
-only owns the command-line interface.
+module (``xeas``/``lower_payload``/``extract_gpu_binary``); this executable only
+owns the command-line interface.
 
 Examples:
-    # produce shared library on stdout
-    matmul.py --dump-kernel=outlined | xeas - --entry-point payload --sizes 4096 4096 4096 > payload.so
+    # produce the kernel blob on stdout
+    matmul.py --dump-kernel=outlined | xeas - --sizes 4096 4096 4096 > payload.bin
 
-    # produce shared library in a file
-    xeas kernel.mlir --entry-point payload --sizes 4096 4096 4096 -o payload.so
+    # produce the kernel blob in a file
+    xeas kernel.mlir --sizes 4096 4096 4096 -o payload.bin
 
-    # force static argument shapes on launcher and gpu kernel
-    xeas kernel.mlir --entry-point payload --sizes 4096 4096 4096 \
-        --input-shape 4096x4096xf32,4096x4096xf16,4096x4096xf16 -o payload.so
+    # let xeas infer the sizes from the kernel signature
+    xeas kernel.mlir -o payload.bin
+
+    # rewrite a dynamically shaped kernel to static shapes
+    xeas kernel.mlir \
+        --input-shape 4096x4096xf32,4096x4096xf16,4096x4096xf16 -o payload.bin
 """
 
 import argparse
 import json as json_lib
-import subprocess
 import sys
 
 from lighthouse.tools.xeas import xeas
@@ -42,17 +48,11 @@ def parse_args(argv=None):
         "or omitted.",
     )
     parser.add_argument(
-        "--entry-point",
-        help="Name of the function in the input IR to expose for external "
-        "linking (callable as _mlir_ciface_<entry-point>). Inferred from the "
-        "payload's kernel launcher when omitted.",
-    )
-    parser.add_argument(
         "--input-shape",
         help="Comma-separated argument descriptors in DIMSxTYPE format (e.g. "
-        "4096x4096xf32,4096x4096xf16,4096x4096xf16), in the order the entry "
-        "function expects them. When provided, xeas rewrites launcher and "
-        "kernel memref argument types to these static shapes.",
+        "4096x4096xf32,4096x4096xf16,4096x4096xf16), one per kernel argument in "
+        "order. When provided, xeas rewrites the gpu.func kernel's dynamically "
+        "shaped memref arguments to these static shapes.",
     )
     parser.add_argument(
         "--assume-in-bounds",
@@ -69,7 +69,7 @@ def parse_args(argv=None):
         "-o",
         "--output",
         default="-",
-        help="Output shared library. Writes to stdout if '-' (default).",
+        help="Output GPU kernel blob file. Writes to stdout if '-' (default).",
     )
 
     # Problem size and layout (must match the IR that was outlined).
@@ -173,12 +173,6 @@ def parse_args(argv=None):
         default=True,
         help="Enable the large register file IGC option.",
     )
-    parser.add_argument(
-        "-O",
-        type=int,
-        default=3,
-        help="Optimization level for the generated code.",
-    )
     return parser.parse_args(argv)
 
 
@@ -229,7 +223,7 @@ def build_params(args):
 
 
 def write_output(library: bytes, output: str):
-    """Write the compiled library to a file, or to stdout when output is '-'."""
+    """Write the kernel blob to a file, or to stdout when output is '-'."""
     if output == "-":
         sys.stdout.buffer.write(library)
         sys.stdout.buffer.flush()
@@ -249,17 +243,12 @@ def main(argv=None):
             _lh_dialects.register_and_load()
             library = xeas(
                 source,
-                args.entry_point,
-                params,
+                params=params,
                 input_shape=args.input_shape,
                 assume_in_bounds=args.assume_in_bounds,
                 xegpu_op_level=args.xegpu_op_level,
                 large_register_file=args.large_register_file,
-                opt_level=args.O,
             )
-    except subprocess.CalledProcessError as exc:
-        # The failing tool already printed its diagnostics to stderr.
-        sys.exit(exc.returncode)
     except Exception as exc:
         sys.exit(f"xeas: error: {exc}")
 
