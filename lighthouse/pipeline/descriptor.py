@@ -23,10 +23,10 @@ class Descriptor:
     def __init__(
         self,
         descriptor: str = "",
-        args: dict = None,
-        opts: dict = None,
-        type: str = None,
-        base_path: str = None,
+        args: dict | None = None,
+        opts: dict | None = None,
+        type: str | None = None,
+        base_path: str | None = None,
     ):
         self.type = type
         self.base_path = base_path

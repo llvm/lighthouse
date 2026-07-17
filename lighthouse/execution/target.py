@@ -15,7 +15,10 @@ class TargetInfo:
     """
 
     def __init__(
-        self, arch: str = None, features: list[str] = None, filter: list[str] = None
+        self,
+        arch: str | None = None,
+        features: list[str] | None = None,
+        filter: list[str] | None = None,
     ):
         self.arch = arch if arch is not None else platform.machine()
         self.features = features if features is not None else self._get_feature_list()

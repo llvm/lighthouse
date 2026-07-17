@@ -49,8 +49,8 @@ class Runner:
     def __init__(
         self,
         module: ir.Module,
-        mem_manager_cls: type = None,
-        shared_libs: list[str] = None,
+        mem_manager_cls: type | None = None,
+        shared_libs: list[str] | None = None,
         opt_level: int = 3,
         target: TargetInfo = None,
     ):
