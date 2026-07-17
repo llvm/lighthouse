@@ -1,7 +1,6 @@
 import struct
 from enum import Enum, auto
 from collections import abc
-from typing import Union
 
 import numpy as np
 
@@ -121,7 +120,7 @@ def gen_tensor_cst(tensor_type: ir.RankedTensorType) -> ir.Value:
     return arith.constant(tensor_type, value)
 
 
-def get_outputs(outputs_or_outputs_type: Union[ir.Value, ir.Type]) -> ir.Value:
+def get_outputs(outputs_or_outputs_type: ir.Value | ir.Type) -> ir.Value:
     if isinstance(outputs_or_outputs_type, ir.Value):
         return outputs_or_outputs_type
     else:
@@ -135,7 +134,7 @@ def get_outputs(outputs_or_outputs_type: Union[ir.Value, ir.Type]) -> ir.Value:
         return linalg.fill(zero, outs=out_uninit)
 
 
-def get_weights(weights_or_weights_type: Union[ir.Value, ir.Type]) -> ir.Value:
+def get_weights(weights_or_weights_type: ir.Value | ir.Type) -> ir.Value:
     if isinstance(weights_or_weights_type, ir.Value):
         return weights_or_weights_type
     else:

@@ -113,11 +113,13 @@ select = [
   "F", # Pyflakes
   "PERF", # Perflint
   "RUF013", # ban implicit optional
+  "RUF018", # assignment in assert
   "RUF022", # __all__ is not sorted
   "RUF030", # print() call in assert
   "RUF034", # useless if-else
   "RUF047", # empty else
   "RUF200", # invalid pyproject.toml
+  "UP", # upgrade syntax to target version
   "W", # Warning
 ]
 ignore = [

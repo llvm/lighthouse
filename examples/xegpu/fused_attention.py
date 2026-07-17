@@ -6,7 +6,6 @@ XeGPU fused attention benchmark.
 """
 
 import argparse
-from typing import Optional
 from functools import cached_property
 
 import numpy as np
@@ -175,7 +174,7 @@ class XeGPUFusedAttention:
         return mod
 
     def schedule_modules(
-        self, stop_at_stage: Optional[str] = None, parameters: Optional[dict] = None
+        self, stop_at_stage: str | None = None, parameters: dict | None = None
     ) -> list[ir.Module]:
         """Generate transform schedule for fused attention."""
         schedules = []

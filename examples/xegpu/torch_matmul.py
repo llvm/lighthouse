@@ -5,7 +5,6 @@
 
 import argparse
 import json
-from typing import Optional
 from functools import partial
 import os
 
@@ -29,7 +28,7 @@ from lighthouse.ingress.torch import gpu_backend, TargetDialect
 
 class Model(nn.Module):
     def __init__(self):
-        super(Model, self).__init__()
+        super().__init__()
 
     def forward(self, A: torch.Tensor, B: torch.Tensor) -> torch.Tensor:
         return torch.matmul(A, B)
@@ -49,7 +48,7 @@ def shared_libs() -> list[str]:
 
 
 def schedule_modules(
-    parameters: Optional[dict] = None, benchmark: bool = False, entry_func: str = "main"
+    parameters: dict | None = None, benchmark: bool = False, entry_func: str = "main"
 ) -> list[ir.Module]:
     assert parameters is not None, "Schedule parameters must be provided"
     schedules = []
@@ -78,7 +77,7 @@ def schedule_modules(
 
 def lower_to_llvm(
     module: ir.Module,
-    parameters: Optional[dict] = None,
+    parameters: dict | None = None,
     benchmark: bool = False,
     entry_func: str = "main",
 ) -> ir.Module:
@@ -217,7 +216,7 @@ enabled via CLI arguments.
         params["device"] = args.target
     if args.json:
         # Override parameters with values from JSON file if provided
-        with open(args.json, "r") as f:
+        with open(args.json) as f:
             json_params = json.load(f)
         params.update(json_params)
 

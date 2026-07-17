@@ -1,5 +1,5 @@
 import ctypes
-from typing import Sequence
+from collections.abc import Sequence
 
 
 def to_ctype(memref_desc) -> ctypes._Pointer:

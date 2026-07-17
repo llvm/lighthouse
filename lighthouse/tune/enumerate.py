@@ -1,5 +1,5 @@
 from itertools import product
-from typing import Sequence
+from collections.abc import Sequence
 
 from .trace import Tuneable, Predicate
 

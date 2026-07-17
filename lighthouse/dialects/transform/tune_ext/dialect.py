@@ -3,7 +3,8 @@ import re
 import ast
 import math
 from dataclasses import dataclass
-from typing import Any, Callable, Literal, Optional, Sequence
+from typing import Any, Literal
+from collections.abc import Callable, Sequence
 from functools import wraps
 from operator import mod
 
@@ -18,7 +19,7 @@ def register_and_load(**kwargs):
 
 def knob(
     *args,
-    result: Optional[ir.Type] = None,
+    result: ir.Type | None = None,
     **kwargs,
 ) -> "KnobValue":
     """Create a `transform.tune.knob` op whose result is wrapped in/cast to KnobValue."""

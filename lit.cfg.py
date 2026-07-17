@@ -8,7 +8,8 @@ import lit.formats
 from lit.TestingConfig import TestingConfig
 
 # Imagine that, all your variables defined and with type information!
-assert isinstance(config := eval("config"), TestingConfig)
+config = eval("config")
+assert isinstance(config, TestingConfig)
 
 
 def find_filecheck() -> str:
@@ -23,7 +24,7 @@ def find_filecheck() -> str:
         return "FileCheck"  # Avoid full path when none is needed
     # Otherwise, search for FileCheck in the system and return the newest one.
     for version in range(21, 0, -1):
-        path = shutil.which("FileCheck-{}".format(version))
+        path = shutil.which(f"FileCheck-{version}")
         if path:
             return path
     # If not found, raise an error.

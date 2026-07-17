@@ -8,7 +8,7 @@ import ctypes
 import os
 from contextlib import contextmanager
 from functools import partial
-from typing import Optional, Callable
+from collections.abc import Callable
 
 from mlir import ir
 from mlir.dialects import transform
@@ -35,7 +35,7 @@ class RunnerCallable(typing.Protocol):
         self,
         inputs: list[ctypes.Structure],
         execution_engine: ExecutionEngine,
-        memory_manager: Optional[MemoryManager],
+        memory_manager: MemoryManager | None,
     ) -> None: ...
 
 
@@ -147,9 +147,10 @@ class Runner:
         self,
         host_input_buffers: list,
         payload_function_name: str = "",
-        argument_access_callback: Optional[
-            Callable[[list[ctypes.Structure], ExecutionEngine, MemoryManager], None]
-        ] = None,
+        argument_access_callback: Callable[
+            [list[ctypes.Structure], ExecutionEngine, MemoryManager], None
+        ]
+        | None = None,
         nruns: int = 100,
         nwarmup: int = 10,
         benchmark: bool = True,

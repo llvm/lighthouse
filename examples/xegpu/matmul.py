@@ -20,7 +20,7 @@ import argparse
 import json
 import warnings
 from dataclasses import dataclass, field
-from typing import Optional, ClassVar
+from typing import ClassVar
 
 import numpy as np
 from mlir import ir
@@ -201,7 +201,7 @@ class XeGPUMatMul:
         return mod
 
     def schedule_modules(
-        self, stop_at_stage: Optional[str] = None, parameters: Optional[dict] = None
+        self, stop_at_stage: str | None = None, parameters: dict | None = None
     ) -> list[ir.Module]:
         assert parameters is not None, "Schedule parameters must be provided"
         schedules = []
@@ -496,7 +496,7 @@ enabled via CLI arguments.
     # By default the tile size parameters are left undefined
     if args.json:
         # Override parameters with values from JSON file if provided
-        with open(args.json, "r") as f:
+        with open(args.json) as f:
             json_params = json.load(f)
         params.update(json_params)
         # Override with CLI params
