@@ -240,12 +240,9 @@ def bundle_xegpu_softmax_schedule(
 
     # Set layout attributes for xegpu.store_nd and xegpu.store_matrix ops.
     store_nd_ops = match_and_split(gpu_func, ops={"xegpu.store_nd"}, nhandles=1)
-    store_matrix_ops = match_and_split(gpu_func, ops={"xegpu.store_matrix"}, nhandles=4)
     sg_layout = [parameters["sg_rows"], 1]
     sg_data = [parameters["sg_rows"], parameters["reduction_step_size"]]
     for store_op in store_nd_ops:
-        xegpu.set_anchor_layout(store_op, sg_layout=sg_layout, sg_data=sg_data)
-    for store_op in store_matrix_ops:
         xegpu.set_anchor_layout(store_op, sg_layout=sg_layout, sg_data=sg_data)
 
     if stop_at_stage == "xegpu-wg":
