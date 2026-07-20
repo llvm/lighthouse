@@ -3,10 +3,22 @@
 import math
 
 from mlir import ir
-from mlir.dialects import arith, bufferization, linalg, memref, tensor
+from mlir.dialects import (
+    arith,
+    bufferization,
+    linalg,
+    math as mlir_math,
+    memref,
+    tensor,
+)
 
 from lighthouse.utils.mlir import func_cif
-from lighthouse.ingress.mlir_gen.utils import emit_buf_to_tensor
+from lighthouse.ingress.mlir_gen.utils import (
+    affine_map,
+    emit_buf_to_tensor,
+    parallel,
+    reduction,
+)
 
 
 def generate_gpu_attention_payload(
@@ -105,24 +117,82 @@ def generate_gpu_attention_payload(
             scaled_qkt_init = tensor.empty(qkt_shape_3d, dtype)
             scaled_qkt = linalg.mul(qkt, scale_tensor, outs=[scaled_qkt_init])
 
-            # Step 4: Apply softmax along the last dimension (dim=2 in 3D)
-            softmax_init = tensor.empty(qkt_shape_3d, dtype)
-            attention_weights = linalg.softmax(
-                result=[ir.RankedTensorType.get(qkt_shape_3d, dtype)],
-                input=scaled_qkt,
-                output=softmax_init,
-                dimension=2,
-            )
+            # Step 4: Softmax numerator, emitted in decomposed form but WITHOUT
+            # the final division. This is the flash-attention reordering: keep
+            # the unnormalized probabilities P = exp(x - rowmax) and the per-row
+            # sum, and defer the division until after the P*V matmul (the row-sum
+            # normalization commutes past P*V since it is a per-row scalar).
+            #
+            # Softmax reduces over the last dimension (j, dim=2). The iteration
+            # space is 3D (batch, i, j); reductions reduce over j.
+            reduce_shape_3d = (batch_dim, n_ctx)
+            d0 = ir.AffineDimExpr.get(0)
+            d1 = ir.AffineDimExpr.get(1)
+            d2 = ir.AffineDimExpr.get(2)
+            par_map_3d = affine_map(3, [d0, d1, d2])
+            red_map_3d = affine_map(3, [d0, d1])
 
-            # Step 5: Multiply attention weights by V using batch_matmul
-            # attention_weights: (batch_dim, n_ctx, n_ctx) @ V: (batch_dim, n_ctx, n_head)
+            # Step 4a: Row max reduction: max[b, i] = max_j scaled_qkt[b, i, j].
+            neg_inf = arith.constant(dtype, float("-inf"))
+            max_init = tensor.empty(reduce_shape_3d, dtype)
+            max_acc = linalg.fill(neg_inf, outs=[max_init])
+
+            @linalg.generic(
+                [scaled_qkt],
+                [max_acc],
+                [par_map_3d, red_map_3d],
+                [parallel, parallel, reduction],
+            )
+            def row_max(x, acc):
+                return arith.MaximumFOp(x, acc)
+
+            # Step 4b: Numerator P = exp(x - rowmax).
+            p_init = tensor.empty(qkt_shape_3d, dtype)
+
+            @linalg.generic(
+                [scaled_qkt, row_max],
+                [p_init],
+                [par_map_3d, red_map_3d, par_map_3d],
+                [parallel, parallel, parallel],
+            )
+            def numerator(x, m, _out):
+                centered = arith.SubFOp(x, m).result
+                return mlir_math.exp(centered)
+
+            # Step 4c: Row sum reduction over the numerator:
+            #    sum[b, i] = sum_j P[b, i, j].
+            sum_init = tensor.empty(reduce_shape_3d, dtype)
+            sum_acc = linalg.fill(zero, outs=[sum_init])
+
+            @linalg.generic(
+                [numerator],
+                [sum_acc],
+                [par_map_3d, red_map_3d],
+                [parallel, parallel, reduction],
+            )
+            def row_sum(p, acc):
+                return arith.AddFOp(p, acc)
+
+            # Step 5: Multiply the UNNORMALIZED numerator P by V using batch_matmul.
+            # P: (batch_dim, n_ctx, n_ctx) @ V: (batch_dim, n_ctx, n_head)
             # Result: (batch_dim, n_ctx, n_head)
-            output_3d_init = tensor.empty(collapsed_shape_3d, dtype)
-            output_3d_init_filled = linalg.fill(zero, outs=[output_3d_init])
+            pv_init = tensor.empty(collapsed_shape_3d, dtype)
+            pv_init_filled = linalg.fill(zero, outs=[pv_init])
 
-            result_3d = linalg.batch_matmul(
-                attention_weights, V_3d, outs=[output_3d_init_filled]
+            pv = linalg.batch_matmul(numerator, V_3d, outs=[pv_init_filled])
+
+            # Step 6: Apply the deferred division by the row sum:
+            #    out[b, i, k] = pv[b, i, k] / sum[b, i].
+            result_3d_init = tensor.empty(collapsed_shape_3d, dtype)
+
+            @linalg.generic(
+                [pv, row_sum],
+                [result_3d_init],
+                [par_map_3d, red_map_3d, par_map_3d],
+                [parallel, parallel, parallel],
             )
+            def result_3d(pv_val, s, _out):
+                return arith.DivFOp(pv_val, s)
 
             # Materialize 3D result back to 3D output memref
             bufferization.materialize_in_destination(
