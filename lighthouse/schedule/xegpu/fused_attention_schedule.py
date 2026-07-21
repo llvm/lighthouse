@@ -11,6 +11,7 @@ from mlir.dialects.transform.vector import (
     apply_patterns_vector_cast_away_vector_leading_one_dim,
 )
 
+from lighthouse.dialects.transform import transform_ext
 from lighthouse.pipeline.helper import (
     canonicalize,
     match,
@@ -171,6 +172,18 @@ def tile_and_fuse_reduction_dim(
     scale_mul = match_and_split(func, ops={"linalg.mul"}, nhandles=1)[0]
     transpose_op = match_and_split(func, ops={"linalg.transpose"}, nhandles=1)[0]
 
+    # Grab the QK^T-out and scale fills so step 6 can sink them into the scf.for
+    # alongside the QK^T producer chain. In program order after outer tiling the
+    # 5 fills are: 0 QK^T out, 1 scale tensor, 2 row-max init, 3 P*V out,
+    # 4 row-sum init. Only fills 0 and 1 belong to the transient QK^T block; the
+    # other three are loop-carried softmax accumulators and stay in the forall.
+    # These two handles are not touched by the reduction tiling in steps 3-5
+    # (they feed qkt/scale_mul, which are only fused in step 6), so they survive
+    # just like the scale_mul/qkt handles above.
+    qkt_out_fill, scale_fill, _, _, _ = match_and_split(
+        func, ops={"linalg.fill"}, nhandles=5
+    )
+
     reduction_step_size = parameters.get("inner_loop_tile_size", 64)
 
     # Step 3: Tile the producer reduction (row max) along its reduction dim (the
@@ -198,7 +211,12 @@ def tile_and_fuse_reduction_dim(
     # Step 6: Fuse the QK^T producer chain into the scf.for reduction loop. The
     # loop slices the scaled QK^T tensor, so fuse from the closest producer
     # outward: the scale multiply, then the QK^T matmul, then the K transpose.
-    for producer in [scale_mul, qkt, transpose_op]:
+    # The QK^T-out and scale fills are pulled in right after the op that consumes
+    # them (qkt reads qkt_out_fill as its init, scale_mul reads scale_fill as an
+    # input) so they become per-iteration 1x128x64 inits instead of full-tile
+    # 1x128x4096 buffers. After vectorization each collapses to its splat
+    # constant, eliminating the two 1x128x4096 scratch allocs entirely.
+    for producer in [scale_mul, scale_fill, qkt, qkt_out_fill, transpose_op]:
         _, fused_loop = structured.structured_fuse_into_containing_op(
             anytype,
             anytype,
@@ -280,6 +298,17 @@ def bundle_xegpu_fused_attention_schedule(
     if stop_at_stage == "inner-tiled":
         raise PipelineInterrupt()
 
+    # Drop the batch unit extent (tile size 1) from the linalg ops in the loop
+    # nest before vectorizing. Tiling the batch dim by 1 left every op with a
+    # leading 1x... shape; folding it here (via rank-reducing slices) means
+    # vectorization emits 128x64 / 128 vectors directly instead of 1x128x64
+    # vectors wrapped in shape_casts, and bufferization allocates unit-dim-free
+    # memrefs (e.g. memref<128xf16> instead of memref<1x128xf16>).
+    with ir.InsertionPoint(transform.apply_patterns(func).patterns):
+        structured.apply_patterns_linalg_fold_unit_extent_dims_via_slices()
+    transform.apply_cse(func)
+    canonicalize(func)
+
     # Vectorize the fused loop nest: rewrite the remaining linalg ops (the tiled
     # matmuls, reductions and elementwise ops inside the scf.for) into vector
     # ops.
@@ -320,8 +349,8 @@ def bundle_xegpu_fused_attention_schedule(
         func,
         "promote-buffers-to-stack",
         options={
-            "max-alloc-size-in-bytes": "8192",
-            "max-rank-of-allocated-memref": "2",
+            "max-alloc-size-in-bytes": "16384",
+            "max-rank-of-allocated-memref": "3",
         },
     )
 
@@ -360,6 +389,26 @@ def bundle_xegpu_fused_attention_schedule(
 
     transform.print_(target=mod, name="after gpu kernel outlining")
     if stop_at_stage == "gpu-outlining":
+        raise PipelineInterrupt()
+
+    # Set xevm target
+    mod = apply_registered_pass(
+        mod,
+        "xevm-attach-target",
+        options={"O": "3", "chip": "bmg"},
+    )
+
+    # Convert vectot to xegpu
+    gpu_mod_ops = match_and_split(mod, ops={"gpu.module"})
+    for gpu_mod in gpu_mod_ops:
+        gpu_func = match(gpu_mod, ops={"gpu.func"})
+        allocas = match(gpu_func, ops={"memref.alloca"})
+        transform_ext.update_address_space(allocas, address_space=3)
+        gpu_func = apply_registered_pass(gpu_func, "convert-vector-to-xegpu")
+        transform.apply_cse(gpu_func)
+        gpu_func = apply_registered_pass(gpu_func, "loop-invariant-code-motion")
+
+    if stop_at_stage == "xegpu-initial":
         raise PipelineInterrupt()
 
     return mod
