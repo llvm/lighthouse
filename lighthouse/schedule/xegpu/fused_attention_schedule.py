@@ -4,7 +4,12 @@ from typing import Optional
 
 from mlir import ir
 from mlir.dialects import transform
-from mlir.dialects.transform import structured
+from mlir.dialects.transform import structured, loop, xegpu
+from mlir.dialects.transform import bufferization as transform_bufferization
+from mlir.dialects.bufferization import LayoutMapOption
+from mlir.dialects.transform.vector import (
+    apply_patterns_vector_cast_away_vector_leading_one_dim,
+)
 
 from lighthouse.pipeline.helper import (
     canonicalize,
@@ -99,14 +104,14 @@ def tile_and_fuse_parallel_dim(
     scale_mul = match_and_split(func, ops={"linalg.mul"}, nhandles=1)[0]
     transpose_op = match_and_split(func, ops={"linalg.transpose"}, nhandles=1)[0]
 
-    batch_tile = parameters.get("batch_tile_size", 1)
+    wg_tile_size = parameters.get("wg_rows", 128)
     _, forall_loop = structured.structured_tile_using_forall(
         anytype,
         anytype,
         div_op,
         num_threads=[],
         tile_sizes=[],
-        static_tile_sizes=(batch_tile, 0, 0),
+        static_tile_sizes=(1, wg_tile_size, 0),
     )
     # Fuse consumers-to-producers. Both the sum reduction and the P*V matmul feed
     # the final division; whichever is fused last is cloned closest to the
@@ -240,6 +245,7 @@ def bundle_xegpu_fused_attention_schedule(
         op_name="func.func",
         deduplicate=True,
     )
+    transform.print_(target=func, name="initial payload function")
 
     # Step 1: Generalize both matmuls (QK^T and P*V) into linalg.generic ops so
     # the reduction-fusion machinery can operate on them uniformly.
@@ -258,6 +264,7 @@ def bundle_xegpu_fused_attention_schedule(
     # Outer tiling: partition the whole computation along the parallel batch
     # dimension so each workgroup computes attention for its own batch slice.
     tile_and_fuse_parallel_dim(func, anytype, parameters)
+    transform.print_(target=func, name="after outer tiling and fusion")
 
     if stop_at_stage == "outer-tiled":
         raise PipelineInterrupt()
@@ -268,15 +275,91 @@ def bundle_xegpu_fused_attention_schedule(
     # `linalg.fill`s (rather than `tensor.extract_slice` of an outside fill), so
     # the dependant-reduction fusion's zero-init legality check now succeeds.
     tile_and_fuse_reduction_dim(func, anytype, parameters)
+    transform.print_(target=func, name="after inner tiling and fusion")
 
     if stop_at_stage == "inner-tiled":
         raise PipelineInterrupt()
 
-    # NOTE: The downstream vectorize -> bufferize -> GPU -> XeGPU lowering is
-    # temporarily disabled. It assumed the previous kernel structure (an
-    # scf.forall workgroup loop whose inner P*V vector.contract was rewritten by
-    # the replace_with_fused_attention workaround). The fused kernel is now built
-    # directly at the linalg level as a single scf.for reduction loop (online
-    # softmax), so that lowering no longer matches and must be reworked to target
-    # the new structure. Until then, stop here and return the fused linalg IR.
+    # Vectorize the fused loop nest: rewrite the remaining linalg ops (the tiled
+    # matmuls, reductions and elementwise ops inside the scf.for) into vector
+    # ops.
+    func = structured.VectorizeChildrenAndApplyPatternsOp(
+        func,
+        fold_type_extensions_into_contract=True,
+    ).result
+    transform.apply_cse(func)
+    canonicalize(func)
+
+    # Try to remove any unit dimensions that may have been introduced due to tiling (e.g. batch dim of 1)
+    with ir.InsertionPoint(transform.apply_patterns(func).patterns):
+        apply_patterns_vector_cast_away_vector_leading_one_dim()
+
+    transform.print_(target=func, name="after vectorization")
+    if stop_at_stage == "vectorized":
+        raise PipelineInterrupt()
+
+    # Bufferize: convert tensors to memrefs across function boundaries with an
+    # identity layout map, then fold memref.subviews into the vector transfer
+    # ops.
+    mod = apply_registered_pass(mod, "eliminate-empty-tensors")
+    identity_layout = LayoutMapOption.IdentityLayoutMap
+    mod = transform_bufferization.OneShotBufferizeOp(
+        mod,
+        allow_return_allocs_from_loops=False,
+        bufferize_function_boundaries=True,
+        function_boundary_type_conversion=identity_layout,
+    ).result
+    mod = apply_registered_pass(mod, "fold-memref-alias-ops")
+    transform.apply_cse(mod)
+    canonicalize(mod)
+
+    # Promote small memref.allocs (the per-workgroup scratch buffers) to the
+    # stack in the payload function.
+    func = match(mod, ops={"func.func"})
+    func = apply_registered_pass(
+        func,
+        "promote-buffers-to-stack",
+        options={
+            "max-alloc-size-in-bytes": "8192",
+            "max-rank-of-allocated-memref": "2",
+        },
+    )
+
+    transform.print_(target=func, name="after bufferization")
+    if stop_at_stage == "bufferized":
+        raise PipelineInterrupt()
+
+    # Convert forall to parallel
+    wg_loops = match_and_split(mod, ops={"scf.forall"})
+    for wg_loop in wg_loops:
+        wg_loop = loop.loop_forall_to_parallel([anytype], wg_loop)
+    func = transform.get_parent_op(anytype, wg_loop)
+
+    # Convert scf.parallel to gpu.launch
+    func = apply_registered_pass(func, "gpu-map-parallel-loops")
+    func = apply_registered_pass(func, "convert-parallel-loops-to-gpu")
+    func = apply_registered_pass(func, "lower-affine")
+    transform.apply_cse(func)
+    canonicalize(func)
+
+    # Set the number of threads for the gpu.launch operation
+    launch_op = match_and_split(func, ops={"gpu.launch"})
+    wg_rows = parameters["wg_rows"]
+    sg_rows = parameters["sg_rows"]
+    subgroup_size = parameters["subgroup_size"]
+    num_subgroups = wg_rows // sg_rows
+    num_threads = num_subgroups * subgroup_size
+    xegpu.set_gpu_launch_threads(launch_op[0], threads=[num_threads, 1, 1])
+
+    # Outline gpu func
+    func = apply_registered_pass(func, "lower-affine")
+    canonicalize(func)
+    func = apply_registered_pass(func, "gpu-launch-sink-index-computations")
+    mod = apply_registered_pass(mod, "gpu-kernel-outlining")
+    transform.apply_cse(mod)
+
+    transform.print_(target=mod, name="after gpu kernel outlining")
+    if stop_at_stage == "gpu-outlining":
+        raise PipelineInterrupt()
+
     return mod
