@@ -2,7 +2,9 @@ from .dialect import register_and_load
 from .dialect import TransformExtensionDialect
 
 from .ops.wrap_in_benching_func import wrap_in_benching_func
+from .ops.assign_tile_sizes import assign_tile_sizes
 from .ops.get_named_attribute import get_named_attribute
+from .ops.get_tile_sizes import get_tile_sizes
 from .ops.param_cmp_eq import param_cmp_eq
 from .ops.replace import replace
 from .ops.convert_func_results_to_args import convert_func_results_to_args
@@ -12,15 +14,21 @@ from .ops.get_tiling_sizes import get_tiling_sizes
 from .ops.update_address_space import update_address_space
 from .ops.replace_with_fused_attention import replace_with_fused_attention
 from .ops.filter_num_loops import filter_num_loops
+from .ops.filter_elementwise import filter_elementwise
+from .ops.get_leading_unit_tile_sizes import get_leading_unit_tile_sizes
 from .ops.move_offsets_to_subview import move_offsets_to_subview
 
 __all__ = [
     "TransformExtensionDialect",
+    "assign_tile_sizes",
     "convert_func_results_to_args",
     "extract_handle",
+    "filter_elementwise",
     "filter_num_loops",
+    "get_leading_unit_tile_sizes",
     "get_named_attribute",
     "get_named_attribute",
+    "get_tile_sizes",
     "get_tileable_consumers",
     "get_tiling_sizes",
     "move_offsets_to_subview",
