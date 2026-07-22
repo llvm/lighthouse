@@ -417,7 +417,7 @@ def bundle_xegpu_fused_attention_schedule(
         gpu_func = match(gpu_mod, ops={"gpu.func"})
         allocas = match(gpu_func, ops={"memref.alloca"})
         transform_ext.update_address_space(allocas, address_space=3)
-        # gpu_func = apply_registered_pass(gpu_func, "convert-vector-to-xegpu")
+        gpu_func = apply_registered_pass(gpu_func, "convert-vector-to-xegpu")
         transform.apply_cse(gpu_func)
         gpu_func = apply_registered_pass(gpu_func, "loop-invariant-code-motion")
 
