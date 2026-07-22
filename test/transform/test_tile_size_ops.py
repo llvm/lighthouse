@@ -6,15 +6,9 @@ from mlir.dialects.transform import structured
 
 import lighthouse.dialects as lh_dialects
 from lighthouse import transform as lh_transform
-from lighthouse.dialects.transform.transform_ext.ops.assign_tile_sizes import (
-    assign_tile_sizes,
-)
-from lighthouse.dialects.transform.transform_ext.ops.get_leading_unit_tile_sizes import (
-    get_leading_unit_tile_sizes,
-)
-from lighthouse.dialects.transform.transform_ext.ops.get_tile_sizes import (
-    get_tile_sizes,
-)
+from lighthouse.dialects.transform.transform_ext import assign_tile_sizes
+from lighthouse.dialects.transform.transform_ext import get_leading_unit_tile_sizes
+from lighthouse.dialects.transform.transform_ext import get_tile_sizes
 from lighthouse.schedule.builders import schedule_boilerplate
 
 
