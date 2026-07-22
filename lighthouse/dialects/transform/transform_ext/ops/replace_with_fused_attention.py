@@ -100,6 +100,62 @@ def compute_qkt_chunks(
     return qkt_chunks
 
 
+def apply_causal_mask(
+    qkt_chunks,
+    q_row_offset,
+    loop_idx,
+    k_tile_offsets,
+    wg_rows,
+    k_subtile_size,
+    num_k_tiles,
+    element_type,
+):
+    """Mask future keys in each Q@K^T chunk for causal attention.
+
+    Chunk `tile_idx` entry [r, c] holds score(query row, key col) where the global
+    positions are query_row = q_row_offset + r and key_col = loop_idx +
+    k_tile_offsets[tile_idx] + c. A key is in the future when key_col > query_row;
+    such entries are overwritten with -6e4 (f16-safe "-inf") so their exp() is 0 and
+    they drop out of the online softmax. Returns the masked chunk list.
+
+    q_row_offset is the Q load's row index (the forall query-block offset); the query
+    dim is tiled (wg_rows < seq_len), so masking uses global, not tile-local, rows.
+    """
+    index_type = ir.IndexType.get()
+
+    # Global query rows [wg_rows]: iota + q_row_offset, broadcast to [wg_rows, k_sub]
+    # (broadcast to [k_sub, wg_rows] then transpose, matching the m_ij pattern).
+    row_iota = vector.step(ir.VectorType.get([wg_rows], index_type))
+    row_off = vector.broadcast(ir.VectorType.get([wg_rows], index_type), q_row_offset)
+    row_global = arith.addi(row_iota, row_off)
+    row_bcast = vector.broadcast(
+        ir.VectorType.get([k_subtile_size, wg_rows], index_type), row_global
+    )
+    row_2d = vector.transpose(
+        ir.VectorType.get([wg_rows, k_subtile_size], index_type), row_bcast, [1, 0]
+    )
+
+    neg_inf = emit_vector_constant((wg_rows, k_subtile_size), -6e4, element_type)
+    col_iota = vector.step(ir.VectorType.get([k_subtile_size], index_type))
+
+    masked_chunks = []
+    for tile_idx in range(num_k_tiles):
+        # Global key columns [k_sub] for this tile: loop_idx + tile_offset + iota.
+        k_tile_offset = arith.addi(loop_idx, k_tile_offsets[tile_idx])
+        col_off = vector.broadcast(
+            ir.VectorType.get([k_subtile_size], index_type), k_tile_offset
+        )
+        col_global = arith.addi(col_iota, col_off)
+        col_2d = vector.broadcast(
+            ir.VectorType.get([wg_rows, k_subtile_size], index_type), col_global
+        )
+        # future key when col_global > row_global -> select -6e4, else keep score.
+        is_future = arith.cmpi(arith.CmpIPredicate.sgt, col_2d, row_2d)
+        masked_chunks.append(arith.select(is_future, neg_inf, qkt_chunks[tile_idx]))
+
+    return masked_chunks
+
+
 def compute_qkt_max_scaled(qkt_chunks, num_k_tiles, m_i_init, scale_vector):
     """Reduce Q@K^T chunks to a row-wise scaled max.
 
@@ -298,6 +354,7 @@ class ReplaceWithFusedAttentionOp(
     scale: ext.Operand[transform.AnyOpType]
     output: ext.Operand[transform.AnyOpType]
     tile_size: ir.IntegerAttr
+    causal: ir.IntegerAttr  # 0/1 flag (ext op attrs don't support BoolAttr)
     new_output: ext.Result[transform.AnyOpType[()]] = ext.infer_result()
 
     @classmethod
@@ -374,6 +431,17 @@ class ReplaceWithFusedAttentionOp(
             # Get tile size
             tile_size_value = ir.IntegerAttr(op.tile_size).value
 
+            # Causal masking flag (opt-in; default 0 leaves IR unchanged)
+            causal = bool(ir.IntegerAttr(op.causal).value)
+
+            # Query-row block offset: the Q load's sequence-row index. Indices are
+            # operands[1:-1] (drop the memref and the trailing padding); the row is
+            # the second-to-last index (same convention as the K load in
+            # compute_qkt_chunks), with the head-dim column index last. When the
+            # query dim is tiled this is the forall block offset, so causal masking
+            # can compare global query rows against global key columns.
+            q_row_offset = list(q_load_op.operands[1:-1])[-2]
+
             # Get element type from q_load result
             element_type = q_vector_type.element_type
 
@@ -446,6 +514,21 @@ class ReplaceWithFusedAttentionOp(
                         num_k_tiles,
                         element_type,
                     )
+
+                    # Causal mask: overwrite future-key scores with -6e4 before the
+                    # running max/exp so they vanish from the online softmax. Masking
+                    # the chunks here covers both the max-reduce and the exp below.
+                    if causal:
+                        qkt_chunks = apply_causal_mask(
+                            qkt_chunks,
+                            q_row_offset,
+                            loop_idx,
+                            k_tile_offsets,
+                            wg_rows,
+                            k_subtile_size,
+                            num_k_tiles,
+                            element_type,
+                        )
 
                     # Reduce Q@K^T chunks to row-wise scaled max: [wg_rows]
                     qkt_max_scaled = compute_qkt_max_scaled(
@@ -541,6 +624,7 @@ def replace_with_fused_attention(
     scale: ir.Value,
     output: ir.Value,
     tile_size: int | ir.IntegerAttr,
+    causal: bool | ir.IntegerAttr = False,
 ) -> ir.Value:
     """Replace a given (standard) attention output with an equivalent output
     that is computed in a fused fashion (fused attention optimization).
@@ -552,13 +636,17 @@ def replace_with_fused_attention(
         scale: Handle to scale constant operation (arith.constant)
         output: Handle to output operation to replace (vector.contract)
         tile_size: Tile size for the reduction dimension tiling (K/V sequence length)
+        causal: When True, mask future keys (key_col > query_row) so attention is
+            causal/autoregressive. Default False (non-causal, IR unchanged).
 
     Returns:
         Handle to the new output operation
     """
     if not isinstance(tile_size, ir.IntegerAttr):
         tile_size = ir.IntegerAttr.get(ir.IntegerType.get_signless(64), tile_size)
+    if not isinstance(causal, ir.IntegerAttr):
+        causal = ir.IntegerAttr.get(ir.IntegerType.get_signless(64), int(causal))
 
     return ReplaceWithFusedAttentionOp(
-        q_load, k_load, v_load, scale, output, tile_size=tile_size
+        q_load, k_load, v_load, scale, output, tile_size=tile_size, causal=causal
     ).new_output
