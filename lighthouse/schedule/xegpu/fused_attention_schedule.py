@@ -293,21 +293,34 @@ def bundle_xegpu_fused_attention_schedule(
     # `linalg.fill`s (rather than `tensor.extract_slice` of an outside fill), so
     # the dependant-reduction fusion's zero-init legality check now succeeds.
     tile_and_fuse_reduction_dim(func, anytype, parameters)
-    transform.print_(target=func, name="after inner tiling and fusion")
-
-    if stop_at_stage == "inner-tiled":
-        raise PipelineInterrupt()
-
     # Drop the batch unit extent (tile size 1) from the linalg ops in the loop
     # nest before vectorizing. Tiling the batch dim by 1 left every op with a
     # leading 1x... shape; folding it here (via rank-reducing slices) means
     # vectorization emits 128x64 / 128 vectors directly instead of 1x128x64
     # vectors wrapped in shape_casts, and bufferization allocates unit-dim-free
     # memrefs (e.g. memref<128xf16> instead of memref<1x128xf16>).
-    with ir.InsertionPoint(transform.apply_patterns(func).patterns):
-        structured.apply_patterns_linalg_fold_unit_extent_dims_via_slices()
+    # The fold_unit_extent_dims patterns only rewrite linalg.generic ops, so
+    # first generalize the remaining named/category ops in the loop nest (the K
+    # transpose, the scale linalg.mul and the div/mul linalg.elementwise ops)
+    # into generics. Without this the unit dim survives on exactly those ops.
+    func = apply_registered_pass(
+        func,
+        "linalg-morph-ops",
+        options={"category-to-generic": True},
+    )
     transform.apply_cse(func)
     canonicalize(func)
+    transform.print_(target=func, name="after generalizing")
+
+    with ir.InsertionPoint(transform.apply_patterns(func).patterns):
+        structured.apply_patterns_linalg_fold_unit_extent_dims_via_slices()
+        structured.apply_patterns_linalg_fold_unit_extent_dims_via_reshapes()
+    transform.apply_cse(func)
+    canonicalize(func)
+    transform.print_(target=func, name="after inner tiling and fusion")
+
+    if stop_at_stage == "inner-tiled":
+        raise PipelineInterrupt()
 
     # Vectorize the fused loop nest: rewrite the remaining linalg ops (the tiled
     # matmuls, reductions and elementwise ops inside the scf.for) into vector
@@ -404,7 +417,7 @@ def bundle_xegpu_fused_attention_schedule(
         gpu_func = match(gpu_mod, ops={"gpu.func"})
         allocas = match(gpu_func, ops={"memref.alloca"})
         transform_ext.update_address_space(allocas, address_space=3)
-        gpu_func = apply_registered_pass(gpu_func, "convert-vector-to-xegpu")
+        # gpu_func = apply_registered_pass(gpu_func, "convert-vector-to-xegpu")
         transform.apply_cse(gpu_func)
         gpu_func = apply_registered_pass(gpu_func, "loop-invariant-code-motion")
 
