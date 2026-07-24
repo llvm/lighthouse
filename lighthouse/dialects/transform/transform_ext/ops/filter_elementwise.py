@@ -16,7 +16,7 @@ def _all_loops_parallel(op: ir.OpView) -> bool:
 def is_elementwise(op: ir.Operation | ir.OpView) -> bool:
     """Check whether the op is an elementwise linalg op.
 
-    NOTE: Mimick correspodnig Linalg util as it is not exposed
+    NOTE: Mimics corresponding Linalg util as it is not exposed
           in the Python bindings yet.
     """
     ov = op.opview if isinstance(op, ir.Operation) else op
