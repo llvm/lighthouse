@@ -31,7 +31,7 @@ def _disable_small_tiles(
     op: ir.OpView,
     out_map: ir.AffineMap,
     sizes: list[int],
-    tile_size: int,
+    tile_size: int = DEFAULT_TILE_SIZE,
 ) -> None:
     """Disable tiling for parallel dims whose static extent is below tile_size.
 
