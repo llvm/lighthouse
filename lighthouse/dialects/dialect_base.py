@@ -26,7 +26,7 @@ class DialectExtension(ext.Dialect, name="base_extension"):
         try:
             super().load(*args, **kwargs)
         except ext.DialectAlreadyLoadedError:
-            pass
+            return
 
         # Attach interfaces to just registered/loaded operations.
         for op_cls in cls.operations:
