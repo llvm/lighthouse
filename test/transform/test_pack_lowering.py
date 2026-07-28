@@ -13,7 +13,7 @@ from lighthouse.schedule.x86 import lower_packs_unpacks
 def run(name, payload_str, make_schedule):
     print(f"Test: {name}", flush=True)
     with ir.Context(), ir.Location.unknown():
-        lh_dialects.register_and_load(reload=True)
+        lh_dialects.register_and_load()
         payload = ir.Module.parse(payload_str)
         # Keep the schedule module alive while it is applied.
         sched = make_schedule()
