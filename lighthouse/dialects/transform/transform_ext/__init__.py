@@ -11,10 +11,12 @@ from .ops.convert_func_results_to_args import convert_func_results_to_args
 from .ops.extract_handle import extract_handle
 from .ops.get_tileable_consumers import get_tileable_consumers
 from .ops.get_tiling_sizes import get_tiling_sizes
+from .ops.trace_producers import trace_producers
 from .ops.update_address_space import update_address_space
 from .ops.replace_with_fused_attention import replace_with_fused_attention
 from .ops.filter_num_loops import filter_num_loops
 from .ops.filter_elementwise import filter_elementwise
+from .ops.filter_reduction_ops import filter_reduction_ops
 from .ops.get_leading_unit_tile_sizes import get_leading_unit_tile_sizes
 from .ops.move_offsets_to_subview import move_offsets_to_subview
 from .ops.fold_singleton_extract_slice import fold_singleton_extract_slice
@@ -26,8 +28,9 @@ __all__ = [
     "extract_handle",
     "filter_elementwise",
     "filter_num_loops",
-    "get_leading_unit_tile_sizes",
+    "filter_reduction_ops",
     "fold_singleton_extract_slice",
+    "get_leading_unit_tile_sizes",
     "get_named_attribute",
     "get_named_attribute",
     "get_tile_sizes",
@@ -38,6 +41,7 @@ __all__ = [
     "register_and_load",
     "replace",
     "replace_with_fused_attention",
+    "trace_producers",
     "update_address_space",
     "wrap_in_benching_func",
 ]
