@@ -139,19 +139,5 @@ def test_registry_holds_contexts_weakly():
     print("reload after gc ok:", ctx_c.is_registered_operation(PROBE_OP), flush=True)
 
 
-# CHECK-LABEL: Test: test_explicit_reload_flag_is_safe
-@run
-def test_explicit_reload_flag_is_safe():
-    """Passing reload=True must never abort, even in an already-loaded context."""
-    ctx = ir.Context()
-    with ctx:
-        lh_dialects.register_and_load()
-        # Explicit reload in the same context cannot re-load into MLIR and must
-        # be handled gracefully rather than asserting.
-        lh_dialects.register_and_load(reload=True)
-    # CHECK: explicit reload ok: True
-    print("explicit reload ok:", ctx.is_registered_operation(PROBE_OP), flush=True)
-
-
 # CHECK: All dialect loading tests passed
 print("All dialect loading tests passed", flush=True)

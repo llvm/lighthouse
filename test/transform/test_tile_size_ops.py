@@ -15,7 +15,7 @@ from lighthouse.schedule.builders import schedule_boilerplate
 def run(name, payload_str, build_schedule):
     print(f"Test: {name}", flush=True)
     with ir.Context(), ir.Location.unknown():
-        lh_dialects.register_and_load(reload=True)
+        lh_dialects.register_and_load()
         payload = ir.Module.parse(payload_str)
         sched = build_schedule()
         sched.body.operations[0].apply(payload.operation)
