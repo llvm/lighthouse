@@ -1,6 +1,7 @@
 from mlir import ir
 from mlir.dialects import ext, transform
 from mlir.dialects.transform import DiagnosedSilenceableFailure
+from collections import deque
 
 from lighthouse.dialects.transform.transform_ext import TransformExtensionDialect
 
@@ -37,26 +38,35 @@ class TraceProducersOp(TransformExtensionDialect.Operation, name="trace_producer
 
             leaf = target_ops[0]
             # Walk the SSA producer graph via operand -> owner edges.
+            # Use BFS to guarantee closest-first ordering by graph distance.
             producers: list[ir.Operation] = []
-            visited: set[int] = set()
-            worklist: list[ir.Operation] = []
+            visited_ids: set[int] = set()
+            worklist = deque()
+
+            def producer_owner_op(value: ir.Value) -> ir.Operation | None:
+                owner = value.owner
+                if isinstance(owner, ir.OpView):
+                    return owner.operation
+                if isinstance(owner, ir.Operation):
+                    return owner
+                # Block arguments do not have a direct defining op.
+                return None
 
             for operand in leaf.operands:
-                owner = operand.owner
-                if isinstance(owner, ir.OpView):
-                    worklist.append(owner.operation)
+                owner_op = producer_owner_op(operand)
+                if owner_op is not None and id(owner_op) not in visited_ids:
+                    visited_ids.add(id(owner_op))
+                    worklist.append(owner_op)
 
             while worklist:
-                producer = worklist.pop()
-                if producer in visited:
-                    continue
-                visited.add(producer)
+                producer = worklist.popleft()
                 producers.append(producer)
 
                 for operand in producer.operands:
-                    owner = operand.owner
-                    if isinstance(owner, ir.OpView):
-                        worklist.append(owner.operation)
+                    owner_op = producer_owner_op(operand)
+                    if owner_op is not None and id(owner_op) not in visited_ids:
+                        visited_ids.add(id(owner_op))
+                        worklist.append(owner_op)
 
             results.set_ops(op.ops, producers)
             return DiagnosedSilenceableFailure.Success
