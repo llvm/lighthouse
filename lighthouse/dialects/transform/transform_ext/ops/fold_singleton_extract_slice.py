@@ -146,7 +146,7 @@ class FoldSingletonExtractSliceOp(
     Args:
         target: Handle to root ops to rewrite within (e.g. func.func).
     Returns:
-        Handle to rewritten extract_slice ops.
+        Handle to (possibly) rewritten extract_slice ops.
     """
 
     target: ext.Operand[transform.AnyOpType]

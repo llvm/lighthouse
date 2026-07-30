@@ -113,7 +113,6 @@ def infer_parameters(mod: ir.Module, verbose: int = 0) -> tuple[dict, str, list[
     matmuls = [layer for layer in layer_metadata if layer["kind"] == "matmul"]
     elemwise = [layer for layer in layer_metadata if layer["kind"] == "elemwise"]
     reduction = [layer for layer in layer_metadata if layer["kind"] == "reduction"]
-    print(layer_metadata)
     elemtype_bytes = {
         "f16": 2,
         "bf16": 2,
@@ -183,7 +182,7 @@ def infer_parameters(mod: ir.Module, verbose: int = 0) -> tuple[dict, str, list[
             "subgroup_size": 16,
             "reduction_step_size": 32,
         }
-        schedule_params = layer_params  # NOTE this is a dict not list of dicts
+        schedule_params = [layer_params]
         schedule_kind = "softmax"
     else:
         print("Layers:")
@@ -431,8 +430,9 @@ def lower_to_llvm(
             stop_at_stage=stop_at_stage,
         )
     elif schedule_kind == "softmax":
+        layer_params = schedule_params[0]
         schedule = softmax_schedule(
-            parameters=schedule_params,
+            parameters=layer_params,
             stop_at_stage=stop_at_stage,
         )
     else:
@@ -641,7 +641,7 @@ def lower_and_execute_benchmark(
     if len(matmuls) > 0:
         shape_str = " ".join(str(mmul["shape"]) for mmul in matmuls)
     elif len(elemwise) > 0:
-        shape_str = elemwise[0]["shape"] if len(elemwise) > 0 else ""
+        shape_str = str(elemwise[0]["shape"])
     else:
         shape_str = ""
     entry["flops"] = total_flops
