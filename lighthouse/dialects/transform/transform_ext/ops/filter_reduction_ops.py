@@ -1,7 +1,7 @@
 from mlir import ir
 from mlir.dialects import transform, linalg
 
-from lighthouse.dialects.transform.transform_ext.ops.filter_handles import (
+from lighthouse.dialects.transform.transform_ext.utils.make_filter_handles_op import (
     make_filter_handles_op,
 )
 
