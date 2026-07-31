@@ -1,8 +1,9 @@
 from mlir import ir
-from mlir.dialects import ext, transform
-from mlir.dialects.transform import DiagnosedSilenceableFailure
+from mlir.dialects import transform
 
-from lighthouse.dialects.transform.transform_ext import TransformExtensionDialect
+from lighthouse.dialects.transform.transform_ext.utils.make_filter_handles_op import (
+    make_filter_handles_op,
+)
 
 
 def _normalize_op_names(op_names: str | list[str] | tuple[str, ...]) -> tuple[str, ...]:
@@ -15,56 +16,26 @@ def _normalize_op_names(op_names: str | list[str] | tuple[str, ...]) -> tuple[st
     return names
 
 
-class FilterByNameOp(TransformExtensionDialect.Operation, name="filter_by_name"):
-    """Return only payload ops whose operation name is in `op_names`."""
+def _parse_op_names(params) -> frozenset[str] | None:
+    if len(params) != 1 or not isinstance(params[0], ir.ArrayAttr):
+        return None
+    names = set()
+    for name_attr in params[0]:
+        if not isinstance(name_attr, ir.StringAttr):
+            return None
+        names.add(name_attr.value)
+    return frozenset(names)
 
-    target: ext.Operand[transform.AnyOpType]
-    op_names: ext.Operand[transform.AnyParamType]
-    ops: ext.Result[transform.AnyOpType[()]] = ext.infer_result()
 
-    @classmethod
-    def attach_interface_impls(cls, ctx=None):
-        cls.TransformOpInterfaceModel.attach(cls.OPERATION_NAME, context=ctx)
-        cls.MemoryEffectsOpInterfaceModel.attach(cls.OPERATION_NAME, context=ctx)
+def _name_matches(op: ir.Operation | ir.OpView, allowed_names: frozenset[str]) -> bool:
+    return op.name in allowed_names
 
-    class TransformOpInterfaceModel(transform.TransformOpInterface):
-        @staticmethod
-        def apply(
-            op: "FilterByNameOp",
-            _rewriter: transform.TransformRewriter,
-            results: transform.TransformResults,
-            state: transform.TransformState,
-        ) -> DiagnosedSilenceableFailure:
-            target_ops = state.get_payload_ops(op.target)
-            params = state.get_params(op.op_names)
 
-            allowed_names = set()
-            if len(params) == 1 and isinstance(params[0], ir.ArrayAttr):
-                array_attr = params[0]
-                for name_attr in array_attr:
-                    if not isinstance(name_attr, ir.StringAttr):
-                        return DiagnosedSilenceableFailure.SilenceableFailure
-                    allowed_names.add(name_attr.value)
-            else:
-                for name_attr in params:
-                    if not isinstance(name_attr, ir.StringAttr):
-                        return DiagnosedSilenceableFailure.SilenceableFailure
-                    allowed_names.add(name_attr.value)
-
-            filtered = [target for target in target_ops if target.name in allowed_names]
-            results.set_ops(op.ops, filtered)
-            return DiagnosedSilenceableFailure.Success
-
-        @staticmethod
-        def allow_repeated_handle_operands(_op: "FilterByNameOp") -> bool:
-            return False
-
-    class MemoryEffectsOpInterfaceModel(ir.MemoryEffectsOpInterface):
-        @staticmethod
-        def get_effects(op: ir.Operation, effects):
-            transform.only_reads_handle(op.op_operands, effects)
-            transform.produces_handle(op.results, effects)
-            transform.only_reads_payload(effects)
+FilterByNameOp = make_filter_handles_op(
+    "filter_by_name",
+    _name_matches,
+    parse_param=_parse_op_names,
+)
 
 
 def filter_by_name(
@@ -75,4 +46,4 @@ def filter_by_name(
     names = _normalize_op_names(op_names)
     names_attr = ir.ArrayAttr.get([ir.StringAttr.get(name) for name in names])
     op_names_param = transform.ParamConstantOp(transform.AnyParamType.get(), names_attr)
-    return FilterByNameOp(target=target, op_names=op_names_param).ops
+    return FilterByNameOp(target=target, param=op_names_param).ops
