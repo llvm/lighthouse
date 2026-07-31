@@ -4,6 +4,7 @@ from mlir.dialects.transform import DiagnosedSilenceableFailure
 from collections import deque
 
 from lighthouse.dialects.transform.transform_ext import TransformExtensionDialect
+from lighthouse.utils.mlir import defining_op
 
 
 class TraceProducersOp(TransformExtensionDialect.Operation, name="trace_producers"):
@@ -43,17 +44,8 @@ class TraceProducersOp(TransformExtensionDialect.Operation, name="trace_producer
             visited_ids: set[int] = set()
             worklist = deque()
 
-            def producer_owner_op(value: ir.Value) -> ir.Operation | None:
-                owner = value.owner
-                if isinstance(owner, ir.OpView):
-                    return owner.operation
-                if isinstance(owner, ir.Operation):
-                    return owner
-                # Block arguments do not have a direct defining op.
-                return None
-
             for operand in leaf.operands:
-                owner_op = producer_owner_op(operand)
+                owner_op = defining_op(operand)
                 if owner_op is not None and id(owner_op) not in visited_ids:
                     visited_ids.add(id(owner_op))
                     worklist.append(owner_op)
@@ -63,7 +55,7 @@ class TraceProducersOp(TransformExtensionDialect.Operation, name="trace_producer
                 producers.append(producer)
 
                 for operand in producer.operands:
-                    owner_op = producer_owner_op(operand)
+                    owner_op = defining_op(operand)
                     if owner_op is not None and id(owner_op) not in visited_ids:
                         visited_ids.add(id(owner_op))
                         worklist.append(owner_op)
