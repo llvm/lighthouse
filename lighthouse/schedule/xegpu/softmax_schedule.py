@@ -123,10 +123,10 @@ def bundle_xegpu_softmax_schedule(
     wg_loop = match_and_split(func, ops={"scf.forall"}, nhandles=1)[0]
 
     # Reduction dimension tiling.
-    # 1a. Find the leaf elemwise linalg.generic op and tile it
-    # 1b. Find its elemwise linalg.generic producers and fuse them into the leaf loop
-    # 2. Find the last sum reduction linalg.generic op and tile it, fuse all elemwise producers into the parallel loop.
-    # 3. Find the first max reduction linalg.generic op and tile it, fuse all elemwise producers into the parallel loop.
+    # 1. Tile the leaf elemwise linalg.generic op and fuse its elemwise
+    #    linalg.generic producers into the resulting loop.
+    # 2. Tile each reduction linalg.generic op (from last to first) and fuse its
+    #    elemwise producers into the resulting loop.
 
     def fuse_elemwise_producers_to_loop(target, parent_loop):
         """Fuses all elementwise producer ops of `target` into `parent_loop`."""
@@ -171,19 +171,17 @@ def bundle_xegpu_softmax_schedule(
         # Fuse all elemwise producers into the tiled leaf loop.
         fuse_elemwise_producers_to_loop(tiled_op, tile_loop)
 
-    # Tile and fuse reduction ops in reverse order.
-    # Start with the last reduction op, sum reduction.
-    last_reduction_op = transform_ext.extract_handle(reduction_ops, 1)
-    tile_and_fuse_reduction(last_reduction_op, reduction_tile_size)
-
-    # Cleanup redundant ops. Required before the next tile-and-fuse transform.
-    lh_transform.cleanup(wg_loop)
-    generic_ops = match(wg_loop, ops={"linalg.generic"})
-    reduction_ops = transform_ext.filter_reduction_ops(generic_ops)
-
-    # Tile and fuse the first reduction op, max reduction.
-    first_reduction_op = transform_ext.extract_handle(reduction_ops, 0)
-    tile_and_fuse_reduction(first_reduction_op, reduction_tile_size)
+    # Tile and fuse the reduction loops in reverse order. After each fusion
+    # step, DCE removes the dead untiled elementwise epilogue so it cannot
+    # create a cross-loop use that breaks the next tile-fuse iteration. Note
+    # that DCE does not invalidate the reduction loop handles as the tracking
+    # listener only invalidates modified handles and the reduction loops are
+    # alive and thus not removed.
+    reduction_ops = transform_ext.reverse_handles(reduction_ops)
+    with lh_transform.foreach(reduction_ops) as reduction_op:
+        tile_and_fuse_reduction(reduction_op, reduction_tile_size)
+        transform.apply_dce(wg_loop)
+        transform.yield_()
 
     # Fuse all sibling elementwise ops in scf.for loops.
     func = apply_registered_pass(func, "linalg-fuse-elementwise-ops")
