@@ -12,6 +12,7 @@ from .ops.extract_handle import extract_handle
 from .ops.get_tileable_consumers import get_tileable_consumers
 from .ops.get_tiling_sizes import get_tiling_sizes
 from .ops.trace_producers import trace_producers
+from .ops.reverse_handles import reverse_handles
 from .ops.update_address_space import update_address_space
 from .ops.replace_with_fused_attention import replace_with_fused_attention
 from .ops.filter_num_loops import filter_num_loops
@@ -43,6 +44,7 @@ __all__ = [
     "register_and_load",
     "replace",
     "replace_with_fused_attention",
+    "reverse_handles",
     "trace_producers",
     "update_address_space",
     "wrap_in_benching_func",
