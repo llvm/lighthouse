@@ -67,7 +67,7 @@ from lighthouse.schedule.xegpu import (
     mlp_schedule,
     elemwise_schedule,
     xegpu_to_binary,
-    softmax_schedule,
+    reduction_schedule,
 )
 from lighthouse.pipeline.helper import PipelineInterrupt
 from lighthouse.ingress.torch import gpu_backend, TargetDialect
@@ -431,7 +431,7 @@ def lower_to_llvm(
         )
     elif schedule_kind == "softmax":
         layer_params = schedule_params[0]
-        schedule = softmax_schedule(
+        schedule = reduction_schedule(
             parameters=layer_params,
             stop_at_stage=stop_at_stage,
         )

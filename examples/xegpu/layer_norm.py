@@ -20,7 +20,7 @@ from lighthouse.ingress.mlir_gen import get_mlir_elem_type
 from lighthouse.ingress.mlir_gen.gpu_layer_norm_payload import (
     generate_gpu_layer_norm_payload,
 )
-from lighthouse.schedule.xegpu import softmax_schedule, xegpu_to_binary
+from lighthouse.schedule.xegpu import reduction_schedule, xegpu_to_binary
 
 
 def layer_norm_complexity(M: int, N: int, nbytes: int):
@@ -141,7 +141,7 @@ class XeGPULayerNorm:
         schedules.append(Runner.get_bench_wrapper_schedule(self.payload_function_name))
 
         schedules.append(
-            softmax_schedule(
+            reduction_schedule(
                 payload_func_name=self.payload_function_name,
                 stop_at_stage=stop_at_stage,
                 parameters=parameters,

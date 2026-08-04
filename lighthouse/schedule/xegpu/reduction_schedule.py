@@ -22,7 +22,7 @@ from lighthouse.schedule import schedule_boilerplate
 from lighthouse.dialects.transform import transform_ext
 
 
-def softmax_schedule(
+def reduction_schedule(
     stop_at_stage: str | None = None,
     parameters: dict | None = None,
     payload_func_name: str = "payload",
@@ -63,7 +63,7 @@ def softmax_schedule(
         )
 
         try:
-            bundle_xegpu_softmax_schedule(
+            bundle_xegpu_reduction_schedule(
                 payload_mod,
                 payload_func_name=payload_func_name,
                 parameters=parameters,
@@ -77,7 +77,7 @@ def softmax_schedule(
     return schedule
 
 
-def bundle_xegpu_softmax_schedule(
+def bundle_xegpu_reduction_schedule(
     mod: ir.Value[transform.AnyOpType],
     payload_func_name: str,
     parameters: dict,
