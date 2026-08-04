@@ -6,7 +6,6 @@ from mlir import ir
 from mlir.dialects import func, linalg
 import os
 from pathlib import Path
-from collections import defaultdict
 
 
 def get_mlir_library_path():
@@ -56,19 +55,21 @@ def inspect_payload(payload_module: ir.Module) -> dict:
         function_name: {
             "inputs": [input types],
             "results": [result types],
-            "layers": {
-                "matmul": {
-                    "m": m,
-                    "n": n,
-                    "k": k,
+            "layers": [
+                {
+                    "kind": "matmul",
+                    "shape": (m, n, k),
                     "transpose_a": bool,
                     "transpose_b": bool,
-                }
+                    ...
+                },
                 ...
-            }
+            ]
         },
         ...
     }
+
+    The layer list preserves walk order.
     """
 
     def has_producer(value: ir.Value, kind: type) -> bool:
@@ -91,7 +92,7 @@ def inspect_payload(payload_module: ir.Module) -> dict:
         op = op.opview
         match op:
             case func.FuncOp():
-                layers = defaultdict(list)
+                layers = []
 
                 def match_linalg(op: ir.Operation) -> ir.WalkResult:
                     op = op.opview
@@ -99,21 +100,45 @@ def inspect_payload(payload_module: ir.Module) -> dict:
                         case linalg.GenericOp():
                             # TODO support ElementwiseOp and MapOp
                             iter_parallel = "#linalg.iterator_type<parallel>"
-                            parallel = all(
+                            all_parallel = all(
                                 str(it) == iter_parallel for it in op.iterator_types
                             )
-                            assert parallel, (
-                                "Only parallel iterators are supported in linalg.generic"
-                            )
+                            inputs = op.inputs
                             outputs = op.outputs
-                            assert len(outputs) == 1, "Expected only one output"
-                            out_shape = outputs[0].type.shape
-                            layers["elemwise"].append(
-                                {
-                                    "shape": out_shape,
-                                    "elemtype": str(outputs[0].type.element_type),
-                                }
-                            )
+                            if all_parallel:
+                                assert len(outputs) == 1, "Expected only one output"
+                                layers.append(
+                                    {
+                                        "kind": "elemwise",
+                                        "shape": outputs[0].type.shape,
+                                        "elemtype": str(outputs[0].type.element_type),
+                                    }
+                                )
+                            else:
+                                iterators = [
+                                    "parallel"
+                                    if str(it) == iter_parallel
+                                    else "reduction"
+                                    for it in op.iterator_types
+                                ]
+                                in_shapes = [inp.type.shape for inp in inputs]
+                                out_shapes = [out.type.shape for out in outputs]
+                                in_types = [
+                                    str(inp.type.element_type) for inp in inputs
+                                ]
+                                out_types = [
+                                    str(out.type.element_type) for out in outputs
+                                ]
+                                layers.append(
+                                    {
+                                        "kind": "reduction",
+                                        "input_shape": in_shapes,
+                                        "input_elemtype": in_types,
+                                        "output_shape": out_shapes,
+                                        "output_elemtype": out_types,
+                                        "iterators": iterators,
+                                    }
+                                )
                         case linalg.MatmulOp():
                             inputs = op.inputs
                             outputs = op.outputs
@@ -136,8 +161,9 @@ def inspect_payload(payload_module: ir.Module) -> dict:
                             assert a_etype == b_etype, "Input element types must match"
                             ab_etype = a_etype
                             acc_etype = str(outputs[0].type.element_type)
-                            layers["matmul"].append(
+                            layers.append(
                                 {
+                                    "kind": "matmul",
                                     "shape": (m, n, k),
                                     "ab_elemtype": ab_etype,
                                     "acc_elemtype": acc_etype,
@@ -161,8 +187,9 @@ def inspect_payload(payload_module: ir.Module) -> dict:
                                 _, _, k = a_shape
                             except Exception:
                                 _, k, _ = b_shape
-                            layers["batch_matmul"].append(
+                            layers.append(
                                 {
+                                    "kind": "batch_matmul",
                                     "shape": (b, m, n, k),
                                     "transpose_a": input_is_transpose[0],
                                     "transpose_b": input_is_transpose[1],
