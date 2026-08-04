@@ -138,6 +138,7 @@ class XeGPUSoftmax:
 
         schedules.append(
             softmax_schedule(
+                payload_func_name=self.payload_function_name,
                 stop_at_stage=stop_at_stage,
                 parameters=parameters,
             )
@@ -193,13 +194,13 @@ def parse_cli():
     parser.add_argument(
         "--nruns",
         type=int,
-        default=500,
+        default=1000,
         help="Number of runs to average the execution time.",
     )
     parser.add_argument(
         "--nwarmup",
         type=int,
-        default=500,
+        default=1000,
         help="Number of warm-up iterations before benchmarking.",
     )
     parser.add_argument(

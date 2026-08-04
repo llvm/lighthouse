@@ -554,7 +554,7 @@ def _bundle(
         raise PipelineInterrupt()
 
     # Shared with the per-op xegpu schedules: forall -> scf.parallel -> gpu.launch.
-    func = convert_to_gpu_launch(mod, "payload", nlayers=nkernels)
+    func = convert_to_gpu_launch(mod, "payload")
 
     # launch threads per kernel, in IR (build) order = `kinds`.
     launches = match_and_split(mod, ops={"gpu.launch"}, nhandles=nkernels)
