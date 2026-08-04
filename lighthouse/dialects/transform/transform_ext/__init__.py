@@ -22,10 +22,14 @@ from .ops.filter_reduction_ops import filter_reduction_ops
 from .ops.get_leading_unit_tile_sizes import get_leading_unit_tile_sizes
 from .ops.move_offsets_to_subview import move_offsets_to_subview
 from .ops.fold_singleton_extract_slice import fold_singleton_extract_slice
+from .ops.clear_tile_and_fuse_annotations import clear_tile_and_fuse_annotations
+from .ops.get_fusion_roots import get_fusion_roots
+from .ops.propagate_tile_sizes import propagate_tile_sizes
 
 __all__ = [
     "TransformExtensionDialect",
     "assign_tile_sizes",
+    "clear_tile_and_fuse_annotations",
     "convert_func_results_to_args",
     "extract_handle",
     "filter_by_name",
@@ -33,6 +37,7 @@ __all__ = [
     "filter_num_loops",
     "filter_reduction_ops",
     "fold_singleton_extract_slice",
+    "get_fusion_roots",
     "get_leading_unit_tile_sizes",
     "get_named_attribute",
     "get_named_attribute",
@@ -41,6 +46,7 @@ __all__ = [
     "get_tiling_sizes",
     "move_offsets_to_subview",
     "param_cmp_eq",
+    "propagate_tile_sizes",
     "register_and_load",
     "replace",
     "replace_with_fused_attention",
