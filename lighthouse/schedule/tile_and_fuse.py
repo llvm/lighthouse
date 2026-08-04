@@ -21,7 +21,7 @@ import lighthouse.transform as lh_transform
 
 # Op names treated as GEMM anchors. Their tiles take precedence and drive the
 # tiling of surrounding elementwise ops via propagation.
-GEMM_OPS = [
+_GEMM_ANCHOR_OPS = [
     "linalg.matmul",
     "linalg.matmul_transpose_a",
     "linalg.matmul_transpose_b",
@@ -53,7 +53,7 @@ def assign_and_propagate_tile_sizes(
         Schedule module.
     """
     if anchor_op is None:
-        anchor_op = GEMM_OPS
+        anchor_op = _GEMM_ANCHOR_OPS
 
     with schedule_boilerplate() as (sched, named_seq):
         anchors = lh_transform.match_op(named_seq.bodyTarget, anchor_op)
