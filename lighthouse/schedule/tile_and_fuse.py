@@ -1,16 +1,3 @@
-"""Generic tile-and-fuse schedules.
-
-These schedules generalise the matmul-specific cache tiling to arbitrary
-workloads: they assign target tile sizes to anchor ops, propagate
-those sizes to neighboring ops, and tile and fuse using the annotations as
-fusion hints. Sizes are recorded as ``transform_ext.tile_sizes`` attributes, so
-the assignment / propagation policy is decoupled from the tiling.
-
-Tiling decisions are dominated by GEMMs: their tiles take precedence and define
-the tiling of elementwise consumers. Kernels without a GEMM fall back to
-anchoring an elementwise op and propagating from there.
-"""
-
 from mlir import ir
 from mlir.dialects import transform
 from mlir.dialects.transform import structured
@@ -19,8 +6,8 @@ from lighthouse.dialects.transform import transform_ext
 from lighthouse.schedule.builders import schedule_boilerplate
 import lighthouse.transform as lh_transform
 
-# Op names treated as GEMM anchors. Their tiles take precedence and drive the
-# tiling of surrounding elementwise ops via propagation.
+# Named GEMM ops treated as default anchors.
+# Their tiles take precedence and drive the tiling of surrounding ops.
 _GEMM_ANCHOR_OPS = [
     "linalg.matmul",
     "linalg.matmul_transpose_a",
@@ -41,16 +28,16 @@ def assign_and_propagate_tile_sizes(
     """
     Assign tile sizes to anchor ops and propagate them to their neighbors.
 
-    Anchors matched by `anchor_op` are annotated and their sizes propagated to
-    neighboring ops so a fusable group shares one tiling. Can be applied repeatedly
-    with different anchors (e.g. GEMMs first, then leftover elementwise ops);
-    already-annotated ops keep their sizes, so earlier assignments win.
+    Anchors ops are annotated and their sizes propagated to neighboring ops
+    so a fusable group shares one tiling. Can be applied repeatedly with different
+    anchors (e.g. GEMMs first, then leftover elementwise ops); already-annotated
+    ops keep their sizes, so earlier assignments win.
 
     Args:
         anchor_op: Op(s) to anchor tiling on. Defaults to the GEMM op family.
         tile_size: Size used for tiled dimensions. User hint, default 32.
     Returns:
-        Schedule module.
+        Schedule
     """
     if anchor_op is None:
         anchor_op = _GEMM_ANCHOR_OPS
@@ -67,14 +54,13 @@ def assign_elementwise_tile_sizes(tile_size: int = 32) -> ir.Module:
     """
     Anchor tiling on elementwise ops only.
 
-    For kernels without a GEMM: all linalg ops are matched, filtered to the
-    genuinely elementwise ones, annotated, and propagated from. Already-annotated
-    ops (e.g. from a preceding GEMM assignment) are kept.
+    Selects all elementwise linalg ops then performs tile size selection and
+    propagation. Already-annotated ops are kept.
 
     Args:
         tile_size: Size used for tiled dimensions. User hint, default 32.
     Returns:
-        Schedule module.
+        Schedule
     """
     with schedule_boilerplate() as (sched, named_seq):
         candidates = lh_transform.match_op(
@@ -93,19 +79,18 @@ def tile_and_fuse_annotated(
     clear_annotations: bool = True,
 ) -> ir.Module:
     """
-    Tile and fuse annotated groups using their tile-size annotations.
+    Tile and fuse annotated groups.
 
     Fusion roots are selected among the candidates, each is tiled with its
-    annotated `transform_ext.tile_sizes`, and its producers are greedily fused into
-    the tiled loop -- pulling a barrier (e.g. a GEMM) and its elementwise neighbors
-    into one loop. The annotations act as fusion hints.
+    annotated tile sizes, and its producers are greedily fused into the tiled loop.
+    The annotations act as fusion hints.
 
     Args:
         target_op: Candidate op(s) to consider. Defaults to all linalg ops.
         use_forall: Generate `scf.forall` loops (parallel) when tiling.
         clear_annotations: Clear the annotations from the fused ops.
     Returns:
-        Schedule module.
+        Schedule
     """
     if target_op is None:
         target_op = structured.MatchInterfaceEnum.LinalgOp
