@@ -13,10 +13,16 @@ import ctypes
 import ctypes.util
 from collections.abc import Iterable, Sequence
 
+import numpy as np
+
 
 ze_kernel_handle_t = ctypes.c_void_p
 ze_module_handle_t = ctypes.c_void_p
 StreamWrapper = ctypes.c_void_p
+
+# `gpu-lower-to-xevm-pipeline` lowers `index` to i64 (`use64bitIndex` defaults
+# to true), so memref descriptor fields other than the pointers are i64.
+_INDEX_CTYPE = ctypes.c_int64
 
 
 def _load_library(lib_path: str | None = None) -> ctypes.CDLL:
@@ -92,26 +98,89 @@ def _as_triplet(value: int | Sequence[int], name: str) -> tuple[int, int, int]:
     raise ValueError(f"{name} must be an int or a sequence of length 1 to 3")
 
 
-def _argument_pointer(argument):
+def _buffer_layout(argument) -> tuple[int, list[int], list[int]] | None:
+    """Describe an array-like argument as ``(data pointer, sizes, strides)``.
+
+    Strides are returned in elements, which is what a memref descriptor stores.
+    Returns ``None`` for arguments that are not array-like.
+    """
     if hasattr(argument, "ctypes") and hasattr(argument.ctypes, "data"):
-        storage = ctypes.c_void_p(int(argument.ctypes.data))
-        return storage, ctypes.byref(storage)
+        # NumPy-style: strides are expressed in bytes.
+        itemsize = argument.itemsize
+        return (
+            int(argument.ctypes.data),
+            [int(size) for size in argument.shape],
+            [int(stride) // itemsize for stride in argument.strides],
+        )
 
     data_ptr = getattr(argument, "data_ptr", None)
     if callable(data_ptr):
-        storage = ctypes.c_void_p(int(data_ptr()))
-        return storage, ctypes.byref(storage)
+        # Torch-style: strides are already expressed in elements.
+        return (
+            int(data_ptr()),
+            [int(size) for size in argument.shape],
+            [int(stride) for stride in argument.stride()],
+        )
+
+    return None
+
+
+def _memref_descriptor(data: int, sizes: list[int], strides: list[int]) -> list:
+    """Expand a buffer into the fields of an MLIR memref descriptor.
+
+    `gpu.launch_func` is lowered with the default (non bare-pointer) calling
+    convention, so every memref operand reaches the kernel as the unpacked
+    descriptor ``(allocated, aligned, offset, sizes..., strides...)``. The
+    kernel body dereferences the *aligned* pointer, so passing just the data
+    pointer would leave the pointer it actually uses unset.
+
+    The data pointer already refers to element 0, hence a zero offset.
+    """
+    fields = [ctypes.c_void_p(data), ctypes.c_void_p(data), _INDEX_CTYPE(0)]
+    fields.extend(_INDEX_CTYPE(size) for size in sizes)
+    fields.extend(_INDEX_CTYPE(stride) for stride in strides)
+    return fields
+
+
+def _scalar_field(argument):
+    """Convert a NumPy scalar to the ctypes value with the same ABI type.
+
+    Returns ``None`` if the argument is not a NumPy scalar.
+    """
+    if not isinstance(argument, np.generic):
+        return None
+
+    try:
+        ctype = np.ctypeslib.as_ctypes_type(argument.dtype)
+    except NotImplementedError as error:
+        raise TypeError(
+            f"unsupported scalar kernel argument of dtype {argument.dtype}"
+        ) from error
+
+    return ctype(argument.item())
+
+
+def _argument_fields(argument) -> list:
+    """Return the ctypes values a single kernel argument expands into."""
+    scalar = _scalar_field(argument)
+    if scalar is not None:
+        return [scalar]
+
+    layout = _buffer_layout(argument)
+    if layout is not None:
+        return _memref_descriptor(*layout)
 
     if isinstance(argument, ctypes._Pointer):  # type: ignore[attr-defined]
-        return argument, ctypes.byref(argument)
+        return [argument]
 
     if isinstance(
         argument, (ctypes.Array, ctypes.Structure, ctypes.Union, ctypes._SimpleCData)
     ):
-        return argument, ctypes.byref(argument)
+        return [argument]
 
     raise TypeError(
-        "kernel arguments must be ctypes values, ctypes pointers, or objects exposing a NumPy-style ctypes.data"
+        "kernel arguments must be NumPy arrays or scalars, torch tensors, "
+        "or ctypes values"
     )
 
 
@@ -121,9 +190,9 @@ def _prepare_kernel_arguments(
     storages: list[object] = []
     pointers: list[int] = []
     for argument in arguments:
-        storage, pointer = _argument_pointer(argument)
-        storages.append(storage)
-        pointers.append(ctypes.cast(pointer, ctypes.c_void_p).value)
+        for field in _argument_fields(argument):
+            storages.append(field)
+            pointers.append(ctypes.cast(ctypes.byref(field), ctypes.c_void_p).value)
 
     return storages, (ctypes.c_void_p * len(pointers))(*pointers)
 
@@ -189,7 +258,10 @@ def launch_level_zero_kernel(
     """Launch a Level Zero kernel using the MLIR runtime wrapper ABI.
 
     `input_arguments` and `output_arguments` are forwarded as an array of
-    pointers, matching the lowering used by `gpu.launch_func` for Xe.
+    pointers, matching the lowering used by `gpu.launch_func` for Xe. Array-like
+    arguments (NumPy arrays, torch tensors) are expanded into their memref
+    descriptor fields, NumPy scalars are converted to the matching C type, and
+    ctypes values are passed through as single arguments.
 
     If `stream` is omitted, this function creates one, launches the kernel, and
     synchronizes it before returning.
