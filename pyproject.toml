@@ -23,19 +23,19 @@ ingress_torch_mlir = [
 ]
 # Additional "targets" which pull in optional dependencies -- use `uv sync --extra TARGET`
 ingress_torch_cpu = [
-    "torch==v2.12.1+cpu",
+    "torch==v2.13.0+cpu",
     "lighthouse[ingress_torch_mlir]"
 ]
 ingress_torch_nvidia = [
-    "torch==2.12.1+cu130",  # Nvidia-enabled version of torch
+    "torch==2.13.0+cu130",  # Nvidia-enabled version of torch
     "lighthouse[ingress_torch_mlir]"
 ]
 ingress_torch_rocm = [
-    "torch==2.12.1+rocm7.2",  # AMD-enabled version of torch
+    "torch==2.13.0+rocm7.2",  # AMD-enabled version of torch
     "lighthouse[ingress_torch_mlir]"
 ]
 ingress_torch_xpu = [
-    "torch==2.12.1+xpu",  # Intel-enabled version of torch
+    "torch==2.13.0+xpu",  # Intel-enabled version of torch
     "lighthouse[ingress_torch_mlir]"
 ]
 runtime_mpich = [
