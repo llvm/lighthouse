@@ -261,3 +261,6 @@ if __name__ == "__main__":
 
 # CHECK: 5_Matrix_scalar_multiplication.py
 # CHECK: Success: The output of the compiled model matches the reference output.
+
+# CHECK: 1_MLP.py
+# CHECK: Success: The output of the compiled model matches the reference output.
