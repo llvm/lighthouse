@@ -131,8 +131,8 @@ class Attention(torch.nn.Module):
                 self.head_dim,
             )
         )
-        self.register_buffer("cache_k", cache_k, persistent=False)
-        self.register_buffer("cache_v", cache_v, persistent=False)
+        self.register_buffer("cache_k", cache_k)
+        self.register_buffer("cache_v", cache_v)
 
     def forward(
         self,
