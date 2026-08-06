@@ -70,7 +70,6 @@ def vectorize_bufferize_and_outline_gpu_func(
 def vectorize(
     mod: transform.AnyOpType,
     payload_func_name: str,
-    hoist_scf_for: bool = True,
 ) -> transform.AnyOpType:
     """Vectorize and run loop-hoisting cleanup for the payload function."""
     func = get_named_func(mod, payload_func_name)
@@ -79,11 +78,11 @@ def vectorize(
         func,
         fold_type_extensions_into_contract=True,
     )
-    if hoist_scf_for:
-        # Hoist loop-invariant vector read/store ops if present.
-        k_loop = match(func, ops={"scf.for"})
-        lh_transform.loop_hoisting(k_loop)
-        lh_transform.cleanup(func)
+
+    # Hoist loop-invariant vector read/store ops if present.
+    k_loop = match(func, ops={"scf.for"})
+    lh_transform.loop_hoisting(k_loop)
+    lh_transform.cleanup(func)
 
     return func
 
@@ -225,8 +224,6 @@ def convert_vector_to_xegpu(mod: transform.AnyOpType) -> transform.AnyOpType:
     gpu_mod_ops = match(mod, ops={"gpu.module"})
     with lh_transform.foreach(gpu_mod_ops) as gpu_mod:
         gpu_func = match(gpu_mod, ops={"gpu.func"})
-        allocas = match(gpu_func, ops={"memref.alloca"})
-        transform_ext.update_address_space(allocas, address_space=3)
         gpu_func = apply_registered_pass(gpu_func, "convert-vector-to-xegpu")
         transform.apply_cse(gpu_func)
         transform.yield_()
