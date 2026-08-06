@@ -131,8 +131,8 @@ class Attention(torch.nn.Module):
                 self.head_dim,
             )
         )
-        self.register_buffer("cache_k", cache_k, persistent=False)
-        self.register_buffer("cache_v", cache_v, persistent=False)
+        self.register_buffer("cache_k", cache_k)
+        self.register_buffer("cache_v", cache_v)
 
     def forward(
         self,
@@ -255,7 +255,7 @@ class Transformer(nn.Module):
             params.max_seq_len * 2,
             params.rope_theta,
         )
-        self.register_buffer("freqs_cis", freqs_cis, persistent=False)
+        self.register_buffer("freqs_cis", freqs_cis)
 
     @torch.inference_mode()
     def forward(self, tokens: torch.Tensor, start_pos: int):
