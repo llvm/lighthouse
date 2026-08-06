@@ -6,5 +6,9 @@ Pipeline:
   - schedule: "packing.py[gen=block_pack_matmuls]{block_factors=$block_factors rhs_transpose_outer_block=True rhs_transpose_inner_block=False}"
   - schedule: "x86/pack_lowering.py[gen=lower_packs_unpacks]{tile_size=$tile_size}"
   - pass: "linalg-morph-ops{named-to-category generic-to-category}"
-  - schedule: "x86/cache_tiling.py[gen=matmul_cache_tiling]{target=linalg.contract fuse_producers}"
+
+  - schedule: "tile_and_fuse.py[gen=assign_and_propagate_tile_sizes]{tile_size=$tile_size}"
+  - schedule: "tile_and_fuse.py[gen=assign_elementwise_tile_sizes]{tile_size=$tile_size}"
+  - schedule: "tile_and_fuse.py[gen=tile_and_fuse_annotated]"
+
   - schedule: "linalg.py[gen=linalg_contract_fold_unit_dims]"
