@@ -255,7 +255,7 @@ class Transformer(nn.Module):
             params.max_seq_len * 2,
             params.rope_theta,
         )
-        self.register_buffer("freqs_cis", freqs_cis, persistent=False)
+        self.register_buffer("freqs_cis", freqs_cis)
 
     @torch.inference_mode()
     def forward(self, tokens: torch.Tensor, start_pos: int):
