@@ -2,11 +2,15 @@
 
 from mlir import ir
 from mlir.dialects import transform
-from mlir.dialects.transform import structured, loop, xegpu
-from mlir.dialects.transform import bufferization
-from mlir.dialects.bufferization import LayoutMapOption
+from mlir.dialects.transform import structured, xegpu
 import lighthouse.transform as lh_transform
-
+from .lowering_common import (
+    get_named_func,
+    vectorize,
+    bufferize,
+    convert_to_gpu_launch,
+    convert_vector_to_xegpu,
+)
 from lighthouse.pipeline.helper import (
     apply_registered_pass,
     canonicalize,
@@ -18,9 +22,10 @@ from lighthouse.schedule import schedule_boilerplate
 from lighthouse.dialects.transform import transform_ext
 
 
-def softmax_schedule(
+def reduction_schedule(
     stop_at_stage: str | None = None,
     parameters: dict | None = None,
+    payload_func_name: str = "payload",
 ) -> ir.Module:
     """
     Generate transform schedule for softmax operation.
@@ -58,8 +63,9 @@ def softmax_schedule(
         )
 
         try:
-            bundle_xegpu_softmax_schedule(
+            bundle_xegpu_reduction_schedule(
                 payload_mod,
+                payload_func_name=payload_func_name,
                 parameters=parameters,
                 stop_at_stage=stop_at_stage,
             )
@@ -71,8 +77,9 @@ def softmax_schedule(
     return schedule
 
 
-def bundle_xegpu_softmax_schedule(
+def bundle_xegpu_reduction_schedule(
     mod: ir.Value[transform.AnyOpType],
+    payload_func_name: str,
     parameters: dict,
     stop_at_stage: str = "",
 ) -> ir.Value[transform.AnyOpType]:
@@ -194,10 +201,7 @@ def bundle_xegpu_softmax_schedule(
         raise PipelineInterrupt()
 
     # vectorize
-    func = structured.VectorizeChildrenAndApplyPatternsOp(
-        func,
-        fold_type_extensions_into_contract=True,
-    ).result
+    func = vectorize(mod, payload_func_name=payload_func_name)
     transform.apply_cse(func)
     canonicalize(func)
 
@@ -205,46 +209,14 @@ def bundle_xegpu_softmax_schedule(
         raise PipelineInterrupt()
 
     # bufferize
-    mod = apply_registered_pass(mod, "eliminate-empty-tensors")
-    identity_layout = LayoutMapOption.IdentityLayoutMap
-    mod = bufferization.OneShotBufferizeOp(
-        mod,
-        allow_return_allocs_from_loops=True,
-        bufferize_function_boundaries=True,
-        function_boundary_type_conversion=identity_layout,
-    ).result
-    # fold memref.subviews into vector.transfer_read/write ops
-    mod = apply_registered_pass(mod, "fold-memref-alias-ops")
-    transform.apply_cse(mod)
-    canonicalize(mod)
-
-    # promote memref.alloc to memref.alloca in payload function
-    func = match(mod, ops={"func.func"})
-    func = apply_registered_pass(
-        func,
-        "promote-buffers-to-stack",
-        options={
-            "max-alloc-size-in-bytes": "8192",
-            "max-rank-of-allocated-memref": "2",
-        },
-    )
+    mod = bufferize(mod)
 
     if stop_at_stage == "bufferized":
         raise PipelineInterrupt()
 
-    # convert forall to parallel
-    wg_loops = match_and_split(mod, ops={"scf.forall"})
-    for wg_loop in wg_loops:
-        wg_loop = loop.loop_forall_to_parallel([anytype], wg_loop)
-    func = transform.get_parent_op(anytype, wg_loop)
+    convert_to_gpu_launch(mod, payload_func_name)
 
-    # convert scf.parallel to gpu.launch
-    func = apply_registered_pass(func, "gpu-map-parallel-loops")
-    func = apply_registered_pass(func, "convert-parallel-loops-to-gpu")
-    func = apply_registered_pass(func, "lower-affine")
-    transform.apply_cse(func)
-    canonicalize(func)
-
+    func = get_named_func(mod, payload_func_name)
     # set the number of threads for the gpu.launch operation
     launch_op = match_and_split(func, ops={"gpu.launch"})
     num_subgroups = parameters["wg_rows"] // parameters["sg_rows"]
@@ -261,39 +233,25 @@ def bundle_xegpu_softmax_schedule(
     if stop_at_stage == "gpu-outlining":
         raise PipelineInterrupt()
 
-    # set xevm target
-    mod = apply_registered_pass(
-        mod,
-        "xevm-attach-target",
-        options={"O": "3", "chip": "bmg"},
-    )
-
-    # for each gpu function in the gpu module, change memref.alloca address
-    # space to 3 (SLM) and convert vector to xegpu.
-    gpu_mod_ops = match_and_split(mod, ops={"gpu.module"})
-    for gpu_mod in gpu_mod_ops:
-        gpu_func = match(gpu_mod, ops={"gpu.func"})
-        allocas = match(gpu_func, ops={"memref.alloca"})
-        transform_ext.update_address_space(allocas, address_space=3)
-        gpu_func = apply_registered_pass(gpu_func, "convert-vector-to-xegpu")
-        transform.apply_cse(gpu_func)
-
-    # Cleanup.
-    transform.apply_cse(mod)
-    canonicalize(mod)
+    mod = convert_vector_to_xegpu(mod)
+    lh_transform.cleanup(mod)
 
     if stop_at_stage == "xegpu-initial":
         raise PipelineInterrupt()
 
     # Set layout attributes for xegpu.store_nd and xegpu.store_matrix ops.
-    store_nd_ops = match_and_split(gpu_func, ops={"xegpu.store_nd"}, nhandles=1)
-    store_matrix_ops = match_and_split(gpu_func, ops={"xegpu.store_matrix"}, nhandles=4)
+    gpu_mod = match_and_split(mod, ops={"gpu.module"})[0]
+    gpu_func = match(gpu_mod, ops={"gpu.func"})
+    store_nd_ops = match(gpu_func, ops={"xegpu.store_nd"})
+    store_matrix_ops = match(gpu_func, ops={"xegpu.store_matrix"})
     sg_layout = [parameters["sg_rows"], 1]
     sg_data = [parameters["sg_rows"], parameters["reduction_step_size"]]
-    for store_op in store_nd_ops:
+    with lh_transform.foreach(store_nd_ops) as store_op:
         xegpu.set_anchor_layout(store_op, sg_layout=sg_layout, sg_data=sg_data)
-    for store_op in store_matrix_ops:
+        transform.yield_()
+    with lh_transform.foreach(store_matrix_ops) as store_op:
         xegpu.set_anchor_layout(store_op, sg_layout=sg_layout, sg_data=sg_data)
+        transform.yield_()
 
     if stop_at_stage == "xegpu-wg":
         raise PipelineInterrupt()
