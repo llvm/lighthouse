@@ -1,28 +1,23 @@
-"""xerun - launch a Xe kernel blob (importable implementation).
-
-Loads a serialized GPU kernel binary blob (such as the one produced by `xeas`)
-into the Level Zero runtime and launches its kernel once. Compilation
-(IR -> blob) and execution are fully decoupled, so the same blob can be run
-repeatedly without recompiling.
+"""Launch a XeGPU kernel blob through the Level Zero runtime.
 
 The blob is the device kernel embedded by the Xe pipeline in a `gpu.binary` op.
 It is loaded with `mgpuModuleLoad` and launched with `mgpuLaunchKernel` through
-the helpers in `lighthouse.tools.level_zero_ctypes`. Nothing is recovered from
-the blob: the kernel name and the launch grid/block are provided by the caller.
+the helpers in `lighthouse.execution.xegpu.level_zero_ctypes`. The caller
+provides the kernel name and launch grid/block.
 
-This module is the importable Python API; the command line tool lives in the
-``tools/xerun`` executable. The entry point is :func:`xerun`, which loads a blob
-and launches its kernel once against the given host buffers:
+Use :func:`xelaunch` to launch synchronously against host buffers:
 
-    from lighthouse.tools.xerun import xerun
+    from lighthouse.execution.xegpu.xelaunch import xelaunch
 
-    xerun(blob, "payload_kernel", [c, a, b], grid=(8, 4, 1), block=(256, 1, 1))
+    xelaunch(blob, "payload_kernel", [c, a, b], grid=(8, 4, 1), block=(256, 1, 1))
 """
 
-from lighthouse.tools.level_zero_ctypes import launch_level_zero_module_kernel
+from lighthouse.execution.xegpu.level_zero_ctypes import (
+    launch_level_zero_module_kernel,
+)
 
 
-def xerun(
+def xelaunch(
     blob,
     kernel_name: str,
     host_buffers: list,
@@ -31,12 +26,13 @@ def xerun(
     *,
     library_path: str | None = None,
 ):
-    """Load a GPU kernel blob and launch its kernel once.
+    """Synchronously launch a GPU kernel blob with input buffers only.
 
     The host buffers are forwarded to the kernel in the given order, so they
     must match the order the kernel expects them. On a shared/unified memory
     setup the kernel reads and writes the buffers in place, so results are
-    observed directly in the passed buffers.
+    observed directly in the passed buffers. For output arguments, streams, or
+    JIT loading, use :func:`launch_level_zero_module_kernel` directly.
 
     Args:
         blob: The serialized GPU kernel binary (e.g. the output of ``xeas``).

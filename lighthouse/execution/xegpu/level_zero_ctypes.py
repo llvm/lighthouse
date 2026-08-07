@@ -12,6 +12,7 @@ from __future__ import annotations
 import ctypes
 import ctypes.util
 from collections.abc import Iterable, Sequence
+from functools import lru_cache
 
 import numpy as np
 
@@ -25,6 +26,7 @@ StreamWrapper = ctypes.c_void_p
 _INDEX_CTYPE = ctypes.c_int64
 
 
+@lru_cache
 def _load_library(lib_path: str | None = None) -> ctypes.CDLL:
     candidates = []
     if lib_path:
@@ -37,7 +39,9 @@ def _load_library(lib_path: str | None = None) -> ctypes.CDLL:
     last_error = None
     for candidate in candidates:
         try:
-            return ctypes.CDLL(candidate)
+            lib = ctypes.CDLL(candidate)
+            _configure_prototypes(lib)
+            return lib
         except OSError as error:
             last_error = error
 
@@ -81,6 +85,14 @@ def _configure_prototypes(lib: ctypes.CDLL) -> None:
         ctypes.c_size_t,
     ]
     lib.mgpuLaunchKernel.restype = None
+
+
+def _require_handle(
+    handle: ctypes.c_void_p | None, description: str
+) -> ctypes.c_void_p:
+    if not handle:
+        raise RuntimeError(f"{description} returned a null handle")
+    return handle
 
 
 def _as_triplet(value: int | Sequence[int], name: str) -> tuple[int, int, int]:
@@ -186,7 +198,7 @@ def _argument_fields(argument) -> list:
 
 def _prepare_kernel_arguments(
     arguments: Iterable[object],
-) -> tuple[list[object], ctypes.Array[ctypes.c_void_p]]:
+) -> tuple[list[object], list[int]]:
     storages: list[object] = []
     pointers: list[int] = []
     for argument in arguments:
@@ -194,7 +206,7 @@ def _prepare_kernel_arguments(
             storages.append(field)
             pointers.append(ctypes.cast(ctypes.byref(field), ctypes.c_void_p).value)
 
-    return storages, (ctypes.c_void_p * len(pointers))(*pointers)
+    return storages, pointers
 
 
 def _module_blob_argument(module_blob: object) -> tuple[object, ctypes.c_void_p, int]:
@@ -204,7 +216,11 @@ def _module_blob_argument(module_blob: object) -> tuple[object, ctypes.c_void_p,
         return storage, ctypes.cast(storage, ctypes.c_void_p), len(blob_bytes)
 
     if hasattr(module_blob, "ctypes") and hasattr(module_blob.ctypes, "data"):
-        blob_size = len(module_blob)
+        blob_size = getattr(module_blob, "nbytes", None)
+        if blob_size is None:
+            raise TypeError(
+                "array module_blob must expose NumPy-style ctypes.data and nbytes"
+            )
         return module_blob, ctypes.c_void_p(int(module_blob.ctypes.data)), blob_size
 
     raise TypeError(
@@ -222,13 +238,13 @@ def load_level_zero_module(
     """Load an embedded MLIR GPU module and return a Level Zero module handle."""
 
     lib = _load_library(library_path)
-    _configure_prototypes(lib)
 
-    storage, blob_ptr, blob_size = _module_blob_argument(module_blob)
-    _ = storage
+    _storage, blob_ptr, blob_size = _module_blob_argument(module_blob)
     if jit:
-        return lib.mgpuModuleLoadJIT(blob_ptr, opt_level, blob_size)
-    return lib.mgpuModuleLoad(blob_ptr, blob_size)
+        module_handle = lib.mgpuModuleLoadJIT(blob_ptr, opt_level, blob_size)
+    else:
+        module_handle = lib.mgpuModuleLoad(blob_ptr, blob_size)
+    return _require_handle(module_handle, "mgpuModuleLoad")
 
 
 def get_level_zero_kernel_handle(
@@ -240,8 +256,11 @@ def get_level_zero_kernel_handle(
     """Resolve a kernel handle from a loaded module and kernel symbol name."""
 
     lib = _load_library(library_path)
-    _configure_prototypes(lib)
-    return lib.mgpuModuleGetFunction(module_handle, kernel_name.encode("utf-8"))
+    module_handle = _require_handle(module_handle, "kernel lookup")
+    kernel_handle = lib.mgpuModuleGetFunction(
+        module_handle, kernel_name.encode("utf-8")
+    )
+    return _require_handle(kernel_handle, f"kernel '{kernel_name}' lookup")
 
 
 def launch_level_zero_kernel(
@@ -268,18 +287,20 @@ def launch_level_zero_kernel(
     """
 
     lib = _load_library(library_path)
-    _configure_prototypes(lib)
+    kernel_handle = _require_handle(kernel_handle, "kernel launch")
 
     created_stream = False
     if stream is None:
         stream = lib.mgpuStreamCreate()
         created_stream = True
+    stream = _require_handle(stream, "mgpuStreamCreate")
 
-    input_storages, input_ptrs = _prepare_kernel_arguments(input_arguments)
-    output_storages, output_ptrs = _prepare_kernel_arguments(output_arguments)
-    kernel_arg_storages = [*input_storages, *output_storages, input_ptrs, output_ptrs]
+    input_storages, input_pointers = _prepare_kernel_arguments(input_arguments)
+    output_storages, output_pointers = _prepare_kernel_arguments(output_arguments)
+    # Keep ctypes fields alive until mgpuLaunchKernel has read their addresses.
+    _kernel_argument_storages = [*input_storages, *output_storages]
 
-    arg_values = [*input_ptrs, *output_ptrs]
+    arg_values = [*input_pointers, *output_pointers]
     kernel_args = None
     if arg_values:
         kernel_args = (ctypes.c_void_p * len(arg_values))(*arg_values)
@@ -304,7 +325,6 @@ def launch_level_zero_kernel(
         )
         if created_stream:
             lib.mgpuStreamSynchronize(stream)
-        _ = kernel_arg_storages
         return None if created_stream else stream
     finally:
         if created_stream:
@@ -331,19 +351,18 @@ def launch_level_zero_module_kernel(
 ) -> StreamWrapper | None:
     """Load a lowered MLIR module, resolve a kernel, and launch it."""
 
-    lib = _load_library(library_path)
-    _configure_prototypes(lib)
-
-    storage, blob_ptr, blob_size = _module_blob_argument(module_blob)
-    _ = storage
-    if jit:
-        module_handle = lib.mgpuModuleLoadJIT(blob_ptr, opt_level, blob_size)
-    else:
-        module_handle = lib.mgpuModuleLoad(blob_ptr, blob_size)
+    module_handle = load_level_zero_module(
+        module_blob,
+        library_path=library_path,
+        jit=jit,
+        opt_level=opt_level,
+    )
 
     try:
-        kernel_handle = lib.mgpuModuleGetFunction(
-            module_handle, kernel_name.encode("utf-8")
+        kernel_handle = get_level_zero_kernel_handle(
+            module_handle,
+            kernel_name,
+            library_path=library_path,
         )
         return launch_level_zero_kernel(
             kernel_handle,
@@ -356,7 +375,7 @@ def launch_level_zero_module_kernel(
             library_path=library_path,
         )
     finally:
-        lib.mgpuModuleUnload(module_handle)
+        _load_library(library_path).mgpuModuleUnload(module_handle)
 
 
 __all__ = [

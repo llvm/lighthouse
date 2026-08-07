@@ -16,8 +16,6 @@ from mlir.runtime.np_to_memref import get_ranked_memref_descriptor
 
 from lighthouse.execution.target import TargetInfo
 from lighthouse.utils.sys_config import enable_amx
-from lighthouse.dialects.transform import transform_ext
-from lighthouse.schedule import schedule_boilerplate
 from lighthouse.schedule import bench_wrapper_schedule
 from lighthouse.utils.memref import to_packed_args
 from lighthouse.utils.mlir import get_mlir_library_path
@@ -341,6 +339,7 @@ class Runner:
                     func.attributes["llvm.emit_c_interface"] = ir.UnitAttr.get()
                     break
 
+
 class SharedLibraryEngine:
     """Minimal ``ExecutionEngine``-compatible loader for a prebuilt shared library.
 
@@ -436,8 +435,8 @@ class SharedLibraryEngine:
 class SharedLibraryRunner(Runner):
     """:class:`Runner` variant that executes a prebuilt shared library.
 
-    Instead of JIT-compiling an MLIR module, it loads a shared library (such as
-    the one produced by ``tools/xeas``) and calls its MLIR C-interface symbols.
+    Instead of JIT-compiling an MLIR module, it loads a prebuilt shared library
+    and calls its MLIR C-interface symbols.
     The library must export the entry/benchmark function and, when a GPU memory
     manager is used, the ``gpu_alloc``/``gpu_copy``/``gpu_dealloc`` helpers.
 
@@ -449,7 +448,7 @@ class SharedLibraryRunner(Runner):
     def __init__(
         self,
         shared_library: str,
-        mem_manager_cls: type = None,
+        mem_manager_cls: type | None = None,
         benchmark_function_name: str | None = None,
     ):
         self.mem_manager_cls = mem_manager_cls

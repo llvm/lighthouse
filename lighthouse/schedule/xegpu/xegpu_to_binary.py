@@ -6,19 +6,23 @@ from lighthouse.pipeline.helper import apply_registered_pass
 
 
 def xegpu_to_binary(
-    xegpu_op_level: str = "workgroup", large_register_file: bool = True
+    xegpu_op_level: str = "workgroup",
+    large_register_file: bool = True,
+    enable_vector_to_xegpu: bool = True,
 ) -> ir.Module:
-    """
-    Lower XeGPU dialect to binary using the default upstream pipeline.
+    """Build a transform schedule that lowers XeGPU IR to a device binary.
 
     Args:
         xegpu_op_level: Initial XeGPU operation level.
         large_register_file: Whether to enable large register file.
+        enable_vector_to_xegpu: Whether to lower vector operations to XeGPU.
+
     Returns:
-        Schedule
+        Transform schedule module for ``gpu-lower-to-xevm-pipeline``.
     """
     options = {
         "xegpu-op-level": xegpu_op_level,
+        "enable-vector-to-xegpu": enable_vector_to_xegpu,
     }
     if large_register_file:
         options["igc-cmd-options"] = "-ze-opt-large-register-file"

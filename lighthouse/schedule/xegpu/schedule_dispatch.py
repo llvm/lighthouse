@@ -3,8 +3,8 @@
 This module centralizes the mechanism that decides *which* lowering schedule a
 payload requires and builds it, so callers do not have to hard-code a specific
 schedule (e.g. blindly assume a matmul). It is the common piece shared by the
-KernelBench driver (``examples/xegpu/kernel_bench.py``) and the ``xeas``
-assembler (``lighthouse.tools.xeas``).
+KernelBench driver (``examples/xegpu/kernel_bench.py``) and the XeGPU binary
+lowering API (``lighthouse.pipeline.xegpu.xeas``).
 
 The classification of a payload (matmul-like vs. elementwise-like) happens at
 different IR levels for different callers, so this module only owns the parts
