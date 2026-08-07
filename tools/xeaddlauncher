@@ -1,4 +1,4 @@
-#!/scratch/fschlimb/github/lighthouse/.venv/bin/python
+#!/usr/bin/env python
 """xeaddlauncher - add the host launcher for a GPU kernel (command line interface).
 
 Generates the host-side entry function (`func.func` launching the kernel via

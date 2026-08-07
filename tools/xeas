@@ -1,4 +1,4 @@
-#!/scratch/fschlimb/github/lighthouse/.venv/bin/python
+#!/usr/bin/env python
 """xeas - Xe assembler (command line interface).
 
 Compiles an "outlined" MLIR payload down to a serialized GPU kernel binary blob
