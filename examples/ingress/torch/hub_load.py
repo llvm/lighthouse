@@ -3,12 +3,10 @@
 """
 Example demonstrating how to load any Hugging Face model to MLIR using Lighthouse
 without initializing the model class on the user's side.
-
-The script loads the model with 'transformers.AutoModel', then uses
-'lighthouse.ingress.torch.import_from_model'.
 """
 
 import argparse
+import sys
 from transformers import AutoModel
 from lighthouse.ingress.torch import import_from_model
 
@@ -39,8 +37,6 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
 
-    print(f"Loading model from Hugging Face: {args.model}")
+    print(f"Loading model from Hugging Face: {args.model}", file=sys.stderr)
     mlir_module = load_from_hf(args.model)
-    print(f"Loaded MLIR module for model: {args.model}")
-    print("\n\nModule dump:")
     print(mlir_module)
