@@ -11,9 +11,6 @@ from lighthouse.pipeline.helper import (
 )
 
 from lighthouse.schedule import schedule_boilerplate
-from lighthouse.dialects import smt_ext
-from lighthouse.dialects.transform import smt_ext as td_smt_ext
-from lighthouse.dialects.transform.tune_ext import KnobValue
 from .xegpu_specs import XeGPUSpecs
 from .xegpu_parameter_selector import XeGPUParameterSelector
 from .lowering_common import (
@@ -70,7 +67,7 @@ def bundle_xegpu_elemwise_schedule(
     mod: ir.Value[transform.AnyOpType],
     payload_func_name: str,
     gpu_specs: XeGPUSpecs,
-    params: list[dict[str, int | KnobValue]],
+    params: list[dict[str, int]],
     stop_at_stage: str = "",
 ) -> ir.Value[transform.AnyOpType]:
     """Schedule for lowering elemwise-like payload to xegpu wg level."""
@@ -128,12 +125,12 @@ def xegpu_wg_annotation_for_elemwise_layer(
     gpu_func: ir.Value,
     gpu_specs: XeGPUSpecs,
     *,
-    wg_m: int | KnobValue,
-    wg_n: int | KnobValue,
-    sg_m: int | KnobValue,
-    sg_n: int | KnobValue,
-    load_m: int | KnobValue,
-    load_n: int | KnobValue,
+    wg_m: int,
+    wg_n: int,
+    sg_m: int,
+    sg_n: int,
+    load_m: int,
+    load_n: int,
     **_catch_all,
 ):
     """
@@ -142,18 +139,13 @@ def xegpu_wg_annotation_for_elemwise_layer(
     Should be applied after the payload has been converted to XeGPU using
     the convert-vector-to-xegpu pass.
     """
-
-    @td_smt_ext.constrain_params(wg_m, wg_n, sg_m, sg_n, load_m, load_n)
-    def calc_sg_layout(WG_M, WG_N, SG_M, SG_N, LD_M, LD_N):
-        smt_ext.assert_(WG_M % SG_M == 0)
-        smt_ext.assert_(WG_N % SG_N == 0)
-        smt_ext.assert_(SG_M % LD_M == 0)
-        smt_ext.assert_(SG_N % LD_N == 0)
-        smt_ext.assert_(LD_M <= LOAD_MAX_ROWS)
-        smt_ext.assert_(LD_N <= LOAD_MAX_COLS)
-        return WG_M // SG_M, WG_N // SG_N
-
-    sg_layout = calc_sg_layout.results
+    assert wg_m % sg_m == 0
+    assert wg_n % sg_n == 0
+    assert sg_m % load_m == 0
+    assert sg_n % load_n == 0
+    assert load_m <= LOAD_MAX_ROWS
+    assert load_n <= LOAD_MAX_COLS
+    sg_layout = [wg_m // sg_m, wg_n // sg_n]
 
     sg_tile = [sg_m, sg_n]
     load_tile = [load_m, load_n]
