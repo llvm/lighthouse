@@ -13,259 +13,20 @@ string the Level Zero runtime loads at run time (``mgpuModuleLoad``). The blob
 can be passed to :func:`lighthouse.execution.xegpu.xelaunch.xelaunch` without
 producing a host-side launcher or shared library.
 
-Lowering parameters that cannot be recovered from the IR are passed in via
-``params`` (e.g. the matmul sizes ``m``/``n``/``k`` and any XeGPU tile
-overrides); matmul sizes are inferred from the kernel signature when omitted.
-
 The high-level entry point is :func:`xeas`:
 
     from lighthouse.pipeline.xegpu.xeas import xeas
 
-    blob = xeas(outlined_mlir, params={"m": 2048, "n": 4096, "k": 8192})
+    blob = xeas(outlined_mlir)
 """
 
 import sys
-from itertools import product
 
 from mlir import ir
-from mlir.dialects import func, gpu
+from mlir.dialects import gpu
 
 from lighthouse.pipeline.driver import TransformDriver
-from lighthouse.schedule.xegpu import (
-    ELEMWISE_SCHEDULE,
-    MLP_SCHEDULE,
-    XeGPUParameterSelector,
-    xegpu_to_binary,
-)
-from lighthouse.schedule.xegpu.matmul_constraints import (
-    DPAS,
-    MIN_NB_THREADS,
-    check_k_tile,
-    check_load_tile_a,
-    check_load_tile_b,
-    check_prefetch_tile_a,
-    check_prefetch_tile_b,
-    check_sg_tile,
-    check_wg_tile,
-)
-from lighthouse.schedule.xegpu.matmul_costmodel import (
-    generate_load_tiles_a,
-    generate_load_tiles_b,
-    generate_prefetch_tiles,
-)
-
-# The XeGPU schedule locates the payload module by matching a top-level
-# ``func.func`` by name. The outlined input has none (only a ``gpu.func``), so a
-# throwaway function under this name is injected for the schedule to anchor on.
-_SCHEDULE_ANCHOR = "__xeas_schedule_anchor"
-
-# Tile parameters consumed by the XeGPU WG annotation stage. They form a
-# dependency chain -- the load tiles are constrained by the subgroup tile and
-# ``k_tile``, the prefetch tiles by the work-group tile and ``k_tile`` -- so a
-# partial override cannot simply be merged into a configuration picked by the
-# selector. ``_complete_tile_params`` fills the missing ones instead.
-_TILE_PARAM_NAMES = (
-    "wg_m",
-    "wg_n",
-    "sg_m",
-    "sg_n",
-    "k_tile",
-    "load_a_m",
-    "load_a_k",
-    "load_b_k",
-    "load_b_n",
-    "prefetch_a_m",
-    "prefetch_a_k",
-    "prefetch_b_k",
-    "prefetch_b_n",
-    "prefetch_a_nb",
-    "prefetch_b_nb",
-)
-
-# Subgroup tile candidates, tried in this order when the subgroup tile has to be
-# derived from a caller-provided work-group tile.
-_SG_TILE_OPTIONS = (128, 64, 32, 16)
-
-
-def _is_valid(check, *args, **kwargs) -> bool:
-    """Report whether a constraint checker accepts its arguments."""
-    try:
-        check(*args, **kwargs)
-    except ValueError:
-        return False
-    return True
-
-
-def _resolve_tile(
-    names: tuple[str, ...], params: dict, reference: dict, is_valid, candidates
-) -> tuple[int, ...]:
-    """Determine one group of interdependent tile parameters.
-
-    A group the caller specified in full is honoured verbatim, so an explicit
-    request is never silently replaced. Otherwise the missing components are
-    taken from ``reference`` (the selector's configuration) when the result
-    satisfies the constraints, and are derived from ``candidates`` when it does
-    not. This is what happens when the caller overrode a parameter the group
-    depends on.
-    """
-    given = {name: params[name] for name in names if name in params}
-    if len(given) == len(names):
-        return tuple(params[name] for name in names)
-
-    preferred = tuple(params.get(name, reference.get(name)) for name in names)
-    if None not in preferred and is_valid(preferred):
-        return preferred
-
-    for candidate in candidates():
-        if all(
-            name not in given or given[name] == value
-            for name, value in zip(names, candidate)
-        ):
-            return tuple(candidate)
-
-    raise ValueError(
-        f"xeas: no valid {'/'.join(names)} exists for the given tile parameters"
-        + (f" (with {given})" if given else "")
-    )
-
-
-def _ordered_load_tiles(tiles: list, preferred: tuple) -> list:
-    """Order load tile candidates so the DPAS-shaped tile is tried first."""
-    preferred = tuple(preferred)
-    tiles = [tuple(tile) for tile in tiles]
-    return ([preferred] if preferred in tiles else []) + [
-        tile for tile in tiles if tile != preferred
-    ]
-
-
-def _check_wg_and_k_tile(params: dict) -> None:
-    """Reject work-group / reduction tiles the lowering cannot handle.
-
-    These head the dependency chain and are used verbatim when provided. An
-    invalid one is not caught by the schedule's own assertions and instead
-    surfaces much later as an opaque transform failure -- most notably
-    ``k_tile == k``, which makes the reduction loop single-trip so it is
-    canonicalized away and the schedule loses its handle on it.
-    """
-    try:
-        check_wg_tile(params["m"], params["n"], (params["wg_m"], params["wg_n"]))
-        check_k_tile(params["k"], params["k_tile"])
-    except ValueError as error:
-        raise ValueError(
-            f"xeas: invalid tile parameters for matmul "
-            f"{params['m']}x{params['n']}x{params['k']}: {error}"
-        ) from error
-
-
-def _complete_tile_params(params: dict) -> dict:
-    """Fill in the tile parameters the caller did not provide.
-
-    Starts from the caller's values and completes the configuration in
-    dependency order, re-deriving anything the caller's overrides invalidate.
-    """
-    selector = XeGPUParameterSelector(device=params.get("device"))
-    gpu_specs = selector.gpu_specs
-    reference = selector.get_parameters(
-        (params["m"], params["n"], params["k"]),
-        params["transpose_a"],
-        params["transpose_b"],
-    )
-    transpose_a = params["transpose_a"]
-    transpose_b = params["transpose_b"]
-
-    filled = dict(params)
-    # The work-group and reduction tiles head the chain; nothing constrains them
-    # beyond the problem sizes, so the selector's values can be used directly.
-    for name in ("wg_m", "wg_n", "k_tile"):
-        filled.setdefault(name, reference[name])
-    wg_tile = (filled["wg_m"], filled["wg_n"])
-    k_tile = filled["k_tile"]
-
-    sg_tile = _resolve_tile(
-        ("sg_m", "sg_n"),
-        params,
-        reference,
-        lambda tile: _is_valid(
-            check_sg_tile, wg_tile, tile, gpu_specs, min_nb_threads=MIN_NB_THREADS
-        ),
-        lambda: (
-            tile
-            for tile in product(_SG_TILE_OPTIONS, repeat=2)
-            if _is_valid(
-                check_sg_tile, wg_tile, tile, gpu_specs, min_nb_threads=MIN_NB_THREADS
-            )
-        ),
-    )
-    filled["sg_m"], filled["sg_n"] = sg_tile
-
-    filled["load_a_m"], filled["load_a_k"] = _resolve_tile(
-        ("load_a_m", "load_a_k"),
-        params,
-        reference,
-        lambda tile: _is_valid(
-            check_load_tile_a, tile, sg_tile, k_tile, transpose=transpose_a
-        ),
-        lambda: _ordered_load_tiles(
-            generate_load_tiles_a(sg_tile, k_tile), DPAS.A_TILE
-        ),
-    )
-    filled["load_b_k"], filled["load_b_n"] = _resolve_tile(
-        ("load_b_k", "load_b_n"),
-        params,
-        reference,
-        lambda tile: _is_valid(
-            check_load_tile_b, tile, sg_tile, k_tile, transpose=transpose_b
-        ),
-        lambda: _ordered_load_tiles(
-            generate_load_tiles_b(sg_tile, k_tile), DPAS.B_TILE
-        ),
-    )
-
-    # Prefetch tiles are cooperative across the work group, hence they depend on
-    # the work-group tile rather than the subgroup tile.
-    prefetch_a, prefetch_b = generate_prefetch_tiles(
-        wg_tile,
-        k_tile,
-        gpu_specs,
-        transpose_a=transpose_a,
-        transpose_b=transpose_b,
-    )
-    filled["prefetch_a_m"], filled["prefetch_a_k"] = _resolve_tile(
-        ("prefetch_a_m", "prefetch_a_k"),
-        params,
-        reference,
-        lambda tile: _is_valid(
-            check_prefetch_tile_a,
-            tile,
-            wg_tile,
-            k_tile,
-            gpu_specs,
-            transpose=transpose_a,
-            min_nb_threads=MIN_NB_THREADS,
-        ),
-        lambda: prefetch_a,
-    )
-    filled["prefetch_b_k"], filled["prefetch_b_n"] = _resolve_tile(
-        ("prefetch_b_k", "prefetch_b_n"),
-        params,
-        reference,
-        lambda tile: _is_valid(
-            check_prefetch_tile_b,
-            tile,
-            wg_tile,
-            k_tile,
-            gpu_specs,
-            transpose=transpose_b,
-            min_nb_threads=MIN_NB_THREADS,
-        ),
-        lambda: prefetch_b,
-    )
-
-    # Prefetch depth does not interact with the tile shapes.
-    for name in ("prefetch_a_nb", "prefetch_b_nb"):
-        filled.setdefault(name, reference.get(name, 1))
-
-    return filled
+from lighthouse.schedule.xegpu import xegpu_to_binary
 
 
 def _get_gpu_funcs(module: ir.Module) -> list:
@@ -384,123 +145,6 @@ def _rewrite_function_with_static_shapes(
     _set_function_arg_types(func_op, new_types)
 
 
-def _count_ops(root, op_name: str) -> int:
-    """Return how many ops named ``op_name`` ``root`` contains, at any depth."""
-    count = 0
-    for region in root.operation.regions:
-        for block in region.blocks:
-            for op in block.operations:
-                if op.operation.name == op_name:
-                    count += 1
-                count += _count_ops(op, op_name)
-    return count
-
-
-def _detect_schedule_kind(gpu_funcs: list) -> str:
-    """Infer the schedule kind from the outlined kernel body.
-
-    A single ``vector.contract`` in the kernel identifies a matmul/MLP payload;
-    otherwise it is treated as an elementwise payload. The MLP schedule anchors
-    on *the* DPAS op and takes one set of tile parameters, so a payload with
-    several contractions (e.g. fused attention) cannot be described by it.
-    """
-    contractions = sum(
-        _count_ops(gpu_func, "vector.contract") for gpu_func in gpu_funcs
-    )
-    if contractions == 1:
-        return MLP_SCHEDULE
-    if contractions > 1:
-        print(
-            f"xeas: {contractions} vector.contract ops found; the MLP schedule "
-            "supports a single contraction, falling back to the elementwise "
-            "schedule",
-            file=sys.stderr,
-        )
-    return ELEMWISE_SCHEDULE
-
-
-def _static_2d_shape(type_) -> list[int] | None:
-    """Return the static 2D shape of a memref type, or ``None`` otherwise."""
-    try:
-        memref_type = ir.MemRefType(type_)
-    except (ValueError, TypeError):
-        return None
-    if memref_type.rank != 2:
-        return None
-    shape = list(memref_type.shape)
-    if any(ir.ShapedType.is_dynamic_size(dim) for dim in shape):
-        return None
-    return shape
-
-
-def _infer_matmul_sizes(gpu_func) -> tuple[int, int, int, bool, bool] | None:
-    """Infer ``(m, n, k, transpose_a, transpose_b)`` from the kernel signature.
-
-    The outlined matmul kernel follows the ``kernel(C, A, B)`` convention, where
-    ``C`` is ``M x N`` and ``A``/``B`` are the (possibly transposed) operands.
-    ``M`` and ``N`` come from ``C``; ``K`` and the transpose flags are recovered
-    by matching ``A``/``B`` against the derived ``M``/``N``. Returns ``None``
-    when the signature does not match a static 2D matmul.
-    """
-    func_type = ir.FunctionType(ir.TypeAttr(gpu_func.attributes["function_type"]).value)
-    inputs = list(func_type.inputs)
-    if len(inputs) < 3:
-        return None
-    c_shape = _static_2d_shape(inputs[0])
-    a_shape = _static_2d_shape(inputs[1])
-    b_shape = _static_2d_shape(inputs[2])
-    if not (c_shape and a_shape and b_shape):
-        return None
-
-    m, n = c_shape
-    # A is (M, K) when not transposed, (K, M) when transposed.
-    if a_shape[0] == m:
-        k, transpose_a = a_shape[1], False
-    elif a_shape[1] == m:
-        k, transpose_a = a_shape[0], True
-    else:
-        return None
-    # Validate B against the derived K and N.
-    if b_shape == [k, n]:
-        transpose_b = False
-    elif b_shape == [n, k]:
-        transpose_b = True
-    else:
-        return None
-    return m, n, k, transpose_a, transpose_b
-
-
-def _prepare_mlp_params(gpu_funcs: list, params: dict) -> dict:
-    """Complete the matmul lowering parameters for the MLP schedule.
-
-    Missing ``m``/``n``/``k`` (and the transpose flags) are inferred from the
-    kernel signature. A partial set of tile parameters is completed in
-    dependency order, so the caller's values are preserved and everything they
-    constrain is derived from them.
-    """
-    params = dict(params)
-    if not all(dim in params for dim in ("m", "n", "k")):
-        sizes = _infer_matmul_sizes(gpu_funcs[0])
-        if sizes is None:
-            raise ValueError(
-                "could not infer the matmul sizes from the kernel signature; "
-                "pass m, n and k in params"
-            )
-        m, n, k, transpose_a, transpose_b = sizes
-        params.setdefault("m", m)
-        params.setdefault("n", n)
-        params.setdefault("k", k)
-        params.setdefault("transpose_a", transpose_a)
-        params.setdefault("transpose_b", transpose_b)
-    params.setdefault("transpose_a", False)
-    params.setdefault("transpose_b", False)
-
-    if not all(name in params for name in _TILE_PARAM_NAMES):
-        params = _complete_tile_params(params)
-    _check_wg_and_k_tile(params)
-    return params
-
-
 def _mark_transfers_in_bounds(module: ir.Module) -> int:
     """Force ``vector.transfer_read``/``transfer_write`` ops to be in_bounds.
 
@@ -539,22 +183,6 @@ def _mark_transfers_in_bounds(module: ir.Module) -> int:
     for op in module.body.operations:
         visit(op)
     return count
-
-
-def _inject_schedule_anchor(module: ir.Module) -> str:
-    """Insert a throwaway ``func.func`` for the XeGPU schedule to anchor on.
-
-    The outlined input contains only a ``gpu.module``/``gpu.func`` and no host
-    ``func.func``, but the XeGPU schedule locates the payload module by matching
-    a ``func.func`` by name. This adds an empty function it can grab; the
-    function is never called and is lowered to a dead, empty ``llvm.func`` by
-    the binary lowering (only the ``gpu.binary`` object is extracted).
-    """
-    with ir.InsertionPoint(module.body):
-        anchor = func.FuncOp(_SCHEDULE_ANCHOR, ([], []))
-        with ir.InsertionPoint(anchor.add_entry_block()):
-            func.ReturnOp([])
-    return _SCHEDULE_ANCHOR
 
 
 def _select_gpu_object(objects: ir.ArrayAttr, large_register_file: bool):
@@ -619,10 +247,8 @@ def lower_payload(
 
     Args:
         source: MLIR text at the ``outlined`` stage.
-        params: Lowering parameters. For a matmul/MLP kernel this holds the
-            problem sizes ``m``/``n``/``k`` (inferred from the kernel signature
-            when omitted) plus optional transpose flags, ``device`` and XeGPU
-            tile overrides.
+        params: Retained for compatibility with the original API. The active
+            binary-only lowering does not consume these values.
         input_shape: Optional comma-separated ``DIMSxTYPE`` descriptors, one per
             kernel argument in order. When given, the ``gpu.func`` kernel's
             (possibly dynamically shaped) memref arguments are rewritten to
@@ -651,10 +277,6 @@ def lower_payload(
             except Exception as exc:
                 raise ValueError(f"invalid --input-shape rewrite: {exc}") from exc
 
-        # schedule_kind = _detect_schedule_kind(gpu_funcs)
-        # if schedule_kind == MLP_SCHEDULE:
-        #     params = _prepare_mlp_params(gpu_funcs, params)
-
         if assume_in_bounds:
             marked = _mark_transfers_in_bounds(module)
             if marked:
@@ -663,21 +285,12 @@ def lower_payload(
                     file=sys.stderr,
                 )
 
-        # anchor = _inject_schedule_anchor(module)
-
         schedules = [
-            # build_payload_schedule(
-            #     schedule_kind,
-            #     [params],
-            #     payload_func_name=anchor,
-            #     start_at_stage="outlined",
-            # ),
             xegpu_to_binary(
                 xegpu_op_level=xegpu_op_level,
                 large_register_file=large_register_file,
             ),
         ]
-        # print(module)
         return TransformDriver(schedules).apply(module)
 
 
