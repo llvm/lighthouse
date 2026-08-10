@@ -78,7 +78,8 @@
   input_shapes: ["4096", 4096x4096]
   initializations: [rnd, rnd]
   output_shape: 4096x4096
-  warning: "error: failed to legalize operation 'torch.operator' that was explicitly marked illegal"
+  gflops: (4096 * 4096 * 2) / 1e9
+  pipeline: element_wise
 
 - kernel: level1/13_Matmul_for_symmetric_matrices.py
   input_shapes: [4096x4096, 4096x4096]
