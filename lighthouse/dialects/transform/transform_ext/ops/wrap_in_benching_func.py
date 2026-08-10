@@ -108,10 +108,10 @@ class WrapInBenchingFuncOp(
 
 
 def wrap_in_benching_func(
-    target: ir.Value[transform.AnyOpType], bench_name: str | None | bool = None
+    target: ir.Value[transform.AnyOpType], bench_name: str | None = None
 ) -> ir.Value[transform.AnyOpType]:
     """snake_case wrapper to create a WrapInBenchingFuncOp."""
     op = WrapInBenchingFuncOp(target=target)
-    if bench_name:
+    if bench_name is not None:
         op.attributes["bench_name"] = ir.StringAttr.get(bench_name)
     return op.bench_func

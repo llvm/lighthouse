@@ -27,40 +27,13 @@ from .matmul_constraints import (
 )
 
 
-# Default workgroup/subgroup/load tile sizes for an elementwise layer. Unlike
-# the matmul schedule, the elementwise schedule has no cost-model selector, so
-# any tile parameters a caller omits are filled from these fixed defaults.
-DEFAULT_ELEMWISE_PARAMS = {
-    "wg_m": 128,
-    "wg_n": 256,
-    "sg_m": 32,
-    "sg_n": 32,
-    "load_m": 8,
-    "load_n": 16,
-}
-
-
 def elemwise_schedule(
     params: list[dict[str, int | None]],
     payload_func_name: str = "payload",
     stop_at_stage: str = "",
-    start_at_stage: str = "",
 ) -> ir.Module:
-    """Generate transform schedule module for elemwise payload.
-
-    Tile parameters omitted from ``params`` are filled from
-    :data:`DEFAULT_ELEMWISE_PARAMS`.
-
-    ``start_at_stage`` allows resuming the schedule from a partially lowered
-    payload. Currently only ``"outlined"`` is supported, which assumes the input
-    payload has already been fused, tiled, vectorized, bufferized and outlined
-    to gpu.func (i.e. the IR produced by the ``"outlined"`` dump stage), and
-    applies only the XeGPU-level lowering (convert-vector-to-xegpu and WG
-    annotations) onwards.
-    """
+    """Generate transform schedule module for elemwise payload."""
     assert params is not None and len(params) > 0, "params must be provided."
-    # fill any missing tile parameters with the fixed elementwise defaults
-    params = [{**DEFAULT_ELEMWISE_PARAMS, **layer_params} for layer_params in params]
     devices = {p.get("device") for p in params if "device" in p}
     assert len(devices) <= 1, f"Multiple devices specified in params list: {devices}"
     device = devices.pop() if devices else None
@@ -84,7 +57,6 @@ def elemwise_schedule(
                 gpu_specs=gpu_specs,
                 params=params,
                 stop_at_stage=stop_at_stage,
-                start_at_stage=start_at_stage,
             )
         except PipelineInterrupt:
             pass
@@ -100,54 +72,44 @@ def bundle_xegpu_elemwise_schedule(
     gpu_specs: XeGPUSpecs,
     params: list[dict[str, int | KnobValue]],
     stop_at_stage: str = "",
-    start_at_stage: str = "",
 ) -> ir.Value[transform.AnyOpType]:
-    """Schedule for lowering elemwise-like payload to xegpu wg level.
-
-    When ``start_at_stage == "outlined"``, the front of the schedule (elementwise
-    fusion, tiling, vectorization, bufferization and gpu outlining) is skipped
-    and ``mod`` is assumed to already be at the ``"outlined"`` stage.
-    """
+    """Schedule for lowering elemwise-like payload to xegpu wg level."""
     nlayers = len(params)
 
-    if start_at_stage not in ("", "outlined"):
-        raise ValueError(f"Unsupported start_at_stage: {start_at_stage!r}")
+    if stop_at_stage == "initial":
+        raise PipelineInterrupt()
 
-    if start_at_stage != "outlined":
-        if stop_at_stage == "initial":
-            raise PipelineInterrupt()
+    # fuse all elementwise ops first
+    func = get_named_func(mod, payload_func_name)
+    func = apply_registered_pass(func, "linalg-fuse-elementwise-ops")
 
-        # fuse all elementwise ops first
-        func = get_named_func(mod, payload_func_name)
-        func = apply_registered_pass(func, "linalg-fuse-elementwise-ops")
-
-        # tile each layer separately
-        generic_ops = match_and_split(func, ops={"linalg.generic"}, nhandles=nlayers)
-        for generic_op, layer_params in zip(generic_ops, params):
-            # wg tiling
-            wg_tile = [layer_params["wg_m"], layer_params["wg_n"]]
-            _, [wg_loop], _ = lh_transform.tile(
-                generic_op,
-                tile_sizes=wg_tile,
-                fuse_producers=True,
-                use_forall=True,
-                apply_cleanup=False,
-            )
-
-        lh_transform.cleanup(func)
-        if stop_at_stage == "tiled":
-            raise PipelineInterrupt()
-
-        mod = vectorize_bufferize_and_outline_gpu_func(
-            mod,
-            payload_func_name=payload_func_name,
-            nlayers=nlayers,
-            gpu_specs=gpu_specs,
-            params=params,
-            stop_at_stage=stop_at_stage,
+    # tile each layer separately
+    generic_ops = match_and_split(func, ops={"linalg.generic"}, nhandles=nlayers)
+    for generic_op, layer_params in zip(generic_ops, params):
+        # wg tiling
+        wg_tile = [layer_params["wg_m"], layer_params["wg_n"]]
+        _, [wg_loop], _ = lh_transform.tile(
+            generic_op,
+            tile_sizes=wg_tile,
+            fuse_producers=True,
+            use_forall=True,
+            apply_cleanup=False,
         )
-        if stop_at_stage == "outlined":
-            raise PipelineInterrupt()
+
+    lh_transform.cleanup(func)
+    if stop_at_stage == "tiled":
+        raise PipelineInterrupt()
+
+    mod = vectorize_bufferize_and_outline_gpu_func(
+        mod,
+        payload_func_name=payload_func_name,
+        nlayers=nlayers,
+        gpu_specs=gpu_specs,
+        params=params,
+        stop_at_stage=stop_at_stage,
+    )
+    if stop_at_stage == "outlined":
+        raise PipelineInterrupt()
 
     mod = convert_vector_to_xegpu(mod, nlayers=nlayers)
     if stop_at_stage == "xegpu-initial":
@@ -187,9 +149,6 @@ def xegpu_wg_annotation_for_elemwise_layer(
 
     @td_smt_ext.constrain_params(wg_m, wg_n, sg_m, sg_n, load_m, load_n)
     def calc_sg_layout(WG_M, WG_N, SG_M, SG_N, LD_M, LD_N):
-        print(
-            f"Calculating subgroup layout for wg=({WG_M},{WG_N}), sg=({SG_M},{SG_N}), load=({LD_M},{LD_N})"
-        )
         smt_ext.assert_(WG_M % SG_M == 0)
         smt_ext.assert_(WG_N % SG_N == 0)
         smt_ext.assert_(SG_M % LD_M == 0)

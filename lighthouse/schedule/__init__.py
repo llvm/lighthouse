@@ -1,7 +1,6 @@
 from .builders import create_schedule
 from .builders import create_named_sequence
 from .builders import schedule_boilerplate
-from .bench import bench_wrapper_schedule
 from .hoisting import hoist_loops
 from .func import convert_function_results
 from .linalg import linalg_contract_fold_unit_dims
@@ -17,7 +16,6 @@ from .debug import print_ir
 from .omp import parallelize
 
 __all__ = [
-    "bench_wrapper_schedule",
     "block_pack_matmuls",
     "bufferize",
     "convert_function_results",

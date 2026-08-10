@@ -63,13 +63,7 @@ from lighthouse.utils.mlir import inspect_payload
 from lighthouse.execution.runner import Runner
 from lighthouse.schedule.xegpu import XeGPUParameterSelector
 from lighthouse.pipeline.driver import TransformDriver
-from lighthouse.schedule.xegpu import (
-    MLP_SCHEDULE,
-    ELEMWISE_SCHEDULE,
-    build_payload_schedule,
-    select_schedule_kind,
-    xegpu_to_binary,
-)
+from lighthouse.schedule.xegpu import mlp_schedule, elemwise_schedule, xegpu_to_binary
 from lighthouse.pipeline.helper import PipelineInterrupt
 from lighthouse.ingress.torch import gpu_backend, TargetDialect
 from lighthouse.ingress.torch.compile import TorchMemoryManager
@@ -118,8 +112,7 @@ def infer_parameters(mod: ir.Module, verbose: int = 0) -> tuple[dict, str, list[
         "bf16": 2,
         "f32": 4,
     }
-    schedule_kind = select_schedule_kind(func_metadata)
-    if schedule_kind == MLP_SCHEDULE:
+    if len(matmuls) > 0:
         schedule_params = XeGPUParameterSelector().get_parameters_for_layers(matmuls)
         # check that all matmul dims are powers of 2
         for mmul in matmuls:
@@ -143,7 +136,9 @@ def infer_parameters(mod: ir.Module, verbose: int = 0) -> tuple[dict, str, list[
             ab_bytes = elemtype_bytes[ab_elemtype]
             read_bytes += (np.prod(a_shape) + np.prod(b_shape)) * ab_bytes
             write_bytes += np.prod(c_shape) * ab_bytes
-    elif schedule_kind == ELEMWISE_SCHEDULE:
+
+        schedule_kind = "mlp"
+    elif len(elemwise) > 0:
         # TODO estimate flops in a reliable way, now assuming 1 flop per element
         shape = elemwise[0]["shape"]
         res_elemtype = elemwise[0]["elemtype"]
@@ -152,9 +147,23 @@ def infer_parameters(mod: ir.Module, verbose: int = 0) -> tuple[dict, str, list[
         read_bytes = np.prod(shape) * res_bytes
         write_bytes = np.prod(shape) * res_bytes
 
-        # NOTE assume all elemwise layers will be fused to a single layer; the
-        # tile parameters are filled from the elementwise schedule's defaults.
-        schedule_params = [{}]
+        # Use fixed tile sizes for now
+        layer_params = {
+            "wg_m": 128,
+            "wg_n": 256,
+            "sg_m": 32,
+            "sg_n": 32,
+            "load_m": 8,
+            "load_n": 16,
+        }
+        # NOTE assume all elemwise layers will be fused to a single layer
+        schedule_params = [layer_params]
+        schedule_kind = "elemwise"
+    else:
+        print("Layers:")
+        for k, v in layer_metadata.items():
+            print(f"  {k}: {v}")
+        raise ValueError("Unsupported payload type")
     func_metadata["total_flops"] = total_flops
     func_metadata["read_bytes"] = read_bytes
     func_metadata["write_bytes"] = write_bytes
@@ -357,13 +366,21 @@ def lower_to_llvm(
     payload_func_name: str,
 ) -> ir.Module:
     """Lower payload module to LLVM using the specified schedule and parameters."""
-    make_function_callable(mod, payload_func_name)
-    schedule = build_payload_schedule(
-        schedule_kind,
-        schedule_params,
-        payload_func_name=payload_func_name,
-        stop_at_stage=stop_at_stage,
-    )
+    Runner.make_function_callable(mod, payload_func_name)
+    if schedule_kind == "mlp":
+        schedule = mlp_schedule(
+            params=schedule_params,
+            payload_func_name=payload_func_name,
+            stop_at_stage=stop_at_stage,
+        )
+    elif schedule_kind == "elemwise":
+        schedule = elemwise_schedule(
+            params=schedule_params,
+            payload_func_name=payload_func_name,
+            stop_at_stage=stop_at_stage,
+        )
+    else:
+        raise ValueError(f"Unsupported schedule kind: {schedule_kind}")
 
     # define lowering pipeline
     schedules = []

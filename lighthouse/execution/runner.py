@@ -11,12 +11,15 @@ from functools import partial
 from collections.abc import Callable
 
 from mlir import ir
+from mlir.dialects import transform
+from mlir.dialects.transform import structured
 from mlir.execution_engine import ExecutionEngine
 from mlir.runtime.np_to_memref import get_ranked_memref_descriptor
 
 from lighthouse.execution.target import TargetInfo
 from lighthouse.utils.sys_config import enable_amx
-from lighthouse.schedule import bench_wrapper_schedule
+from lighthouse.dialects.transform import transform_ext
+from lighthouse.schedule import schedule_boilerplate
 from lighthouse.utils.memref import to_packed_args
 from lighthouse.utils.mlir import get_mlir_library_path
 from lighthouse.utils.lib_finder import find_openmp_library
@@ -50,7 +53,6 @@ class Runner:
         shared_libs: list[str] | None = None,
         opt_level: int = 3,
         target: TargetInfo = None,
-        benchmark_function_name: str | None = None,
     ):
         self.payload = module
         self.target = target if target else TargetInfo()
@@ -66,8 +68,6 @@ class Runner:
         # Remove duplicates, the same library cannot be loaded multiple times.
         self.shared_libs = list(dict.fromkeys(shared_libs))
         self.opt_level = opt_level
-        if benchmark_function_name is not None:
-            self.payload_benchmark_function_name = benchmark_function_name
         self.engine = self._get_engine()
         self._configure_system()
 
@@ -304,9 +304,24 @@ class Runner:
         The function name is defined in Runner and will be used by the runner benchmark method.
         This schedule must apply to the module before any other in an optimizing pipeline.
         """
-        return bench_wrapper_schedule(
-            payload_func, bench_name=Runner.payload_benchmark_function_name
-        )
+        with ir.Location.unknown():
+            with schedule_boilerplate(result_types=[transform.any_op_t()]) as (
+                schedule,
+                named_seq,
+            ):
+                named_func = structured.structured_match(
+                    transform.AnyOpType.get(),
+                    target=named_seq.bodyTarget,
+                    ops={"func.func"},
+                    op_attrs={"sym_name": ir.StringAttr.get(payload_func)},
+                )
+                bench_func = transform_ext.wrap_in_benching_func(
+                    named_func, bench_name=Runner.payload_benchmark_function_name
+                )
+                transform.yield_([bench_func])
+
+        schedule.body.operations[0].verify()
+        return schedule
 
     @staticmethod
     def get_gpu_argument_access_callback(
