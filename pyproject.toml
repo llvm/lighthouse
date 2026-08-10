@@ -20,6 +20,7 @@ dev = [
 ingress_torch_mlir = [
     "torch-mlir==20260805.836",
     "ml_dtypes",
+    "transformers",
 ]
 # Additional "targets" which pull in optional dependencies -- use `uv sync --extra TARGET`
 ingress_torch_cpu = [
