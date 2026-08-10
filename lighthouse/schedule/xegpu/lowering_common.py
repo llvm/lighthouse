@@ -45,7 +45,6 @@ def vectorize_bufferize_and_outline_gpu_func(
     mod: transform.AnyOpType,
     payload_func_name: str,
     *,
-    nlayers: int,
     gpu_specs: XeGPUSpecs,
     params: list[dict[str, int | KnobValue]],
     stop_at_stage: str = "",
@@ -60,7 +59,7 @@ def vectorize_bufferize_and_outline_gpu_func(
     if stop_at_stage == "bufferized":
         raise PipelineInterrupt()
 
-    convert_to_gpu_launch(mod, payload_func_name, nlayers=nlayers)
+    convert_to_gpu_launch(mod, payload_func_name)
     mod = outline_gpu_function(
         mod, payload_func_name, gpu_specs=gpu_specs, params=params
     )
@@ -79,6 +78,7 @@ def vectorize(
         func,
         fold_type_extensions_into_contract=True,
     )
+
     # Hoist loop-invariant vector read/store ops if present.
     k_loop = match(func, ops={"scf.for"})
     lh_transform.loop_hoisting(k_loop)
@@ -129,16 +129,15 @@ def convert_allocs_to_gpu(
 def convert_to_gpu_launch(
     mod: transform.AnyOpType,
     payload_func_name: str,
-    *,
-    nlayers: int,
 ) -> transform.AnyOpType:
     """Convert scf.forall/scf.parallel structure to gpu.launch."""
 
     # convert forall to parallel
     func = get_named_func(mod, payload_func_name)
-    wg_loops = match_and_split(func, ops={"scf.forall"}, nhandles=nlayers)
-    for wg_loop in wg_loops:
-        wg_loop = loop.loop_forall_to_parallel([transform.any_op_t()], wg_loop)
+    forall_loops = match(func, ops={"scf.forall"})
+    with lh_transform.foreach(forall_loops) as forall_op:
+        loop.loop_forall_to_parallel([transform.any_op_t()], forall_op)
+        transform.yield_()
 
     # convert scf.parallel to gpu.launch
     func = apply_registered_pass(func, "gpu-map-parallel-loops")
@@ -211,9 +210,7 @@ def outline_gpu_function(
     return mod
 
 
-def convert_vector_to_xegpu(
-    mod: transform.AnyOpType, *, nlayers: int
-) -> transform.AnyOpType:
+def convert_vector_to_xegpu(mod: transform.AnyOpType) -> transform.AnyOpType:
     """Attach xevm target and convert vector ops to xegpu in all gpu.module ops."""
 
     # set xevm target
@@ -224,10 +221,11 @@ def convert_vector_to_xegpu(
     )
 
     # convert vector to xegpu
-    gpu_mod_ops = match_and_split(mod, ops={"gpu.module"}, nhandles=nlayers)
-    for gpu_mod in gpu_mod_ops:
+    gpu_mod_ops = match(mod, ops={"gpu.module"})
+    with lh_transform.foreach(gpu_mod_ops) as gpu_mod:
         gpu_func = match(gpu_mod, ops={"gpu.func"})
         gpu_func = apply_registered_pass(gpu_func, "convert-vector-to-xegpu")
         transform.apply_cse(gpu_func)
+        transform.yield_()
 
     return mod

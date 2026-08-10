@@ -10,8 +10,8 @@ it rewrites the payload from high-level linalg ops down to GPU (XeGPU) kernels.
      `_tile_one_matmul` / `_tile_one_layernorm` / `_tile_one_fused_attention_region`
      helpers.
 
-We can't reuse the repo's per-op schedules (layer_norm_schedule, mlp_schedule,
-softmax_schedule) directly, because each assumes the module contains only its op.
+We can't reuse the repo's per-op schedules (reduction_schedule, mlp_schedule)
+directly, because each assumes the module contains only its op.
 The nanoGPT module is mixed (matmul + layernorm + softmax + elementwise), so we
 build one combined schedule that handles all op classes. The strategy:
 
@@ -554,7 +554,7 @@ def _bundle(
         raise PipelineInterrupt()
 
     # Shared with the per-op xegpu schedules: forall -> scf.parallel -> gpu.launch.
-    func = convert_to_gpu_launch(mod, "payload", nlayers=nkernels)
+    func = convert_to_gpu_launch(mod, "payload")
 
     # launch threads per kernel, in IR (build) order = `kinds`.
     launches = match_and_split(mod, ops={"gpu.launch"}, nhandles=nkernels)

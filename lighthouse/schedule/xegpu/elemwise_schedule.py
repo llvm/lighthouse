@@ -103,12 +103,11 @@ def bundle_xegpu_elemwise_schedule(
     mod = vectorize_bufferize_and_outline_gpu_func(
         mod,
         payload_func_name=payload_func_name,
-        nlayers=nlayers,
         gpu_specs=gpu_specs,
         params=params,
         stop_at_stage=stop_at_stage,
     )
-    mod = convert_vector_to_xegpu(mod, nlayers=nlayers)
+    mod = convert_vector_to_xegpu(mod)
     if stop_at_stage == "xegpu-initial":
         raise PipelineInterrupt()
 

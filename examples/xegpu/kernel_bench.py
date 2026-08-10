@@ -67,7 +67,7 @@ from lighthouse.schedule.xegpu import (
     mlp_schedule,
     elemwise_schedule,
     xegpu_to_binary,
-    softmax_schedule,
+    reduction_schedule,
 )
 from lighthouse.pipeline.helper import PipelineInterrupt
 from lighthouse.ingress.torch import gpu_backend, TargetDialect
@@ -165,8 +165,8 @@ def infer_parameters(mod: ir.Module, verbose: int = 0) -> tuple[dict, str, list[
         # NOTE assume all elemwise layers will be fused to a single layer
         schedule_params = [layer_params]
         schedule_kind = "elemwise"
-    elif len(elemwise) > 0 and len(reduction) == 2:
-        # assume this is softmax
+    elif len(elemwise) > 0 and len(reduction) > 0:
+        # elemwise + reduction kernel, e.g. softmax or layer norm
         shape = elemwise[-1]["shape"]
         res_elemtype = elemwise[-1]["elemtype"]
         # Note this is scaled by factor in the flop scaling dict
@@ -182,8 +182,19 @@ def infer_parameters(mod: ir.Module, verbose: int = 0) -> tuple[dict, str, list[
             "subgroup_size": 16,
             "reduction_step_size": 32,
         }
+
+        # Ensure shape is divisible by tile sizes.
+        # Padding or remainder handling is not implemented yet.
+        if shape[0] % layer_params["wg_rows"] != 0:
+            raise ValueError(
+                f"Shape {shape} dimension 0 not divisible by wg_rows={layer_params['wg_rows']}"
+            )
+        if shape[1] % layer_params["reduction_step_size"] != 0:
+            raise ValueError(
+                f"Shape {shape} dimension 1 not divisible by reduction_step_size={layer_params['reduction_step_size']}"
+            )
         schedule_params = [layer_params]
-        schedule_kind = "softmax"
+        schedule_kind = "reduction"
     else:
         print("Layers:")
         for layer in layer_metadata:
@@ -429,10 +440,11 @@ def lower_to_llvm(
             payload_func_name=payload_func_name,
             stop_at_stage=stop_at_stage,
         )
-    elif schedule_kind == "softmax":
+    elif schedule_kind == "reduction":
         layer_params = schedule_params[0]
-        schedule = softmax_schedule(
+        schedule = reduction_schedule(
             parameters=layer_params,
+            payload_func_name=payload_func_name,
             stop_at_stage=stop_at_stage,
         )
     else:
