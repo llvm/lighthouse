@@ -13,6 +13,7 @@ from lighthouse.pipeline.helper import (
 )
 
 from lighthouse.schedule import schedule_boilerplate
+from lighthouse.schedule.parameters import ScheduleParameters
 from .xegpu_specs import XeGPUSpecs
 from .xegpu_parameter_selector import XeGPUParameterSelector
 from .lowering_common import (
@@ -28,29 +29,27 @@ from .matmul_constraints import (
 
 def matmul_schedule(
     payload_func_name: str = "payload",
+    device: str | None = None,
     stop_at_stage: str = "",
     **layer_params,
 ) -> ir.Module:
     """Generate transform schedule module for a single matmul layer."""
     return mlp_schedule(
-        params=[layer_params],
+        params=ScheduleParameters([{"layer_kind": "matmul", **layer_params}]),
         payload_func_name=payload_func_name,
+        device=device,
         stop_at_stage=stop_at_stage,
     )
 
 
 def mlp_schedule(
-    params: list[dict[str, int | None]],
+    params: ScheduleParameters,
     payload_func_name: str = "payload",
+    device: str | None = None,
     stop_at_stage: str = "",
 ) -> ir.Module:
     """Generate transform schedule module for MLP payload."""
-    assert params is not None and isinstance(params, list) and len(params) > 0, (
-        "params must be provided."
-    )
-    devices = {p.get("device") for p in params if "device" in p}
-    assert len(devices) <= 1, f"Multiple devices specified in params list: {devices}"
-    device = devices.pop() if devices else None
+    assert params is not None and len(params) > 0, "params must be provided."
     param_selector = XeGPUParameterSelector(device=device)
     gpu_specs = param_selector.gpu_specs
 
@@ -99,7 +98,7 @@ def mlp_schedule(
                     shape, transpose_a, transpose_b
                 )
                 # Overwrite original params to ensure consistent configuration
-                layer_params.update(generated_params)
+                layer_params.update(generated_params[0])
 
         try:
             bundle_xegpu_mlp_schedule(
@@ -121,7 +120,7 @@ def bundle_xegpu_mlp_schedule(
     mod: ir.Value[transform.AnyOpType],
     payload_func_name: str,
     gpu_specs: XeGPUSpecs,
-    params: list[dict[str, int]],
+    params: ScheduleParameters,
     stop_at_stage: str = "",
 ) -> ir.Value[transform.AnyOpType]:
     """Schedule for lowering MLP-like payload to xegpu wg level."""

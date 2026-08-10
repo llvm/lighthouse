@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 from .matmul_costmodel import generate_configs
 from .xegpu_specs import XeGPUSpecs
+from ..parameters import ScheduleParameters
 
 DEFAULT_JSON_FILE = str(Path(__file__).parent / "matmul_params.json")
 
@@ -30,7 +31,7 @@ class XeGPUParameterSelector:
         self.gpu_specs = XeGPUSpecs.get(self.device)
         self.matmul_param_db = load_param_database(json_file)
 
-    def get_parameters(
+    def get_parameters_dict(
         self,
         shape: tuple[int, int, int],
         transpose_a: bool = False,
@@ -66,5 +67,19 @@ class XeGPUParameterSelector:
         params.setdefault("transpose_b", False)
         return params
 
-    def get_parameters_for_layers(self, param_list: list[dict]) -> list:
-        return [self.get_parameters(**params) for params in param_list]
+    def get_parameters(
+        self,
+        shape: tuple[int, int, int],
+        transpose_a: bool = False,
+        transpose_b: bool = False,
+        **kwargs,
+    ) -> ScheduleParameters:
+        params_dict = self.get_parameters_dict(
+            shape, transpose_a=transpose_a, transpose_b=transpose_b, **kwargs
+        )
+        return ScheduleParameters([params_dict])
+
+    def get_parameters_for_layers(self, param_list: list[dict]) -> ScheduleParameters:
+        return ScheduleParameters(
+            [self.get_parameters_dict(**params) for params in param_list]
+        )

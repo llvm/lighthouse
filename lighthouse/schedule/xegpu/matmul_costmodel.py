@@ -111,6 +111,7 @@ def generate_configs(
     ) -> dict[str, int]:
         wg_tile, sg_tile, k_tile, ld_a, ld_b, pf_a, pf_b, tr_a, tr_b = config
         return {
+            "layer_kind": "matmul",
             "m": M,
             "n": N,
             "k": K,

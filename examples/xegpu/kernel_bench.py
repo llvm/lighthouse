@@ -52,7 +52,6 @@ import warnings
 import torch
 import torch._dynamo as dynamo
 import os
-import json
 import numpy as np
 from mlir import ir
 
@@ -62,6 +61,7 @@ from lighthouse import dialects as lh_dialects
 from lighthouse.utils.mlir import inspect_payload
 from lighthouse.execution.runner import Runner
 from lighthouse.schedule.xegpu import XeGPUParameterSelector
+from lighthouse.schedule.parameters import ScheduleParameters
 from lighthouse.pipeline.driver import TransformDriver
 from lighthouse.schedule.xegpu import (
     mlp_schedule,
@@ -72,9 +72,16 @@ from lighthouse.schedule.xegpu import (
 from lighthouse.pipeline.helper import PipelineInterrupt
 from lighthouse.ingress.torch import gpu_backend, TargetDialect
 from lighthouse.ingress.torch.compile import TorchMemoryManager
-from tune_matmul_costmodel import optimize_payload, dump_configs_json
+from tune_matmul_costmodel import optimize_payload
 from tune_utils import run_with_timeout
 from csv_logger import CSVLogger
+
+
+def dtype_to_torch_dtype(datatype: str) -> torch.dtype:
+    return {
+        "f16": torch.float16,
+        "bf16": torch.bfloat16,
+    }[datatype]
 
 
 def inspect_kb_payload(module: ir.Module) -> tuple[str, dict]:
@@ -90,14 +97,16 @@ def inspect_kb_payload(module: ir.Module) -> tuple[str, dict]:
     return payload_func_name, func_metadata
 
 
-def infer_parameters(mod: ir.Module, verbose: int = 0) -> tuple[dict, str, list[dict]]:
+def infer_parameters(
+    mod: ir.Module, verbose: int = 0
+) -> tuple[dict, str, ScheduleParameters]:
     """
     Inspects payload and selects lowering schedule and tile size parameters.
 
     Returns:
         func_metadata: Payload function metadata dict.
         schedule kind: Name of selected lowering schedule.
-        schedule_parameters: List of parameter dicts, one per layer.
+        schedule_parameters: ScheduleParameters for the lowering schedule.
     """
     payload_func_name, func_metadata = inspect_kb_payload(mod)
     if verbose > 0:
@@ -155,6 +164,7 @@ def infer_parameters(mod: ir.Module, verbose: int = 0) -> tuple[dict, str, list[
 
         # Use fixed tile sizes for now
         layer_params = {
+            "layer_kind": "elemwise",
             "wg_m": 128,
             "wg_n": 256,
             "sg_m": 32,
@@ -163,7 +173,7 @@ def infer_parameters(mod: ir.Module, verbose: int = 0) -> tuple[dict, str, list[
             "load_n": 16,
         }
         # NOTE assume all elemwise layers will be fused to a single layer
-        schedule_params = [layer_params]
+        schedule_params = ScheduleParameters([layer_params])
         schedule_kind = "elemwise"
     elif len(elemwise) > 0 and len(reduction) > 0:
         # elemwise + reduction kernel, e.g. softmax or layer norm
@@ -176,7 +186,7 @@ def infer_parameters(mod: ir.Module, verbose: int = 0) -> tuple[dict, str, list[
         write_bytes = int(np.prod(shape)) * res_bytes
 
         layer_params = {
-            "sizes": shape,
+            "layer_kind": "reduction",
             "wg_rows": 64,
             "sg_rows": 8,
             "subgroup_size": 16,
@@ -193,7 +203,7 @@ def infer_parameters(mod: ir.Module, verbose: int = 0) -> tuple[dict, str, list[
             raise ValueError(
                 f"Shape {shape} dimension 1 not divisible by reduction_step_size={layer_params['reduction_step_size']}"
             )
-        schedule_params = [layer_params]
+        schedule_params = ScheduleParameters([layer_params])
         schedule_kind = "reduction"
     else:
         print("Layers:")
@@ -278,7 +288,8 @@ def tune_matmul_layer(
         final_mod = lower_to_llvm(
             copy_module(mod),
             schedule_kind="mlp",
-            schedule_params=[kwparams],
+            schedule_params=ScheduleParameters([kwparams]),
+            device="B70",
             stop_at_stage=None,
             benchmark=True,
             payload_func_name=payload_func_name,
@@ -364,27 +375,31 @@ def infer_params_and_lower(
         # runtime tuning for matmul kernels
         if os.path.isfile(params_cache_json):
             print(f"Loading cached parameters from {params_cache_json}")
-            with open(params_cache_json) as f:
-                params_dict = json.load(f)
-            schedule_params = [params_dict]
+            schedule_params = ScheduleParameters.from_json(filename=params_cache_json)
         else:
             print(f"Tuning parameters and saving to {params_cache_json}")
+            # construct a buffer for kernel result
+            res_type = kernel_metadata["inputs"][-1]  # result is last input
+            shape = res_type.shape
+            dtype = dtype_to_torch_dtype(str(res_type.element_type))
+            res_buffer = torch.zeros(shape, dtype=dtype).to("xpu")
+            kernel_inputs = [*torch_all_inputs, res_buffer]
             # tune matmul parameters
             configs = tune_matmul_layer(
                 matmuls[0],
                 mod,
                 payload_func_name,
-                torch_all_inputs,
+                kernel_inputs,
                 func_metadata["total_flops"],
                 func_metadata["read_bytes"],
                 func_metadata["write_bytes"],
             )
-            schedule_params = [configs[0][1]]
-            dump_configs_json(
-                schedule_params[0], filename_prefix=params_cache_json.rsplit(".", 1)[0]
-            )
+            schedule_params = ScheduleParameters([configs[0][1]])
+            schedule_params.to_json(filename=params_cache_json, overwrite=True)
     else:
         print(f"Using default parameters for {schedule_kind} schedule")
+        print(f"Saving applied parameters to {params_cache_json}")
+        schedule_params.to_json(filename=params_cache_json, overwrite=True)
 
     if verbose > 2:
         print("Payload module before lowering:")
@@ -392,7 +407,9 @@ def infer_params_and_lower(
     if verbose > 1:
         print(f"Applying '{schedule_kind}' schedule with params:")
         param_list = (
-            schedule_params if isinstance(schedule_params, list) else [schedule_params]
+            schedule_params
+            if isinstance(schedule_params, (list, ScheduleParameters))
+            else [schedule_params]
         )
         for i, param_dict in enumerate(param_list):
             print(f" Parameters for layer {i}:")
@@ -403,6 +420,7 @@ def infer_params_and_lower(
         mod=mod,
         schedule_kind=schedule_kind,
         schedule_params=schedule_params,
+        device="B70" if schedule_kind == "mlp" else None,
         stop_at_stage=stop_at_stage,
         benchmark=benchmark,
         payload_func_name=payload_func_name,
@@ -421,7 +439,8 @@ def infer_params_and_lower(
 def lower_to_llvm(
     mod: ir.Module,
     schedule_kind: str,
-    schedule_params: list[dict],
+    schedule_params: ScheduleParameters,
+    device: str | None,
     stop_at_stage: str | None,
     benchmark: bool,
     payload_func_name: str,
@@ -432,6 +451,7 @@ def lower_to_llvm(
         schedule = mlp_schedule(
             params=schedule_params,
             payload_func_name=payload_func_name,
+            device=device,
             stop_at_stage=stop_at_stage,
         )
     elif schedule_kind == "elemwise":
@@ -441,9 +461,8 @@ def lower_to_llvm(
             stop_at_stage=stop_at_stage,
         )
     elif schedule_kind == "reduction":
-        layer_params = schedule_params[0]
         schedule = reduction_schedule(
-            parameters=layer_params,
+            params=schedule_params,
             payload_func_name=payload_func_name,
             stop_at_stage=stop_at_stage,
         )
@@ -495,10 +514,7 @@ def lower_and_execute_benchmark(
         A dictionary containing benchmark performance metrics.
     """
     assert datatype in ["f16", "bf16"], "Unsupported datatype"
-    model_dtype = {
-        "f16": torch.float16,
-        "bf16": torch.bfloat16,
-    }[datatype]
+    model_dtype = dtype_to_torch_dtype(datatype)
     execute = stop_at_stage is None
 
     # import torch model
@@ -527,7 +543,6 @@ def lower_and_execute_benchmark(
         with torch.no_grad():
             torch_model = torch_model.to("xpu")
             result_ref = torch_model(*torch_inputs).to("cpu")
-        torch.xpu.synchronize()
 
     # compile and execute the model with the MLIR backend
     torch_all_inputs = [*torch_model.parameters(), *torch_inputs]
