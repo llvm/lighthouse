@@ -55,7 +55,7 @@ class Runner:
         target: TargetInfo = None,
     ):
         self.payload = module
-        self.target = target if target else TargetInfo()
+        self.target = target if target else TargetInfo.host()
         self.mem_manager_cls = mem_manager_cls
         if shared_libs is None:
             shared_libs = []
