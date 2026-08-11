@@ -3,14 +3,11 @@ Pipeline:
   - include: ../../matmul-like.yaml {
                                 block_factors=[32,32,32]
                                 tile_size=32
-                                reg_tile_batch=1
-                                reg_tile_m=32
-                                reg_tile_n=32
-                                reg_tile_k=32
+                                batch_tile=1
+                                parallel_tiles=[32,32]
+                                reduction_tiles=[32]
                                 batch=1
-                                reg_unroll_m=16
-                                reg_unroll_n=16
-                                reg_unroll_k=32
+                                unroll_reduction=true
                                 fill_tiling=[1]
                                 generic_tiling=[1,1,1,1,8]
                                 2D_generic_tiling=[1,8]

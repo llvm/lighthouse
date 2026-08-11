@@ -6,28 +6,38 @@ Pipeline:
                                 }
   - schedule: "sfc.py[gen=remap]"
 
-  # CPU specific register tiling (depends on uArch & data type)
-  - schedule: "x86/register_tiling.py[gen=matmul_register_tiling] {
-                                                                    target=linalg.contract
-                                                                    reg_tile_batch=$reg_tile_batch
-                                                                    reg_tile_m=$reg_tile_m
-                                                                    reg_tile_n=$reg_tile_n
-                                                                    reg_tile_k=$reg_tile_k
-                                                                  }"
-  - schedule: "x86/register_tiling.py[gen=matmul_register_unroll] {
-                                                                    target=linalg.contract
-                                                                    batch=$batch
-                                                                    reg_tile_m=$reg_tile_m
-                                                                    reg_tile_n=$reg_tile_n
-                                                                    reg_tile_k=$reg_tile_k
-                                                                    reg_unroll_m=$reg_unroll_m
-                                                                    reg_unroll_n=$reg_unroll_n
-                                                                    reg_unroll_k=$reg_unroll_k
-                                                                  }"
+  ## CPU register-level tiling flow (strategy-driven)
   - pass: "linalg-morph-ops{named-to-category generic-to-named}"
-  - schedule: "tiling.py[gen=tile_ops]{target_op=linalg.fill tile_sizes=$fill_tiling filter_ops=True}"
-  - schedule: "tiling.py[gen=tile_ops]{target_op=linalg.generic tile_sizes=$generic_tiling filter_ops=True use_forall=True}"
-  - schedule: "tiling.py[gen=tile_ops]{target_op=linalg.generic tile_sizes=$2D_generic_tiling filter_ops=True}"
+
+  ## 2a) Parallel register tiles: assign/propagate from contraction anchors and fuse.
+  - schedule: "tile_and_fuse.py[gen=assign_and_propagate_tile_sizes]{
+                                                                      strategy=register_parallel
+                                                                      propagate=True
+                                                                    }"
+  - schedule: "tile_and_fuse.py[gen=assign_elementwise_tile_sizes]{
+                                                                    strategy=register_parallel
+                                                                    propagate=True
+                                                                  }"
+  - schedule: "tile_and_fuse.py[gen=tile_and_fuse_annotated]"
+
+  ## 2b) Reduction register tiles: annotate K-like dims and tile ops individually.
+  - schedule: "tile_and_fuse.py[gen=assign_and_propagate_tile_sizes]{
+                                                                      strategy=register_reduction
+                                                                      propagate=False
+                                                                    }"
+  - schedule: "tile_and_fuse.py[gen=tile_annotated]{target_op=linalg.contract use_forall=False}"
+
+  ## 3) Tile+unroll: annotate final unrolled tiles, optionally propagate, then tile+unroll.
+  - schedule: "tile_and_fuse.py[gen=assign_and_propagate_tile_sizes]{
+                                                                      strategy=register_unroll
+                                                                      propagate=True
+                                                                      propagate_through_loops=True
+                                                                    }"
+  - schedule: "tile_and_fuse.py[gen=assign_elementwise_tile_sizes]{
+                                                                    strategy=register_unroll
+                                                                    propagate=True
+                                                                  }"
+  - schedule: "tile_and_fuse.py[gen=tile_and_unroll_annotated]"
 
   - include: vectorize.yaml
 
