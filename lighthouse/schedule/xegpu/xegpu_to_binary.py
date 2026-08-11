@@ -22,7 +22,7 @@ def xegpu_to_binary(
     """
     options = {
         "xegpu-op-level": xegpu_op_level,
-        "enable-vector-to-xegpu": enable_vector_to_xegpu,
+        "enable-vector-to-xegpu": "true" if enable_vector_to_xegpu else "false",
     }
     if large_register_file:
         options["igc-cmd-options"] = "-ze-opt-large-register-file"

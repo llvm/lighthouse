@@ -221,8 +221,11 @@ def _module_blob_argument(module_blob: object) -> tuple[object, ctypes.c_void_p,
             raise TypeError(
                 "array module_blob must expose NumPy-style ctypes.data and nbytes"
             )
-        return module_blob, ctypes.c_void_p(int(module_blob.ctypes.data)), blob_size
-
+        if isinstance(module_blob, np.ndarray) and (
+            module_blob.dtype != np.uint8 or not module_blob.flags["C_CONTIGUOUS"]
+        ):
+            raise TypeError("array module_blob must be a contiguous np.uint8 buffer")
+        return module_blob, ctypes.c_void_p(int(module_blob.ctypes.data)), int(blob_size)
     raise TypeError(
         "module_blob must be bytes-like or expose a NumPy-style ctypes.data buffer"
     )
@@ -244,8 +247,7 @@ def load_level_zero_module(
         module_handle = lib.mgpuModuleLoadJIT(blob_ptr, opt_level, blob_size)
     else:
         module_handle = lib.mgpuModuleLoad(blob_ptr, blob_size)
-    return _require_handle(module_handle, "mgpuModuleLoad")
-
+    return _require_handle(module_handle, "mgpuModuleLoadJIT" if jit else "mgpuModuleLoad")
 
 def get_level_zero_kernel_handle(
     module_handle: ze_module_handle_t,

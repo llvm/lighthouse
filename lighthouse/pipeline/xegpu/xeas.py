@@ -266,9 +266,10 @@ def lower_payload(
         module = ir.Module.parse(source)
 
         gpu_funcs = _get_gpu_funcs(module)
-        if not gpu_funcs:
-            raise ValueError("input IR contains no 'gpu.func' kernel to lower")
-
+        if len(gpu_funcs) != 1:
+            raise ValueError(
+                f"expected exactly one 'gpu.func' kernel to lower, found {len(gpu_funcs)}"
+            )
         if input_shape:
             try:
                 shapes = _parse_input_shape(input_shape)
@@ -278,13 +279,7 @@ def lower_payload(
                 raise ValueError(f"invalid --input-shape rewrite: {exc}") from exc
 
         if assume_in_bounds:
-            marked = _mark_transfers_in_bounds(module)
-            if marked:
-                print(
-                    f"xeas: marked {marked} vector transfer op(s) as in_bounds",
-                    file=sys.stderr,
-                )
-
+            _mark_transfers_in_bounds(module)
         schedules = [
             xegpu_to_binary(
                 xegpu_op_level=xegpu_op_level,
