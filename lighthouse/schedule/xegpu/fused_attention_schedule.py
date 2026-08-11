@@ -283,8 +283,19 @@ def bundle_xegpu_fused_attention_schedule(
         wg_loop = loop.loop_forall_to_parallel([anytype], wg_loop)
     func = transform.get_parent_op(anytype, wg_loop)
 
-    # Convert scf.parallel to gpu.launch
-    func = apply_registered_pass(func, "gpu-map-parallel-loops")
+    # Convert scf.parallel to gpu.launch.
+    #
+    # The parallel loop nest is (batch, rows-within-batch). Map the innermost
+    # (rows) loop to block X so that the workgroups sharing a batch's K/V are
+    # consecutive in dispatch order and therefore co-resident. With the default
+    # outermost-first policy, batch maps to X and the sharers of a batch are
+    # strided apart by the batch count, which spreads them across dispatch waves
+    # and defeats the K/V prefetch sharing.
+    func = apply_registered_pass(
+        func,
+        "gpu-map-parallel-loops",
+        options={"mapping-policy": "innermost-first"},
+    )
     func = apply_registered_pass(func, "convert-parallel-loops-to-gpu")
     func = apply_registered_pass(func, "lower-affine")
     transform.apply_cse(func)
@@ -323,6 +334,51 @@ def bundle_xegpu_fused_attention_schedule(
         gpu_func = apply_registered_pass(gpu_func, "convert-vector-to-xegpu")
         transform.apply_cse(gpu_func)
         gpu_func = apply_registered_pass(gpu_func, "loop-invariant-code-motion")
+
+    # Insert prefetches for the K and V tiles of the reduction loop.
+    #
+    # The reduction loop is unrolled over the inner tile: there are 4 K loads and
+    # 4 V loads of 16x64 each, and together the 4 loads of a given operand cover
+    # the tile_size x n_head region starting at the loop induction variable. Only
+    # the first load of each group is matched: prefetch_tile_shape overrides the
+    # 16x64 load shape with the full tile, so one prefetch covers all 4 loads.
+    # Note this must run before the wg-level layouts are set below, since the
+    # prefetch descriptor is cloned from the load's descriptor.
+    prefetch_tile_shape = [tile_size, parameters["n_head"]]
+    # Distribute the prefetched tile over all subgroups: sg_layout x sg_data must
+    # cover prefetch_tile_shape exactly ([4, 2] x [16, 32] = [64, 64]).
+    # TODO: derive these from the tile shape and the subgroup count instead of
+    # hardcoding them.
+    prefetch_sg_layout = [4, 2]
+    prefetch_sg_data = [16, 32]
+    prefetch_inst_data = [16, 16]
+    # 9 load_nd ops: index 0 is the Q load (hoisted out of the loop), 1-4 are the
+    # K loads and 5-8 are the V loads, in program order.
+    initial_load_nd_ops = match_and_split(gpu_func, ops={"xegpu.load_nd"}, nhandles=9)
+    q_load = initial_load_nd_ops[0]
+    first_k_load = initial_load_nd_ops[1]
+    first_v_load = initial_load_nd_ops[5]
+    for load_op in [first_k_load, first_v_load]:
+        # Base the prefetch at the Q load's offsets. Those are dynamic values
+        # (derived from the block id), so they can only be supplied by handle via
+        # offsets_from, not as a static index list. The loop dimension still
+        # advances by the loop step on top of this base.
+        desc_op = xegpu.insert_prefetch(
+            load_op,
+            nb_prefetch=parameters.get("nb_prefetch", 3),
+            prefetch_tile_shape=prefetch_tile_shape,
+            offsets_from=q_load,
+        )
+        # The emitted prefetch_nd ops are the consumers of the new descriptor.
+        prefetch_ops = transform.get_consumers_of_result(anytype, desc_op, 0)
+        xegpu.set_anchor_layout(
+            prefetch_ops,
+            sg_layout=prefetch_sg_layout,
+            sg_data=prefetch_sg_data,
+            inst_data=prefetch_inst_data,
+        )
+    transform.apply_cse(gpu_func)
+    canonicalize(gpu_func)
 
     if stop_at_stage == "xegpu-initial":
         raise PipelineInterrupt()
