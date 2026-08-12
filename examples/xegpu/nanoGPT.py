@@ -189,7 +189,7 @@ def main():
     # mm/sm params drive the non-attention kernels (matmul, layernorm); fa_params
     # drives the fused attention kernel.
     param_selector = XeGPUParameterSelector()
-    mm_params = dict(param_selector.get_parameters((T, C, C)))
+    mm_params = dict(param_selector.get_parameters((T, C, C))[0])
     mm_params["gpu_specs"] = param_selector.gpu_specs
     ln_params = {
         "wg_rows": 64,
