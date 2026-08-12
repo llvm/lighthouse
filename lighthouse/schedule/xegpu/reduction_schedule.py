@@ -250,7 +250,7 @@ def bundle_xegpu_reduction_schedule(
     gpu_func = match(gpu_mod, ops={"gpu.func"})
     store_nd_ops = match(gpu_func, ops={"xegpu.store_nd"})
     store_matrix_ops = match(gpu_func, ops={"xegpu.store_matrix"})
-    sg_layout = [layer_params["sg_rows"], 1]
+    sg_layout = [layer_params["wg_rows"] // layer_params["sg_rows"], 1]
     sg_data = [layer_params["sg_rows"], layer_params["reduction_step_size"]]
     with lh_transform.foreach(store_nd_ops) as store_op:
         xegpu.set_anchor_layout(store_op, sg_layout=sg_layout, sg_data=sg_data)
