@@ -1,10 +1,12 @@
 from mlir import ir
 from mlir.dialects import transform
 from mlir.dialects.transform import structured
+from mlir.dialects.transform import loop
 
 from lighthouse.dialects.transform import transform_ext
 from lighthouse.schedule.builders import schedule_boilerplate
 import lighthouse.transform as lh_transform
+
 
 # Named GEMM ops treated as default anchors.
 # Their tiles take precedence and drive the tiling of surrounding ops.
@@ -24,6 +26,8 @@ _GEMM_ANCHOR_OPS = [
 def assign_and_propagate_tile_sizes(
     anchor_op: str | list[str] | None = None,
     tile_size: int = 32,
+    strategy: str = "cache",
+    propagate: bool = True,
 ) -> ir.Module:
     """
     Assign tile sizes to anchor ops and propagate them to their neighbors.
@@ -35,7 +39,9 @@ def assign_and_propagate_tile_sizes(
 
     Args:
         anchor_op: Op(s) to anchor tiling on. Defaults to the GEMM op family.
-        tile_size: Size used for tiled dimensions. User hint, default 32.
+        tile_size: Tiling size hint.
+        strategy: Tiling strategy.
+        propagate: Whether to propagate the tile sizes to neighboring ops.
     Returns:
         Schedule
     """
@@ -44,13 +50,22 @@ def assign_and_propagate_tile_sizes(
 
     with schedule_boilerplate() as (sched, named_seq):
         anchors = lh_transform.match_op(named_seq.bodyTarget, anchor_op)
-        annotated = transform_ext.assign_tile_sizes(anchors, tile_size=tile_size)
-        transform_ext.propagate_tile_sizes(annotated)
+        annotated = transform_ext.assign_tile_sizes(
+            anchors,
+            tile_size=tile_size,
+            strategy=strategy,
+        )
+        if propagate:
+            transform_ext.propagate_tile_sizes(annotated)
         transform.yield_()
     return sched
 
 
-def assign_elementwise_tile_sizes(tile_size: int = 32) -> ir.Module:
+def assign_elementwise_tile_sizes(
+    tile_size: int = 32,
+    strategy: str = "cache",
+    propagate: bool = True,
+) -> ir.Module:
     """
     Anchor tiling on elementwise ops only.
 
@@ -58,7 +73,9 @@ def assign_elementwise_tile_sizes(tile_size: int = 32) -> ir.Module:
     propagation. Already-annotated ops are kept.
 
     Args:
-        tile_size: Size used for tiled dimensions. User hint, default 32.
+        tile_size: Tiling size hint.
+        strategy: Tiling strategy.
+        propagate: Whether to propagate the tile sizes to neighboring ops.
     Returns:
         Schedule
     """
@@ -67,8 +84,92 @@ def assign_elementwise_tile_sizes(tile_size: int = 32) -> ir.Module:
             named_seq.bodyTarget, structured.MatchInterfaceEnum.LinalgOp
         )
         elementwise = transform_ext.filter_elementwise(candidates)
-        annotated = transform_ext.assign_tile_sizes(elementwise, tile_size=tile_size)
-        transform_ext.propagate_tile_sizes(annotated)
+        annotated = transform_ext.assign_tile_sizes(
+            elementwise,
+            tile_size=tile_size,
+            strategy=strategy,
+        )
+        if propagate:
+            transform_ext.propagate_tile_sizes(annotated)
+        transform.yield_()
+    return sched
+
+
+def _execute_annotated(
+    target_op: str | list[str] | None,
+    use_forall: bool,
+    clear_annotations: bool,
+    action: str,
+) -> ir.Module:
+    """Execute annotated tiling actions for matched ops.
+
+    This internal helper applies one of two actions over candidate ops:
+    - ``"fuse"``: select fusion roots, tile them using annotated tile sizes,
+      and greedily fuse producers.
+    - ``"tile"``: tile candidates using annotated tile sizes only.
+
+    Args:
+        target_op: Candidate op(s) to consider. Defaults to all linalg ops.
+        use_forall: Use ``scf.forall`` for tiling when supported by the action.
+        clear_annotations: Clear tile/fuse annotations on produced loop handles.
+        action: Action to perform.
+    Returns:
+        Schedule
+    """
+
+    def _merge_loop_handles(loop_handles):
+        """Normalize loop handles to a single handle when possible."""
+        try:
+            loops = list(loop_handles)
+        except TypeError:
+            return loop_handles
+        if len(loops) == 1:
+            return loops[0]
+        return transform.merge_handles(loops)
+
+    if target_op is None:
+        target_op = structured.MatchInterfaceEnum.LinalgOp
+
+    with schedule_boilerplate() as (sched, named_seq):
+        candidates = lh_transform.match_op(named_seq.bodyTarget, target_op)
+        if action == "fuse":
+            targets = transform_ext.get_fusion_roots(candidates)
+        else:
+            targets = candidates
+        with lh_transform.foreach(targets) as op:
+            tiles = transform_ext.get_tile_sizes(op)
+
+            if action == "fuse":
+                fused = structured.FuseOp(
+                    op,
+                    tile_sizes=tiles,
+                    apply_cleanup=True,
+                    use_forall=use_forall,
+                )
+                if clear_annotations:
+                    loops = _merge_loop_handles(fused.loops)
+                    transform_ext.clear_tile_and_fuse_annotations(loops)
+
+            elif action == "tile":
+                if use_forall:
+                    _, loops = structured.TileUsingForallOp(
+                        op,
+                        tile_sizes=tiles,
+                    ).results
+                else:
+                    _, loops = structured.TileUsingForOp(
+                        op,
+                        sizes=tiles,
+                    ).results
+                if clear_annotations:
+                    loops = _merge_loop_handles(loops)
+                    transform_ext.clear_tile_and_fuse_annotations(loops)
+
+            else:
+                raise ValueError(f"Unsupported action: {action}")
+
+            transform.yield_()
+        lh_transform.cleanup(named_seq.bodyTarget)
         transform.yield_()
     return sched
 
@@ -92,26 +193,61 @@ def tile_and_fuse_annotated(
     Returns:
         Schedule
     """
+    return _execute_annotated(
+        target_op=target_op,
+        use_forall=use_forall,
+        clear_annotations=clear_annotations,
+        action="fuse",
+    )
+
+
+def tile_annotated(
+    target_op: str | list[str] | None = None,
+    use_forall: bool = False,
+    clear_annotations: bool = True,
+) -> ir.Module:
+    """
+    Tile annotated ops with its tile sizes.
+
+    Args:
+        target_op: Candidate op(s) to consider. Defaults to all linalg ops.
+        use_forall: Generate `scf.forall` loops (parallel) when tiling.
+        clear_annotations: Clear the annotations from the tiled ops.
+    Returns:
+        Schedule
+    """
+    return _execute_annotated(
+        target_op=target_op,
+        use_forall=use_forall,
+        clear_annotations=clear_annotations,
+        action="tile",
+    )
+
+
+def tile_and_unroll_annotated(
+    target_op: str | list[str] | None = None,
+    clear_annotations: bool = True,
+) -> ir.Module:
+    """Tile annotated ops and fully unroll the loops created by tiling."""
     if target_op is None:
         target_op = structured.MatchInterfaceEnum.LinalgOp
 
     with schedule_boilerplate() as (sched, named_seq):
         candidates = lh_transform.match_op(named_seq.bodyTarget, target_op)
-        roots = transform_ext.get_fusion_roots(candidates)
-        with lh_transform.foreach(roots) as op:
+        with lh_transform.foreach(candidates) as op:
             tiles = transform_ext.get_tile_sizes(op)
-            fused = structured.FuseOp(
+            _, loops = structured.TileUsingForOp(
                 op,
-                tile_sizes=tiles,
-                apply_cleanup=True,
-                use_forall=use_forall,
-            )
-            # Fusion has consumed the annotations of this group. Clear them from
-            # the ops now inside the generated loop(s).
+                sizes=tiles,
+            ).results
             if clear_annotations:
-                loops = transform.merge_handles(list(fused.loops))
+                # Clear annotations before unrolling: full unroll may consume
+                # loop handles and make post-unroll cleanup invalid.
                 transform_ext.clear_tile_and_fuse_annotations(loops)
+            inner_to_outer = transform_ext.reverse_handles(loops)
+            with lh_transform.foreach(inner_to_outer) as handle:
+                loop.loop_unroll_full(handle)
+                transform.yield_()
             transform.yield_()
-        lh_transform.cleanup(named_seq.bodyTarget)
         transform.yield_()
     return sched

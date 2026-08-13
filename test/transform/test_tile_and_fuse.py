@@ -2,7 +2,7 @@
 
 """Tests for the generic tile-and-fuse transform ops and schedules.
 
-Exercises the three-step strategy on linalg payloads:
+Exercises the three-step approach on linalg payloads:
     1. assign tile sizes to anchor ops (GEMMs / elementwise)
     2. propagate them to neighboring ops
     3. tile and fuse using the annotations
@@ -30,15 +30,15 @@ def run(name: str, payload_str: str, *schedules):
 
 
 def assign_gemm():
-    return tf.assign_and_propagate_tile_sizes(tile_size=32)
+    return tf.assign_and_propagate_tile_sizes(tile_size=32, strategy="cache")
 
 
 def assign_elementwise():
-    return tf.assign_elementwise_tile_sizes(tile_size=32)
+    return tf.assign_elementwise_tile_sizes(tile_size=32, strategy="cache")
 
 
 def assign_elementwise64():
-    return tf.assign_elementwise_tile_sizes(tile_size=64)
+    return tf.assign_elementwise_tile_sizes(tile_size=64, strategy="cache")
 
 
 def tile_and_fuse():

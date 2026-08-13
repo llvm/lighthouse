@@ -7,8 +7,8 @@ Pipeline:
   - schedule: "x86/pack_lowering.py[gen=lower_packs_unpacks]{tile_size=$tile_size}"
   - pass: "linalg-morph-ops{named-to-category generic-to-category}"
 
-  - schedule: "tile_and_fuse.py[gen=assign_and_propagate_tile_sizes]{tile_size=$tile_size}"
-  - schedule: "tile_and_fuse.py[gen=assign_elementwise_tile_sizes]{tile_size=$tile_size}"
+  - schedule: "tile_and_fuse.py[gen=assign_and_propagate_tile_sizes]{tile_size=$tile_size strategy=cache}"
+  - schedule: "tile_and_fuse.py[gen=assign_elementwise_tile_sizes]{tile_size=$tile_size strategy=cache}"
   - schedule: "tile_and_fuse.py[gen=tile_and_fuse_annotated]"
 
   - schedule: "linalg.py[gen=linalg_contract_fold_unit_dims]"
