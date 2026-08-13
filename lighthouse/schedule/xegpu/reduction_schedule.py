@@ -19,12 +19,13 @@ from lighthouse.pipeline.helper import (
     PipelineInterrupt,
 )
 from lighthouse.schedule import schedule_boilerplate
+from lighthouse.schedule.parameters import ScheduleParameters
 from lighthouse.dialects.transform import transform_ext
 
 
 def reduction_schedule(
     stop_at_stage: str | None = None,
-    parameters: dict | None = None,
+    params: ScheduleParameters | None = None,
     payload_func_name: str = "payload",
 ) -> ir.Module:
     """
@@ -39,7 +40,8 @@ def reduction_schedule(
 
     Args:
         stop_at_stage: Optional stage name to stop early (for debugging)
-        parameters: Dictionary with scheduling parameters:
+        params: ScheduleParameters object containing one reduction layer
+            parameter dictionary with keys:
             - wg_rows: Number of rows per workgroup
             - sg_rows: Number of rows per subgroup
             - subgroup_size: Size of subgroup
@@ -49,7 +51,9 @@ def reduction_schedule(
     Returns:
         MLIR module containing the transform schedule
     """
-    assert parameters is not None, "Schedule parameters must be provided"
+    assert params is not None and len(params) > 0, (
+        "Schedule parameters must be provided"
+    )
 
     with schedule_boilerplate() as (schedule, named_seq):
         # match the payload module
@@ -66,7 +70,7 @@ def reduction_schedule(
             bundle_xegpu_reduction_schedule(
                 payload_mod,
                 payload_func_name=payload_func_name,
-                parameters=parameters,
+                params=params,
                 stop_at_stage=stop_at_stage,
             )
         except PipelineInterrupt:
@@ -80,15 +84,17 @@ def reduction_schedule(
 def bundle_xegpu_reduction_schedule(
     mod: ir.Value[transform.AnyOpType],
     payload_func_name: str,
-    parameters: dict,
+    params: ScheduleParameters,
     stop_at_stage: str = "",
 ) -> ir.Value[transform.AnyOpType]:
     """Schedule for lowering softmax payload to xegpu wg level."""
 
+    layer_params = params[0]
+
     if stop_at_stage == "initial":
         raise PipelineInterrupt()
 
-    reduction_step_size = parameters["reduction_step_size"]
+    reduction_step_size = layer_params["reduction_step_size"]
 
     anytype = transform.AnyOpType.get()
 
@@ -121,7 +127,7 @@ def bundle_xegpu_reduction_schedule(
     leaf_generic = transform_ext.extract_handle(generic_ops, -1)
     _, [wg_loop], _ = lh_transform.tile(
         leaf_generic,
-        tile_sizes=(parameters["wg_rows"],),
+        tile_sizes=(layer_params["wg_rows"],),
         fuse_producers=True,
         use_forall=True,
         apply_cleanup=False,
@@ -219,8 +225,8 @@ def bundle_xegpu_reduction_schedule(
     func = get_named_func(mod, payload_func_name)
     # set the number of threads for the gpu.launch operation
     launch_op = match_and_split(func, ops={"gpu.launch"})
-    num_subgroups = parameters["wg_rows"] // parameters["sg_rows"]
-    num_threads = num_subgroups * parameters["subgroup_size"]
+    num_subgroups = layer_params["wg_rows"] // layer_params["sg_rows"]
+    num_threads = num_subgroups * layer_params["subgroup_size"]
     xegpu.set_gpu_launch_threads(launch_op[0], threads=[num_threads, 1, 1])
 
     # outline gpu func
@@ -244,8 +250,8 @@ def bundle_xegpu_reduction_schedule(
     gpu_func = match(gpu_mod, ops={"gpu.func"})
     store_nd_ops = match(gpu_func, ops={"xegpu.store_nd"})
     store_matrix_ops = match(gpu_func, ops={"xegpu.store_matrix"})
-    sg_layout = [parameters["sg_rows"], 1]
-    sg_data = [parameters["sg_rows"], parameters["reduction_step_size"]]
+    sg_layout = [layer_params["wg_rows"] // layer_params["sg_rows"], 1]
+    sg_data = [layer_params["sg_rows"], layer_params["reduction_step_size"]]
     with lh_transform.foreach(store_nd_ops) as store_op:
         xegpu.set_anchor_layout(store_op, sg_layout=sg_layout, sg_data=sg_data)
         transform.yield_()

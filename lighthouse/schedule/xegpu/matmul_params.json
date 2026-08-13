@@ -1,5 +1,6 @@
 [
     {
+        "layer_kind": "matmul",
         "m": 1024,
         "n": 1024,
         "k": 1024,
@@ -20,6 +21,7 @@
         "prefetch_b_nb": 1
     },
     {
+        "layer_kind": "matmul",
         "m": 1024,
         "n": 1024,
         "k": 8192,
@@ -40,6 +42,7 @@
         "prefetch_b_nb": 1
     },
     {
+        "layer_kind": "matmul",
         "m": 1024,
         "n": 8192,
         "k": 1024,
@@ -60,6 +63,7 @@
         "prefetch_b_nb": 1
     },
     {
+        "layer_kind": "matmul",
         "m": 128,
         "n": 16384,
         "k": 16384,
@@ -80,6 +84,7 @@
         "prefetch_b_nb": 1
     },
     {
+        "layer_kind": "matmul",
         "m": 128,
         "n": 16384,
         "k": 32768,
@@ -100,6 +105,7 @@
         "prefetch_b_nb": 1
     },
     {
+        "layer_kind": "matmul",
         "m": 128,
         "n": 32768,
         "k": 16384,
@@ -120,6 +126,7 @@
         "prefetch_b_nb": 1
     },
     {
+        "layer_kind": "matmul",
         "m": 128,
         "n": 32768,
         "k": 32768,
@@ -140,6 +147,7 @@
         "prefetch_b_nb": 1
     },
     {
+        "layer_kind": "matmul",
         "m": 128,
         "n": 8192,
         "k": 16384,
@@ -160,6 +168,7 @@
         "prefetch_b_nb": 1
     },
     {
+        "layer_kind": "matmul",
         "m": 2048,
         "n": 4096,
         "k": 8192,
@@ -180,6 +189,7 @@
         "prefetch_b_nb": 1
     },
     {
+        "layer_kind": "matmul",
         "m": 256,
         "n": 256,
         "k": 524288,
@@ -200,6 +210,7 @@
         "prefetch_b_nb": 1
     },
     {
+        "layer_kind": "matmul",
         "m": 32768,
         "n": 32768,
         "k": 32,
@@ -220,6 +231,7 @@
         "prefetch_b_nb": 1
     },
     {
+        "layer_kind": "matmul",
         "m": 32768,
         "n": 32768,
         "k": 64,
@@ -240,6 +252,7 @@
         "prefetch_b_nb": 2
     },
     {
+        "layer_kind": "matmul",
         "m": 4096,
         "n": 4096,
         "k": 4096,
@@ -260,6 +273,7 @@
         "prefetch_b_nb": 1
     },
     {
+        "layer_kind": "matmul",
         "m": 8192,
         "n": 8192,
         "k": 8192,
