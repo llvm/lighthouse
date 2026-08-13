@@ -332,11 +332,9 @@ def bundle_xegpu_fused_attention_schedule(
     # the other wg-level layouts.
     nb_prefetch = parameters.get("nb_prefetch", 1)
     if nb_prefetch > 0:
-        # 3 load_nd ops: Q (hoisted out of the loop), then K and V inside it.
-        initial_load_nd_ops = match_and_split(
-            gpu_func, ops={"xegpu.load_nd"}, nhandles=3
-        )
-        for load_op in initial_load_nd_ops[1:]:
+        reduction_loop = match(gpu_func, ops={"scf.for"})
+        kv_load_ops = match_and_split(reduction_loop, ops={"xegpu.load_nd"}, nhandles=2)
+        for load_op in kv_load_ops:
             xegpu.insert_prefetch(load_op, nb_prefetch=nb_prefetch)
         transform.apply_cse(gpu_func)
         canonicalize(gpu_func)
