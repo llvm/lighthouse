@@ -33,6 +33,12 @@ def assign_gemm():
     return tf.assign_and_propagate_tile_sizes(tile_size=32, strategy="cache")
 
 
+def assign_gemm_through_loops():
+    return tf.assign_and_propagate_tile_sizes(
+        tile_size=32, propagate_through_loops=True
+    )
+
+
 def assign_elementwise():
     return tf.assign_elementwise_tile_sizes(tile_size=32, strategy="cache")
 
@@ -294,6 +300,53 @@ module {
       linalg.yield %s : f32
     } -> tensor<?x?xf32>
     return %relu : tensor<?x?xf32>
+  }
+}
+"""
+
+# A K-split matmul in an scf.for accumulation loop, with elementwise consumers
+# outside the loop. Tile propagation must cross the loop boundary from the
+# yielded matmul result to the loop result and then to the consumers.
+K_LOOP_GEMM_OUTER_CHAIN = """
+#map = affine_map<(d0, d1) -> (d0, d1)>
+module {
+  func.func @main(%a: tensor<32x64xf32>, %b: tensor<64x128xf32>) -> tensor<32x128xf32> {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c32 = arith.constant 32 : index
+    %c64 = arith.constant 64 : index
+    %cst = arith.constant 0.0 : f32
+    %init = tensor.empty() : tensor<32x128xf32>
+    %acc0 = linalg.fill ins(%cst : f32) outs(%init : tensor<32x128xf32>) -> tensor<32x128xf32>
+    %acc = scf.for %k = %c0 to %c64 step %c32 iter_args(%iter = %acc0) -> (tensor<32x128xf32>) {
+      %a_slice = tensor.extract_slice %a[0, %k] [32, 32] [1, 1]
+          : tensor<32x64xf32> to tensor<32x32xf32>
+      %b_slice = tensor.extract_slice %b[%k, 0] [32, 128] [1, 1]
+          : tensor<64x128xf32> to tensor<32x128xf32>
+      %mm = linalg.matmul ins(%a_slice, %b_slice : tensor<32x32xf32>, tensor<32x128xf32>)
+          outs(%iter : tensor<32x128xf32>) -> tensor<32x128xf32>
+      scf.yield %mm : tensor<32x128xf32>
+    }
+    %out0 = tensor.empty() : tensor<32x128xf32>
+    %relu = linalg.generic {indexing_maps = [#map, #map],
+        iterator_types = ["parallel", "parallel"]}
+        ins(%acc : tensor<32x128xf32>)
+        outs(%out0 : tensor<32x128xf32>) {
+    ^bb0(%in: f32, %out: f32):
+      %c = arith.cmpf ugt, %in, %cst : f32
+      %s = arith.select %c, %in, %cst : f32
+      linalg.yield %s : f32
+    } -> tensor<32x128xf32>
+    %out1 = tensor.empty() : tensor<32x128xf32>
+    %exp = linalg.generic {indexing_maps = [#map, #map],
+        iterator_types = ["parallel", "parallel"]}
+        ins(%relu : tensor<32x128xf32>)
+        outs(%out1 : tensor<32x128xf32>) {
+    ^bb0(%in: f32, %out: f32):
+      %e = math.exp %in : f32
+      linalg.yield %e : f32
+    } -> tensor<32x128xf32>
+    return %exp : tensor<32x128xf32>
   }
 }
 """
@@ -664,6 +717,17 @@ run("mlp_three_layers", MLP3, assign_gemm, tile_and_fuse)
 # CHECK: linalg.generic
 # CHECK: scf.forall.in_parallel
 run("dynamic_tile_and_fuse", DYN, assign_gemm, tile_and_fuse)
+
+
+# Propagation crosses the scf.for loop boundary: a matmul inside a K loop drives
+# tile annotations on elementwise consumers outside the loop.
+# CHECK-LABEL: Test: k_loop_matmul_propagation
+# CHECK: linalg.matmul {transform_ext.tile_sizes = array<i64: 32, 32, 0>}
+# CHECK: linalg.generic
+# CHECK-SAME: transform_ext.tile_sizes = array<i64: 32, 32>
+# CHECK: linalg.generic
+# CHECK-SAME: transform_ext.tile_sizes = array<i64: 32, 32>
+run("k_loop_matmul_propagation", K_LOOP_GEMM_OUTER_CHAIN, assign_gemm_through_loops)
 
 
 # High-dimensional contraction: only the innermost two parallel (M, N) output
