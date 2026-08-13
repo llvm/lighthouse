@@ -283,19 +283,8 @@ def bundle_xegpu_fused_attention_schedule(
         wg_loop = loop.loop_forall_to_parallel([anytype], wg_loop)
     func = transform.get_parent_op(anytype, wg_loop)
 
-    # Convert scf.parallel to gpu.launch.
-    #
-    # The parallel loop nest is (batch, rows-within-batch). Map the innermost
-    # (rows) loop to block X so that the workgroups sharing a batch's K/V are
-    # consecutive in dispatch order and therefore co-resident. With the default
-    # outermost-first policy, batch maps to X and the sharers of a batch are
-    # strided apart by the batch count, which spreads them across dispatch waves
-    # and defeats the K/V prefetch sharing.
-    func = apply_registered_pass(
-        func,
-        "gpu-map-parallel-loops",
-        options={"mapping-policy": "innermost-first"},
-    )
+    # Convert scf.parallel to gpu.launch
+    func = apply_registered_pass(func, "gpu-map-parallel-loops")
     func = apply_registered_pass(func, "convert-parallel-loops-to-gpu")
     func = apply_registered_pass(func, "lower-affine")
     transform.apply_cse(func)
@@ -335,84 +324,62 @@ def bundle_xegpu_fused_attention_schedule(
         transform.apply_cse(gpu_func)
         gpu_func = apply_registered_pass(gpu_func, "loop-invariant-code-motion")
 
-    # Insert prefetches for the K and V tiles of the reduction loop.
-    #
-    # The reduction loop is unrolled over the inner tile: there are 4 K loads and
-    # 4 V loads of 16x64 each, and together the 4 loads of a given operand cover
-    # the tile_size x n_head region starting at the loop induction variable. Only
-    # the first load of each group is matched: prefetch_tile_shape overrides the
-    # 16x64 load shape with the full tile, so one prefetch covers all 4 loads.
-    # Note this must run before the wg-level layouts are set below, since the
-    # prefetch descriptor is cloned from the load's descriptor.
-    prefetch_tile_shape = [tile_size, parameters["n_head"]]
-    # Distribute the prefetched tile over all subgroups: sg_layout x sg_data must
-    # cover prefetch_tile_shape exactly ([4, 2] x [16, 32] = [64, 64]).
-    # TODO: derive these from the tile shape and the subgroup count instead of
-    # hardcoding them.
-    prefetch_sg_layout = [4, 2]
-    prefetch_sg_data = [16, 32]
-    prefetch_inst_data = [16, 16]
-    # 9 load_nd ops: index 0 is the Q load (hoisted out of the loop), 1-4 are the
-    # K loads and 5-8 are the V loads, in program order.
-    initial_load_nd_ops = match_and_split(gpu_func, ops={"xegpu.load_nd"}, nhandles=9)
-    q_load = initial_load_nd_ops[0]
-    first_k_load = initial_load_nd_ops[1]
-    first_v_load = initial_load_nd_ops[5]
-    for load_op in [first_k_load, first_v_load]:
-        # Base the prefetch at the Q load's offsets. Those are dynamic values
-        # (derived from the block id), so they can only be supplied by handle via
-        # offsets_from, not as a static index list. The loop dimension still
-        # advances by the loop step on top of this base.
-        desc_op = xegpu.insert_prefetch(
-            load_op,
-            nb_prefetch=parameters.get("nb_prefetch", 3),
-            prefetch_tile_shape=prefetch_tile_shape,
-            offsets_from=q_load,
+    # Insert prefetches for the K and V tiles of the reduction loop. Each inserts
+    # nb_prefetch prefetches ahead of the loop plus one per iteration, at
+    # induction_var + nb_prefetch * step. This must run before the wg-level layouts
+    # are set below, since the prefetch descriptor is cloned from the load's
+    # descriptor. The layouts of the emitted prefetch_nd ops are set together with
+    # the other wg-level layouts.
+    nb_prefetch = parameters.get("nb_prefetch", 1)
+    if nb_prefetch > 0:
+        # 3 load_nd ops: Q (hoisted out of the loop), then K and V inside it.
+        initial_load_nd_ops = match_and_split(
+            gpu_func, ops={"xegpu.load_nd"}, nhandles=3
         )
-        # The emitted prefetch_nd ops are the consumers of the new descriptor.
-        prefetch_ops = transform.get_consumers_of_result(anytype, desc_op, 0)
-        xegpu.set_anchor_layout(
-            prefetch_ops,
-            sg_layout=prefetch_sg_layout,
-            sg_data=prefetch_sg_data,
-            inst_data=prefetch_inst_data,
-        )
-    transform.apply_cse(gpu_func)
-    canonicalize(gpu_func)
+        for load_op in initial_load_nd_ops[1:]:
+            xegpu.insert_prefetch(load_op, nb_prefetch=nb_prefetch)
+        transform.apply_cse(gpu_func)
+        canonicalize(gpu_func)
 
     if stop_at_stage == "xegpu-initial":
         raise PipelineInterrupt()
 
     # Define XeGPU layout parameters
     n_head = parameters["n_head"]
+    sg_rows = parameters["sg_rows"]
+
+    # Q, the attention weights and the output are all [wg_rows, n_head] tiles that
+    # are split by rows over the subgroups. Only the memory ops carry inst_data,
+    # the DPAS operands are left to the default DPAS blocking.
     q_sg_layout = [num_subgroups, 1]
-    q_sg_data = [16, n_head]
-    q_inst_data = [8, 16]
-
-    k_sg_layout = [num_subgroups, 1]
-    k_sg_data = [16, n_head]
-    k_inst_data = [16, 16]
-
-    v_sg_layout = k_sg_layout
-    v_sg_data = k_sg_data
-    v_inst_data = k_inst_data
-
-    kt_sg_layout = [1, num_subgroups]
-    kt_sg_data = [n_head, 16]
-    kt_inst_data = [16, 16]
-    kt_order = [0, 1]
+    q_sg_data = [sg_rows, n_head]
+    q_load_inst_data = [16, 32]
 
     out_sg_layout = q_sg_layout
     out_sg_data = q_sg_data
-    out_inst_data = q_inst_data
 
-    layout_128x16_sg_layout = [num_subgroups, 1]
-    layout_128x16_sg_data = [16, 16]
-    layout_128x16_inst_data = [8, 16]
+    qk_sg_layout = q_sg_layout
+    qk_sg_data = [sg_rows, tile_size]
 
-    qk_sg_layout = layout_128x16_sg_layout
-    qk_sg_data = layout_128x16_sg_data
-    qk_inst_data = layout_128x16_inst_data
+    # The K and V tiles are consumed in full by every subgroup (each subgroup owns
+    # its own rows of Q).
+    kv_sg_layout = [1, 1]
+    kv_load_sg_data = [tile_size, n_head]
+    v_load_inst_data = [32, 32]
+    # Load K column-major so that the transpose feeding the DPAS is a no-op.
+    k_load_order = [0, 1]
+
+    # K^T operand of the Q@K^T DPAS: [n_head, tile_size]
+    kt_sg_data = [n_head, tile_size]
+    # V operand of the P@V DPAS: [tile_size, n_head]
+    v_sg_data = [tile_size, n_head]
+
+    # The K/V prefetches cover the same [tile_size, n_head] tile as the loads, but
+    # are distributed over the subgroups. [4, 2] layout is used to maximize
+    # prefetch bandwidth.
+    prefetch_sg_layout = [4, 2]
+    prefetch_sg_data = [tile_size // 4, n_head // 2]
+    prefetch_inst_data = list(prefetch_sg_data)
 
     # Set layout attributes for xegpu.store_nd ops.
     store_nd_op = match_and_split(gpu_func, ops={"xegpu.store_nd"}, nhandles=1)[0]
@@ -420,92 +387,95 @@ def bundle_xegpu_fused_attention_schedule(
         store_nd_op,
         sg_layout=out_sg_layout,
         sg_data=out_sg_data,
-        inst_data=out_inst_data,
     )
 
-    # Set layout for xegpu.load_nd ops (9 total: 1 Q, 4 K, 4 V)
-    load_nd_ops = match_and_split(gpu_func, ops={"xegpu.load_nd"}, nhandles=9)
+    # Set layout for xegpu.load_nd ops (3 total: Q, K, V)
+    load_nd_ops = match_and_split(gpu_func, ops={"xegpu.load_nd"}, nhandles=3)
 
     # First load_nd: Q layout
     xegpu.set_anchor_layout(
-        load_nd_ops[0], sg_layout=q_sg_layout, sg_data=q_sg_data, inst_data=q_inst_data
+        load_nd_ops[0],
+        sg_layout=q_sg_layout,
+        sg_data=q_sg_data,
+        inst_data=q_load_inst_data,
     )
 
-    # Next 4 load_nd ops: K layout
-    for load_op in load_nd_ops[:4]:
+    # Second load_nd: K layout
+    xegpu.set_anchor_layout(
+        load_nd_ops[1],
+        sg_layout=kv_sg_layout,
+        sg_data=kv_load_sg_data,
+        order=k_load_order,
+    )
+
+    # Third load_nd: V layout
+    xegpu.set_anchor_layout(
+        load_nd_ops[2],
+        sg_layout=kv_sg_layout,
+        sg_data=kv_load_sg_data,
+        inst_data=v_load_inst_data,
+    )
+
+    # Set layout for all K/V xegpu.prefetch_nd ops
+    if nb_prefetch > 0:
+        prefetch_ops = match(gpu_func, ops={"xegpu.prefetch_nd"})
         xegpu.set_anchor_layout(
-            load_op,
-            sg_layout=k_sg_layout,
-            sg_data=k_sg_data,
-            inst_data=k_inst_data,
+            prefetch_ops,
+            sg_layout=prefetch_sg_layout,
+            sg_data=prefetch_sg_data,
+            inst_data=prefetch_inst_data,
         )
 
-    # Last 4 load_nd ops: V layout
-    for load_op in load_nd_ops[4:]:
-        xegpu.set_anchor_layout(
-            load_op,
-            sg_layout=v_sg_layout,
-            sg_data=v_sg_data,
-            inst_data=v_inst_data,
-        )
+    # Set layout for xegpu.dpas ops (2 total: Q@K^T and P@V)
+    dpas_ops = match_and_split(gpu_func, ops={"xegpu.dpas"}, nhandles=2)
 
-    # Set layout for xegpu.dpas ops (8 total: 4 for Q@K, 4 for P@V)
-    dpas_ops = match_and_split(gpu_func, ops={"xegpu.dpas"}, nhandles=8)
+    # Layouts for the Q@K^T dpas:
+    qk_dpas_op = dpas_ops[0]
+    # Index 0: Q layout
+    xegpu.set_anchor_layout(
+        qk_dpas_op,
+        sg_layout=q_sg_layout,
+        sg_data=q_sg_data,
+        index=0,
+    )
+    # Index 1: K^T layout
+    xegpu.set_anchor_layout(
+        qk_dpas_op,
+        sg_layout=kv_sg_layout,
+        sg_data=kt_sg_data,
+        index=1,
+    )
+    # Index 2: QK output layout
+    xegpu.set_anchor_layout(
+        qk_dpas_op,
+        sg_layout=qk_sg_layout,
+        sg_data=qk_sg_data,
+        index=2,
+    )
 
-    # Layouts for first 4 dpas ops (Q@K^T):
-    for qk_dpas_op in dpas_ops[:4]:
-        # Index 0: Q layout
-        xegpu.set_anchor_layout(
-            qk_dpas_op,
-            sg_layout=q_sg_layout,
-            sg_data=q_sg_data,
-            inst_data=q_inst_data,
-            index=0,
-        )
-        # Index 1: K^T layout
-        xegpu.set_anchor_layout(
-            qk_dpas_op,
-            sg_layout=kt_sg_layout,
-            sg_data=kt_sg_data,
-            inst_data=kt_inst_data,
-            order=kt_order,
-            index=1,
-        )
-        # Index 2: QK output layout (128x16)
-        xegpu.set_anchor_layout(
-            qk_dpas_op,
-            sg_layout=layout_128x16_sg_layout,
-            sg_data=layout_128x16_sg_data,
-            inst_data=layout_128x16_inst_data,
-            index=2,
-        )
-
-    # Layouts for second 4 dpas ops (P@V):
-    for pv_dpas_op in dpas_ops[4:]:
-        # Index 0: QK (attention weights) layout
-        xegpu.set_anchor_layout(
-            pv_dpas_op,
-            sg_layout=qk_sg_layout,
-            sg_data=qk_sg_data,
-            inst_data=qk_inst_data,
-            index=0,
-        )
-        # Index 1: V layout
-        xegpu.set_anchor_layout(
-            pv_dpas_op,
-            sg_layout=v_sg_layout,
-            sg_data=v_sg_data,
-            inst_data=v_inst_data,
-            index=1,
-        )
-        # Index 2: Output layout
-        xegpu.set_anchor_layout(
-            pv_dpas_op,
-            sg_layout=out_sg_layout,
-            sg_data=out_sg_data,
-            inst_data=out_inst_data,
-            index=2,
-        )
+    # Layouts for the P@V dpas:
+    pv_dpas_op = dpas_ops[1]
+    # Index 0: QK (attention weights) layout
+    xegpu.set_anchor_layout(
+        pv_dpas_op,
+        sg_layout=qk_sg_layout,
+        sg_data=qk_sg_data,
+        index=0,
+    )
+    # Index 1: V layout
+    xegpu.set_anchor_layout(
+        pv_dpas_op,
+        sg_layout=kv_sg_layout,
+        sg_data=v_sg_data,
+        index=1,
+    )
+    # Index 2: Output layout
+    xegpu.set_anchor_layout(
+        pv_dpas_op,
+        sg_layout=out_sg_layout,
+        sg_data=out_sg_data,
+        index=2,
+    )
 
     if stop_at_stage == "xegpu-wg":
         raise PipelineInterrupt()

@@ -254,26 +254,24 @@ def xegpu_fa_annotation(gf, anytype, fa_params):
     """Attach XeGPU layouts to one fused-attention gpu.func."""
     num_subgroups = fa_params["wg_rows"] // fa_params["sg_rows"]
     n_head = fa_params["n_head"]
+    tile_size = fa_params["inner_loop_tile_size"]
     q_sg_layout = [num_subgroups, 1]
     q_sg_data = [16, n_head]
     q_inst_data = [8, 16]
+    # K and V tiles are [tile_size, n_head], shared by all subgroups.
     k_sg_layout = [num_subgroups, 1]
-    k_sg_data = [16, n_head]
+    k_sg_data = [tile_size, n_head]
     k_inst_data = [16, 16]
     v_sg_layout, v_sg_data, v_inst_data = k_sg_layout, k_sg_data, k_inst_data
     kt_sg_layout = [1, num_subgroups]
-    kt_sg_data = [n_head, 16]
+    kt_sg_data = [n_head, tile_size]
     kt_inst_data = [16, 16]
     kt_order = [0, 1]
     out_sg_layout, out_sg_data, out_inst_data = q_sg_layout, q_sg_data, q_inst_data
-    l128_sg_layout = [num_subgroups, 1]
-    l128_sg_data = [16, 16]
-    l128_inst_data = [8, 16]
-    qk_sg_layout, qk_sg_data, qk_inst_data = (
-        l128_sg_layout,
-        l128_sg_data,
-        l128_inst_data,
-    )
+    # Q@K^T (attention weights) tile is [wg_rows, tile_size].
+    qk_sg_layout = [num_subgroups, 1]
+    qk_sg_data = [16, tile_size]
+    qk_inst_data = [8, 16]
 
     store_nd_op = match_and_split(gf, ops={"xegpu.store_nd"}, nhandles=1)[0]
     xegpu.set_anchor_layout(
@@ -282,64 +280,68 @@ def xegpu_fa_annotation(gf, anytype, fa_params):
         sg_data=out_sg_data,
         inst_data=out_inst_data,
     )
-    load_nd_ops = match_and_split(gf, ops={"xegpu.load_nd"}, nhandles=9)
+    # 3 load_nd ops: Q (hoisted out of the loop), then K and V in the loop.
+    load_nd_ops = match_and_split(gf, ops={"xegpu.load_nd"}, nhandles=3)
     xegpu.set_anchor_layout(
         load_nd_ops[0], sg_layout=q_sg_layout, sg_data=q_sg_data, inst_data=q_inst_data
     )
-    for i in range(1, 5):
-        xegpu.set_anchor_layout(
-            load_nd_ops[i],
-            sg_layout=k_sg_layout,
-            sg_data=k_sg_data,
-            inst_data=k_inst_data,
-        )
-    for i in range(5, 9):
-        xegpu.set_anchor_layout(
-            load_nd_ops[i],
-            sg_layout=v_sg_layout,
-            sg_data=v_sg_data,
-            inst_data=v_inst_data,
-        )
-    dpas_ops = match_and_split(gf, ops={"xegpu.dpas"}, nhandles=8)
-    for i in range(4):
-        d = dpas_ops[i]
-        xegpu.set_anchor_layout(
-            d, sg_layout=q_sg_layout, sg_data=q_sg_data, inst_data=q_inst_data, index=0
-        )
-        xegpu.set_anchor_layout(
-            d,
-            sg_layout=kt_sg_layout,
-            sg_data=kt_sg_data,
-            inst_data=kt_inst_data,
-            order=kt_order,
-            index=1,
-        )
-        xegpu.set_anchor_layout(
-            d,
-            sg_layout=l128_sg_layout,
-            sg_data=l128_sg_data,
-            inst_data=l128_inst_data,
-            index=2,
-        )
-    for i in range(4, 8):
-        d = dpas_ops[i]
-        xegpu.set_anchor_layout(
-            d,
-            sg_layout=qk_sg_layout,
-            sg_data=qk_sg_data,
-            inst_data=qk_inst_data,
-            index=0,
-        )
-        xegpu.set_anchor_layout(
-            d, sg_layout=v_sg_layout, sg_data=v_sg_data, inst_data=v_inst_data, index=1
-        )
-        xegpu.set_anchor_layout(
-            d,
-            sg_layout=out_sg_layout,
-            sg_data=out_sg_data,
-            inst_data=out_inst_data,
-            index=2,
-        )
+    xegpu.set_anchor_layout(
+        load_nd_ops[1],
+        sg_layout=k_sg_layout,
+        sg_data=k_sg_data,
+        inst_data=k_inst_data,
+    )
+    xegpu.set_anchor_layout(
+        load_nd_ops[2],
+        sg_layout=v_sg_layout,
+        sg_data=v_sg_data,
+        inst_data=v_inst_data,
+    )
+    # 2 dpas ops: Q@K^T and P@V.
+    qk_dpas, pv_dpas = match_and_split(gf, ops={"xegpu.dpas"}, nhandles=2)
+    xegpu.set_anchor_layout(
+        qk_dpas,
+        sg_layout=q_sg_layout,
+        sg_data=q_sg_data,
+        inst_data=q_inst_data,
+        index=0,
+    )
+    xegpu.set_anchor_layout(
+        qk_dpas,
+        sg_layout=kt_sg_layout,
+        sg_data=kt_sg_data,
+        inst_data=kt_inst_data,
+        order=kt_order,
+        index=1,
+    )
+    xegpu.set_anchor_layout(
+        qk_dpas,
+        sg_layout=qk_sg_layout,
+        sg_data=qk_sg_data,
+        inst_data=qk_inst_data,
+        index=2,
+    )
+    xegpu.set_anchor_layout(
+        pv_dpas,
+        sg_layout=qk_sg_layout,
+        sg_data=qk_sg_data,
+        inst_data=qk_inst_data,
+        index=0,
+    )
+    xegpu.set_anchor_layout(
+        pv_dpas,
+        sg_layout=v_sg_layout,
+        sg_data=v_sg_data,
+        inst_data=v_inst_data,
+        index=1,
+    )
+    xegpu.set_anchor_layout(
+        pv_dpas,
+        sg_layout=out_sg_layout,
+        sg_data=out_sg_data,
+        inst_data=out_inst_data,
+        index=2,
+    )
 
 
 def build_combined_schedule(

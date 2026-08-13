@@ -17,22 +17,21 @@ def emit_vector_constant(shape, fill_value, element_type):
     return arith.constant(vector_type, attr)
 
 
-def compute_qkt_chunks(
+def compute_qkt(
     q_value,
     k_load_op,
     loop_idx,
-    k_tile_offsets,
     wg_rows,
     d_head,
-    k_subtile_size,
-    num_k_tiles,
+    tile_size,
     element_type,
+    compute_type,
 ):
-    """Load K tiles, transpose, and contract with Q to produce Q@K^T chunks.
+    """Load the K tile, transpose it, and contract with Q to produce Q@K^T.
 
-    Each K tile is [k_subtile_size, d_head], transposed to [d_head, k_subtile_size]
-    and contracted with q_value [wg_rows, d_head] to produce [wg_rows, k_subtile_size].
-    Returns a list of `num_k_tiles` such chunks.
+    The K tile is [tile_size, d_head], transposed to [d_head, tile_size] and
+    contracted with q_value [wg_rows, d_head] to produce [wg_rows, tile_size].
+    Q and K are `element_type`, the contraction accumulates in `compute_type`.
     """
     k_memref = k_load_op.operands[0]
     k_load_indices = list(k_load_op.operands[1:-1])
@@ -64,141 +63,98 @@ def compute_qkt_chunks(
         ]
     )
 
-    qkt_chunk_type = ir.VectorType.get([wg_rows, k_subtile_size], element_type)
-    qkt_chunk_acc = emit_vector_constant((wg_rows, k_subtile_size), 0.0, element_type)
+    qkt_type = ir.VectorType.get([wg_rows, tile_size], compute_type)
+    qkt_acc = emit_vector_constant((wg_rows, tile_size), 0.0, compute_type)
 
-    qkt_chunks = []
-    for tile_idx in range(num_k_tiles):
-        k_tile_offset = arith.addi(loop_idx, k_tile_offsets[tile_idx])
+    k_tile_indices = k_load_indices.copy()
+    k_tile_indices[-2] = loop_idx
 
-        k_tile_indices = k_load_indices.copy()
-        k_tile_indices[-2] = k_tile_offset
+    k_tile_type = ir.VectorType.get([tile_size, d_head], element_type)
+    k_tile = vector.TransferReadOp(
+        k_tile_type,
+        k_memref,
+        k_tile_indices,
+        k_perm_map,
+        padding,
+        in_bounds=in_bounds,
+    ).result
 
-        k_tile_type = ir.VectorType.get([k_subtile_size, d_head], element_type)
-        k_tile = vector.TransferReadOp(
-            k_tile_type,
-            k_memref,
-            k_tile_indices,
-            k_perm_map,
-            padding,
-            in_bounds=in_bounds,
-        ).result
+    k_transpose_type = ir.VectorType.get([d_head, tile_size], element_type)
+    k_transpose = vector.transpose(k_transpose_type, k_tile, [1, 0])
 
-        k_transpose_type = ir.VectorType.get([d_head, k_subtile_size], element_type)
-        k_transpose = vector.transpose(k_transpose_type, k_tile, [1, 0])
-
-        qkt_chunk = vector.contract(
-            qkt_chunk_type,
-            q_value,
-            k_transpose,
-            qkt_chunk_acc,
-            indexing_maps=indexing_maps,
-            iterator_types=iterator_types,
-        )
-        qkt_chunks.append(qkt_chunk)
-
-    return qkt_chunks
-
-
-def compute_qkt_max_scaled(qkt_chunks, num_k_tiles, m_i_init, scale_vector):
-    """Reduce Q@K^T chunks to a row-wise scaled max.
-
-    Combines chunks elementwise with maximumf, reduces along the inner dim with
-    multi_reduction(maxnumf, acc=m_i_init), and multiplies by scale_vector.
-    Returns a [wg_rows] vector.
-    """
-    qkt_max_combined = qkt_chunks[0]
-    for i in range(1, num_k_tiles):
-        qkt_max_combined = arith.maximumf(qkt_max_combined, qkt_chunks[i])
-
-    qkt_max = vector.multi_reduction(
-        kind="maxnumf",
-        source=qkt_max_combined,
-        acc=m_i_init,
-        reduction_dims=[1],
+    return vector.contract(
+        qkt_type,
+        q_value,
+        k_transpose,
+        qkt_acc,
+        indexing_maps=indexing_maps,
+        iterator_types=iterator_types,
     )
-
-    return arith.mulf(qkt_max, scale_vector)
 
 
 def compute_online_softmax_and_sum(
-    qkt_chunks,
+    qkt_scaled,
     m_ij,
     l_i_init,
-    scale_value,
     wg_rows,
-    k_subtile_size,
-    num_k_tiles,
-    element_type,
+    tile_size,
+    compute_type,
 ):
-    """Apply online softmax to Q@K^T chunks and reduce to a row-wise sum.
+    """Apply online softmax to the scaled Q@K^T and reduce to a row-wise sum.
 
-    For each chunk: exp(chunk * scale - m_ij), broadcast over the inner dim.
-    Returns (qkt_exp_chunks, l_ij) where qkt_exp_chunks is the list of
-    [wg_rows, k_subtile_size] exp tiles and l_ij is their row-wise sum
-    [wg_rows] (added into l_i_init).
+    Computes exp(qkt_scaled - m_ij), with m_ij broadcast over the inner dim.
+    Returns (qkt_exp, l_ij) where qkt_exp is the [wg_rows, tile_size] exp tile
+    and l_ij is its row-wise sum [wg_rows] (added into l_i_init).
     """
-    scale_chunk = emit_vector_constant(
-        (wg_rows, k_subtile_size), scale_value, element_type
-    )
-
-    # Broadcast m_ij from [wg_rows] to [wg_rows, k_subtile_size]
-    m_ij_bcasted_type = ir.VectorType.get([k_subtile_size, wg_rows], element_type)
+    # Broadcast m_ij from [wg_rows] to [wg_rows, tile_size]
+    m_ij_bcasted_type = ir.VectorType.get([tile_size, wg_rows], compute_type)
     m_ij_bcasted = vector.broadcast(m_ij_bcasted_type, m_ij)
-    m_ij_transposed_type = ir.VectorType.get([wg_rows, k_subtile_size], element_type)
+    m_ij_transposed_type = ir.VectorType.get([wg_rows, tile_size], compute_type)
     m_ij_transposed = vector.transpose(m_ij_transposed_type, m_ij_bcasted, [1, 0])
 
-    qkt_exp_chunks = []
-    for qkt_chunk in qkt_chunks:
-        qkt_scaled = arith.mulf(qkt_chunk, scale_chunk)
-        qkt_centered = arith.subf(qkt_scaled, m_ij_transposed)
-        qkt_exp = math.exp(qkt_centered)
-        qkt_exp_chunks.append(qkt_exp)
-
-    qkt_exp_combined = qkt_exp_chunks[0]
-    for i in range(1, num_k_tiles):
-        qkt_exp_combined = arith.addf(qkt_exp_combined, qkt_exp_chunks[i])
+    qkt_centered = arith.subf(qkt_scaled, m_ij_transposed)
+    # fastmath<fast> lets the exp lower to the native hardware exp; without it
+    # the accurate expansion doubles the exp count and scalarizes part of it.
+    qkt_exp = math.exp(qkt_centered, fastmath="fast")
 
     l_ij = vector.multi_reduction(
         kind="add",
-        source=qkt_exp_combined,
+        source=qkt_exp,
         acc=l_i_init,
         reduction_dims=[1],
     )
 
-    return qkt_exp_chunks, l_ij
+    return qkt_exp, l_ij
 
 
-def rescale_pv_out_accumulator(acc, alpha, wg_rows, d_head, element_type):
+def rescale_pv_out_accumulator(acc, alpha, wg_rows, d_head, compute_type):
     """Rescale the running P@V accumulator by broadcasting alpha across d_head.
 
     Broadcasts alpha [wg_rows] to [wg_rows, d_head] and multiplies acc by it
     elementwise. Returns the rescaled accumulator.
     """
-    alpha_bcasted_type = ir.VectorType.get([d_head, wg_rows], element_type)
+    alpha_bcasted_type = ir.VectorType.get([d_head, wg_rows], compute_type)
     alpha_bcasted = vector.broadcast(alpha_bcasted_type, alpha)
-    alpha_transposed_type = ir.VectorType.get([wg_rows, d_head], element_type)
+    alpha_transposed_type = ir.VectorType.get([wg_rows, d_head], compute_type)
     alpha_transposed = vector.transpose(alpha_transposed_type, alpha_bcasted, [1, 0])
     return arith.mulf(acc, alpha_transposed)
 
 
-def compute_pv_chunks(
-    qkt_exp_chunks,
+def compute_pv(
+    qkt_exp,
     v_load_op,
     pv_init,
     loop_idx,
-    k_tile_offsets,
     acc_vector_type,
     d_head,
-    k_subtile_size,
-    num_k_tiles,
+    tile_size,
     element_type,
 ):
-    """Load V tiles and contract with softmax chunks, accumulating into pv_init.
+    """Load the V tile and contract it with the softmax tile, accumulating into pv_init.
 
-    For each tile: load V tile [k_subtile_size, d_head] and contract with the
-    matching exp chunk [wg_rows, k_subtile_size] into the running [wg_rows, d_head]
-    accumulator. Returns the final accumulated result.
+    Loads V [tile_size, d_head] (`element_type`) and contracts it with the exp
+    tile [wg_rows, tile_size] into the running [wg_rows, d_head] accumulator,
+    whose type is given by `acc_vector_type`. Returns the accumulated result.
     """
     v_memref = v_load_op.operands[0]
     v_load_indices = list(v_load_op.operands[1:-1])
@@ -229,40 +185,34 @@ def compute_pv_chunks(
         ]
     )
 
-    pv_out = pv_init
-    for tile_idx in range(num_k_tiles):
-        v_tile_offset = arith.addi(loop_idx, k_tile_offsets[tile_idx])
+    v_tile_indices = v_load_indices.copy()
+    v_tile_indices[-2] = loop_idx
 
-        v_tile_indices = v_load_indices.copy()
-        v_tile_indices[-2] = v_tile_offset
+    v_tile_type = ir.VectorType.get([tile_size, d_head], element_type)
+    v_tile = vector.TransferReadOp(
+        v_tile_type,
+        v_memref,
+        v_tile_indices,
+        v_perm_map,
+        v_padding,
+        in_bounds=v_in_bounds,
+    ).result
 
-        v_tile_type = ir.VectorType.get([k_subtile_size, d_head], element_type)
-        v_tile = vector.TransferReadOp(
-            v_tile_type,
-            v_memref,
-            v_tile_indices,
-            v_perm_map,
-            v_padding,
-            in_bounds=v_in_bounds,
-        ).result
-
-        pv_out = vector.contract(
-            acc_vector_type,
-            qkt_exp_chunks[tile_idx],
-            v_tile,
-            pv_out,
-            indexing_maps=indexing_maps_pv,
-            iterator_types=iterator_types_pv,
-        )
-
-    return pv_out
+    return vector.contract(
+        acc_vector_type,
+        qkt_exp,
+        v_tile,
+        pv_init,
+        indexing_maps=indexing_maps_pv,
+        iterator_types=iterator_types_pv,
+    )
 
 
-def normalize_ouput_by_sum(pv_out, l_i_out, wg_rows, d_head, element_type):
+def normalize_ouput_by_sum(pv_out, l_i_out, wg_rows, d_head, compute_type):
     """Divide pv_out [wg_rows, d_head] by l_i_out [wg_rows] (broadcast over d_head)."""
-    l_i_out_bcasted_type = ir.VectorType.get([d_head, wg_rows], element_type)
+    l_i_out_bcasted_type = ir.VectorType.get([d_head, wg_rows], compute_type)
     l_i_out_bcasted = vector.broadcast(l_i_out_bcasted_type, l_i_out)
-    l_i_out_transposed_type = ir.VectorType.get([wg_rows, d_head], element_type)
+    l_i_out_transposed_type = ir.VectorType.get([wg_rows, d_head], compute_type)
     l_i_out_transposed = vector.transpose(
         l_i_out_transposed_type, l_i_out_bcasted, [1, 0]
     )
@@ -374,34 +324,32 @@ class ReplaceWithFusedAttentionOp(
             # Get tile size
             tile_size_value = ir.IntegerAttr(op.tile_size).value
 
-            # Get element type from q_load result
+            # Get element type from q_load result. Q, K, V and the output stay in this
+            # type (the DPAS input type), while the softmax and both accumulators are
+            # computed in f32 to keep the online softmax accurate and to avoid holding
+            # the intermediates in narrow registers.
             element_type = q_vector_type.element_type
+            compute_type = ir.F32Type.get()
 
             # Build the fused attention computation
             with ir.InsertionPoint(output_op):
                 # Define m_i_init: vector of shape [wg_rows] with neg_inf values
-                # NOTE: We use float32 for the initial neg_inf values and cast to the element type
-                # to avoid issues with representing -inf.
-                m_i_vector_type = ir.VectorType.get([wg_rows], element_type)
-                m_i_init_f32 = emit_vector_constant(
-                    (wg_rows,), float("-inf"), ir.F32Type.get()
-                )
-                m_i_init = arith.truncf(m_i_vector_type, m_i_init_f32)
+                m_i_init = emit_vector_constant((wg_rows,), float("-inf"), compute_type)
 
                 # Define l_i_init: vector of shape [wg_rows] with zero values
-                l_i_init = emit_vector_constant((wg_rows,), 0.0, element_type)
+                l_i_init = emit_vector_constant((wg_rows,), 0.0, compute_type)
 
                 # Define acc_init: vector of shape [wg_rows, d_head] with zero values
-                acc_vector_type = ir.VectorType.get([wg_rows, d_head], element_type)
-                acc_init = emit_vector_constant((wg_rows, d_head), 0.0, element_type)
+                acc_vector_type = ir.VectorType.get([wg_rows, d_head], compute_type)
+                acc_init = emit_vector_constant((wg_rows, d_head), 0.0, compute_type)
 
                 # Get n_ctx from k_load result type (first dimension size)
                 k_load_result = k_load_op.results[0]
                 k_vector_type = ir.VectorType(k_load_result.type)
                 n_ctx = k_vector_type.shape[0]
-                # Define scale vector: vector of shape [wg_rows] with the scale value
-                scale_vector = emit_vector_constant(
-                    (wg_rows,), scale_value, element_type
+                # Define scale tile: [wg_rows, tile_size] filled with the scale value
+                scale_tile = emit_vector_constant(
+                    (wg_rows, tile_size_value), scale_value, compute_type
                 )
 
                 # Create loop bounds
@@ -424,53 +372,44 @@ class ReplaceWithFusedAttentionOp(
 
                     q_value = q_load_op.results[0]
 
-                    # Constants for K/V tiling (tile into chunks of 16)
-                    k_subtile_size = 16
-                    num_k_tiles = tile_size_value // k_subtile_size
-
-                    # Create offset constants for each K tile
-                    k_tile_offsets = []
-                    for i in range(num_k_tiles):
-                        offset = arith.constant(index_type, i * k_subtile_size)
-                        k_tile_offsets.append(offset)
-
-                    # Load K tiles, transpose, and contract with Q to get Q@K^T chunks
-                    qkt_chunks = compute_qkt_chunks(
+                    # Load the K tile, transpose it, and contract with Q to get Q@K^T
+                    qkt = compute_qkt(
                         q_value,
                         k_load_op,
                         loop_idx,
-                        k_tile_offsets,
                         wg_rows,
                         d_head,
-                        k_subtile_size,
-                        num_k_tiles,
+                        tile_size_value,
                         element_type,
+                        compute_type,
+                    )
+                    qkt_scaled = arith.mulf(qkt, scale_tile)
+
+                    # Reduce the scaled Q@K^T to a row-wise max: [wg_rows]
+                    qkt_row_max = vector.multi_reduction(
+                        kind="maximumf",
+                        source=qkt_scaled,
+                        acc=m_i_init,
+                        reduction_dims=[1],
                     )
 
-                    # Reduce Q@K^T chunks to row-wise scaled max: [wg_rows]
-                    qkt_max_scaled = compute_qkt_max_scaled(
-                        qkt_chunks, num_k_tiles, m_i_init, scale_vector
-                    )
-
-                    # Compute m_ij = max(m_i, qkt_max_scaled)
+                    # Compute m_ij = max(m_i, qkt_row_max)
                     # Both have shape [wg_rows]
-                    m_ij = arith.maximumf(m_i, qkt_max_scaled)
+                    m_ij = arith.maximumf(m_i, qkt_row_max)
 
-                    # Apply online softmax to chunks and reduce to row-wise sum
-                    qkt_exp_chunks, l_ij = compute_online_softmax_and_sum(
-                        qkt_chunks,
+                    # Apply online softmax and reduce to row-wise sum
+                    qkt_exp, l_ij = compute_online_softmax_and_sum(
+                        qkt_scaled,
                         m_ij,
                         l_i_init,
-                        scale_value,
                         wg_rows,
-                        k_subtile_size,
-                        num_k_tiles,
-                        element_type,
+                        tile_size_value,
+                        compute_type,
                     )
 
                     # Compute alpha = exp(m_i - m_ij)
                     m_diff = arith.subf(m_i, m_ij)
-                    alpha = math.exp(m_diff)
+                    alpha = math.exp(m_diff, fastmath="fast")
 
                     # Update l_i: l_i_updated = l_i * alpha + l_ij
                     l_i_scaled = arith.mulf(l_i, alpha)
@@ -478,20 +417,24 @@ class ReplaceWithFusedAttentionOp(
 
                     # Rescale running P@V accumulator by alpha
                     acc_updated = rescale_pv_out_accumulator(
-                        acc, alpha, wg_rows, d_head, element_type
+                        acc, alpha, wg_rows, d_head, compute_type
                     )
 
-                    # Load V tiles and contract with softmax chunks into pv_out
-                    pv_out = compute_pv_chunks(
-                        qkt_exp_chunks,
+                    # Narrow the softmax tile to the DPAS input type
+                    qkt_exp_type = ir.VectorType.get(
+                        [wg_rows, tile_size_value], element_type
+                    )
+                    qkt_exp_narrow = arith.truncf(qkt_exp_type, qkt_exp)
+
+                    # Load the V tile and contract with the softmax tile into pv_out
+                    pv_out = compute_pv(
+                        qkt_exp_narrow,
                         v_load_op,
                         acc_updated,
                         loop_idx,
-                        k_tile_offsets,
                         acc_vector_type,
                         d_head,
-                        k_subtile_size,
-                        num_k_tiles,
+                        tile_size_value,
                         element_type,
                     )
 
@@ -503,8 +446,12 @@ class ReplaceWithFusedAttentionOp(
             l_i_out = loop.results[1]
             with ir.InsertionPoint.after(loop):
                 # Normalize the output: output_final = pv_out / l_i_out
-                output_final = normalize_ouput_by_sum(
-                    pv_out, l_i_out, wg_rows, d_head, element_type
+                output_normalized = normalize_ouput_by_sum(
+                    pv_out, l_i_out, wg_rows, d_head, compute_type
+                )
+                # Narrow back to the type of the output op being replaced
+                output_final = arith.truncf(
+                    output_op.results[0].type, output_normalized
                 )
 
             # Replace all uses of the original output operation with the final loop result
