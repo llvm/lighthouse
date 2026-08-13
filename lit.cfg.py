@@ -3,6 +3,7 @@ import shlex
 import importlib.util
 import shutil
 import platform
+import sys
 
 import lit.formats
 from lit.TestingConfig import TestingConfig
@@ -46,7 +47,7 @@ config.substitutions.append(("FileCheck", find_filecheck()))
 config.substitutions.append(("%TEST", project_root + "/test"))
 config.substitutions.append(("%CACHE", project_root + "/cache"))
 config.substitutions.append(("%VIRTUAL_ENV", os.environ.get("VIRTUAL_ENV", "")))
-python = os.environ.get("PYTHON", "python")
+python = os.environ.get("PYTHON", sys.executable)
 config.substitutions.append(("%PYTHON", python))
 if pythonpath := os.environ.get("PYTHONPATH"):
     config.substitutions[-1] = (
@@ -61,7 +62,7 @@ for tool_dir, _, files in os.walk(project_root + "/tools"):
             config.substitutions.append((file, tool_path))
 
 # Set available features based on the presence of Python packages and git submodules.
-for pkg in ["torch", "mpi4py", "mpich", "impi-rt"]:
+for pkg in ["torch", "torch_mlir", "mpi4py", "mpich", "impi-rt"]:
     if importlib.util.find_spec(pkg):
         config.available_features.add(pkg)
 
