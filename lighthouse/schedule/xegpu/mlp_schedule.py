@@ -13,9 +13,7 @@ from lighthouse.pipeline.helper import (
 )
 
 from lighthouse.schedule import schedule_boilerplate
-from lighthouse.dialects import smt_ext
-from lighthouse.dialects.transform import smt_ext as td_smt_ext
-from lighthouse.dialects.transform.tune_ext import knob, KnobValue
+from lighthouse.schedule.parameters import ScheduleParameters
 from .xegpu_specs import XeGPUSpecs
 from .xegpu_parameter_selector import XeGPUParameterSelector
 from .lowering_common import (
@@ -26,110 +24,32 @@ from .lowering_common import (
 from .matmul_constraints import (
     DPAS,
     PREFETCH_INST_DATA,
-    LOAD_MAX_ROWS,
-    LOAD_MAX_COLS,
-    PFETCH_MIN_ROWS,
-    PFETCH_MIN_COLS,
-    PFETCH_MAX_ROWS,
-    PFETCH_MAX_COLS,
-    MIN_NB_THREADS,
 )
-
-
-@KnobValue.ast_rewrite(in_exprs=True)
-def params_with_constraints_imposed(
-    params: dict[str, int | None], knob_name_prefix=""
-) -> dict[str, int | KnobValue]:
-    """Check the parameters for validity and replace `None`s with knobs with asserted ranges.
-
-    Inserts the `KnobOp`s for any knobs that are created at the active `InsertionPoint` and
-    maps the parameter name to the (`Knob`)`Value` returned by the `KnobOp`."""
-    m, n, k = params["m"], params["n"], params["k"]
-    assert isinstance(m, int) and isinstance(n, int) and isinstance(k, int)
-    assert m > 0 and n > 0 and k > 0
-    wg_m = params["wg_m"] or knob(knob_name_prefix + "wg_m")
-    wg_n = params["wg_n"] or knob(knob_name_prefix + "wg_n")
-    sg_m = params["sg_m"] or knob(knob_name_prefix + "sg_m")
-    sg_n = params["sg_n"] or knob(knob_name_prefix + "sg_n")
-    k_tile = params["k_tile"] or knob(knob_name_prefix + "k_tile")
-    load_a_m = params["load_a_m"] or knob(knob_name_prefix + "load_a_m")
-    load_a_k = params["load_a_k"] or knob(knob_name_prefix + "load_a_k")
-    load_b_k = params["load_b_k"] or knob(knob_name_prefix + "load_b_k")
-    load_b_n = params["load_b_n"] or knob(knob_name_prefix + "load_b_n")
-    prefetch_a_m = params["prefetch_a_m"] or knob(knob_name_prefix + "prefetch_a_m")
-    prefetch_a_k = params["prefetch_a_k"] or knob(knob_name_prefix + "prefetch_a_k")
-    prefetch_b_k = params["prefetch_b_k"] or knob(knob_name_prefix + "prefetch_b_k")
-    prefetch_b_n = params["prefetch_b_n"] or knob(knob_name_prefix + "prefetch_b_n")
-    prefetch_a_nb = params["prefetch_a_nb"] or knob(knob_name_prefix + "prefetch_a_nb")
-    prefetch_b_nb = params["prefetch_b_nb"] or knob(knob_name_prefix + "prefetch_b_nb")
-
-    # NB: Constraints on knobs will be added as attributes on the KnobOps, while
-    #     constraints on concrete values will be checked immediately.
-    assert min(max(m // 4, 16), 64) <= wg_m <= min(m, 256)
-    assert m % wg_m == 0 and wg_m % DPAS.M == 0
-    assert min(max(n // 4, 16), 64) <= wg_n <= min(n, 256)
-    assert n % wg_n == 0 and wg_n % DPAS.N == 0
-    assert 16 <= sg_m <= min(m, 128)
-    assert m % sg_m == 0 and sg_m % DPAS.M == 0
-    assert 16 <= sg_n <= min(n, 128)
-    assert n % sg_n == 0 and sg_n % DPAS.N == 0
-    assert 16 <= k_tile <= min(k, 256)
-    assert k % k_tile == 0 and k_tile % DPAS.K == 0
-    assert prefetch_a_nb > 0
-    assert prefetch_b_nb > 0
-
-    LOAD_TILE_SIZES = [8, 16, 32]
-    assert load_a_m in LOAD_TILE_SIZES and load_a_m % DPAS.M == 0
-    assert load_a_k in LOAD_TILE_SIZES and load_a_k % DPAS.K == 0
-    assert load_b_k in LOAD_TILE_SIZES and load_b_k % DPAS.K == 0
-    assert load_b_n in LOAD_TILE_SIZES and load_b_n % DPAS.N == 0
-    assert prefetch_a_m in LOAD_TILE_SIZES
-    assert prefetch_a_k in LOAD_TILE_SIZES
-    assert prefetch_b_k in LOAD_TILE_SIZES
-    assert prefetch_b_n in LOAD_TILE_SIZES
-
-    return {
-        "wg_m": wg_m,
-        "wg_n": wg_n,
-        "sg_m": sg_m,
-        "sg_n": sg_n,
-        "k_tile": k_tile,
-        "load_a_m": load_a_m,
-        "load_a_k": load_a_k,
-        "load_b_k": load_b_k,
-        "load_b_n": load_b_n,
-        "prefetch_a_m": prefetch_a_m,
-        "prefetch_a_k": prefetch_a_k,
-        "prefetch_b_k": prefetch_b_k,
-        "prefetch_b_n": prefetch_b_n,
-    }
 
 
 def matmul_schedule(
     payload_func_name: str = "payload",
+    device: str | None = None,
     stop_at_stage: str = "",
     **layer_params,
 ) -> ir.Module:
     """Generate transform schedule module for a single matmul layer."""
     return mlp_schedule(
-        params=[layer_params],
+        params=ScheduleParameters([{"layer_kind": "matmul", **layer_params}]),
         payload_func_name=payload_func_name,
+        device=device,
         stop_at_stage=stop_at_stage,
     )
 
 
 def mlp_schedule(
-    params: list[dict[str, int | None]],
+    params: ScheduleParameters,
     payload_func_name: str = "payload",
+    device: str | None = None,
     stop_at_stage: str = "",
 ) -> ir.Module:
     """Generate transform schedule module for MLP payload."""
-    assert params is not None and isinstance(params, list) and len(params) > 0, (
-        "params must be provided."
-    )
-    devices = {p.get("device") for p in params if "device" in p}
-    assert len(devices) <= 1, f"Multiple devices specified in params list: {devices}"
-    device = devices.pop() if devices else None
+    assert params is not None and len(params) > 0, "params must be provided."
     param_selector = XeGPUParameterSelector(device=device)
     gpu_specs = param_selector.gpu_specs
 
@@ -171,7 +91,6 @@ def mlp_schedule(
             ]
             if not all(p in layer_params for p in required_params):
                 # Some parameters are missing, use the parameter selector to fill
-                # NOTE None values are interpreted as knobs in the constraint function
                 shape = (m, n, k)
                 transpose_a = layer_params.get("transpose_a", False)
                 transpose_b = layer_params.get("transpose_b", False)
@@ -179,11 +98,7 @@ def mlp_schedule(
                     shape, transpose_a, transpose_b
                 )
                 # Overwrite original params to ensure consistent configuration
-                layer_params.update(generated_params)
-
-            layer_params |= params_with_constraints_imposed(
-                layer_params, knob_name_prefix=f"layer_{i}_"
-            )
+                layer_params.update(generated_params[0])
 
         try:
             bundle_xegpu_mlp_schedule(
@@ -205,7 +120,7 @@ def bundle_xegpu_mlp_schedule(
     mod: ir.Value[transform.AnyOpType],
     payload_func_name: str,
     gpu_specs: XeGPUSpecs,
-    params: list[dict[str, int | KnobValue]],
+    params: ScheduleParameters,
     stop_at_stage: str = "",
 ) -> ir.Value[transform.AnyOpType]:
     """Schedule for lowering MLP-like payload to xegpu wg level."""
@@ -280,21 +195,21 @@ def xegpu_wg_annotation_for_mlp_layer(
     gpu_func: ir.Value,
     gpu_specs: XeGPUSpecs,
     *,
-    wg_m: int | KnobValue,
-    wg_n: int | KnobValue,
-    sg_m: int | KnobValue,
-    sg_n: int | KnobValue,
-    k_tile: int | KnobValue,
-    load_a_m: int | KnobValue,
-    load_a_k: int | KnobValue,
-    load_b_k: int | KnobValue,
-    load_b_n: int | KnobValue,
-    prefetch_a_m: int | KnobValue,
-    prefetch_a_k: int | KnobValue,
-    prefetch_b_k: int | KnobValue,
-    prefetch_b_n: int | KnobValue,
-    prefetch_a_nb: int | KnobValue,
-    prefetch_b_nb: int | KnobValue,
+    wg_m: int,
+    wg_n: int,
+    sg_m: int,
+    sg_n: int,
+    k_tile: int,
+    load_a_m: int,
+    load_a_k: int,
+    load_b_k: int,
+    load_b_n: int,
+    prefetch_a_m: int,
+    prefetch_a_k: int,
+    prefetch_b_k: int,
+    prefetch_b_n: int,
+    prefetch_a_nb: int,
+    prefetch_b_nb: int,
     transpose_a: bool,
     transpose_b: bool,
     **_catch_all,
@@ -309,109 +224,19 @@ def xegpu_wg_annotation_for_mlp_layer(
     anytype = transform.AnyOpType.get()
     anyvalue = transform.AnyValueType.get()
 
-    # Calculate with SMT ops in case of symbolic values, normal ints in case of concrete values.
-    @td_smt_ext.constrain_params(wg_m, wg_n, sg_m, sg_n)
-    def calc_sg_layout(WG_M, WG_N, SG_M, SG_N):
-        # NB: Constraint on overall num SG threads already dealt with elsewhere.
-        return WG_M // SG_M, WG_N // SG_N
-
-    sg_layout = calc_sg_layout.results
+    sg_layout = [wg_m // sg_m, wg_n // sg_n]
 
     load_tile_a = [load_a_m, load_a_k]
     load_tile_b = [load_b_k, load_b_n]
     prefetch_tile_a = [prefetch_a_m, prefetch_a_k]
     prefetch_tile_b = [prefetch_b_k, prefetch_b_n]
 
-    @td_smt_ext.constrain_params(
-        wg_m,
-        wg_n,
-        sg_m,
-        sg_n,
-        k_tile,
-        load_a_m,
-        load_a_k,
-        load_b_k,
-        load_b_n,
-        prefetch_a_m,
-        prefetch_a_k,
-        prefetch_b_k,
-        prefetch_b_n,
-        transpose_a,
-        transpose_b,
-    )
-    def constrain_and_calculate_load_and_prefetch_params(
-        WG_M,
-        WG_N,
-        SG_M,
-        SG_N,
-        K_TILE,
-        LDA_M,
-        LDA_K,
-        LDB_K,
-        LDB_N,
-        PFA_M,
-        PFA_K,
-        PFB_K,
-        PFB_N,
-        TR_A,
-        TR_B,
-    ):
-        # NB: normal asserts in case of concrete values, SMT assert ops for symbolic values
-        smt_ext.assert_(SG_M % LDA_M == 0)
-        smt_ext.assert_(K_TILE % LDA_K == 0)
-        smt_ext.assert_(K_TILE % LDB_K == 0)
-        smt_ext.assert_(SG_N % LDB_N == 0)
+    # prefetch tile shape depends on transpose flag
+    pf_shape_a = (k_tile, wg_m) if transpose_a else (wg_m, k_tile)
+    pf_shape_b = (wg_n, k_tile) if transpose_b else (k_tile, wg_n)
 
-        smt_ext.assert_(LDA_M <= LOAD_MAX_ROWS)
-        smt_ext.assert_(LDA_K <= LOAD_MAX_COLS)
-        smt_ext.assert_(LDB_K <= LOAD_MAX_ROWS)
-        smt_ext.assert_(LDB_N <= LOAD_MAX_COLS)
-
-        # prefetch tile shape depends on transpose flag
-        pf_shape_a = (K_TILE, WG_M) if TR_A else (WG_M, K_TILE)
-        pf_shape_b = (WG_N, K_TILE) if TR_B else (K_TILE, WG_N)
-
-        smt_ext.assert_(pf_shape_a[0] % PFA_M == 0)
-        smt_ext.assert_(pf_shape_a[1] % PFA_K == 0)
-        smt_ext.assert_(pf_shape_b[0] % PFB_K == 0)
-        smt_ext.assert_(pf_shape_b[1] % PFB_N == 0)
-
-        smt_ext.assert_(PFA_M <= PFETCH_MAX_ROWS)
-        smt_ext.assert_(PFA_K <= PFETCH_MAX_COLS)
-        smt_ext.assert_(PFA_M >= PFETCH_MIN_ROWS)
-        smt_ext.assert_(PFA_K >= PFETCH_MIN_COLS)
-
-        smt_ext.assert_(PFB_K <= PFETCH_MAX_ROWS)
-        smt_ext.assert_(PFB_N <= PFETCH_MAX_COLS)
-        smt_ext.assert_(PFB_K >= PFETCH_MIN_ROWS)
-        smt_ext.assert_(PFB_N >= PFETCH_MIN_COLS)
-
-        smt_ext.assert_(LDA_M % DPAS.M == 0)
-        smt_ext.assert_(LDA_K % DPAS.K == 0)
-        smt_ext.assert_(LDB_K % DPAS.K == 0)
-        smt_ext.assert_(LDB_N % DPAS.N == 0)
-
-        # prefetch A thread layout
-        prefetch_th_a_m = pf_shape_a[0] // PFA_M
-        prefetch_th_a_k = pf_shape_a[1] // PFA_K
-
-        prefetch_th_a = prefetch_th_a_m * prefetch_th_a_k
-        smt_ext.assert_(prefetch_th_a <= gpu_specs.max_nb_threads)
-        smt_ext.assert_(prefetch_th_a_m * prefetch_th_a_k >= MIN_NB_THREADS)
-
-        # prefetch B thread layout
-        prefetch_th_b_k = pf_shape_b[0] // PFB_K
-        prefetch_th_b_n = pf_shape_b[1] // PFB_N
-        prefetch_th_b = prefetch_th_b_k * prefetch_th_b_n
-        smt_ext.assert_(prefetch_th_b <= gpu_specs.max_nb_threads)
-        if isinstance(prefetch_th_b, smt_ext.SMTIntValue):
-            # NB: Constraint only enabled during tuning.
-            smt_ext.assert_(prefetch_th_b_k * prefetch_th_b_n >= MIN_NB_THREADS)
-
-        return prefetch_th_a_m, prefetch_th_a_k, prefetch_th_b_k, prefetch_th_b_n
-
-    prefetch_layout_a = constrain_and_calculate_load_and_prefetch_params.results[0:2]
-    prefetch_layout_b = constrain_and_calculate_load_and_prefetch_params.results[2:4]
+    prefetch_layout_a = [pf_shape_a[0] // prefetch_a_m, pf_shape_a[1] // prefetch_a_k]
+    prefetch_layout_b = [pf_shape_b[0] // prefetch_b_k, pf_shape_b[1] // prefetch_b_n]
 
     # matmul matrix shapes
     sg_tile_a = [sg_m, k_tile]

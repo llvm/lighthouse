@@ -17,7 +17,6 @@ XeGPU matrix multiplication example.
 """
 
 import argparse
-import json
 import warnings
 from dataclasses import dataclass, field
 from typing import ClassVar
@@ -36,6 +35,7 @@ from lighthouse.schedule.xegpu import mlp_schedule, xegpu_to_binary
 from lighthouse.utils.numpy import mlir_to_numpy_dtype
 from lighthouse.ingress.mlir_gen import generate_gpu_matmul_payload, get_mlir_elem_type
 from lighthouse.schedule.xegpu import XeGPUParameterSelector
+from lighthouse.schedule.parameters import ScheduleParameters
 
 
 def matmul_complexity(
@@ -201,7 +201,10 @@ class XeGPUMatMul:
         return mod
 
     def schedule_modules(
-        self, stop_at_stage: str | None = None, parameters: dict | None = None
+        self,
+        stop_at_stage: str | None = None,
+        parameters: ScheduleParameters | None = None,
+        device: str | None = None,
     ) -> list[ir.Module]:
         assert parameters is not None, "Schedule parameters must be provided"
         schedules = []
@@ -210,8 +213,9 @@ class XeGPUMatMul:
         schedules.append(
             mlp_schedule(
                 payload_func_name=self.payload_function_name,
+                device=device,
                 stop_at_stage=stop_at_stage,
-                params=[parameters],
+                params=parameters,
             )
         )
 
@@ -464,13 +468,18 @@ enabled via CLI arguments.
     transpose_b = args.transpose_b
 
     # Set required parameters
-    params = {
-        "m": m,
-        "n": n,
-        "k": k,
-        "transpose_a": transpose_a,
-        "transpose_b": transpose_b,
-    }
+    params = ScheduleParameters(
+        [
+            {
+                "layer_kind": "matmul",
+                "m": m,
+                "n": n,
+                "k": k,
+                "transpose_a": transpose_a,
+                "transpose_b": transpose_b,
+            }
+        ]
+    )
 
     # Collect parameters from CLI arguments
     cli_params = {}
@@ -494,31 +503,31 @@ enabled via CLI arguments.
         cli_params["prefetch_b_nb"] = args.prefetch_b_nb
 
     # By default the tile size parameters are left undefined
+    layer_params = params[0]
     if args.json:
         # Override parameters with values from JSON file if provided
-        with open(args.json) as f:
-            json_params = json.load(f)
-        params.update(json_params)
+        json_params = ScheduleParameters.from_json(args.json)
+        layer_params.update(json_params[0] if json_params else {})
         # Override with CLI params
-        params.update(cli_params)
+        layer_params.update(cli_params)
     elif cli_params:
         # Get default parameters from selector
         param_selector = XeGPUParameterSelector(device=args.target)
         def_params = param_selector.get_parameters((m, n, k), transpose_a, transpose_b)
-        params.update(def_params)
+        layer_params.update(def_params[0])
         # Override with CLI params
-        params.update(cli_params)
+        layer_params.update(cli_params)
 
     with ir.Context(), ir.Location.unknown():
         lh_dialects.register_and_load()
 
         wload = XeGPUMatMul(
-            M=params["m"],
-            N=params["n"],
-            K=params["k"],
+            M=m,
+            N=n,
+            K=k,
             ab_type=args.ab_type,
-            transpose_a=params["transpose_a"],
-            transpose_b=params["transpose_b"],
+            transpose_a=transpose_a,
+            transpose_b=transpose_b,
             has_bias=args.bias,
             has_relu=args.relu,
             accumulate_c=not args.no_accumulate_c,
@@ -537,16 +546,22 @@ enabled via CLI arguments.
             if args.dump_kernel:
                 pipeline = TransformDriver(
                     wload.schedule_modules(
-                        stop_at_stage=args.dump_kernel, parameters=params
+                        stop_at_stage=args.dump_kernel,
+                        parameters=params,
+                        device=args.target,
                     )
                 )
                 payload = pipeline.apply(wload.payload_module())
                 print(payload)
             if args.dump_schedule:
-                for schedule_module in wload.schedule_modules(parameters=params):
+                for schedule_module in wload.schedule_modules(
+                    parameters=params, device=args.target
+                ):
                     print(schedule_module)
         else:
-            pipeline = TransformDriver(wload.schedule_modules(parameters=params))
+            pipeline = TransformDriver(
+                wload.schedule_modules(parameters=params, device=args.target)
+            )
             payload = pipeline.apply(wload.payload_module())
             runner = Runner(
                 payload,
@@ -590,20 +605,21 @@ enabled via CLI arguments.
 
             ab_type = str(wload.ab_type)
             c_type = str(wload.c_type)
+            p = params[0]
             print(
-                f"sizes={list2str([params['m'], params['n'], params['k']])} "
-                f"ta={int(params['transpose_a'])} "
-                f"tb={int(params['transpose_b'])} "
+                f"sizes={list2str([p['m'], p['n'], p['k']])} "
+                f"ta={int(p['transpose_a'])} "
+                f"tb={int(p['transpose_b'])} "
                 f"dt={ab_type},{c_type} "
-                f"wg={list2str([params['wg_m'], params['wg_n']])} "
-                f"sg={list2str([params['sg_m'], params['sg_n']])} "
-                f"k={params['k_tile']} "
-                f"ld-a={list2str([params['load_a_m'], params['load_a_k']])} "
-                f"ld-b={list2str([params['load_b_k'], params['load_b_n']])} "
-                f"pf-a={list2str([params['prefetch_a_m'], params['prefetch_a_k']])} "
-                f"pf-b={list2str([params['prefetch_b_k'], params['prefetch_b_n']])} "
-                f"pf-a-nb={params['prefetch_a_nb']} "
-                f"pf-b-nb={params['prefetch_b_nb']} "
+                f"wg={list2str([p['wg_m'], p['wg_n']])} "
+                f"sg={list2str([p['sg_m'], p['sg_n']])} "
+                f"k={p['k_tile']} "
+                f"ld-a={list2str([p['load_a_m'], p['load_a_k']])} "
+                f"ld-b={list2str([p['load_b_k'], p['load_b_n']])} "
+                f"pf-a={list2str([p['prefetch_a_m'], p['prefetch_a_k']])} "
+                f"pf-b={list2str([p['prefetch_b_k'], p['prefetch_b_n']])} "
+                f"pf-a-nb={p['prefetch_a_nb']} "
+                f"pf-b-nb={p['prefetch_b_nb']} "
                 f"time(us): {elapsed:.2f} "
                 f"GFLOPS: {gflops:.2f}"
             )

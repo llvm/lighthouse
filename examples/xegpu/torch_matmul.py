@@ -16,6 +16,7 @@ from mlir.dialects.transform import structured
 
 from lighthouse import dialects as lh_dialects
 from lighthouse import schedule as lh_schedule
+from lighthouse.schedule.parameters import ScheduleParams
 from lighthouse.pipeline.driver import TransformDriver
 from lighthouse.utils.mlir import get_mlir_library_path
 from lighthouse.execution.runner import Runner
@@ -48,7 +49,10 @@ def shared_libs() -> list[str]:
 
 
 def schedule_modules(
-    parameters: dict | None = None, benchmark: bool = False, entry_func: str = "main"
+    parameters: ScheduleParams | None = None,
+    device: str | None = None,
+    benchmark: bool = False,
+    entry_func: str = "main",
 ) -> list[ir.Module]:
     assert parameters is not None, "Schedule parameters must be provided"
     schedules = []
@@ -66,7 +70,8 @@ def schedule_modules(
     schedules.append(
         mlp_schedule(
             payload_func_name="main",
-            params=[parameters],
+            device=device,
+            params=parameters,
         )
     )
 
@@ -77,13 +82,17 @@ def schedule_modules(
 
 def lower_to_llvm(
     module: ir.Module,
-    parameters: dict | None = None,
+    parameters: ScheduleParams | None = None,
+    device: str | None = None,
     benchmark: bool = False,
     entry_func: str = "main",
 ) -> ir.Module:
     pipeline = TransformDriver(
         schedule_modules(
-            parameters=parameters, benchmark=benchmark, entry_func=entry_func
+            parameters=parameters,
+            device=device,
+            benchmark=benchmark,
+            entry_func=entry_func,
         )
     )
     payload = pipeline.apply(module)
@@ -207,40 +216,48 @@ enabled via CLI arguments.
     # Problem size
     m, n, k = args.sizes if args.sizes else (4096, 4096, 4096)
     # Set required parameters
-    params = {
-        "m": m,
-        "n": n,
-        "k": k,
-    }
-    if args.target:
-        params["device"] = args.target
+    params = ScheduleParams(
+        [
+            {
+                "layer_kind": "matmul",
+                "m": m,
+                "n": n,
+                "k": k,
+            }
+        ]
+    )
+    layer_params = params[0]
     if args.json:
         # Override parameters with values from JSON file if provided
         with open(args.json) as f:
             json_params = json.load(f)
-        params.update(json_params)
+        layer_params.update(json_params)
 
     # Override parameters with CLI args if provided
     if args.wg_tile:
-        params["wg_m"], params["wg_n"] = args.wg_tile
+        layer_params["wg_m"], layer_params["wg_n"] = args.wg_tile
     if args.sg_tile:
-        params["sg_m"], params["sg_n"] = args.sg_tile
+        layer_params["sg_m"], layer_params["sg_n"] = args.sg_tile
     if args.k_tile:
-        params["k_tile"] = args.k_tile
+        layer_params["k_tile"] = args.k_tile
     if args.load_tile_a:
-        params["load_a_m"], params["load_a_k"] = args.load_tile_a
+        layer_params["load_a_m"], layer_params["load_a_k"] = args.load_tile_a
     if args.load_tile_b:
-        params["load_b_k"], params["load_b_n"] = args.load_tile_b
+        layer_params["load_b_k"], layer_params["load_b_n"] = args.load_tile_b
     if args.prefetch_tile_a:
-        params["prefetch_a_m"], params["prefetch_a_k"] = args.prefetch_tile_a
+        layer_params["prefetch_a_m"], layer_params["prefetch_a_k"] = (
+            args.prefetch_tile_a
+        )
     if args.prefetch_tile_b:
-        params["prefetch_b_k"], params["prefetch_b_n"] = args.prefetch_tile_b
+        layer_params["prefetch_b_k"], layer_params["prefetch_b_n"] = (
+            args.prefetch_tile_b
+        )
     if args.prefetch_a_nb is not None:
-        params["prefetch_a_nb"] = args.prefetch_a_nb
+        layer_params["prefetch_a_nb"] = args.prefetch_a_nb
     if args.prefetch_b_nb is not None:
-        params["prefetch_b_nb"] = args.prefetch_b_nb
+        layer_params["prefetch_b_nb"] = args.prefetch_b_nb
 
-    for param_key, v in params.items():
+    for param_key, v in layer_params.items():
         if v is None:
             raise ValueError(
                 f"Parameter {param_key} is not set. Please provide it via CLI or JSON file."
@@ -258,7 +275,12 @@ enabled via CLI arguments.
         torch.xpu.synchronize()
 
         benchmark = args.nruns > 0
-        fn_compile = partial(lower_to_llvm, parameters=params, benchmark=benchmark)
+        fn_compile = partial(
+            lower_to_llvm,
+            parameters=params,
+            device=args.target,
+            benchmark=benchmark,
+        )
         backend = gpu_backend(
             fn_compile,
             device=xpu_device,
@@ -292,16 +314,17 @@ enabled via CLI arguments.
 
             ab_type = str(a.dtype)
             c_type = str(out.dtype)
+            p = params[0]
             print(
-                f"sizes={list2str([params['m'], params['n'], params['k']])} "
+                f"sizes={list2str([p['m'], p['n'], p['k']])} "
                 f"dt={ab_type},{c_type} "
-                f"wg-tile={list2str([params['wg_m'], params['wg_n']])} "
-                f"sg-tile={list2str([params['sg_m'], params['sg_n']])} "
-                f"k-tile={params['k_tile']} "
-                f"load-a-tile={list2str([params['load_a_m'], params['load_a_k']])} "
-                f"load-b-tile={list2str([params['load_b_k'], params['load_b_n']])} "
-                f"pf-a-tile={list2str([params['prefetch_a_m'], params['prefetch_a_k']])} "
-                f"pf-b-tile={list2str([params['prefetch_b_k'], params['prefetch_b_n']])} "
+                f"wg-tile={list2str([p['wg_m'], p['wg_n']])} "
+                f"sg-tile={list2str([p['sg_m'], p['sg_n']])} "
+                f"k-tile={p['k_tile']} "
+                f"load-a-tile={list2str([p['load_a_m'], p['load_a_k']])} "
+                f"load-b-tile={list2str([p['load_b_k'], p['load_b_n']])} "
+                f"pf-a-tile={list2str([p['prefetch_a_m'], p['prefetch_a_k']])} "
+                f"pf-b-tile={list2str([p['prefetch_b_k'], p['prefetch_b_n']])} "
                 f"time(us): {elapsed:.2f} "
                 f"GFLOPS: {gflops:.2f}"
             )
