@@ -31,10 +31,6 @@ Run using bfloat16 datatype
 Increase verbosity
     python xegpu_kernel_bench.py -l 1 -b 1 -vv
 
-Run a single benchmark in debug mode (no timeout, exceptions raised
-immediately)
-    python xegpu_kernel_bench.py -l 1 -b 1 -vv --debug
-
 Dump the kernel at a specific stage of the pipeline, does not execute the
 benchmark
     python xegpu_kernel_bench.py -l 1 -b 1 --dump-kernel bufferized
@@ -73,7 +69,6 @@ from lighthouse.pipeline.helper import PipelineInterrupt
 from lighthouse.ingress.torch import gpu_backend, TargetDialect
 from lighthouse.ingress.torch.compile import TorchMemoryManager
 from tune_matmul_costmodel import optimize_payload
-from tune_utils import run_with_timeout
 from csv_logger import CSVLogger
 
 
@@ -246,15 +241,12 @@ def copy_module(module: ir.Module) -> ir.Module:
 
 
 def is_caused_by_pipeline_interrupt(exc: BaseException) -> bool:
-    """Return True if PipelineInterrupt appears anywhere in the exception chain."""
     pending = [exc]
     visited = set()
 
     while pending:
         current = pending.pop()
-        if current is None:
-            continue
-        if current in visited:
+        if current is None or current in visited:
             continue
         visited.add(current)
 
@@ -497,7 +489,6 @@ def lower_and_execute_benchmark(
     verify: bool = True,
     stop_at_stage: str | None = None,
     verbose: int = 0,
-    debug: bool = False,
     dump_parameters: bool = True,
 ) -> dict:
     """
@@ -514,7 +505,6 @@ def lower_and_execute_benchmark(
         verify: Whether to verify the result against PyTorch reference.
         stop_at_stage: Stage at which to stop the lowering pipeline.
         verbose: Verbosity level.
-        debug: Run without timeout and raise exceptions immediately.
         dump_parameters: Whether to save applied schedule parameters as JSON.
     Returns:
         A dictionary containing benchmark performance metrics.
@@ -582,8 +572,8 @@ def lower_and_execute_benchmark(
             gm, _ = dynamo.export(torch_model)(*torch_inputs)
             backend(gm, list(torch_inputs))
         except dynamo.exc.BackendCompilerFailed as e:
-            if debug and not is_caused_by_pipeline_interrupt(e):
-                raise e
+            if not is_caused_by_pipeline_interrupt(e):
+                raise
         return {}
 
     with warnings.catch_warnings():
@@ -689,18 +679,10 @@ def lower_and_execute_benchmark(
     return entry
 
 
-def run_experiment(use_timeout: bool = True, timeout: int = 1200, **kwargs) -> dict:
-    def ctx_wrapper(*args, **kwargs) -> dict:
-        with ir.Context() as ctx, ir.Location.unknown():
-            lh_dialects.register_and_load()
-            results = lower_and_execute_benchmark(*args, **kwargs, ctx=ctx)
-        return results
-
-    if use_timeout:
-        exec_func = partial(ctx_wrapper, **kwargs)
-        results = run_with_timeout(experiment_func=exec_func, timeout=timeout)
-    else:
-        results = ctx_wrapper(**kwargs)
+def run_experiment(**kwargs) -> dict:
+    with ir.Context() as ctx, ir.Location.unknown():
+        lh_dialects.register_and_load()
+        results = lower_and_execute_benchmark(**kwargs, ctx=ctx)
     return results
 
 
@@ -789,11 +771,6 @@ def parser_cli_args():
         help="Number of warmup runs (default: 500)",
     )
     parser.add_argument(
-        "--debug",
-        action="store_true",
-        help="Run in single process and raise exceptions immediately.",
-    )
-    parser.add_argument(
         "--dump-parameters",
         action="store_true",
         help="Store used schedule parameters to disk in JSON format.",
@@ -856,8 +833,6 @@ if __name__ == "__main__":
                 nwarmup=args.nwarmup,
                 verbose=args.verbose,
                 stop_at_stage=stop_at_stage,
-                use_timeout=not args.debug,
-                debug=args.debug,
                 dump_parameters=args.dump_parameters,
             )
             if stop_at_stage:
@@ -874,10 +849,9 @@ if __name__ == "__main__":
             entry["executed"] = 1 if err_msg == "" else 0
             entry["error"] = err_msg
         except Exception as e:
-            if args.debug:
-                raise e
             print(f"Benchmark {short_path} failed with error: {e}", flush=True)
             entry["error"] = str(e)
+            raise e
 
         # Store intermediate results
         if csv_logger is not None:
