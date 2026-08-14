@@ -27,14 +27,16 @@ def fused_attention_complexity(Z: int, H: int, n_ctx: int, n_head: int, nbytes: 
     """
     Complexity of fused attention operation.
 
-    For each batch and head:
-    - Q @ K^T: O(n_ctx^2 * n_head) operations
-    - Softmax: O(n_ctx^2) operations
-    - Attention @ V: O(n_ctx^2 * n_head) operations
-    Total: approximately 2*n_ctx^2*n_head FLOPs per batch and head
+    Counts the two matmuls only, at 2 FLOPs per multiply-accumulate, which is the
+    convention used by the flash attention tutorials (and hence what published
+    attention FLOPS numbers can be compared against). For each batch and head:
+    - Q @ K^T:        2 * n_ctx^2 * n_head FLOPs
+    - Attention @ V:  2 * n_ctx^2 * n_head FLOPs
+    The softmax is left out: it is O(n_ctx^2) (~2% of the above at n_head = 64) and
+    is not multiply-accumulate work. Halve the total for a causal mask.
     """
-    # Approximation: 2 * n_ctx^2 * n_head FLOPs per batch and head
-    flop_count = Z * H * 2 * n_ctx * n_ctx * n_head
+    # 2 matmuls, 2 * n_ctx^2 * n_head FLOPs each, per batch and head
+    flop_count = Z * H * 4 * n_ctx * n_ctx * n_head
     # Memory: read Q, K, V and write output
     memory_reads = 3 * Z * H * n_ctx * n_head * nbytes
     memory_writes = Z * H * n_ctx * n_head * nbytes
@@ -252,6 +254,12 @@ def parse_cli():
         help="Tile size for the inner reduction dimension (K/V sequence length)",
     )
     parser.add_argument(
+        "--nb-prefetch",
+        type=int,
+        default=1,
+        help="Number of K/V tiles to prefetch ahead in the inner loop (0 disables).",
+    )
+    parser.add_argument(
         "--nruns",
         type=int,
         default=500,
@@ -313,6 +321,7 @@ if __name__ == "__main__":
         "sg_rows": args.sg_rows,
         "subgroup_size": args.subgroup_size,
         "inner_loop_tile_size": args.inner_loop_tile_size,
+        "nb_prefetch": args.nb_prefetch,
     }
 
     Z = args.batch_size
