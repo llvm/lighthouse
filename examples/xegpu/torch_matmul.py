@@ -16,7 +16,7 @@ from mlir.dialects.transform import structured
 
 from lighthouse import dialects as lh_dialects
 from lighthouse import schedule as lh_schedule
-from lighthouse.schedule.parameters import ScheduleParams
+from lighthouse.schedule.parameters import ScheduleParameters
 from lighthouse.pipeline.driver import TransformDriver
 from lighthouse.utils.mlir import get_mlir_library_path
 from lighthouse.execution.runner import Runner
@@ -49,7 +49,7 @@ def shared_libs() -> list[str]:
 
 
 def schedule_modules(
-    parameters: ScheduleParams | None = None,
+    parameters: ScheduleParameters | None = None,
     device: str | None = None,
     benchmark: bool = False,
     entry_func: str = "main",
@@ -82,7 +82,7 @@ def schedule_modules(
 
 def lower_to_llvm(
     module: ir.Module,
-    parameters: ScheduleParams | None = None,
+    parameters: ScheduleParameters | None = None,
     device: str | None = None,
     benchmark: bool = False,
     entry_func: str = "main",
@@ -216,7 +216,7 @@ enabled via CLI arguments.
     # Problem size
     m, n, k = args.sizes if args.sizes else (4096, 4096, 4096)
     # Set required parameters
-    params = ScheduleParams(
+    params = ScheduleParameters(
         [
             {
                 "layer_kind": "matmul",
