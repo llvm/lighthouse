@@ -335,6 +335,7 @@ def infer_params_and_lower(
     payload_func_name: str = "main",
     stop_at_stage: str | None = None,
     params_cache_json: str | None = "kb_params.json",
+    dump_parameters: bool = True,
     enable_tuning: bool = True,
     verbose: int = 0,
 ) -> ir.Module:
@@ -356,6 +357,7 @@ def infer_params_and_lower(
         payload_func_name: Name of the payload function.
         stop_at_stage: Stage at which to stop the lowering pipeline.
         params_cache_json: Path to the JSON file for caching parameters.
+        dump_parameters: Whether to save the applied parameters as JSON.
         enable_tuning: Whether to enable runtime tuning.
         verbose: Verbosity level.
     Returns:
@@ -377,7 +379,6 @@ def infer_params_and_lower(
             print(f"Loading cached parameters from {params_cache_json}")
             schedule_params = ScheduleParameters.from_json(filename=params_cache_json)
         else:
-            print(f"Tuning parameters and saving to {params_cache_json}")
             # construct a buffer for kernel result
             res_type = kernel_metadata["inputs"][-1]  # result is last input
             shape = res_type.shape
@@ -395,11 +396,14 @@ def infer_params_and_lower(
                 func_metadata["write_bytes"],
             )
             schedule_params = ScheduleParameters([configs[0][1]])
-            schedule_params.to_json(filename=params_cache_json, overwrite=True)
+            if dump_parameters:
+                print(f"Saving tuned parameters to {params_cache_json}")
+                schedule_params.to_json(filename=params_cache_json, overwrite=True)
     else:
         print(f"Using default parameters for {schedule_kind} schedule")
-        print(f"Saving applied parameters to {params_cache_json}")
-        schedule_params.to_json(filename=params_cache_json, overwrite=True)
+        if dump_parameters:
+            print(f"Saving applied parameters to {params_cache_json}")
+            schedule_params.to_json(filename=params_cache_json, overwrite=True)
 
     if verbose > 2:
         print("Payload module before lowering:")
@@ -494,6 +498,7 @@ def lower_and_execute_benchmark(
     stop_at_stage: str | None = None,
     verbose: int = 0,
     debug: bool = False,
+    dump_parameters: bool = True,
 ) -> dict:
     """
     High-level function to lower and execute a KernelBench benchmark.
@@ -510,6 +515,7 @@ def lower_and_execute_benchmark(
         stop_at_stage: Stage at which to stop the lowering pipeline.
         verbose: Verbosity level.
         debug: Run without timeout and raise exceptions immediately.
+        dump_parameters: Whether to save applied schedule parameters as JSON.
     Returns:
         A dictionary containing benchmark performance metrics.
     """
@@ -556,6 +562,7 @@ def lower_and_execute_benchmark(
         payload_func_name="main",
         stop_at_stage=stop_at_stage,
         params_cache_json=f"kb_params_level{level}-{id}.json",
+        dump_parameters=dump_parameters,
         enable_tuning=execute,
         verbose=2,
     )
@@ -773,7 +780,7 @@ def parser_cli_args():
         "--nruns",
         type=int,
         default=500,
-        help="Number of runs for benchmarking (default: 1000)",
+        help="Number of runs for benchmarking (default: 500)",
     )
     parser.add_argument(
         "--nwarmup",
@@ -785,6 +792,16 @@ def parser_cli_args():
         "--debug",
         action="store_true",
         help="Run in single process and raise exceptions immediately.",
+    )
+    parser.add_argument(
+        "--dump-parameters",
+        action="store_true",
+        help="Store used schedule parameters to disk in JSON format.",
+    )
+    parser.add_argument(
+        "--dump-csv",
+        action="store_true",
+        help="Dump the benchmarking results to a CSV file.",
     )
     parser.add_argument(
         "--verbose",
@@ -805,7 +822,7 @@ if __name__ == "__main__":
     kb_pattern = f"level{kb_level}/*.py"
     bench_list = get_benchmarks(kb_pattern, include=benchmarks)
 
-    if not stop_at_stage:
+    if args.dump_csv and not stop_at_stage:
         csv_file = "out_kernelbench.csv"
         csv_logger = CSVLogger(csv_file, echo_stdout=False, verbose=True)
     else:
@@ -841,6 +858,7 @@ if __name__ == "__main__":
                 stop_at_stage=stop_at_stage,
                 use_timeout=not args.debug,
                 debug=args.debug,
+                dump_parameters=args.dump_parameters,
             )
             if stop_at_stage:
                 continue
