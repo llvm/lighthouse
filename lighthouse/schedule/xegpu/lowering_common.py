@@ -6,6 +6,7 @@ from mlir.dialects.transform import loop
 from mlir.dialects.transform import structured
 from mlir.dialects.transform import xegpu
 from mlir.dialects.transform import memref
+from mlir.dialects.transform import vector
 import lighthouse.transform as lh_transform
 
 from lighthouse.dialects.transform import transform_ext
@@ -79,6 +80,11 @@ def vectorize(
     # Hoist loop-invariant vector read/store ops if present.
     k_loop = match(func, ops={"scf.for"})
     lh_transform.loop_hoisting(k_loop)
+
+    # Try to remove any unit dimensions that may have been introduced due to tiling (e.g. batch dim of 1)
+    with ir.InsertionPoint(transform.apply_patterns(func).patterns):
+        vector.apply_patterns_vector_cast_away_vector_leading_one_dim()
+        vector.apply_patterns_vector_drop_unit_dims_with_shape_cast()
     lh_transform.cleanup(func)
 
     return func
@@ -198,6 +204,7 @@ def convert_vector_to_xegpu(mod: transform.AnyOpType) -> transform.AnyOpType:
         gpu_func = match(gpu_mod, ops={"gpu.func"})
         gpu_func = apply_registered_pass(gpu_func, "convert-vector-to-xegpu")
         transform.apply_cse(gpu_func)
+        gpu_func = apply_registered_pass(gpu_func, "loop-invariant-code-motion")
         transform.yield_()
 
     return mod
