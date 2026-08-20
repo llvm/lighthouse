@@ -21,6 +21,7 @@ from lighthouse.ingress.mlir_gen.gpu_attention_payload import (
     generate_gpu_attention_payload,
 )
 from lighthouse.schedule.xegpu import fused_attention_schedule, xegpu_to_binary
+from lighthouse.schedule.parameters import ScheduleParameters
 
 
 def fused_attention_complexity(Z: int, H: int, n_ctx: int, n_head: int, nbytes: int):
@@ -176,7 +177,9 @@ class XeGPUFusedAttention:
         return mod
 
     def schedule_modules(
-        self, stop_at_stage: str | None = None, parameters: dict | None = None
+        self,
+        stop_at_stage: str | None = None,
+        parameters: ScheduleParameters | None = None,
     ) -> list[ir.Module]:
         """Generate transform schedule for fused attention."""
         schedules = []
@@ -185,7 +188,7 @@ class XeGPUFusedAttention:
         schedules.append(
             fused_attention_schedule(
                 stop_at_stage=stop_at_stage,
-                parameters=parameters,
+                params=parameters,
             )
         )
 
@@ -312,7 +315,8 @@ def parse_cli():
 if __name__ == "__main__":
     args = parse_cli()
 
-    params = {
+    layer_params = {
+        "layer_kind": "attention",
         "batch_size": args.batch_size,
         "num_heads": args.num_heads,
         "n_ctx": args.n_ctx,
@@ -323,6 +327,7 @@ if __name__ == "__main__":
         "inner_loop_tile_size": args.inner_loop_tile_size,
         "nb_prefetch": args.nb_prefetch,
     }
+    params = ScheduleParameters([layer_params])
 
     Z = args.batch_size
     H = args.num_heads
