@@ -64,6 +64,7 @@ from lighthouse.schedule.xegpu import (
     elemwise_schedule,
     xegpu_to_binary,
     reduction_schedule,
+    fused_attention_schedule,
 )
 from lighthouse.pipeline.helper import PipelineInterrupt
 from lighthouse.ingress.torch import gpu_backend, TargetDialect
@@ -115,6 +116,9 @@ def infer_parameters(
     # Keep layer order in metadata and derive kind-specific views when needed.
     layer_metadata = func_metadata["layers"]
     matmuls = [layer for layer in layer_metadata if layer["kind"] == "matmul"]
+    batch_matmuls = [
+        layer for layer in layer_metadata if layer["kind"] == "batch_matmul"
+    ]
     elemwise = [layer for layer in layer_metadata if layer["kind"] == "elemwise"]
     reduction = [layer for layer in layer_metadata if layer["kind"] == "reduction"]
     elemtype_bytes = {
@@ -122,7 +126,11 @@ def infer_parameters(
         "bf16": 2,
         "f32": 4,
     }
-    if len(matmuls) > 0:
+    for i, layer in enumerate(layer_metadata):
+        print(f"Layer {i}")
+        for k, v in layer.items():
+            print(f"  {k}: {v}")
+    if len(matmuls) > 0 and len(batch_matmuls) == 0:
         schedule_params = XeGPUParameterSelector().get_parameters_for_layers(matmuls)
         # check that all matmul dims are powers of 2
         for mmul in matmuls:
@@ -148,7 +156,7 @@ def infer_parameters(
             write_bytes += int(np.prod(c_shape)) * ab_bytes
 
         schedule_kind = "mlp"
-    elif len(elemwise) > 0 and len(reduction) == 0:
+    elif len(elemwise) > 0 and len(reduction) == 0 and len(batch_matmuls) == 0:
         # TODO estimate flops in a reliable way, now assuming 1 flop per element
         shape = elemwise[0]["shape"]
         res_elemtype = elemwise[0]["elemtype"]
@@ -170,7 +178,7 @@ def infer_parameters(
         # NOTE assume all elemwise layers will be fused to a single layer
         schedule_params = ScheduleParameters([layer_params])
         schedule_kind = "elemwise"
-    elif len(elemwise) > 0 and len(reduction) > 0:
+    elif len(elemwise) > 0 and len(reduction) > 0 and len(batch_matmuls) == 0:
         # elemwise + reduction kernel, e.g. softmax or layer norm
         shape = elemwise[-1]["shape"]
         res_elemtype = elemwise[-1]["elemtype"]
@@ -200,6 +208,37 @@ def infer_parameters(
             )
         schedule_params = ScheduleParameters([layer_params])
         schedule_kind = "reduction"
+    elif len(elemwise) > 0 and len(reduction) > 0 and len(batch_matmuls) > 0:
+        # elemwise + reduction + batch_matmul kernel, e.g. attention layer
+        shape = func_metadata["inputs"][0].shape
+        elemtype = str(func_metadata["inputs"][0].element_type)
+        nbytes = elemtype_bytes[elemtype]
+        Z, H, n_ctx, n_head = shape
+        # 2 matmuls, 2 * n_ctx^2 * n_head FLOPs each, per batch and head
+        total_flops = int(Z * H * 4 * n_ctx * n_ctx * n_head)
+        # Memory: read Q, K, V and write output
+        read_bytes = int(3 * Z * H * n_ctx * n_head * nbytes)
+        write_bytes = int(Z * H * n_ctx * n_head * nbytes)
+
+        assert n_head == 64, f"n_head must be 64, got {n_head}"
+        layer_params = {
+            "layer_kind": "attention",
+            "batch_size": Z,
+            "n_head": H,
+            "n_ctx": n_ctx,
+            "d_head": n_head,
+            "wg_tile": [1, 1, 128],
+            "sg_rows": 16,
+            "subgroup_size": 16,
+            "reduction_tile": 64,
+            "q_load_tile": [16, 32],
+            "v_load_tile": [32, 32],
+            "prefetch_tile": [16, 32],
+            "nb_prefetch": 1,
+        }
+
+        schedule_params = ScheduleParameters([layer_params])
+        schedule_kind = "attention"
     else:
         print("Layers:")
         for layer in layer_metadata:
@@ -462,6 +501,11 @@ def lower_to_llvm(
             payload_func_name=payload_func_name,
             stop_at_stage=stop_at_stage,
         )
+    elif schedule_kind == "attention":
+        schedule = fused_attention_schedule(
+            params=schedule_params,
+            stop_at_stage=stop_at_stage,
+        )
     else:
         raise ValueError(f"Unsupported schedule kind: {schedule_kind}")
 
@@ -486,6 +530,7 @@ def lower_and_execute_benchmark(
     ctx: ir.Context = None,
     nwarmup: int = 500,
     nruns: int = 500,
+    compute_reference_on_cpu: bool = False,
     verify: bool = True,
     stop_at_stage: str | None = None,
     verbose: int = 0,
@@ -534,11 +579,19 @@ def lower_and_execute_benchmark(
             param.data /= param.data.norm(dim=0, keepdim=True) + 1e-6
 
     if execute:
-        # execute torch model on the device
-        torch_inputs = [inp.to("xpu") for inp in torch_inputs]
-        with torch.no_grad():
+        if compute_reference_on_cpu:
+            # execute torch model on CPU to get reference result
+            with torch.no_grad():
+                result_ref = torch_model(*torch_inputs).to("cpu")
+            # move inputs and the model to the device for MLIR execution
+            torch_inputs = [inp.to("xpu") for inp in torch_inputs]
             torch_model = torch_model.to("xpu")
-            result_ref = torch_model(*torch_inputs).to("cpu")
+        else:
+            # execute torch model on the device
+            torch_inputs = [inp.to("xpu") for inp in torch_inputs]
+            with torch.no_grad():
+                torch_model = torch_model.to("xpu")
+                result_ref = torch_model(*torch_inputs).to("cpu")
 
     # compile and execute the model with the MLIR backend
     torch_all_inputs = [*torch_model.parameters(), *torch_inputs]
@@ -588,12 +641,19 @@ def lower_and_execute_benchmark(
 
     verified = 0
     if verify:
+        is_attention = any(
+            layer.get("kind") == "batch_matmul"
+            for layer in kernel_metadata.get("layers", [])
+        )
         atol = abs(result_ref).max() * 1e-3
         rtol = 1e-3
         if result_ref.dtype == torch.bfloat16:
-            if is_mlp:
-                atol = 7e-3
             rtol = 2e-2
+            if is_attention:
+                # Attention fuses 2 matmuls and a softmax, needs a looser atol.
+                atol = 2e-2
+            elif is_mlp:
+                atol = 7e-3
         success = torch.allclose(result, result_ref, rtol=rtol, atol=atol)
         verified = 1 if success else 0
         print(f"Verification {'PASSED' if success else 'FAILED'}")
@@ -771,6 +831,11 @@ def parser_cli_args():
         help="Number of warmup runs (default: 500)",
     )
     parser.add_argument(
+        "--compute-reference-on-cpu",
+        action="store_true",
+        help="Compute the reference result on CPU instead of the device.",
+    )
+    parser.add_argument(
         "--dump-parameters",
         action="store_true",
         help="Store used schedule parameters to disk in JSON format.",
@@ -831,6 +896,7 @@ if __name__ == "__main__":
                 datatype=args.datatype,
                 nruns=args.nruns,
                 nwarmup=args.nwarmup,
+                compute_reference_on_cpu=args.compute_reference_on_cpu,
                 verbose=args.verbose,
                 stop_at_stage=stop_at_stage,
                 dump_parameters=args.dump_parameters,
