@@ -187,10 +187,18 @@ def inspect_payload(payload_module: ir.Module) -> dict:
                                 _, _, k = a_shape
                             except Exception:
                                 _, k, _ = b_shape
+                            a_etype, b_etype = [
+                                str(d.type.element_type) for d in inputs
+                            ]
+                            assert a_etype == b_etype, "Input element types must match"
+                            ab_etype = a_etype
+                            acc_etype = str(outputs[0].type.element_type)
                             layers.append(
                                 {
                                     "kind": "batch_matmul",
                                     "shape": (b, m, n, k),
+                                    "ab_elemtype": ab_etype,
+                                    "acc_elemtype": acc_etype,
                                     "transpose_a": input_is_transpose[0],
                                     "transpose_b": input_is_transpose[1],
                                 }
