@@ -71,10 +71,12 @@ def make_filter_handles_op(
 
             class MemoryEffectsOpInterfaceModel(ir.MemoryEffectsOpInterface):
                 @staticmethod
-                def get_effects(op: ir.Operation, effects):
-                    transform.only_reads_handle(op.op_operands, effects)
-                    transform.produces_handle(op.results, effects)
-                    transform.only_reads_payload(effects)
+                def get_effects(op: ir.Operation):
+                    return (
+                        transform.only_reads_handle(op.op_operands)
+                        + transform.produces_handle(op.results)
+                        + transform.only_reads_payload()
+                    )
 
     else:
 
@@ -116,10 +118,12 @@ def make_filter_handles_op(
 
             class MemoryEffectsOpInterfaceModel(ir.MemoryEffectsOpInterface):
                 @staticmethod
-                def get_effects(op: ir.Operation, effects):
-                    transform.only_reads_handle(op.op_operands, effects)
-                    transform.produces_handle(op.results, effects)
-                    transform.only_reads_payload(effects)
+                def get_effects(op: ir.Operation):
+                    return (
+                        transform.only_reads_handle(op.op_operands)
+                        + transform.produces_handle(op.results)
+                        + transform.only_reads_payload()
+                    )
 
     _FilterHandlesOp.__name__ = op_name
     _FilterHandlesOp.__qualname__ = op_name

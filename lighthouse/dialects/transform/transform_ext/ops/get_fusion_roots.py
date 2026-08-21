@@ -149,10 +149,12 @@ class GetFusionRootsOp(TransformExtensionDialect.Operation, name="get_fusion_roo
 
     class MemoryEffectsOpInterfaceModel(ir.MemoryEffectsOpInterface):
         @staticmethod
-        def get_effects(op: ir.Operation, effects):
-            transform.only_reads_handle(op.op_operands, effects)
-            transform.produces_handle(op.results, effects)
-            transform.only_reads_payload(effects)
+        def get_effects(op: ir.Operation):
+            return (
+                transform.only_reads_handle(op.op_operands)
+                + transform.produces_handle(op.results)
+                + transform.only_reads_payload()
+            )
 
 
 def get_fusion_roots(
