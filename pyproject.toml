@@ -7,6 +7,11 @@ dependencies = [
     "pyyaml>=6.0",
 ]
 
+[project.scripts]
+lh-opt = "lighthouse.lh_opt:main"
+lh-run = "lighthouse.lh_run:main"
+lh-tune = "lighthouse.lh_tune:main"
+
 [dependency-groups]
 dev = [
   "lit==18.1.8",  # Tool to configure, discover and run tests
