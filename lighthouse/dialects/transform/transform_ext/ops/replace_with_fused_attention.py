@@ -470,15 +470,17 @@ class ReplaceWithFusedAttentionOp(
 
     class MemoryEffectsOpInterfaceModel(ir.MemoryEffectsOpInterface):
         @staticmethod
-        def get_effects(op: ir.Operation, effects):
-            # Read Q, K, scale, V slices
-            transform.only_reads_handle(op.op_operands[:4], effects)
-            # Consume and replace output
-            transform.consumes_handle(op.op_operands[4:5], effects)
-            # Produce new output handle
-            transform.produces_handle(op.results, effects)
-            # Modify the payload
-            transform.modifies_payload(effects)
+        def get_effects(op: ir.Operation):
+            return (
+                # Read Q, K, scale, V slices
+                transform.only_reads_handle(op.op_operands[:4])
+                # Consume and replace output
+                + transform.consumes_handle(op.op_operands[4:5])
+                # Produce new output handle
+                + transform.produces_handle(op.results)
+                # Modify the payload
+                + transform.modifies_payload()
+            )
 
 
 def replace_with_fused_attention(

@@ -135,10 +135,12 @@ class PropagateTileSizesOp(
 
     class MemoryEffectsOpInterfaceModel(ir.MemoryEffectsOpInterface):
         @staticmethod
-        def get_effects(op: ir.Operation, effects):
-            transform.only_reads_handle(op.op_operands, effects)
-            transform.produces_handle(op.results, effects)
-            transform.modifies_payload(effects)
+        def get_effects(op: ir.Operation):
+            return (
+                transform.only_reads_handle(op.op_operands)
+                + transform.produces_handle(op.results)
+                + transform.modifies_payload()
+            )
 
 
 def propagate_tile_sizes(
