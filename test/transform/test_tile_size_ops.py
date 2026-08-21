@@ -9,6 +9,7 @@ from lighthouse import transform as lh_transform
 from lighthouse.dialects.transform.transform_ext import assign_tile_sizes
 from lighthouse.dialects.transform.transform_ext import get_leading_unit_tile_sizes
 from lighthouse.dialects.transform.transform_ext import get_tile_sizes
+
 from lighthouse.schedule.builders import schedule_boilerplate
 
 
@@ -99,10 +100,16 @@ module {
 """
 
 
-def build_assign_schedule(op_name: str):
+def build_assign_schedule(
+    op_name: str,
+    strategy: str = "cache",
+):
     with schedule_boilerplate() as (sched, named_seq):
         ops = lh_transform.match_op(named_seq.bodyTarget, op_name)
-        assign_tile_sizes(ops)
+        assign_tile_sizes(
+            ops,
+            strategy=strategy,
+        )
         transform.yield_()
     return sched
 

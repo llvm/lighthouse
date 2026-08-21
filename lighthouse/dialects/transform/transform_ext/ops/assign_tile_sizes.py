@@ -3,6 +3,7 @@ from mlir.dialects import ext, transform
 from mlir.dialects.transform import DiagnosedSilenceableFailure
 
 from lighthouse.dialects.transform.transform_ext import TransformExtensionDialect
+from lighthouse.execution.target import TargetInfo
 from lighthouse.dialects.transform.transform_ext.utils import tile_size_analysis as tsa
 
 
@@ -22,12 +23,16 @@ class AssignTileSizesOp(TransformExtensionDialect.Operation, name="assign_tile_s
         target: Handle to anchor op(s).
         tile_size: Optional size for tiled dimensions (default: 32).
             Acts as a user hint, e.g. tile by 64 instead of the default 32.
+        strategy: Tiling strategy.
     Return:
         Pass-through handle to the (now annotated) target ops.
     """
 
     target: ext.Operand[transform.AnyOpType]
     tile_size: ext.Operand[transform.AnyParamType] | None = None
+    strategy: ir.StringAttr = ext.attribute(
+        default_factory=lambda: ir.StringAttr.get("cache")
+    )
     annotated: ext.Result[transform.AnyOpType[()]] = ext.infer_result()
 
     @classmethod
@@ -51,6 +56,9 @@ class AssignTileSizesOp(TransformExtensionDialect.Operation, name="assign_tile_s
                 if len(tile_attr) == 1 and isinstance(tile_attr[0], ir.IntegerAttr):
                     tile_size = tile_attr[0].value
 
+            strategy = op.strategy.value
+            target = TargetInfo.host()
+
             annotated = []
             for target_op in target_ops:
                 # Respect existing annotations so earlier (e.g. GEMM-derived)
@@ -58,7 +66,12 @@ class AssignTileSizesOp(TransformExtensionDialect.Operation, name="assign_tile_s
                 if tsa.get_tile_sizes_attr(target_op) is not None:
                     annotated.append(target_op)
                     continue
-                sizes = tsa.compute_tile_sizes(target_op, tile_size=tile_size)
+                sizes = tsa.compute_tile_sizes(
+                    target_op,
+                    tile_size=tile_size,
+                    strategy=strategy,
+                    target=target,
+                )
                 if sizes is None:
                     continue
                 tsa.set_tile_sizes_attr(target_op, sizes)
@@ -84,6 +97,7 @@ class AssignTileSizesOp(TransformExtensionDialect.Operation, name="assign_tile_s
 def assign_tile_sizes(
     target: ir.Value[transform.AnyOpType],
     tile_size: int | ir.Value | None = None,
+    strategy: str = "cache",
 ) -> ir.Value:
     """
     snake_case wrapper to create an AssignTileSizesOp.
@@ -91,6 +105,7 @@ def assign_tile_sizes(
     Args:
         target: Handle to anchor op(s).
         tile_size: Optional size for tiled dimensions (default: 32).
+        strategy: Tiling strategy.
     Returns:
         Pass-through handle to the (now annotated) target ops.
     """
@@ -101,4 +116,5 @@ def assign_tile_sizes(
     return AssignTileSizesOp(
         target=target,
         tile_size=tile_size,
+        strategy=ir.StringAttr.get(strategy),
     ).annotated
