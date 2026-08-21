@@ -25,6 +25,7 @@ from .ops.fold_singleton_extract_slice import fold_singleton_extract_slice
 from .ops.clear_tile_and_fuse_annotations import clear_tile_and_fuse_annotations
 from .ops.get_fusion_roots import get_fusion_roots
 from .ops.propagate_tile_sizes import propagate_tile_sizes
+from .ops.sfc_remap_forall import sfc_remap_forall
 
 __all__ = [
     "TransformExtensionDialect",
@@ -51,6 +52,7 @@ __all__ = [
     "replace",
     "replace_with_fused_attention",
     "reverse_handles",
+    "sfc_remap_forall",
     "trace_producers",
     "update_address_space",
     "wrap_in_benching_func",
