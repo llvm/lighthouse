@@ -5,7 +5,7 @@ from mlir.dialects import transform
 from mlir.dialects.transform import structured, xegpu
 import lighthouse.transform as lh_transform
 from .lowering_common import (
-    get_named_func,
+    get_payload_func,
     vectorize,
     bufferize,
     convert_to_gpu_launch,
@@ -220,9 +220,9 @@ def bundle_xegpu_reduction_schedule(
     if stop_at_stage == "bufferized":
         raise PipelineInterrupt()
 
-    convert_to_gpu_launch(mod, payload_func_name)
+    convert_to_gpu_launch(mod, payload_func_name=payload_func_name)
 
-    func = get_named_func(mod, payload_func_name)
+    func = get_payload_func(mod, func_name=payload_func_name)
     # set the number of threads for the gpu.launch operation
     launch_op = match_and_split(func, ops={"gpu.launch"})
     num_subgroups = layer_params["wg_rows"] // layer_params["sg_rows"]

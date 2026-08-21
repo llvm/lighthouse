@@ -19,7 +19,7 @@ from .xegpu_parameter_selector import XeGPUParameterSelector
 from .lowering_common import (
     vectorize_bufferize_and_outline_gpu_func,
     convert_vector_to_xegpu,
-    get_named_func,
+    get_payload_func,
 )
 from .matmul_constraints import (
     DPAS,
@@ -56,7 +56,7 @@ def mlp_schedule(
     with schedule_boilerplate() as (schedule, named_seq):
         # match the payload module
         anytype = transform.AnyOpType.get()
-        func = get_named_func(named_seq.bodyTarget, payload_func_name)
+        func = get_payload_func(named_seq.bodyTarget, func_name=payload_func_name)
         payload_mod = transform.get_parent_op(
             anytype,
             func,
@@ -132,7 +132,7 @@ def bundle_xegpu_mlp_schedule(
     anytype = transform.AnyOpType.get()
 
     # fuse all elementwise ops first
-    func = get_named_func(mod, payload_func_name)
+    func = get_payload_func(mod, func_name=payload_func_name)
     func = apply_registered_pass(func, "linalg-fuse-elementwise-ops")
 
     # tile each layer separately

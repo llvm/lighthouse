@@ -17,6 +17,13 @@ from lighthouse.pipeline.helper import (
     PipelineInterrupt,
     apply_registered_pass,
 )
+from .lowering_common import (
+    get_payload_func,
+    vectorize,
+    bufferize,
+    convert_to_gpu_launch,
+    convert_vector_to_xegpu,
+)
 from lighthouse.schedule import schedule_boilerplate
 from lighthouse.dialects.transform.transform_ext import (
     replace_with_fused_attention,
@@ -277,20 +284,10 @@ def bundle_xegpu_fused_attention_schedule(
     if stop_at_stage == "inner-tiled":
         raise PipelineInterrupt()
 
-    # Convert forall to parallel
-    wg_loops = match_and_split(mod, ops={"scf.forall"})
-    for wg_loop in wg_loops:
-        wg_loop = loop.loop_forall_to_parallel([anytype], wg_loop)
-    func = transform.get_parent_op(anytype, wg_loop)
+    convert_to_gpu_launch(mod, payload_func_name=payload_func_name)
 
-    # Convert scf.parallel to gpu.launch
-    func = apply_registered_pass(func, "gpu-map-parallel-loops")
-    func = apply_registered_pass(func, "convert-parallel-loops-to-gpu")
-    func = apply_registered_pass(func, "lower-affine")
-    transform.apply_cse(func)
-    canonicalize(func)
-
-    # Set the number of threads for the gpu.launch operation
+    func = get_payload_func(mod, func_name=payload_func_name)
+    # set the number of threads for the gpu.launch operation
     launch_op = match_and_split(func, ops={"gpu.launch"})
     wg_rows = parameters["wg_rows"]
     sg_rows = parameters["sg_rows"]
