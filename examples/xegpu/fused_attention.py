@@ -24,23 +24,25 @@ from lighthouse.schedule.xegpu import fused_attention_schedule, xegpu_to_binary
 from lighthouse.schedule.parameters import ScheduleParameters
 
 
-def fused_attention_complexity(Z: int, H: int, n_ctx: int, n_head: int, nbytes: int):
+def fused_attention_complexity(
+    batch_size: int, n_head: int, n_ctx: int, d_head: int, nbytes: int
+):
     """
     Complexity of fused attention operation.
 
     Counts the two matmuls only, at 2 FLOPs per multiply-accumulate, which is the
     convention used by the flash attention tutorials (and hence what published
     attention FLOPS numbers can be compared against). For each batch and head:
-    - Q @ K^T:        2 * n_ctx^2 * n_head FLOPs
-    - Attention @ V:  2 * n_ctx^2 * n_head FLOPs
-    The softmax is left out: it is O(n_ctx^2) (~2% of the above at n_head = 64) and
+    - Q @ K^T:        2 * n_ctx^2 * d_head FLOPs
+    - Attention @ V:  2 * n_ctx^2 * d_head FLOPs
+    The softmax is left out: it is O(n_ctx^2) (~2% of the above at d_head = 64) and
     is not multiply-accumulate work. Halve the total for a causal mask.
     """
-    # 2 matmuls, 2 * n_ctx^2 * n_head FLOPs each, per batch and head
-    flop_count = Z * H * 4 * n_ctx * n_ctx * n_head
+    # 2 matmuls, 2 * n_ctx^2 * d_head FLOPs each, per batch and head
+    flop_count = batch_size * n_head * 4 * n_ctx * n_ctx * d_head
     # Memory: read Q, K, V and write output
-    memory_reads = 3 * Z * H * n_ctx * n_head * nbytes
-    memory_writes = Z * H * n_ctx * n_head * nbytes
+    memory_reads = 3 * batch_size * n_head * n_ctx * d_head * nbytes
+    memory_writes = batch_size * n_head * n_ctx * d_head * nbytes
     return flop_count, memory_reads, memory_writes
 
 
@@ -55,7 +57,7 @@ def check_correctness(
     Check correctness of fused attention output.
 
     Reference implementation:
-    - scores = Q @ K^T / sqrt(n_head)
+    - scores = Q @ K^T / sqrt(d_head)
     - attention_weights = softmax(scores, dim=-1)
     - output = attention_weights @ V
     """
@@ -64,15 +66,15 @@ def check_correctness(
     K_f32 = K.astype(np.float32)
     V_f32 = V.astype(np.float32)
 
-    Z, H, n_ctx, n_head = Q.shape
-    scale = 1.0 / np.sqrt(n_head)
+    batch_size, n_head, n_ctx, d_head = Q.shape
+    scale = 1.0 / np.sqrt(d_head)
 
     output_ref = np.zeros_like(Q_f32)
 
     # Compute reference for each batch and head
-    for z in range(Z):
-        for h in range(H):
-            # scores = Q @ K^T / sqrt(n_head)
+    for z in range(batch_size):
+        for h in range(n_head):
+            # scores = Q @ K^T / sqrt(d_head)
             scores = Q_f32[z, h] @ K_f32[z, h].T * scale
 
             # softmax along last dimension
@@ -115,28 +117,29 @@ class XeGPUFusedAttention:
     fused attention algorithm.
 
     Computes fused attention:
-    output = softmax(Q @ K^T / sqrt(n_head)) @ V
+    output = softmax(Q @ K^T / sqrt(d_head)) @ V
 
-    All Q, K, V matrices have shape (Z, H, n_ctx, n_head) where:
-    - Z: batch size
-    - H: number of heads
-    - n_ctx: context length
-    - n_head: head dimension
+    All Q, K, V matrices have shape (batch_size, n_head, n_ctx, d_head) where:
+
+        - batch_size: batch size
+        - n_head: number of heads
+        - n_ctx: context length
+        - d_head: head dimension
     """
 
     def __init__(
         self,
-        Z: int,
-        H: int,
-        n_ctx: int,
+        batch_size: int,
         n_head: int,
+        n_ctx: int,
+        d_head: int,
         dtype: str = "f16",
     ):
-        self.Z = Z
-        self.H = H
-        self.n_ctx = n_ctx
+        self.batch_size = batch_size
         self.n_head = n_head
-        self.shape = (Z, H, n_ctx, n_head)
+        self.n_ctx = n_ctx
+        self.d_head = d_head
+        self.shape = (batch_size, n_head, n_ctx, d_head)
         assert dtype == "f16", "Only f16 type is supported for fused attention"
         self.elem_type = get_mlir_elem_type(dtype)
         self.dtype = mlir_to_numpy_dtype(self.elem_type)
@@ -157,17 +160,17 @@ class XeGPUFusedAttention:
     def get_complexity(self) -> tuple[int, int, int]:
         nbytes = np.dtype(self.dtype).itemsize
         return fused_attention_complexity(
-            self.Z, self.H, self.n_ctx, self.n_head, nbytes
+            self.batch_size, self.n_head, self.n_ctx, self.d_head, nbytes
         )
 
     def payload_module(self) -> ir.Module:
         """Generate MLIR module for fused attention payload."""
         mod = generate_gpu_attention_payload(
             func_name=self.payload_function_name,
-            Z=self.Z,
-            H=self.H,
-            n_ctx=self.n_ctx,
+            batch_size=self.batch_size,
             n_head=self.n_head,
+            n_ctx=self.n_ctx,
+            d_head=self.d_head,
             dtype=self.elem_type,
         )
         ranks_and_types = [(4, self.elem_type)]
@@ -215,7 +218,7 @@ def parse_cli():
         help="Batch size (Z)",
     )
     parser.add_argument(
-        "--num-heads",
+        "--n-head",
         type=int,
         default=8,
         help="Number of attention heads (H)",
@@ -227,7 +230,7 @@ def parse_cli():
         help="Context length (sequence length)",
     )
     parser.add_argument(
-        "--n-head",
+        "--d-head",
         type=int,
         default=64,
         help="Head dimension",
@@ -251,10 +254,31 @@ def parse_cli():
         help="Subgroup size",
     )
     parser.add_argument(
-        "--inner-loop-tile-size",
+        "--reduction-tile",
         type=int,
         default=64,
         help="Tile size for the inner reduction dimension (K/V sequence length)",
+    )
+    parser.add_argument(
+        "--q-load-tile",
+        type=int,
+        nargs=2,
+        default=[16, 32],
+        help="Q load tile size.",
+    )
+    parser.add_argument(
+        "--v-load-tile",
+        type=int,
+        nargs=2,
+        default=[32, 32],
+        help="V load tile size.",
+    )
+    parser.add_argument(
+        "--prefetch-tile",
+        type=int,
+        nargs=2,
+        default=[16, 32],
+        help="Prefetch tile size for prefetching K and V tiles.",
     )
     parser.add_argument(
         "--nb-prefetch",
@@ -284,10 +308,10 @@ def parse_cli():
         type=str,
         choices=[
             "initial",
-            "outer-tiled",
-            "inner-tiled",
+            "tiled",
             "vectorized",
             "bufferized",
+            "reduction-tiled",
             "gpu-outlining",
             "xegpu-initial",
             "xegpu-wg",
@@ -318,26 +342,36 @@ if __name__ == "__main__":
     layer_params = {
         "layer_kind": "attention",
         "batch_size": args.batch_size,
-        "num_heads": args.num_heads,
-        "n_ctx": args.n_ctx,
         "n_head": args.n_head,
-        "wg_rows": args.wg_rows,
+        "n_ctx": args.n_ctx,
+        "d_head": args.d_head,
+        "wg_tile": [1, args.wg_rows],
         "sg_rows": args.sg_rows,
         "subgroup_size": args.subgroup_size,
-        "inner_loop_tile_size": args.inner_loop_tile_size,
+        "reduction_tile": args.reduction_tile,
+        "q_load_tile": args.q_load_tile,
+        "v_load_tile": args.v_load_tile,
+        "prefetch_tile": args.prefetch_tile,
         "nb_prefetch": args.nb_prefetch,
     }
+
     params = ScheduleParameters([layer_params])
 
-    Z = args.batch_size
-    H = args.num_heads
-    n_ctx = args.n_ctx
+    batch_size = args.batch_size
     n_head = args.n_head
+    n_ctx = args.n_ctx
+    d_head = args.d_head
     dtype = "f16"
 
     with ir.Context(), ir.Location.unknown():
         lh_dialects.register_and_load()
-        wload = XeGPUFusedAttention(Z=Z, H=H, n_ctx=n_ctx, n_head=n_head, dtype=dtype)
+        wload = XeGPUFusedAttention(
+            batch_size=batch_size,
+            n_head=n_head,
+            n_ctx=n_ctx,
+            d_head=d_head,
+            dtype=dtype,
+        )
 
         if args.dump_kernel or args.dump_schedule:
             pipeline = TransformDriver(
@@ -398,10 +432,10 @@ if __name__ == "__main__":
             gflops = flop_count / (elapsed * 1e-6) / 1e9
 
             print(
-                f"batch-size={Z} "
-                f"num-heads={H} "
-                f"n-ctx={n_ctx} "
+                f"batch-size={batch_size} "
                 f"n-head={n_head} "
+                f"n-ctx={n_ctx} "
+                f"d-head={d_head} "
                 f"dt={dtype} "
                 f"time(us): {elapsed:.2f} "
                 f"GFLOPS: {gflops:.2f} "

@@ -11,38 +11,38 @@ from lighthouse.ingress.mlir_gen.utils import emit_buf_to_tensor
 
 def generate_gpu_attention_payload(
     func_name: str,
-    Z: int,
-    H: int,
-    n_ctx: int,
+    batch_size: int,
     n_head: int,
+    n_ctx: int,
+    d_head: int,
     dtype: ir.Type,
 ) -> ir.Module:
     """
     Generate MLIR module for attention payload.
 
     Computes attention:
-    output = softmax(Q @ K^T / sqrt(n_head)) @ V
+    output = softmax(Q @ K^T / sqrt(d_head)) @ V
 
     Args:
         func_name: Name of the payload function
-        Z: Batch size
-        H: Number of attention heads
+        batch_size: Batch size
+        n_head: Number of attention heads
         n_ctx: Context length (sequence length)
-        n_head: Head dimension
+        d_head: Head dimension
         dtype: MLIR element type (e.g., F32Type)
 
     Returns:
         MLIR module containing the attention payload function
     """
     mod = ir.Module.create()
-    shape = (Z, H, n_ctx, n_head)
+    shape = (batch_size, n_head, n_ctx, d_head)
     memref_t = ir.MemRefType.get(shape, dtype)
 
     with ir.InsertionPoint(mod.body):
-        # Collapse first 2 dimensions (Z, H) into a batch dimension
-        # From (Z, H, n_ctx, n_head) to (Z*H, n_ctx, n_head)
-        batch_dim = Z * H
-        collapsed_shape_3d = (batch_dim, n_ctx, n_head)
+        # Collapse first 2 dimensions (batch_size, n_head) into a batch dimension
+        # From (batch_size, n_head, n_ctx, d_head) to (batch_size*n_head, n_ctx, d_head)
+        batch_dim = batch_size * n_head
+        collapsed_shape_3d = (batch_dim, n_ctx, d_head)
         memref_3d_t = ir.MemRefType.get(collapsed_shape_3d, dtype)
 
         # Function signature: payload(output, Q, K, V)
@@ -76,13 +76,13 @@ def generate_gpu_attention_payload(
             V_3d = emit_buf_to_tensor(V_3d_memref, restrict=True)
 
             # Step 1: Transpose K to get K^T
-            # Permute from (batch_dim, n_ctx, n_head) to (batch_dim, n_head, n_ctx)
-            kt_shape_3d = (batch_dim, n_head, n_ctx)
+            # Permute from (batch_dim, n_ctx, d_head) to (batch_dim, d_head, n_ctx)
+            kt_shape_3d = (batch_dim, d_head, n_ctx)
             kt_init = tensor.empty(kt_shape_3d, dtype)
             K_transposed = linalg.transpose(K_3d, outs=[kt_init], permutation=[0, 2, 1])
 
             # Step 2: Compute Q @ K^T using batch_matmul
-            # Q: (batch_dim, n_ctx, n_head) @ K^T: (batch_dim, n_head, n_ctx)
+            # Q: (batch_dim, n_ctx, d_head) @ K^T: (batch_dim, d_head, n_ctx)
             # Result: (batch_dim, n_ctx, n_ctx)
             qkt_shape_3d = (batch_dim, n_ctx, n_ctx)
             qkt_init = tensor.empty(qkt_shape_3d, dtype)
@@ -93,8 +93,8 @@ def generate_gpu_attention_payload(
             # Batch matmul: Q @ K^T
             qkt = linalg.batch_matmul(Q_3d, K_transposed, outs=[qkt_init_filled])
 
-            # Step 3: Scale by 1/sqrt(n_head)
-            scale_factor = 1.0 / math.sqrt(n_head)
+            # Step 3: Scale by 1/sqrt(d_head)
+            scale_factor = 1.0 / math.sqrt(d_head)
             scale_const = arith.constant(dtype, scale_factor)
 
             # Create a tensor filled with the scale factor
@@ -115,8 +115,8 @@ def generate_gpu_attention_payload(
             )
 
             # Step 5: Multiply attention weights by V using batch_matmul
-            # attention_weights: (batch_dim, n_ctx, n_ctx) @ V: (batch_dim, n_ctx, n_head)
-            # Result: (batch_dim, n_ctx, n_head)
+            # attention_weights: (batch_dim, n_ctx, n_ctx) @ V: (batch_dim, n_ctx, d_head)
+            # Result: (batch_dim, n_ctx, d_head)
             output_3d_init = tensor.empty(collapsed_shape_3d, dtype)
             output_3d_init_filled = linalg.fill(zero, outs=[output_3d_init])
 
