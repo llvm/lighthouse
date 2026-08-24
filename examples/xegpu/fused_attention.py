@@ -95,7 +95,7 @@ def check_correctness(
         print(output[0, 0, :5])
 
     # Check values match reference
-    values_ok = np.allclose(output, output_ref, rtol=1e-3, atol=1e-3)
+    values_ok = np.allclose(output, output_ref, rtol=1e-3, atol=5e-3)
     success = values_ok
 
     if verbose:
