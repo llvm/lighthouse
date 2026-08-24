@@ -229,7 +229,9 @@ def compute_pv(
     )
 
 
-def normalize_ouput_by_sum(pv_out, l_i_out, batch_shape, wg_rows, d_head, compute_type):
+def normalize_output_by_sum(
+    pv_out, l_i_out, batch_shape, wg_rows, d_head, compute_type
+):
     """Divide pv_out [*batch, wg_rows, d_head] by l_i_out [*batch, wg_rows]."""
     l_i_out_bcasted = _broadcast_last_dim(
         l_i_out, batch_shape, wg_rows, d_head, compute_type
@@ -510,7 +512,7 @@ class ReplaceWithFusedAttentionOp(
                         l_i_out,
                     )
                 # Normalize the output: output_final = pv_out / l_i_out
-                output_normalized = normalize_ouput_by_sum(
+                output_normalized = normalize_output_by_sum(
                     pv_out, l_i_out, batch_shape, wg_rows, d_head, compute_type
                 )
                 # Narrow back to the type of the output op being replaced, if needed

@@ -126,10 +126,11 @@ def infer_parameters(
         "bf16": 2,
         "f32": 4,
     }
-    for i, layer in enumerate(layer_metadata):
-        print(f"Layer {i}")
-        for k, v in layer.items():
-            print(f"  {k}: {v}")
+    if verbose > 1:
+        for i, layer in enumerate(layer_metadata):
+            print(f"Layer {i}")
+            for k, v in layer.items():
+                print(f"  {k}: {v}")
     if len(matmuls) > 0 and len(batch_matmuls) == 0:
         schedule_params = XeGPUParameterSelector().get_parameters_for_layers(matmuls)
         # check that all matmul dims are powers of 2
@@ -213,20 +214,20 @@ def infer_parameters(
         shape = func_metadata["inputs"][0].shape
         elemtype = str(func_metadata["inputs"][0].element_type)
         nbytes = elemtype_bytes[elemtype]
-        Z, H, n_ctx, n_head = shape
-        # 2 matmuls, 2 * n_ctx^2 * n_head FLOPs each, per batch and head
-        total_flops = int(Z * H * 4 * n_ctx * n_ctx * n_head)
+        batch_size, n_head, n_ctx, d_head = shape
+        # 2 matmuls, 2 * n_ctx^2 * d_head FLOPs each, per batch and head
+        total_flops = int(batch_size * n_head * 4 * n_ctx * n_ctx * d_head)
         # Memory: read Q, K, V and write output
-        read_bytes = int(3 * Z * H * n_ctx * n_head * nbytes)
-        write_bytes = int(Z * H * n_ctx * n_head * nbytes)
+        read_bytes = int(3 * batch_size * n_head * n_ctx * d_head * nbytes)
+        write_bytes = int(batch_size * n_head * n_ctx * d_head * nbytes)
 
-        assert n_head == 64, f"n_head must be 64, got {n_head}"
+        assert d_head == 64, f"d_head must be 64, got {d_head}"
         layer_params = {
             "layer_kind": "attention",
-            "batch_size": Z,
-            "n_head": H,
+            "batch_size": batch_size,
+            "n_head": n_head,
             "n_ctx": n_ctx,
-            "d_head": n_head,
+            "d_head": d_head,
             "wg_tile": [1, 1, 128],
             "sg_rows": 16,
             "subgroup_size": 16,

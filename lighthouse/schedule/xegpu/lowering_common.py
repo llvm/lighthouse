@@ -38,7 +38,8 @@ def get_payload_func(
         op_name: Optional name of the operations to match in the payload function (e.g., "linalg.generic").
         func_name: Optional name of the payload function to retrieve.
 
-    Produces a silenceable failure if the function is not found.
+    Returns:
+        A handle to the payload function.
     """
     anytype = transform.AnyOpType.get()
 
