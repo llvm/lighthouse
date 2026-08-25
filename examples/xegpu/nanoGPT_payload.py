@@ -6,17 +6,17 @@ GPT forward pass with linalg-level ops that write into device (gpu.alloc) buffer
   -> class `Builder` (emits one op at a time) and `build_gpt_fused_payload`
      (assembles ops into ffn / attn / block / full-gpt).
 
-C = n_embd, the embedding/channel width (C=256 in this example).
+n_embd = the embedding/channel width (n_embd=256 in this example).
 
 Architecture: each transformer block is
     a = x + attn_proj( MultiHeadAttention( ln1(x) ) )       # attention sublayer
     y = a + ffn( ln2(a) )                                    # MLP (feed-forward) sublayer
-    ffn(z) = Linear(C, 4C) -> ReLU -> Linear(4C, C)         # the MLP: two matmuls
+    ffn(z) = Linear(n_embd, 4*n_embd) -> ReLU -> Linear(4*n_embd, n_embd)  # the MLP: two matmuls
 and the full model is
     x = token_emb + pos_emb            # embeddings (done host-side)
     for _ in range(n_layer): x = Block(x)
     x = ln_f(x); logits = x @ lm_head
-Multi-head attention uses H heads of head_size = C/H = 64, computed by one fused
+Multi-head attention uses n_head heads of d_head = n_embd/n_head = 64, computed by one fused
 flash-attention kernel per block (non-causal for now).
 """
 
@@ -71,8 +71,7 @@ class Builder:
     kernels appear in the final module, which is how the schedule matches them up.
     """
 
-    def __init__(self, T):
-        self.T = T
+    def __init__(self):
         self.f32, self.f16 = F32(), F16()
         self.kinds = []  # ordered kernel classes (see docstring)
         self.to_dealloc = []  # device buffers to gpu.dealloc at the end
@@ -178,10 +177,10 @@ class Builder:
             return None
         return emit_buf_to_tensor(buf, restrict=True)
 
-    # ---- cast f32 (T,C) -> f16 (T,C), returning the MEMREF buffer (for views) ----
-    def cast_f16_buf(self, x, T, C):
+    # ---- cast f32 (n_ctx,n_embd) -> f16 (n_ctx,n_embd), returning the MEMREF buffer (for views) ----
+    def cast_f16_buf(self, x, n_ctx, n_embd):
         par2 = self._par()
-        buf = self._buf((T, C), self.f16)
+        buf = self._buf((n_ctx, n_embd), self.f16)
         out_t = emit_buf_to_tensor(buf, restrict=True, writable=True)
 
         @linalg.generic([x], [out_t], [par2, par2], [parallel, parallel])
@@ -194,64 +193,72 @@ class Builder:
         self.kinds.append("ew")
         return buf
 
-    # ---- view a (T, H*hs) memref as (H, T, hs) -- no kernel, no data move ----
-    def _heads_view_of(self, buf2d, T, H, hs):
+    # ---- view a (n_ctx, n_head*d_head) memref as (n_head, n_ctx, d_head) -- no kernel, no data move ----
+    def _heads_view_of(self, buf2d, n_ctx, n_head, d_head):
         #  We present the 2D
-        # (T, H*hs) projection buffer as a (H,T,hs) STRIDED memref VIEW:
-        #   (T,H*hs) --memref.expand_shape--> (T,H,hs) [strides C,hs,1]
-        #            --memref.transpose [1,0,2]--> (H,T,hs) [strides hs,C,1]
+        # (n_ctx, n_head*d_head) projection buffer as a (n_head,n_ctx,d_head) STRIDED memref VIEW:
+        #   (n_ctx,n_head*d_head) --memref.expand_shape--> (n_ctx,n_head,d_head) [strides n_embd,d_head,1]
+        #            --memref.transpose [1,0,2]--> (n_head,n_ctx,d_head) [strides d_head,n_embd,1]
         # Both are pure layout ops (no compute, no kinds entry). When the fused
         # schedule tiles (1,wg_rows,0,0), the grid peels head h -> a 2D
-        # memref<T x hs, strided<[C,1], offset:h*hs>> -> 2D load_nd (XeGPU supports
+        # memref<n_ctx x d_head, strided<[n_embd,1], offset:h*d_head>> -> 2D load_nd (XeGPU supports
         # such strided block loads).
-        C = H * hs
+        n_embd = n_head * d_head
         et = buf2d.type.element_type
-        exp_t = ir.MemRefType.get((T, H, hs), et)
+        exp_t = ir.MemRefType.get((n_ctx, n_head, d_head), et)
         e = memref.expand_shape(
-            exp_t, buf2d, [[0], [1, 2]], [], static_output_shape=[T, H, hs]
+            exp_t, buf2d, [[0], [1, 2]], [], static_output_shape=[n_ctx, n_head, d_head]
         )
         d0, d1, d2 = (ir.AffineDimExpr.get(i) for i in range(3))
-        perm = ir.AffineMap.get(3, 0, [d1, d0, d2])  # (H,T,hs) <- (T,H,hs)
-        layout = ir.StridedLayoutAttr.get(0, [hs, C, 1])
-        res_t = ir.MemRefType.get((H, T, hs), et, layout=layout)
+        perm = ir.AffineMap.get(
+            3, 0, [d1, d0, d2]
+        )  # (n_head,n_ctx,d_head) <- (n_ctx,n_head,d_head)
+        layout = ir.StridedLayoutAttr.get(0, [d_head, n_embd, 1])
+        res_t = ir.MemRefType.get((n_head, n_ctx, d_head), et, layout=layout)
         return memref.transpose(res_t, e, perm)
 
-    def heads_view(self, buf2d, T, H, hs):
-        return emit_buf_to_tensor(self._heads_view_of(buf2d, T, H, hs), restrict=True)
+    def heads_view(self, buf2d, n_ctx, n_head, d_head):
+        return emit_buf_to_tensor(
+            self._heads_view_of(buf2d, n_ctx, n_head, d_head), restrict=True
+        )
 
-    # ---- fused multi-head attention core on 3D (H,T,hs) f16 -> (H,T,hs) f16 ----
-    # (named attention_4d because it is the canonical 4D (Z,H,T,hs) attention
-    #  algorithm with the batch dim Z=1 FOLDED OUT: one sequence, so (1,H,T,hs)
-    #  collapses to (H,T,hs) and linalg.batch_matmul treats H as the batch axis.)
-    def attention_4d(self, Qh, Kh, Vh, H, T, hs, out_view, out_view_memref):
+    # ---- fused multi-head attention core on 3D (n_head,n_ctx,d_head) f16 -> (n_head,n_ctx,d_head) f16 ----
+    # (named attention_4d because it is the canonical 4D (batch_size,n_head,n_ctx,d_head) attention
+    #  algorithm with the batch dim batch_size=1 FOLDED OUT: one sequence, so (1,n_head,n_ctx,d_head)
+    #  collapses to (n_head,n_ctx,d_head) and linalg.batch_matmul treats n_head as the batch axis.)
+    def attention_4d(
+        self, Qh, Kh, Vh, n_head, n_ctx, d_head, out_view, out_view_memref
+    ):
         # Emits the SAME linalg op sequence as generate_gpu_attention_payload
         # (batch_matmul QK^T -> scale-mul -> softmax -> batch_matmul @V), so the
         # fused-attention schedule's matchers/rewrite apply verbatim. After the
         # per-region fused tiling, all these ops fuse into one scf.forall -> one
         # GPU kernel (the flash/online-softmax kernel). Counts as one 'fa'.
-        # Inputs Qh/Kh/Vh are (H,T,hs) f16 strided views (heads_view); the @V result
-        # is materialized into `out_view`, a (H,T,hs) strided view of a (T,C) buffer,
+        # Inputs Qh/Kh/Vh are (n_head,n_ctx,d_head) f16 strided views (heads_view); the @V result
+        # is materialized into `out_view`, a (n_head,n_ctx,d_head) strided view of a (n_ctx,n_embd) buffer,
         # so the merge back to 2D is also a free view (no from_heads kernel).
         f16 = self.f16
-        scale = 1.0 / (hs**0.5)
+        scale = 1.0 / (d_head**0.5)
         zero = arith.constant(f16, 0.0)
-        # K^T: (H,T,hs) -> (H,hs,T). Lowers to a 2D vector.transpose per head (the
-        # grid peels H), exactly like the standalone -- f16 is fine here.
+        # K^T: (n_head,n_ctx,d_head) -> (n_head,d_head,n_ctx). Lowers to a 2D vector.transpose per head (the
+        # grid peels n_head), exactly like the standalone -- f16 is fine here.
         Kt = linalg.transpose(
-            Kh, outs=[tensor.empty((H, hs, T), f16)], permutation=[0, 2, 1]
+            Kh, outs=[tensor.empty((n_head, d_head, n_ctx), f16)], permutation=[0, 2, 1]
         )
-        qkt_init = linalg.fill(zero, outs=[tensor.empty((H, T, T), f16)])
+        qkt_init = linalg.fill(zero, outs=[tensor.empty((n_head, n_ctx, n_ctx), f16)])
         qkt = linalg.batch_matmul(Qh, Kt, outs=[qkt_init])
         sc = arith.constant(f16, scale)
-        scale_t = linalg.fill(sc, outs=[tensor.empty((H, T, T), f16)])
-        scaled = linalg.mul(qkt, scale_t, outs=[tensor.empty((H, T, T), f16)])
+        scale_t = linalg.fill(sc, outs=[tensor.empty((n_head, n_ctx, n_ctx), f16)])
+        scaled = linalg.mul(
+            qkt, scale_t, outs=[tensor.empty((n_head, n_ctx, n_ctx), f16)]
+        )
         aw = linalg.softmax(
-            result=[ir.RankedTensorType.get((H, T, T), f16)],
+            result=[ir.RankedTensorType.get((n_head, n_ctx, n_ctx), f16)],
             input=scaled,
-            output=tensor.empty((H, T, T), f16),
+            output=tensor.empty((n_head, n_ctx, n_ctx), f16),
             dimension=2,
         )
-        # @V: (H,T,T) @ (H,T,hs) -> (H,T,hs) f16, materialized into the (T,C) view.
+        # @V: (n_head,n_ctx,n_ctx) @ (n_head,n_ctx,d_head) -> (n_head,n_ctx,d_head) f16, materialized into the (n_ctx,n_embd) view.
         out_filled = linalg.fill(zero, outs=[out_view])
         out = linalg.batch_matmul(aw, Vh, outs=[out_filled])
         bufferization.materialize_in_destination(
@@ -259,31 +266,37 @@ class Builder:
         )
         self.kinds.append("fa")
 
-    # ---- fused multi-head attention(ln_f32 (T,C) f32) -> (T,C) f16, non-causal ----
-    def fused_attention(self, x, wq, wk, wv, T, C, H):
+    # ---- fused multi-head attention(ln_f32 (n_ctx,n_embd) f32) -> (n_ctx,n_embd) f16, non-causal ----
+    def fused_attention(self, x, wq, wk, wv, n_ctx, n_embd, n_head):
         # True multi-head attention via the flash kernel, with no on-device
         # head-transpose kernel. Flow:
-        #   x(f32) -cast-> f16 -q/k/v proj-> (T,C) f16 buffers -heads_view (free)->
-        #   (H,T,hs) strided views -> attention_4d (fused flash kernel) -> @V written
-        #   into a (T,C) f16 buffer via its (H,T,hs) view -> return that (T,C) f16.
-        hs = C // H
-        x16 = self.cast_f16(x, T, C)  # ew
+        #   x(f32) -cast-> f16 -q/k/v proj-> (n_ctx,n_embd) f16 buffers -heads_view (free)->
+        #   (n_head,n_ctx,d_head) strided views -> attention_4d (fused flash kernel) -> @V written
+        #   into a (n_ctx,n_embd) f16 buffer via its (n_head,n_ctx,d_head) view -> return that (n_ctx,n_embd) f16.
+        d_head = n_embd // n_head
+        x16 = self.cast_f16(x, n_ctx, n_embd)  # ew
         qbuf = self.cast_f16_buf(
-            self.matmul(x16, wq, T, C), T, C
-        )  # mm, ew -> (T,C) f16 memref
-        kbuf = self.cast_f16_buf(self.matmul(x16, wk, T, C), T, C)  # mm, ew
-        vbuf = self.cast_f16_buf(self.matmul(x16, wv, T, C), T, C)  # mm, ew
-        Qh = self.heads_view(qbuf, T, H, hs)  # (H,T,hs) strided view (free)
-        Kh = self.heads_view(kbuf, T, H, hs)
-        Vh = self.heads_view(vbuf, T, H, hs)
-        # Output (T,C) f16 buffer, viewed as (H,T,hs) for the @V store.
-        out_buf = self._buf((T, C), self.f16)
-        out_view_memref = self._heads_view_of(out_buf, T, H, hs)
+            self.matmul(x16, wq, n_ctx, n_embd), n_ctx, n_embd
+        )  # mm, ew -> (n_ctx,n_embd) f16 memref
+        kbuf = self.cast_f16_buf(
+            self.matmul(x16, wk, n_ctx, n_embd), n_ctx, n_embd
+        )  # mm, ew
+        vbuf = self.cast_f16_buf(
+            self.matmul(x16, wv, n_ctx, n_embd), n_ctx, n_embd
+        )  # mm, ew
+        Qh = self.heads_view(
+            qbuf, n_ctx, n_head, d_head
+        )  # (n_head,n_ctx,d_head) strided view (free)
+        Kh = self.heads_view(kbuf, n_ctx, n_head, d_head)
+        Vh = self.heads_view(vbuf, n_ctx, n_head, d_head)
+        # Output (n_ctx,n_embd) f16 buffer, viewed as (n_head,n_ctx,d_head) for the @V store.
+        out_buf = self._buf((n_ctx, n_embd), self.f16)
+        out_view_memref = self._heads_view_of(out_buf, n_ctx, n_head, d_head)
         out_view = emit_buf_to_tensor(out_view_memref, restrict=True, writable=True)
         self.attention_4d(
-            Qh, Kh, Vh, H, T, hs, out_view, out_view_memref
+            Qh, Kh, Vh, n_head, n_ctx, d_head, out_view, out_view_memref
         )  # fa, writes out_buf
-        return emit_buf_to_tensor(out_buf, restrict=True)  # (T,C) f16
+        return emit_buf_to_tensor(out_buf, restrict=True)  # (n_ctx,n_embd) f16
 
 
 # ---------------------------------------------------------------------------
@@ -296,46 +309,52 @@ class Builder:
 # ---------------------------------------------------------------------------
 
 
-def _emit_block_fused(bld, x, w, T, C, hidden, H, eps, out_buf=None):
+def _emit_block_fused(bld, x, w, n_ctx, n_embd, d_ffn, n_head, eps, out_buf=None):
     """Emit one transformer block whose attention sublayer is the fused multi-head
     flash kernel (non-causal, no mask). `w` weight keys: g1,b1n, wq,wk,wv, wp,bp,
-    g2,b2n, w1,bb1,w2,bb2. wq/wk/wv/wp are full (C,C)."""
+    g2,b2n, w1,bb1,w2,bb2. wq/wk/wv/wp are full (n_embd,n_embd)."""
     # ---- attention sublayer: a = x + proj(fused_attn(ln1(x))) ----
-    ln1 = bld.layernorm(x, w["g1"], w["b1n"], T, C, eps)
-    attn16 = bld.fused_attention(ln1, w["wq"], w["wk"], w["wv"], T, C, H)  # f16 (T,C)
-    proj = bld.matmul(attn16, w["wp"], T, C)
-    proj = bld.bias(proj, w["bp"], T, C, relu=False)
-    a = bld.add(x, proj, T, C)
+    ln1 = bld.layernorm(x, w["g1"], w["b1n"], n_ctx, n_embd, eps)
+    attn16 = bld.fused_attention(
+        ln1, w["wq"], w["wk"], w["wv"], n_ctx, n_embd, n_head
+    )  # f16 (n_ctx,n_embd)
+    proj = bld.matmul(attn16, w["wp"], n_ctx, n_embd)
+    proj = bld.bias(proj, w["bp"], n_ctx, n_embd, relu=False)
+    a = bld.add(x, proj, n_ctx, n_embd)
     # ---- FFN sublayer: y = a + ffn(ln2(a)) ----
-    ln2 = bld.layernorm(a, w["g2"], w["b2n"], T, C, eps)
-    ln2_16 = bld.cast_f16(ln2, T, C)
-    h = bld.matmul(ln2_16, w["w1"], T, hidden)
-    h = bld.bias(h, w["bb1"], T, hidden, relu=True)
-    h16 = bld.cast_f16(h, T, hidden)
-    o = bld.matmul(h16, w["w2"], T, C)
-    o = bld.bias(o, w["bb2"], T, C, relu=False)
-    return bld.add(a, o, T, C, out_buf=out_buf)
+    ln2 = bld.layernorm(a, w["g2"], w["b2n"], n_ctx, n_embd, eps)
+    ln2_16 = bld.cast_f16(ln2, n_ctx, n_embd)
+    h = bld.matmul(ln2_16, w["w1"], n_ctx, d_ffn)
+    h = bld.bias(h, w["bb1"], n_ctx, d_ffn, relu=True)
+    h16 = bld.cast_f16(h, n_ctx, d_ffn)
+    o = bld.matmul(h16, w["w2"], n_ctx, n_embd)
+    o = bld.bias(o, w["bb2"], n_ctx, n_embd, relu=False)
+    return bld.add(a, o, n_ctx, n_embd, out_buf=out_buf)
 
 
-def build_gpt_fused_payload(func_name, T, C, hidden, vocab, n_layer, H, eps=1e-5):
+def build_gpt_fused_payload(
+    func_name, n_ctx, n_embd, d_ffn, n_vocab, n_layer, n_head, eps=1e-5
+):
     """Full nanoGPT forward as one module, with fused multi-head attention per block.
-    Multi-head (H heads, flash attention), non-causal (no mask), wq/wk/wv/wp are
-    (C,C). Embeddings done host-side. Returns (module, kinds)."""
+    Multi-head (n_head heads, flash attention), non-causal (no mask), wq/wk/wv/wp are
+    (n_embd,n_embd). Embeddings done host-side. Returns (module, kinds)."""
     f32, f16 = F32(), F16()
     mod = ir.Module.create()
-    x_t = ir.MemRefType.get((T, C), f32)  # input activations (256,256) f32
-    g_t = ir.MemRefType.get((C,), f32)  # layernorm gamma/beta vectors (256,) f32
-    wqkv_t = ir.MemRefType.get((C, C), f16)  # q/k/v projection weights (256,256) f16
+    x_t = ir.MemRefType.get((n_ctx, n_embd), f32)  # input activations (256,256) f32
+    g_t = ir.MemRefType.get((n_embd,), f32)  # layernorm gamma/beta vectors (256,) f32
+    wqkv_t = ir.MemRefType.get(
+        (n_embd, n_embd), f16
+    )  # q/k/v projection weights (256,256) f16
     wproj_t = ir.MemRefType.get(
-        (C, C), f16
+        (n_embd, n_embd), f16
     )  # attention output proj weight (256,256) f16
-    bvec_t = ir.MemRefType.get((C,), f32)  # bias vectors (256,) f32
-    w1_t = ir.MemRefType.get((C, hidden), f16)  # FFN up-projection (256,1024) f16
-    b1_t = ir.MemRefType.get((hidden,), f32)  # FFN hidden bias (1024,) f32
-    w2_t = ir.MemRefType.get((hidden, C), f16)  # FFN down-projection (1024,256) f16
-    lmw_t = ir.MemRefType.get((C, vocab), f16)  # lm_head weight (256,256) f16
-    lmb_t = ir.MemRefType.get((vocab,), f32)  # lm_head bias (256,) f32
-    out_t = ir.MemRefType.get((T, vocab), f32)  # output logits (256,256) f32
+    bvec_t = ir.MemRefType.get((n_embd,), f32)  # bias vectors (256,) f32
+    w1_t = ir.MemRefType.get((n_embd, d_ffn), f16)  # FFN up-projection (256,1024) f16
+    b1_t = ir.MemRefType.get((d_ffn,), f32)  # FFN hidden bias (1024,) f32
+    w2_t = ir.MemRefType.get((d_ffn, n_embd), f16)  # FFN down-projection (1024,256) f16
+    lmw_t = ir.MemRefType.get((n_embd, n_vocab), f16)  # lm_head weight (256,256) f16
+    lmb_t = ir.MemRefType.get((n_vocab,), f32)  # lm_head bias (256,) f32
+    out_t = ir.MemRefType.get((n_ctx, n_vocab), f32)  # output logits (256,256) f32
     # per-layer arg types: g1,b1n, wq,wk,wv, wp,bp, g2,b2n, w1,bb1,w2,bb2 (13) -- no mask.
     per_layer = [
         g_t,
@@ -357,7 +376,7 @@ def build_gpt_fused_payload(func_name, T, C, hidden, vocab, n_layer, H, eps=1e-5
     for _ in range(n_layer):
         fargs += per_layer
     fargs += [g_t, g_t, lmw_t, lmb_t]  # ln_f gamma/beta, lm_head W,b (no mask)
-    bld = Builder(T)
+    bld = Builder()
     with ir.InsertionPoint(mod.body):
 
         @func_cif(*fargs, name=func_name)
@@ -400,11 +419,11 @@ def build_gpt_fused_payload(func_name, T, C, hidden, vocab, n_layer, H, eps=1e-5
 
             h = x
             for w in layer_w:
-                h = _emit_block_fused(bld, h, w, T, C, hidden, H, eps)
-            hf = bld.layernorm(h, gf_g, gf_b, T, C, eps)
-            hf16 = bld.cast_f16(hf, T, C)
-            logits = bld.matmul(hf16, lmw, T, vocab)
-            bld.bias(logits, lmb, T, vocab, relu=False, out_buf=output)
+                h = _emit_block_fused(bld, h, w, n_ctx, n_embd, d_ffn, n_head, eps)
+            hf = bld.layernorm(h, gf_g, gf_b, n_ctx, n_embd, eps)
+            hf16 = bld.cast_f16(hf, n_ctx, n_embd)
+            logits = bld.matmul(hf16, lmw, n_ctx, n_vocab)
+            bld.bias(logits, lmb, n_ctx, n_vocab, relu=False, out_buf=output)
             for b in bld.to_dealloc:
                 gpu.dealloc(None, [], b)
 

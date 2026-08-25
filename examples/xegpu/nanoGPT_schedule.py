@@ -59,7 +59,7 @@ from lighthouse.schedule.xegpu.mlp_schedule import xegpu_wg_annotation_for_mlp_l
 from nanoGPT_payload import F32
 
 
-def _tile_one_matmul(matmul_op, anytype, mm_params):
+def _tile_one_matmul(matmul_op, mm_params):
     """Tile one matmul for DPAS: a work-group `forall` tile (wg_m x wg_n) with any
     elementwise consumer fused in, then an inner reduction (k) loop. Tile sizes
     come from `mm_params` (chosen by xegpu_parameter_selector for the GPU)."""
@@ -78,7 +78,7 @@ def _tile_one_matmul(matmul_op, anytype, mm_params):
 
 
 def _tile_one_layernorm(
-    mod, anytype, wg_rows, rss, mean_red, var_red, normalize, ln_untiled, n_mm, T_ROWS
+    anytype, wg_rows, rss, mean_red, var_red, normalize, ln_untiled, n_ctx
 ):
     """Tile one layernorm into its own forall, using preserved handles to its 3
     generics (mean_red, var_red, normalize). Handles to other ops stay valid.
@@ -103,14 +103,14 @@ def _tile_one_layernorm(
     )
     # Fuse this ln's 2 accumulator fills into the forall. Robustly select ONLY the
     # layernorm accumulator fills (NOT matmul fills) by filtering on result type:
-    # ln accumulators are rank-1 tensor<T x f32>; matmul accumulators are rank-2.
+    # ln accumulators are rank-1 tensor<n_ctx x f32>; matmul accumulators are rank-2.
     # This avoids fragile positional counting across the whole block. There are
     # 2*ln_untiled such rank-1 fills (this ln + other untiled lns); this ln's are
     # the FIRST 2 in IR order.
     ln_func = transform.get_parent_op(
         anytype, ln_forall, op_name="func.func", deduplicate=True
     )
-    reduce_t = ir.RankedTensorType.get((T_ROWS,), F32())  # ln accumulator type (T,)
+    reduce_t = ir.RankedTensorType.get((n_ctx,), F32())  # ln accumulator type (n_ctx,)
     fill_match = structured.MatchOp(
         anytype, ln_func, ops=["linalg.fill"], filter_result_type=reduce_t
     )
@@ -144,13 +144,13 @@ def _tile_one_layernorm(
     canonicalize(ln_forall)
 
 
-def _tile_one_fused_attention_region(anytype, qkt_bmm, pv_bmm, softmax_op, fa_params):
+def _tile_one_fused_attention_region(anytype, pv_bmm, softmax_op, fa_params):
     """Tile + fuse one attention region (QK^T -> scale -> softmax -> @V) into a
     SINGLE scf.forall, so it vectorizes/bufferizes into one kernel body that
     `replace_with_fused_attention` later rewrites into the flash loop.
 
     Operates on PRE-SPLIT, per-region
-    handles (qkt_bmm, pv_bmm, softmax_op) so it is region-local and works at any
+    handles (pv_bmm, softmax_op) so it is region-local and works at any
     multiplicity. All further producers are pulled in via get_producer_of_operand
     (SSA-walk = inherently scoped to this region)."""
     prod = transform.get_producer_of_operand
@@ -250,21 +250,21 @@ def _fuse_attention_in_region(anytype, forall, fa_params):
     )
 
 
-def xegpu_fa_annotation(gf, anytype, fa_params):
+def xegpu_fa_annotation(gf, fa_params):
     """Attach XeGPU layouts to one fused-attention gpu.func."""
     num_subgroups = fa_params["wg_rows"] // fa_params["sg_rows"]
-    n_head = fa_params["n_head"]
+    d_head = fa_params["d_head"]
     tile_size = fa_params["inner_loop_tile_size"]
     q_sg_layout = [num_subgroups, 1]
-    q_sg_data = [16, n_head]
+    q_sg_data = [16, d_head]
     q_inst_data = [8, 16]
-    # K and V tiles are [tile_size, n_head], shared by all subgroups.
+    # K and V tiles are [tile_size, d_head], shared by all subgroups.
     k_sg_layout = [num_subgroups, 1]
-    k_sg_data = [tile_size, n_head]
+    k_sg_data = [tile_size, d_head]
     k_inst_data = [16, 16]
     v_sg_layout, v_sg_data, v_inst_data = k_sg_layout, k_sg_data, k_inst_data
     kt_sg_layout = [1, num_subgroups]
-    kt_sg_data = [n_head, tile_size]
+    kt_sg_data = [d_head, tile_size]
     kt_inst_data = [16, 16]
     kt_order = [0, 1]
     out_sg_layout, out_sg_data, out_inst_data = q_sg_layout, q_sg_data, q_inst_data
@@ -453,7 +453,6 @@ def _bundle(
     for i, (mean_red, var_red, normalize) in enumerate(ln_slices):
         ln_untiled = n_ln - i
         _tile_one_layernorm(
-            mod,
             anytype,
             wg_rows,
             rss,
@@ -461,8 +460,7 @@ def _bundle(
             var_red,
             normalize,
             ln_untiled,
-            n_mm,
-            ln_params["T"],
+            ln_params["n_ctx"],
         )
 
     # 2) Tile EW generics into own foralls (handles preserved across ln tiling).
@@ -479,7 +477,7 @@ def _bundle(
     # 4) Matmuls (their EW producers already wrapped in foralls)
     mms = match_and_split(mod, ops={"linalg.matmul"}, nhandles=n_mm)
     for mm in mms:
-        _tile_one_matmul(mm, anytype, mm_params)
+        _tile_one_matmul(mm, mm_params)
 
     # 5) Fused-attention regions. Done last so the generic pre-split above ran while
     #    each fa softmax was still one linalg.softmax (its decomposition generics
@@ -491,7 +489,7 @@ def _bundle(
         fa_softmaxes = match_and_split(mod, ops={"linalg.softmax"}, nhandles=n_fa)
         for r in range(n_fa):
             _tile_one_fused_attention_region(
-                anytype, fa_bmms[2 * r], fa_bmms[2 * r + 1], fa_softmaxes[r], fa_params
+                anytype, fa_bmms[2 * r + 1], fa_softmaxes[r], fa_params
             )
 
     func = match(mod, ops={"func.func"})
@@ -627,7 +625,7 @@ def _bundle(
         if kind == "mm":
             xegpu_wg_annotation_for_mlp_layer(gf, **mm_params)
         elif kind == "fa":
-            xegpu_fa_annotation(gf, anytype, fa_params)
+            xegpu_fa_annotation(gf, fa_params)
         else:
             # ln/sm/ew: anchor-layout their store_nd, and (ln/sm) their SLM
             # store_matrix. Pass the whole match handle to set_anchor_layout (it

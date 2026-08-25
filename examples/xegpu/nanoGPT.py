@@ -7,33 +7,33 @@ flash multi-head attention -- the driver ("run it") entry point.
 This is a nanoGPT block stack: each transformer block is
     a = x + attn_proj( MultiHeadAttention( ln1(x) ) )       # attention sublayer
     y = a + ffn( ln2(a) )                                    # MLP sublayer
-    ffn(z) = Linear(C, 4C) -> ReLU -> Linear(4C, C)
+    ffn(z) = Linear(n_embd, 4*n_embd) -> ReLU -> Linear(4*n_embd, n_embd)
 and the full model is
     x = token_emb + pos_emb            # embeddings (done host-side)
     for _ in range(n_layer): x = Block(x)
     x = ln_f(x); logits = x @ lm_head
-Multi-head attention uses H heads of head_size = C/H, computed by one fused
+Multi-head attention uses n_head heads of d_head = n_embd/n_head, computed by one fused
 flash-attention kernel per block.
 
 The attention kernel is fused: the attention math is built on 4D tensors
-(batch, num_heads, seq_len, head_size) at the linalg level, then a
+(batch_size, n_head, n_ctx, d_head) at the linalg level, then a
 transform-dialect schedule rewrites the whole Q@K^T -> softmax -> @V region into
 one kernel that tiles the K/V reduction dim and carries a running max/sum (the
-flash-attention online-softmax), so the full seq_len x seq_len scores matrix is
+flash-attention online-softmax), so the full n_ctx x n_ctx scores matrix is
 never materialized. Everything else (layernorm, the q/k/v/proj/ffn/lm_head
 matmuls, the cast/bias/residual elementwise ops) is lowered as its own XeGPU
 kernel.
 
-Config (this example): n_layer=6, T=256, C=256, H=4, hidden=1024, vocab=256.
-These map onto the attention 4D shape (batch, num_heads, seq_len, head_size) as
-batch=1, num_heads=H=4, seq_len=T=256, head_size=C/H=64.
+Config (this example): n_layer=6, n_ctx=256, n_embd=256, n_head=4, d_ffn=1024, n_vocab=256.
+These map onto the attention 4D shape (batch_size, n_head, n_ctx, d_head) as
+batch_size=1, n_head=4, n_ctx=256, d_head=n_embd/n_head=64.
 
 Builds the full model (n_layer blocks -> ln_f -> lm_head), with fused multi-head
 non-causal attention per block.
 
-Bridging the model's 2D (T,C) activations to the fused kernel's multi-head
-(H,T,hs) layout uses no on-device transpose kernel: each q/k/v projection buffer
-is presented as a (H,T,hs) strided memref view (memref.expand_shape +
+Bridging the model's 2D (n_ctx,n_embd) activations to the fused kernel's multi-head
+(n_head,n_ctx,d_head) layout uses no on-device transpose kernel: each q/k/v projection buffer
+is presented as a (n_head,n_ctx,d_head) strided memref view (memref.expand_shape +
 memref.transpose -- pure layout, zero compute), and the fused schedule's
 (1,wg_rows,0,0) tiling peels the head dim into the work-group grid so each
 work-group reads 2D strided slices -> 2D load_nd.
@@ -92,17 +92,17 @@ def _f16(a):
     return a.astype(np.float16).astype(np.float32)
 
 
-def _mha(q, k, v, H, causal=False):
-    """Multi-head attention over (T,C) q/k/v (already projected), per-head, with an
-    optional causal mask. Returns (T,C). Mirrors the fused kernel's math, which is
+def _mha(q, k, v, n_head, causal=False):
+    """Multi-head attention over (n_ctx,n_embd) q/k/v (already projected), per-head, with an
+    optional causal mask. Returns (n_ctx,n_embd). Mirrors the fused kernel's math, which is
     non-causal, so `causal` defaults to False."""
-    T, C = q.shape
-    hs = C // H
-    scale = 1.0 / (hs**0.5)
-    mask = np.triu(np.full((T, T), -np.inf, np.float32), k=1) if causal else 0.0
-    attn = np.zeros((T, C), np.float32)
-    for h in range(H):
-        sl = slice(h * hs, (h + 1) * hs)
+    n_ctx, n_embd = q.shape
+    d_head = n_embd // n_head
+    scale = 1.0 / (d_head**0.5)
+    mask = np.triu(np.full((n_ctx, n_ctx), -np.inf, np.float32), k=1) if causal else 0.0
+    attn = np.zeros((n_ctx, n_embd), np.float32)
+    for h in range(n_head):
+        sl = slice(h * d_head, (h + 1) * d_head)
         scores = (q[:, sl] @ k[:, sl].T) * scale + mask
         scores = scores - scores.max(-1, keepdims=True)
         e = np.exp(scores)
@@ -111,13 +111,13 @@ def _mha(q, k, v, H, causal=False):
     return attn
 
 
-def numpy_ref_block_fused(x, w, H, eps=1e-5, causal=False):
+def numpy_ref_block_fused(x, w, n_head, eps=1e-5, causal=False):
     """Multi-head block reference (matches _emit_block_fused in the payload)."""
     ln1 = _f16(_ln(x, w["g1"], w["b1n"], eps))
     q = _f16(ln1 @ w["wq"].astype(np.float32))
     k = _f16(ln1 @ w["wk"].astype(np.float32))
     v = _f16(ln1 @ w["wv"].astype(np.float32))
-    attn = _mha(q, k, v, H, causal)
+    attn = _mha(q, k, v, n_head, causal)
     proj = _f16(attn) @ w["wp"].astype(np.float32) + w["bp"]
     a = x + proj
     ln2 = _f16(_ln(a, w["g2"], w["b2n"], eps))
@@ -126,11 +126,11 @@ def numpy_ref_block_fused(x, w, H, eps=1e-5, causal=False):
     return a + o
 
 
-def numpy_ref_gpt_fused(x, layer_w, gf_g, gf_b, lmw, lmb, H, eps=1e-5):
+def numpy_ref_gpt_fused(x, layer_w, gf_g, gf_b, lmw, lmb, n_head, eps=1e-5):
     """Non-causal multi-head full-gpt reference (matches build_gpt_fused_payload)."""
     h = x
     for w in layer_w:
-        h = numpy_ref_block_fused(h, w, H, eps)
+        h = numpy_ref_block_fused(h, w, n_head, eps)
     hf = _ln(h, gf_g, gf_b, eps)
     return _f16(hf) @ lmw.astype(np.float32) + lmb
 
@@ -180,29 +180,29 @@ def main():
     check = args.check
     n_layer = args.gpt_layers
 
-    # Kernel-friendly shapes: T=C=256 (q/k/v/proj matmuls), hidden=1024,
-    # vocab=256. True multi-head: H heads of head_size=C/H=64 -- the fused flash
-    # kernel handles head_size=64 fine.
-    T, C, hidden = 256, 256, 1024
-    vocab = 256
-    H = 4  # attention heads (hs = C/H = 64)
+    # Kernel-friendly shapes: n_ctx=n_embd=256 (q/k/v/proj matmuls), d_ffn=1024,
+    # n_vocab=256. True multi-head: n_head heads of d_head=n_embd/n_head=64 -- the fused flash
+    # kernel handles d_head=64 fine.
+    n_ctx, n_embd, d_ffn = 256, 256, 1024
+    n_vocab = 256
+    n_head = 4  # attention heads (d_head = n_embd/n_head = 64)
     # mm/sm params drive the non-attention kernels (matmul, layernorm); fa_params
     # drives the fused attention kernel.
     param_selector = XeGPUParameterSelector()
-    mm_params = dict(param_selector.get_parameters((T, C, C))[0])
+    mm_params = dict(param_selector.get_parameters((n_ctx, n_embd, n_embd))[0])
     mm_params["gpu_specs"] = param_selector.gpu_specs
     ln_params = {
         "wg_rows": 64,
         "sg_rows": 8,
         "subgroup_size": 16,
         "reduction_step_size": 16,
-        "T": T,
+        "n_ctx": n_ctx,
     }
     fa_params = {
         "batch_size": 1,
-        "num_heads": H,
-        "n_ctx": T,
-        "n_head": C // H,
+        "n_head": n_head,
+        "n_ctx": n_ctx,
+        "d_head": n_embd // n_head,
         "wg_rows": 128,
         "sg_rows": 16,
         "subgroup_size": 16,
@@ -211,7 +211,9 @@ def main():
 
     with ir.Context(), ir.Location.unknown():
         lh_dialects.register_and_load()
-        mod, kinds = build_gpt_fused_payload("payload", T, C, hidden, vocab, n_layer, H)
+        mod, kinds = build_gpt_fused_payload(
+            "payload", n_ctx, n_embd, d_ffn, n_vocab, n_layer, n_head
+        )
         if dump == "initial":
             print(mod)
             print("KINDS:", kinds)
@@ -244,30 +246,30 @@ def main():
             shared_libs=["libmlir_levelzero_runtime.so"],
         )
         np.random.seed(0)
-        out = np.zeros((T, vocab), np.float32)
+        out = np.zeros((n_ctx, n_vocab), np.float32)
         cb = Runner.get_gpu_argument_access_callback(out, arg_index=0)
         sc = 0.05  # small weight scale -> O(1) activations so f16 stays accurate
 
         # full model, fused multi-head attn per block.
         # host "embeddings": simulate token+pos embedding sum as the input x.
-        x = (np.random.randn(T, C) * 0.5).astype(np.float32)
+        x = (np.random.randn(n_ctx, n_embd) * 0.5).astype(np.float32)
         layers = []
         host = [out, x]
         for _ in range(n_layer):
             lw = dict(
-                g1=np.ones(C, np.float32),
-                b1n=np.zeros(C, np.float32),
-                wq=(np.random.randn(C, C) * sc).astype(np.float16),
-                wk=(np.random.randn(C, C) * sc).astype(np.float16),
-                wv=(np.random.randn(C, C) * sc).astype(np.float16),
-                wp=(np.random.randn(C, C) * sc).astype(np.float16),
-                bp=np.zeros(C, np.float32),
-                g2=np.ones(C, np.float32),
-                b2n=np.zeros(C, np.float32),
-                w1=(np.random.randn(C, hidden) * sc).astype(np.float16),
-                bb1=np.zeros(hidden, np.float32),
-                w2=(np.random.randn(hidden, C) * sc).astype(np.float16),
-                bb2=np.zeros(C, np.float32),
+                g1=np.ones(n_embd, np.float32),
+                b1n=np.zeros(n_embd, np.float32),
+                wq=(np.random.randn(n_embd, n_embd) * sc).astype(np.float16),
+                wk=(np.random.randn(n_embd, n_embd) * sc).astype(np.float16),
+                wv=(np.random.randn(n_embd, n_embd) * sc).astype(np.float16),
+                wp=(np.random.randn(n_embd, n_embd) * sc).astype(np.float16),
+                bp=np.zeros(n_embd, np.float32),
+                g2=np.ones(n_embd, np.float32),
+                b2n=np.zeros(n_embd, np.float32),
+                w1=(np.random.randn(n_embd, d_ffn) * sc).astype(np.float16),
+                bb1=np.zeros(d_ffn, np.float32),
+                w2=(np.random.randn(d_ffn, n_embd) * sc).astype(np.float16),
+                bb2=np.zeros(n_embd, np.float32),
             )
             layers.append(lw)
             host += [
@@ -285,17 +287,17 @@ def main():
                 lw["w2"],
                 lw["bb2"],
             ]
-        gf_g = np.ones(C, np.float32)
-        gf_b = np.zeros(C, np.float32)
-        lmw = (np.random.randn(C, vocab) * sc).astype(np.float16)
-        lmb = np.zeros(vocab, np.float32)
+        gf_g = np.ones(n_embd, np.float32)
+        gf_b = np.zeros(n_embd, np.float32)
+        lmw = (np.random.randn(n_embd, n_vocab) * sc).astype(np.float16)
+        lmb = np.zeros(n_vocab, np.float32)
         host += [gf_g, gf_b, lmw, lmb]
         runner.execute(
             host_input_buffers=host,
             payload_function_name="payload",
             argument_access_callback=cb,
         )
-        ref = numpy_ref_gpt_fused(x, layers, gf_g, gf_b, lmw, lmb, H)
+        ref = numpy_ref_gpt_fused(x, layers, gf_g, gf_b, lmw, lmb, n_head)
 
         rel = np.abs(out - ref).max() / (np.abs(ref).max() + 1e-6)
         print(f"max abs diff={np.abs(out - ref).max():.4f}  rel={rel:.6f}")
