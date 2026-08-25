@@ -359,6 +359,8 @@ class ReplaceWithFusedAttentionOp(
             # max and sum, exp) run in f32 for numerical accuracy; only the
             # matmul operands (Q, K, V, P) keep their narrower element types.
             compute_type = ir.F32Type.get()
+            # Change this to a narrower type to run the softmax in lower precision;
+            # the `reduction_type != compute_type` guards handle the trunc/ext.
             reduction_type = compute_type
 
             # Build the fused attention computation
