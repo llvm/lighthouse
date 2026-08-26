@@ -81,7 +81,14 @@ class TargetInfo:
             cls.reset_host_cache()
 
     def _get_feature_list(self) -> list[str]:
-        """Get features from lscpu program"""
+        """Get CPU features from the host system."""
+        if platform.system() == "Darwin":
+            return self._get_feature_list_darwin()
+        return self._get_feature_list_linux()
+
+    @staticmethod
+    def _get_feature_list_linux() -> list[str]:
+        """Get features from lscpu (Linux)."""
         flags = subprocess.run(
             "lscpu | grep Flags",
             capture_output=True,
@@ -93,7 +100,40 @@ class TargetInfo:
                 "Could not get CPU features from lscpu. "
                 "Make sure lscpu is installed and available in PATH."
             )
-        features = flags.split()[1:]  # Remove the "Flags:" prefix
+        return flags.split()[1:]
+
+    @staticmethod
+    def _get_feature_list_darwin() -> list[str]:
+        """Get features from sysctl (macOS)."""
+        result = subprocess.run(
+            ["sysctl", "-n", "hw.optional.cpu_features"],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            return result.stdout.strip().split()
+
+        # Apple Silicon: enumerate hw.optional.arm.* and hw.optional.armv8_* keys.
+        result = subprocess.run(
+            ["sysctl", "-a"],
+            capture_output=True,
+            text=True,
+        )
+        features = []
+        for line in result.stdout.splitlines():
+            if not line.startswith("hw.optional."):
+                continue
+            key, _, value = line.partition(":")
+            if value.strip() not in ("1",):
+                continue
+            # Strip the "hw.optional." prefix.
+            feat = key.split(".", 2)[-1]
+            features.append(feat)
+        if not features:
+            raise RuntimeError(
+                "Could not get CPU features from sysctl. "
+                "Make sure sysctl is installed and available in PATH."
+            )
         return features
 
     def has_features(self, filter: list[str]) -> list[str]:
