@@ -5,13 +5,16 @@ MLIR utility functions.
 from mlir import ir
 from mlir.dialects import func, linalg
 import os
+import platform
 from pathlib import Path
+
+_SHARED_EXT = ".dylib" if platform.system() == "Darwin" else ".so"
 
 
 def get_mlir_library_path():
     """Return MLIR shared library path."""
     pkg_path = Path(ir.__file__).parent
-    run_utils_so = "libmlir_runner_utils.so"
+    run_utils_lib = f"libmlir_runner_utils{_SHARED_EXT}"
     err_msg = f"Could not find shared libs in locations relative to '{pkg_path}'"
     if "python_packages" in str(pkg_path):
         # looks like a local llvm install
@@ -19,19 +22,19 @@ def get_mlir_library_path():
             # LLVM_INSTALL_DIR/python_packages/mlir_core/mlir
             # lib location: LLVM_INSTALL_DIR/lib/
             path = pkg_path.parent.parent.parent / "lib"
-            assert os.path.isfile(path / run_utils_so)
+            assert os.path.isfile(path / run_utils_lib)
         except AssertionError:
             try:
                 # LLVM_BUILD_DIR/tools/mlir/python_packages/mlir_core/mlir
                 # lib location: LLVM_BUILD_DIR/lib/
                 path = pkg_path.parent.parent.parent.parent.parent / "lib"
-                assert os.path.isfile(path / run_utils_so)
+                assert os.path.isfile(path / run_utils_lib)
             except AssertionError:
                 raise ValueError(err_msg)
     else:
         # maybe installed in python path
         path = pkg_path / "_mlir_libs"
-        assert os.path.isfile(path / run_utils_so), err_msg
+        assert os.path.isfile(path / run_utils_lib), err_msg
     return path
 
 
