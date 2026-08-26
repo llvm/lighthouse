@@ -10,10 +10,17 @@ on:
 jobs:
   Pre-Commit:
     strategy:
+      fail-fast: false
       matrix:
-        arch: [x86_64, AArch64]
+        include:
+          - arch: x86_64
+            runs-on: ubuntu-24.04
+          - arch: AArch64
+            runs-on: ubuntu-24.04-arm
+          - arch: macos-arm
+            runs-on: macos-26
 
-    runs-on: ${{ matrix.arch == 'AArch64' && 'ubuntu-24.04-arm' || 'ubuntu-24.04' }}
+    runs-on: ${{ matrix.runs-on }}
     steps:
       - uses: actions/checkout@v5
 
@@ -24,13 +31,27 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@v6
 
-      - name: Install the project and its dependencies
+      - name: Install the project and its dependencies (Linux)
+        if: runner.os == 'Linux'
         run: |
           sudo apt-get install -y llvm-dev # Obtain FileCheck, used in testing.
           sudo apt-get install -y libomp-dev # Obtain LLVM OpenMP, used in testing.
           uv sync --extra ingress-torch-cpu --extra runtime_mpich
 
-      - name: Run lit-enabled tests
+      - name: Install the project and its dependencies (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          brew install llvm libomp mpich # FileCheck and LLVM OpenMP, used in testing.
+          uv sync --extra ingress-torch-cpu --extra runtime_mpich
+
+      - name: Run lit-enabled tests (Linux)
+        if: runner.os == 'Linux'
         run: |
           export FILECHECK=FileCheck-18 # Ubuntu's llvm-dev appends a version number.
+          uv run lit -v .
+
+      - name: Run lit-enabled tests (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          export FILECHECK="$(brew --prefix llvm)/bin/FileCheck" # Homebrew LLVM location.
           uv run lit -v .
