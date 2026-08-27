@@ -2,7 +2,7 @@
 
 from mlir import ir
 from mlir.dialects import transform
-from mlir.dialects.transform import structured, xegpu
+from mlir.dialects.transform import structured, xegpu, tensor
 import lighthouse.transform as lh_transform
 from .lowering_common import (
     get_payload_func,
@@ -114,8 +114,14 @@ def bundle_xegpu_reduction_schedule(
 
     # Normalize possible singleton dimensions so tile+fuse logic works.
     with ir.InsertionPoint(transform.apply_patterns(func).patterns):
+        # fold unit dims in linalg.generic op inputs
         structured.apply_patterns_linalg_fold_unit_extent_dims_via_slices()
-    transform_ext.fold_singleton_extract_slice(func)
+        # fold tensor.extract_slice(tensor.expand_shape(x)) into x
+        tensor.apply_patterns_tensor_reassociative_reshape_folding()
+        # swap tensor.extract_slice(linalg.fill(...)) ops
+        structured.apply_patterns_linalg_swap_extract_slice_with_fill()
+        # fold tensor.extract_slice(tensor.empty(...)) into tensor.tensor_empty(...)
+        tensor.apply_patterns_tensor_fold_tensor_empty(fold_single_use_only=True)
     lh_transform.cleanup(func)
 
     # Fuse elementwise ops, also removes unused linalg op results (if any).
