@@ -151,6 +151,13 @@ def bundle_xegpu_fused_attention_schedule(
     # Match linalg.softmax operation if any and decompose it into generic ops
     softmax_ops = structured.structured_match(anytype, func, ops=["linalg.softmax"])
     structured.structured_decompose_interface(anytype, softmax_ops)
+    # Convert linalg.mul and linalg.batch_matmul to linalg.generic
+    structured.structured_generalize(
+        anytype,
+        structured.structured_match(
+            anytype, func, ops=["linalg.mul", "linalg.batch_matmul"]
+        ),
+    )
 
     # Normalize possible singleton dimensions so tile+fuse logic works.
     with ir.InsertionPoint(transform.apply_patterns(func).patterns):
@@ -197,20 +204,52 @@ def bundle_xegpu_fused_attention_schedule(
     #   Q@K^T:  linalg.batch_matmul(q_slice, linalg.transpose(k_slice))
     #   scale:  linalg.mul(qkt, linalg.fill(scale_constant))
     #   P@V:    linalg.batch_matmul(softmax_out, v_slice)
-    matmul_ops = match_and_split(func, ops={"linalg.batch_matmul"}, nhandles=2)
+
+    linalg_ops = structured.structured_match(
+        anytype, func, ops=["linalg.generic", "linalg.batch_matmul"]
+    )
+    contraction_ops = transform_ext.filter_contraction_ops(linalg_ops)
+    # reduction_ops = transform_ext.filter_reduction_ops(linalg_ops)
+
+    # Match max reduction op. Assumes there's only one arith.max* op.
+    arith_max_op = match_and_split(
+        func, ops=["arith.maximumf", "arith.maxnumf"], nhandles=1
+    )[0]
+    max_reduction = transform.get_parent_op(
+        anytype, arith_max_op, op_name="linalg.generic"
+    )
+
+    def get_producers_by_name(target, op_names):
+        producers = transform_ext.trace_producers(target)
+        return transform_ext.filter_by_name(producers, op_names=op_names)
+
+    # Trace the scalar from max reduction producer chain.
+    max_producer_generics = get_producers_by_name(
+        max_reduction, op_names="linalg.generic"
+    )
+    # Assume the scaling happens in the first ancestor.
+    max_producer = transform_ext.extract_handle(max_producer_generics, 0)
+    max_scale_mul_op = match_and_split(max_producer, ops={"arith.mulf"}, nhandles=1)[0]
+    scale_producers = transform_ext.trace_producers(max_scale_mul_op)
+    scale_const_op = transform_ext.filter_by_name(
+        scale_producers, op_names="arith.constant"
+    )
+
+    matmul_ops = transform.split_handle(2 * [anytype], contraction_ops)
     qk_matmul, pv_matmul = matmul_ops[0], matmul_ops[1]
 
-    q = transform.get_producer_of_operand(anytype, qk_matmul, operand_number=0)
-    k_transpose = transform.get_producer_of_operand(
-        anytype, qk_matmul, operand_number=1
+    # Find the tensor.extract_slice producers for the Q@K^T matmul.
+    qk_extract_slice_producers = get_producers_by_name(
+        qk_matmul, op_names="tensor.extract_slice"
     )
-    k = transform.get_producer_of_operand(anytype, k_transpose, operand_number=0)
-    v = transform.get_producer_of_operand(anytype, pv_matmul, operand_number=1)
+    q = transform_ext.extract_handle(qk_extract_slice_producers, 0)
+    k = transform_ext.extract_handle(qk_extract_slice_producers, 1)
 
-    # The scale is the fill value of the linalg.mul rhs operand.
-    mul_op = match_and_split(func, ops={"linalg.mul"}, nhandles=1)[0]
-    scale_fill = transform.get_producer_of_operand(anytype, mul_op, operand_number=1)
-    scale = transform.get_producer_of_operand(anytype, scale_fill, operand_number=0)
+    # Find handle to v as the first tensor.extract_slice producer of PV matmul
+    pv_extract_slice_producers = get_producers_by_name(
+        pv_matmul, op_names="tensor.extract_slice"
+    )
+    v = transform_ext.extract_handle(pv_extract_slice_producers, 0)
 
     # Replace the P@V batch matmul with a loop over the K/V sequence length that
     # implements online softmax, fusing Q@K^T and the softmax into it.
@@ -221,7 +260,7 @@ def bundle_xegpu_fused_attention_schedule(
         q=q,
         k=k,
         v=v,
-        scale=scale,
+        scale=scale_const_op,
         output=pv_matmul,
         tile_size=reduction_tile,
     )
