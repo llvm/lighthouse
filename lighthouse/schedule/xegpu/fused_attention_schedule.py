@@ -231,8 +231,8 @@ def bundle_xegpu_fused_attention_schedule(
     max_producer = transform_ext.extract_handle(max_producer_generics, 0)
     max_scale_mul_op = match_and_split(max_producer, ops={"arith.mulf"}, nhandles=1)[0]
     scale_producers = transform_ext.trace_producers(max_scale_mul_op)
-    scale_const_op = transform_ext.filter_by_name(
-        scale_producers, op_names="arith.constant"
+    scale_const_op = transform_ext.extract_handle(
+        transform_ext.filter_by_name(scale_producers, op_names="arith.constant"), 0
     )
 
     matmul_ops = transform.split_handle(2 * [anytype], contraction_ops)
