@@ -260,6 +260,13 @@ def parse_cli():
         help="Tile size for the inner reduction dimension (K/V sequence length)",
     )
     parser.add_argument(
+        "--reference-flash",
+        action="store_true",
+        help="Emit the flash loop from the hand-written generator "
+        "(transform_ext.replace_with_fused_attention) instead of deriving it from "
+        "the payload chain. Kept as a reference point for comparing the two.",
+    )
+    parser.add_argument(
         "--q-load-tile",
         type=int,
         nargs=2,
@@ -349,6 +356,7 @@ if __name__ == "__main__":
         "sg_rows": args.sg_rows,
         "subgroup_size": args.subgroup_size,
         "reduction_tile": args.reduction_tile,
+        "reference_flash": args.reference_flash,
         "q_load_tile": args.q_load_tile,
         "v_load_tile": args.v_load_tile,
         "prefetch_tile": args.prefetch_tile,

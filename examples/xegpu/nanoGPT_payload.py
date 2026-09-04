@@ -21,12 +21,13 @@ flash-attention kernel per block (non-causal for now).
 """
 
 from mlir import ir
-from mlir.dialects import linalg, bufferization, tensor, arith, gpu, memref
+from mlir.dialects import linalg, bufferization, tensor, arith, gpu, math, memref
 
 from lighthouse.ingress.mlir_gen.utils import (
     emit_buf_to_tensor,
     affine_map,
     parallel,
+    reduction,
 )
 from lighthouse.ingress.mlir_gen.gpu_utils import emit_gpu_util_funcs
 from lighthouse.ingress.mlir_gen.gpu_layer_norm_payload import emit_layer_norm_generics
@@ -229,11 +230,29 @@ class Builder:
     def attention_4d(
         self, Qh, Kh, Vh, n_head, n_ctx, d_head, out_view, out_view_memref
     ):
-        # Emits the SAME linalg op sequence as generate_gpu_attention_payload
-        # (batch_matmul QK^T -> scale-mul -> softmax -> batch_matmul @V), so the
-        # fused-attention schedule's matchers/rewrite apply verbatim. After the
-        # per-region fused tiling, all these ops fuse into one scf.forall -> one
-        # GPU kernel (the flash/online-softmax kernel). Counts as one 'fa'.
+        # batch_matmul QK^T -> scale-mul -> softmax -> batch_matmul @V, with the
+        # softmax spelled out in the flash-attention form:
+        #
+        #   m   = max_j s          l   = sum_j p
+        #   p   = exp(s - m)       o   = p @ V         out = o / l
+        #
+        # i.e. the normalizing divide comes *after* the contraction. That is
+        # algebraically identical to `softmax(s) @ V` -- dividing by the per-row `l`
+        # commutes with a contraction that reduces the other axis -- but it leaves
+        # the `max -> exp -> {sum, @V}` dependency chain explicit, which is what
+        # `transform_ext.fuse_dependant_reduction_ops` consumes to derive the online
+        # one-pass loop (see `_fuse_attention_in_region` in nanoGPT_schedule.py).
+        # A `linalg.softmax` would not do: its decomposition normalizes *before* the
+        # contraction, leaving @V reading the normalized P and breaking the chain.
+        #
+        # Same chain shape as `generate_gpu_attention_payload`, but not the same ops:
+        # this one stays f16 throughout and keeps @V a named `linalg.batch_matmul`,
+        # while that one accumulates in f32 and writes @V as a `linalg.generic` so the
+        # narrowing of P can sit in its body. Hence the extra `generalize` on the
+        # `_fuse_attention_in_region` path -- the fusion needs @V as a generic.
+        #
+        # After the per-region fused tiling, all these ops fuse into one scf.forall
+        # -> one GPU kernel (the flash/online-softmax kernel). Counts as one 'fa'.
         # Inputs Qh/Kh/Vh are (n_head,n_ctx,d_head) f16 strided views (heads_view); the @V result
         # is materialized into `out_view`, a (n_head,n_ctx,d_head) strided view of a (n_ctx,n_embd) buffer,
         # so the merge back to 2D is also a free view (no from_heads kernel).
@@ -252,15 +271,62 @@ class Builder:
         scaled = linalg.mul(
             qkt, scale_t, outs=[tensor.empty((n_head, n_ctx, n_ctx), f16)]
         )
-        aw = linalg.softmax(
-            result=[ir.RankedTensorType.get((n_head, n_ctx, n_ctx), f16)],
-            input=scaled,
-            output=tensor.empty((n_head, n_ctx, n_ctx), f16),
-            dimension=2,
+
+        # (head, row, col) -> (head, row, col) and -> (head, row): the per-row
+        # statistics are broadcast over the reduced axis.
+        dims = [ir.AffineDimExpr.get(i) for i in range(3)]
+        ew_map = affine_map(3, dims)
+        row_map = affine_map(3, dims[:2])
+        row_shape = (n_head, n_ctx)
+
+        # m = max_j s
+        neg_inf = arith.constant(f16, float("-inf"))
+        max_acc = linalg.fill(neg_inf, outs=[tensor.empty(row_shape, f16)])
+
+        @linalg.generic(
+            [scaled], [max_acc], [ew_map, row_map], [parallel, parallel, reduction]
         )
-        # @V: (n_head,n_ctx,n_ctx) @ (n_head,n_ctx,d_head) -> (n_head,n_ctx,d_head) f16, materialized into the (n_ctx,n_embd) view.
-        out_filled = linalg.fill(zero, outs=[out_view])
-        out = linalg.batch_matmul(aw, Vh, outs=[out_filled])
+        def row_max(s, acc):
+            return arith.MaximumFOp(s, acc)
+
+        # p = exp(s - m), read by both the row sum and the @V contraction.
+        @linalg.generic(
+            [scaled, row_max],
+            [tensor.empty((n_head, n_ctx, n_ctx), f16)],
+            [ew_map, row_map, ew_map],
+            [parallel, parallel, parallel],
+        )
+        def probs(s, m, out):
+            return math.ExpOp(arith.SubFOp(s, m).result)
+
+        # l = sum_j p
+        sum_acc = linalg.fill(zero, outs=[tensor.empty(row_shape, f16)])
+
+        @linalg.generic(
+            [probs], [sum_acc], [ew_map, row_map], [parallel, parallel, reduction]
+        )
+        def row_sum(p, acc):
+            return arith.AddFOp(p, acc)
+
+        # @V: (n_head,n_ctx,n_ctx) @ (n_head,n_ctx,d_head) -> (n_head,n_ctx,d_head)
+        # f16, still unnormalized.
+        unnorm_init = linalg.fill(
+            zero, outs=[tensor.empty((n_head, n_ctx, d_head), f16)]
+        )
+        unnormalized = linalg.batch_matmul(probs, Vh, outs=[unnorm_init])
+
+        # out = o / l, the deferred normalization, materialized into the
+        # (n_ctx,n_embd) view. `l` broadcasts over d_head, the contraction's free
+        # axis.
+        @linalg.generic(
+            [unnormalized, row_sum],
+            [out_view],
+            [ew_map, row_map, ew_map],
+            [parallel, parallel, parallel],
+        )
+        def out(o, denom, dst):
+            return arith.DivFOp(o, denom)
+
         bufferization.materialize_in_destination(
             None, out, out_view_memref, restrict=True, writable=True
         )

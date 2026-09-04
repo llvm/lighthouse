@@ -285,11 +285,12 @@ class ReplaceWithFusedAttentionOp(
             # f32 for numerical accuracy; only the matmul operands keep their
             # narrower element types.
             k_element_type = ir.RankedTensorType(k.type).element_type
-            # P is the lhs operand of the contraction being replaced, so its
-            # element type is the precision the rest of the graph expects.
-            p_element_type = ir.RankedTensorType(
-                output_op.operands[0].type
-            ).element_type
+            # P is the lhs of the `P @ V` contraction, so it carries V's element
+            # type: a `linalg.batch_matmul`'s two operands must agree. Derived from
+            # `v` rather than from `output_op`'s lhs so that `output` may be either
+            # the contraction itself or, when the payload defers the normalizing
+            # divide past it, that divide.
+            p_element_type = ir.RankedTensorType(v.type).element_type
             out_element_type = ir.RankedTensorType(
                 output_op.results[0].type
             ).element_type
