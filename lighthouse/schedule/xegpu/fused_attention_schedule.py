@@ -209,7 +209,6 @@ def bundle_xegpu_fused_attention_schedule(
         anytype, func, ops=["linalg.generic", "linalg.batch_matmul"]
     )
     contraction_ops = transform_ext.filter_contraction_ops(linalg_ops)
-    # reduction_ops = transform_ext.filter_reduction_ops(linalg_ops)
 
     # Match max reduction op. Assumes there's only one arith.max* op.
     arith_max_op = match_and_split(
