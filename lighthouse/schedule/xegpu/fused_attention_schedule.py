@@ -341,11 +341,16 @@ def bundle_xegpu_fused_attention_schedule(
     # Match payload function
     func = get_payload_func(mod, op_name=["linalg.generic", "linalg.batch_matmul"])
 
-    # The payload spells the softmax out as `max -> exp -> {sum, P@V} -> divide`
-    # (see `generate_gpu_attention_payload`), so there is no `linalg.softmax` to
-    # decompose: its decomposition normalizes *before* the contraction, which
-    # would leave the P@V reading the normalized P and so break the dependency
-    # chain the reduction fusion needs.
+    # Match linalg.softmax operation if any and decompose it into generic ops
+    softmax_ops = structured.structured_match(anytype, func, ops=["linalg.softmax"])
+    structured.structured_decompose_interface(anytype, softmax_ops)
+    # Convert linalg.mul and linalg.batch_matmul to linalg.generic
+    structured.structured_generalize(
+        anytype,
+        structured.structured_match(
+            anytype, func, ops=["linalg.mul", "linalg.batch_matmul"]
+        ),
+    )
 
     # Normalize possible singleton dimensions so tile+fuse logic works.
     with ir.InsertionPoint(transform.apply_patterns(func).patterns):

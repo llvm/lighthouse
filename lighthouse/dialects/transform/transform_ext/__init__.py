@@ -21,12 +21,14 @@ from .ops.filter_elementwise import filter_elementwise
 from .ops.filter_by_name import filter_by_name
 from .ops.filter_reduction_ops import filter_reduction_ops
 from .ops.fuse_dependant_reduction_ops import fuse_dependant_reduction_ops
+from .ops.filter_contraction_ops import filter_contraction_ops
 from .ops.get_leading_unit_tile_sizes import get_leading_unit_tile_sizes
 from .ops.move_offsets_to_subview import move_offsets_to_subview
 from .ops.clear_tile_and_fuse_annotations import clear_tile_and_fuse_annotations
 from .ops.get_fusion_roots import get_fusion_roots
 from .ops.propagate_tile_sizes import propagate_tile_sizes
 from .utils.dependant_reduction_legality import REDUCTION_LOOP_ATTR_NAME
+from .ops.sfc_remap_forall import sfc_remap_forall
 
 __all__ = [
     "REDUCTION_LOOP_ATTR_NAME",
@@ -37,6 +39,7 @@ __all__ = [
     "enable_fastmath_optimizations",
     "extract_handle",
     "filter_by_name",
+    "filter_contraction_ops",
     "filter_elementwise",
     "filter_num_loops",
     "filter_reduction_ops",
@@ -55,6 +58,7 @@ __all__ = [
     "replace",
     "replace_with_fused_attention",
     "reverse_handles",
+    "sfc_remap_forall",
     "trace_producers",
     "update_address_space",
     "wrap_in_benching_func",

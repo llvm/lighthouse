@@ -41,13 +41,13 @@ class TraceProducersOp(TransformExtensionDialect.Operation, name="trace_producer
             # Walk the SSA producer graph via operand -> owner edges.
             # Use BFS to guarantee closest-first ordering by graph distance.
             producers: list[ir.Operation] = []
-            visited_ids: set[int] = set()
+            visited: set[ir.Operation] = set()
             worklist = deque()
 
             for operand in leaf.operands:
                 owner_op = defining_op(operand)
-                if owner_op is not None and id(owner_op) not in visited_ids:
-                    visited_ids.add(id(owner_op))
+                if owner_op is not None and owner_op not in visited:
+                    visited.add(owner_op)
                     worklist.append(owner_op)
 
             while worklist:
@@ -56,8 +56,8 @@ class TraceProducersOp(TransformExtensionDialect.Operation, name="trace_producer
 
                 for operand in producer.operands:
                     owner_op = defining_op(operand)
-                    if owner_op is not None and id(owner_op) not in visited_ids:
-                        visited_ids.add(id(owner_op))
+                    if owner_op is not None and owner_op not in visited:
+                        visited.add(owner_op)
                         worklist.append(owner_op)
 
             results.set_ops(op.ops, producers)

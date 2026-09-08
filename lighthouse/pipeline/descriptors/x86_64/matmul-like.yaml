@@ -4,8 +4,9 @@ Pipeline:
                                   block_factors=$block_factors
                                   tile_size=$tile_size
                                 }
+  - schedule: "sfc.py[gen=remap]"
 
-  ## CPU specific register tiling (depends on uArch & data type)
+  # CPU specific register tiling (depends on uArch & data type)
   - schedule: "x86/register_tiling.py[gen=matmul_register_tiling] {
                                                                     target=linalg.contract
                                                                     reg_tile_batch=$reg_tile_batch

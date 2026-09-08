@@ -83,6 +83,17 @@ def build_register_reduction():
     return sched
 
 
+def build_register_unroll():
+    with schedule_boilerplate() as (sched, named_seq):
+        ops = lh_transform.match_op(named_seq.bodyTarget, "linalg.matmul")
+        assign_tile_sizes(
+            ops,
+            strategy="register_unroll",
+        )
+        transform.yield_()
+    return sched
+
+
 # CHECK-LABEL: Test: f32_register_parallel_default
 # CHECK: linalg.matmul
 # CHECK-SAME: transform_ext.tile_sizes = array<i64: 8, 32, 0>
@@ -210,4 +221,45 @@ with TargetInfo.override(features=["amx_tile"]):
         "f32_register_reduction_under_amx_target",
         F32_MATMUL,
         lambda: build_register_reduction(),
+    )
+
+# CHECK-LABEL: Test: f32_register_unroll_default
+# CHECK: linalg.matmul
+# CHECK-SAME: transform_ext.tile_sizes = array<i64: 1, 16, 1>
+run("f32_register_unroll_default", F32_MATMUL, lambda: build_register_unroll())
+
+
+# CHECK-LABEL: Test: bf16_amx_register_unroll_default
+# CHECK: linalg.matmul
+# CHECK-SAME: transform_ext.tile_sizes = array<i64: 16, 16, 32>
+with TargetInfo.override(features=["amx_tile"]):
+    run(
+        "bf16_amx_register_unroll_default",
+        BF16_MATMUL,
+        lambda: build_register_unroll(),
+    )
+
+
+# Without AMX, bf16 is neither an AMX nor an all-f32 contraction, so both the
+# parallel and reduction tiles come from the generic fallback.
+# CHECK-LABEL: Test: bf16_no_amx_register_unroll_generic_fallback
+# CHECK: linalg.matmul
+# CHECK-SAME: transform_ext.tile_sizes = array<i64: 1, 16, 1>
+with TargetInfo.override(features=[]):
+    run(
+        "bf16_no_amx_register_unroll_generic_fallback",
+        BF16_MATMUL,
+        lambda: build_register_unroll(),
+    )
+
+
+# An AMX-capable target must not change f32 GEMM unroll tiling.
+# CHECK-LABEL: Test: f32_register_unroll_under_amx_target
+# CHECK: linalg.matmul
+# CHECK-SAME: transform_ext.tile_sizes = array<i64: 1, 16, 1>
+with TargetInfo.override(features=["amx_tile"]):
+    run(
+        "f32_register_unroll_under_amx_target",
+        F32_MATMUL,
+        lambda: build_register_unroll(),
     )
