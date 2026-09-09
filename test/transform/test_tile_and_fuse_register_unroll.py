@@ -47,6 +47,13 @@ def assign_register_unroll():
     )
 
 
+def assign_register_unroll_through_loops():
+    return tf.assign_and_propagate_tile_sizes(
+        strategy="register_unroll",
+        propagate_through_loops=True,
+    )
+
+
 def assign_elementwise_register_unroll():
     return tf.assign_elementwise_tile_sizes(
         strategy="register_unroll",
@@ -389,9 +396,30 @@ run(
 
 
 # The elementwise ops sit outside the K loop, so propagation does not reach them
-# and they fall back to the SIMD-width-derived generic tiles; pin the target.
+# and they fall back to the SIMD-width-derived generic tiles.
 # CHECK-LABEL: Test: k_loop_matmul_unroll_all_annotated
 # CHECK: func.func @main
+# CHECK-COUNT-1: scf.for
+# CHECK-NOT: scf.forall
+# CHECK: linalg.matmul {transform_ext.tile_sizes = array<i64: 1, 16, 1>}
+# CHECK: linalg.generic
+# CHECK-SAME: transform_ext.tile_sizes = array<i64: 1, 8>
+# CHECK: linalg.generic
+# CHECK-SAME: transform_ext.tile_sizes = array<i64: 1, 8>
+with TargetInfo.override(features=["avx2"]):
+    run(
+        "k_loop_matmul_unroll_all_annotated",
+        K_LOOP_GEMM_OUTER_CHAIN,
+        assign_register_unroll,
+        assign_elementwise_register_unroll,
+        tile_and_unroll_all_annotated,
+    )
+
+# With loop propagation enabled, the matmul annotation crosses the scf.for result
+# and the epilogues inherit its f32 contraction tile instead of the AVX2 fallback.
+# CHECK-LABEL: Test: k_loop_matmul_unroll_through_loops
+# CHECK: func.func @main
+# CHECK: linalg.fill {transform_ext.tile_sizes = array<i64: 1, 16>}
 # CHECK-COUNT-1: scf.for
 # CHECK-NOT: scf.forall
 # CHECK: linalg.matmul {transform_ext.tile_sizes = array<i64: 1, 16, 1>}
@@ -399,11 +427,11 @@ run(
 # CHECK-SAME: transform_ext.tile_sizes = array<i64: 1, 16>
 # CHECK: linalg.generic
 # CHECK-SAME: transform_ext.tile_sizes = array<i64: 1, 16>
-with TargetInfo.override(features=["avx512f"]):
+with TargetInfo.override(features=["avx2"]):
     run(
-        "k_loop_matmul_unroll_all_annotated",
+        "k_loop_matmul_unroll_through_loops",
         K_LOOP_GEMM_OUTER_CHAIN,
-        assign_register_unroll,
+        assign_register_unroll_through_loops,
         assign_elementwise_register_unroll,
         tile_and_unroll_all_annotated,
     )
@@ -424,6 +452,25 @@ with TargetInfo.override(features=["amx_tile", "avx512f"]):
         "k_loop_bf16_amx_matmul_unroll",
         K_LOOP_GEMM_BF16_EPILOGUE,
         assign_register_unroll,
+        assign_elementwise_register_unroll,
+        tile_and_unroll_all_annotated,
+    )
+
+# With loop propagation enabled, the AMX matmul's parallel tile propagates out
+# through the loop-carried value to both the fill and epilogue.
+# CHECK-LABEL: Test: k_loop_bf16_amx_matmul_unroll_through_loops
+# CHECK: func.func @main
+# CHECK: linalg.fill {transform_ext.tile_sizes = array<i64: 16, 16>}
+# CHECK-COUNT-1: scf.for
+# CHECK-NOT: scf.forall
+# CHECK: linalg.matmul {transform_ext.tile_sizes = array<i64: 16, 16, 32>}
+# CHECK: linalg.generic
+# CHECK-SAME: transform_ext.tile_sizes = array<i64: 16, 16>
+with TargetInfo.override(features=["amx_tile", "avx512f"]):
+    run(
+        "k_loop_bf16_amx_matmul_unroll_through_loops",
+        K_LOOP_GEMM_BF16_EPILOGUE,
+        assign_register_unroll_through_loops,
         assign_elementwise_register_unroll,
         tile_and_unroll_all_annotated,
     )
