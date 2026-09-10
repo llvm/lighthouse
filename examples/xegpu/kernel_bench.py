@@ -208,9 +208,9 @@ def infer_parameters(
                 "layer_kind": "reduction",
                 "sizes": shape,
                 "wg_tile": [1, 0, 128, 128],
-                "wg_subtile": [0, 0, 16, 32],
-                "sg_tile": [0, 2, 16, 32],
-                "reduction_tile": [0, 32, 0, 0],
+                "wg_subtile": [0, 0, 64, 128],
+                "sg_tile": [0, 0, 8, 32],
+                "reduction_tile": [0, 8, 0, 0],
                 "subgroup_size": 16,
             }
         else:
