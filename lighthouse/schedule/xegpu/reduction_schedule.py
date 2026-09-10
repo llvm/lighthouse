@@ -265,7 +265,13 @@ def bundle_xegpu_reduction_schedule(
         raise PipelineInterrupt()
 
     # vectorize
-    func = vectorize(mod, payload_func_name=payload_func_name)
+    # Disable multi-reduction to contract patterns because xegpu lowering does
+    # not currently support vector.contract reductions properly.
+    func = vectorize(
+        mod,
+        payload_func_name=payload_func_name,
+        disable_multi_reduction_to_contract_patterns=True,
+    )
 
     # Convert math.fpowi to arith.mulf.
     func = get_payload_func(mod, func_name=payload_func_name)

@@ -102,6 +102,8 @@ def vectorize(
     mod: transform.AnyOpType,
     payload_func_name: str | None = None,
     payload_func: transform.AnyOpType | None = None,
+    *,
+    disable_multi_reduction_to_contract_patterns: bool = False,
 ) -> transform.AnyOpType:
     """Vectorize and run loop-hoisting cleanup for the payload function."""
     if payload_func is None:
@@ -110,6 +112,7 @@ def vectorize(
         transform.any_op_t(),
         payload_func,
         fold_type_extensions_into_contract=True,
+        disable_multi_reduction_to_contract_patterns=disable_multi_reduction_to_contract_patterns,
     )
 
     # Hoist loop-invariant vector read/store ops if present.
