@@ -119,6 +119,12 @@ def bundle_xegpu_reduction_schedule(
     reduction_tile = layer_params["reduction_tile"]
     subgroup_size = layer_params["subgroup_size"]
 
+    assert sum(wg_tile) > 0, "wg_tile must have at least one non-zero value"
+    assert sum(sg_tile) > 0, "sg_tile must have at least one non-zero value"
+    assert sum(reduction_tile) > 0, (
+        "reduction_tile must have at least one non-zero value"
+    )
+
     assert len(wg_tile) == len(sg_tile) == len(reduction_tile), (
         "wg_tile, sg_tile, and reduction_tile must have the same number of dimensions"
     )
@@ -292,9 +298,12 @@ def bundle_xegpu_reduction_schedule(
     # set the number of threads for the gpu.launch operation
     launch_op = match_and_split(func, ops={"gpu.launch"})
     num_subgroups = 1
-    for wg, sg in zip(wg_tile, sg_tile):
+    _wg_tile = wg_subtile if apply_wg_subtile else wg_tile
+    for i, (wg, red, sg) in enumerate(zip(_wg_tile, reduction_tile, sg_tile)):
         if wg > 0 and sg > 0:
             num_subgroups *= wg // sg
+        if red > 0 and sg > 0:
+            num_subgroups *= red // sg
     num_threads = num_subgroups * subgroup_size
     xegpu.set_gpu_launch_threads(launch_op[0], threads=[num_threads, 1, 1])
 
@@ -320,7 +329,6 @@ def bundle_xegpu_reduction_schedule(
     store_nd_ops = match(gpu_func, ops={"xegpu.store_nd"})
     store_matrix_ops = match(gpu_func, ops={"xegpu.store_matrix"})
     sg_layout = [1] * ndims
-    _wg_tile = wg_subtile if apply_wg_subtile else wg_tile
     for i, (wg, red, sg) in enumerate(zip(_wg_tile, reduction_tile, sg_tile)):
         if red > 0 and sg > 0:
             sg_layout[i] = int(red // sg)
