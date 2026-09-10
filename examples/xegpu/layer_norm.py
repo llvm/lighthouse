@@ -261,10 +261,10 @@ if __name__ == "__main__":
             {
                 "layer_kind": "reduction",
                 "sizes": args.sizes,
-                "wg_rows": args.wg_rows,
-                "sg_rows": args.sg_rows,
+                "wg_tile": [args.wg_rows, 0],
+                "sg_tile": [args.sg_rows, 0],
+                "reduction_tile": [0, args.reduction_step_size],
                 "subgroup_size": args.subgroup_size,
-                "reduction_step_size": args.reduction_step_size,
             }
         ]
     )
