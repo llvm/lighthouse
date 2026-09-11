@@ -141,27 +141,37 @@ def _derive_flash_attention(anytype, func, layer_params):
     running max changes. Applied once per consumer reduction -- the row sum and the
     `P@V` contraction -- it folds the whole chain into a single loop.
 
-    Inside the WG forall the chain reads, in program order:
+    Inside the WG forall the chain reads, in program order (every op a
+    `linalg.generic` by this point):
 
-        %s   = linalg.mul(batch_matmul(q, k^T), fill(scale))   the scaled scores
-        %m   = max_k %s                                        the producer reduction
-        %p   = exp(%s - %m)                                    the elementwise term
-        %o   = contract(%p, v)                                 consumer reduction
-        %l   = sum_k %p                                        consumer reduction
-        %out = %o / %l                                         the deferred divide
+        %qk  = contract(q, transpose(k))    Q @ K^T
+        %s   = %qk * scale                  the scaled scores
+        %m   = max_k %s                     the producer reduction
+        %p   = exp(%s - %m)                 the elementwise term
+        %o   = contract(%p, v)              consumer reduction
+        %l   = sum_k %p                     consumer reduction
+        %out = %o / %l                      the deferred divide
     """
     # Tile size for the reduction dimension (the K/V sequence length).
     reduction_tile = layer_params["reduction_tile"]
 
-    # Program order at this point (the WG tiling reorders the two consumer
-    # reductions relative to the payload's build order): row max, exp term, the P@V
-    # contraction, row sum, deferred divide. P@V is already a `linalg.generic` --
-    # the payload writes it that way so the narrowing of P can sit in its body (see
-    # `generate_gpu_attention_payload`) -- so unlike Q@K^T it needs no `generalize`
-    # to be a fusable consumer.
-    max_op, p_op, pv_op, sum_op, _divide = match_and_split(
-        func, ops={"linalg.generic"}, nhandles=5
-    )
+    # The whole chain is `linalg.generic` by now -- the payload writes P@V that way
+    # so the narrowing of P can sit in its body (see
+    # `generate_gpu_attention_payload`), and everything else was generalized in
+    # `bundle_xegpu_fused_attention_schedule` -- so op names no longer tell the
+    # chain apart. Its four reduction generics do: in program order they are Q@K^T,
+    # the row max, P@V and the row sum. The WG tiling is what puts the two consumer
+    # reductions in that order, swapping them relative to the payload's build order.
+    reductions = transform_ext.filter_reduction_ops(match(func, ops={"linalg.generic"}))
+    qk_op, max_op, pv_op, sum_op = transform.split_handle([anytype] * 4, reductions)
+
+    # The elementwise term `p` is the row sum's input; the scaled scores are the row
+    # max's, and the K transpose is Q@K^T's rhs. The latter two get sunk into the
+    # reduction loop further down.
+    prod = transform.get_producer_of_operand
+    p_op = prod(anytype, sum_op, operand_number=0)
+    scale_mul_op = prod(anytype, max_op, operand_number=0)
+    transpose_op = prod(anytype, qk_op, operand_number=1)
 
     # Tile the row max along the key/value axis. This is the producer reduction
     # loop the rest of the chain gets folded into; the marker attribute is what
@@ -187,7 +197,7 @@ def _derive_flash_attention(anytype, func, layer_params):
 
     # Second chain: max -> p -> P@V, into that same loop. The first fusion
     # consumed the handle to `p`; the original is still the contraction's operand.
-    p_op = transform.get_producer_of_operand(anytype, pv_op, operand_number=0)
+    p_op = prod(anytype, pv_op, operand_number=0)
     reduction_loop = transform_ext.fuse_dependant_reduction_ops(
         p_op, pv_op, reduction_loop
     )
@@ -195,40 +205,37 @@ def _derive_flash_attention(anytype, func, layer_params):
 
     # Sink the score computation into the reduction loop as well, so only one
     # [wg_rows, tile_size] score tile -- rather than the full [wg_rows, n_ctx]
-    # matrix -- is ever live.
-    for producer_name in ["linalg.mul", "linalg.batch_matmul", "linalg.transpose"]:
-        producer_op = match_and_split(func, ops={producer_name}, nhandles=1)[0]
-        _, reduction_loop = structured.structured_fuse_into_containing_op(
+    # matrix -- is ever live. Consumer before producer, and the in-loop copies of
+    # the first two are kept: their accumulator fills are sunk next.
+    in_loop = {}
+    for key, producer_op in [
+        ("mul", scale_mul_op),
+        ("qk", qk_op),
+        ("transpose", transpose_op),
+    ]:
+        in_loop[key], reduction_loop = structured.structured_fuse_into_containing_op(
             anytype,
             anytype,
             producer_op=producer_op,
             containing_op=reduction_loop,
         )
 
-    # The Q @ K^T zero accumulator and the scale tensor are still filled at full
-    # [wg_rows, n_ctx] extent outside the loop, even though the ops now inside it
-    # only ever read a [wg_rows, tile_size] slice. Sink those two fills as well so
-    # neither tensor is materialized whole. Reach them through the in-loop consumer
-    # they initialize -- one hop for the slice the fusion left behind, one more for
-    # the fill itself. The three remaining fills initialize the loop's running
-    # accumulators and must stay outside.
-    scale_mul_op = match_and_split(reduction_loop, ops={"linalg.mul"}, nhandles=1)[0]
-    qk_matmul = match_and_split(
-        reduction_loop, ops={"linalg.batch_matmul"}, nhandles=1
-    )[0]
-    for consumer_op, operand_number in [(scale_mul_op, 1), (qk_matmul, 2)]:
-        fill_slice = transform.get_producer_of_operand(
-            anytype, consumer_op, operand_number=operand_number
-        )
-        fill_op = transform.get_producer_of_operand(
-            anytype, fill_slice, operand_number=0
-        )
-        _, reduction_loop = structured.structured_fuse_into_containing_op(
-            anytype,
-            anytype,
-            producer_op=fill_op,
-            containing_op=reduction_loop,
-        )
+    # The Q @ K^T zero accumulator is still filled at full [wg_rows, n_ctx] extent
+    # outside the loop, even though the contraction now inside it only ever reads a
+    # [wg_rows, tile_size] slice. Sink that fill too so the tensor is never
+    # materialized whole. Reach it through the in-loop contraction's `outs` -- one
+    # hop for the slice the fusion left behind, one more for the fill itself. The
+    # three remaining fills initialize the loop's running accumulators (max, sum,
+    # P@V) and must stay outside. The scale needs no fill: elementwise fusion sinks
+    # it into the multiply's body as a scalar constant.
+    fill_slice = prod(anytype, in_loop["qk"], operand_number=2)
+    fill_op = prod(anytype, fill_slice, operand_number=0)
+    _, reduction_loop = structured.structured_fuse_into_containing_op(
+        anytype,
+        anytype,
+        producer_op=fill_op,
+        containing_op=reduction_loop,
+    )
 
     transform.apply_cse(func)
     canonicalize(func)
@@ -241,10 +248,8 @@ def _derive_flash_attention(anytype, func, layer_params):
     # reductions and the correction's broadcasts would keep a unit dim and drag
     # shape_casts (and rank-3 XeGPU layouts) along with them.
     #
-    # Done here, after the reduction fusion rather than before it, for two reasons:
-    # `fuse_dependant_reduction_ops` gets to run on the shape it already handles,
-    # and every op above is still matched by name -- generalizing first would turn
-    # the whole chain into linalg.generic.
+    # Done here, after the reduction fusion, so `fuse_dependant_reduction_ops` runs
+    # on the shape it already handles.
     #
     # `fold_unit_extent_dims` only rewrites linalg.generic, hence the generalize;
     # and it leaves two-step slice chains behind (16x4096x64 -> 1x128x64 ->
@@ -254,14 +259,7 @@ def _derive_flash_attention(anytype, func, layer_params):
     # rank 2, vectorization reads through them rank-reducing and the accumulators
     # come out as rank-1/2 vectors.
     named_ops = match(
-        func,
-        ops={
-            "linalg.batch_matmul",
-            "linalg.mul",
-            "linalg.transpose",
-            "linalg.fill",
-            "linalg.elementwise",
-        },
+        func, ops={"linalg.transpose", "linalg.fill", "linalg.elementwise"}
     )
     structured.structured_generalize(anytype, named_ops)
     with ir.InsertionPoint(transform.apply_patterns(func).patterns):
@@ -290,27 +288,54 @@ def _replace_with_reference_flash_attention(anytype, func, layer_params):
     chain's leaf -- rather than the `P@V` contraction; everything upstream of it
     (max, exp, row sum, `P@V`) is left dead for DCE.
     """
-    prod = transform.get_producer_of_operand
-    # The Q, K, V tensors and the scale constant are found by walking the SSA chain
-    # of the two batch matmuls inside the WG forall:
-    #
-    #   Q@K^T:  linalg.batch_matmul(q_slice, linalg.transpose(k_slice))
-    #   scale:  linalg.mul(qkt, linalg.fill(scale_constant))
-    #   P@V:    linalg.generic(probs, v_slice)   -- a generic, not a named matmul,
-    #                                              so that P's narrowing can live in
-    #                                              its body; V is its rhs either way
-    qk_matmul = match_and_split(func, ops={"linalg.batch_matmul"}, nhandles=1)[0]
-    q = prod(anytype, qk_matmul, operand_number=0)
-    k_transpose = prod(anytype, qk_matmul, operand_number=1)
-    k = prod(anytype, k_transpose, operand_number=0)
-    mul_op = match_and_split(func, ops={"linalg.mul"}, nhandles=1)[0]
-    scale = prod(anytype, prod(anytype, mul_op, operand_number=1), operand_number=0)
-    # Generics in program order: row max, exp term, P@V, row sum, deferred divide.
-    # The divide is the chain's leaf; V is P@V's rhs.
-    _max, _exp, pv_op, _sum, divide_op = match_and_split(
-        func, ops={"linalg.generic"}, nhandles=5
+    # Every op in the chain is a `linalg.generic` by now, so Q, K, V and the scale
+    # are found structurally rather than by op name. The two contractions are
+    # Q@K^T and P@V, in program order; each tensor is the corresponding
+    # contraction's `tensor.extract_slice` producer (Q and K^T's source for the
+    # first, V for the second).
+    generics = match(func, ops={"linalg.generic"})
+    qk_matmul, pv_matmul = transform.split_handle(
+        [anytype] * 2, transform_ext.filter_contraction_ops(generics)
     )
-    v = prod(anytype, pv_op, operand_number=1)
+
+    def slice_producers(target):
+        producers = transform_ext.trace_producers(target)
+        return transform_ext.filter_by_name(producers, op_names="tensor.extract_slice")
+
+    qk_slices = slice_producers(qk_matmul)
+    q = transform_ext.extract_handle(qk_slices, 0)
+    k = transform_ext.extract_handle(qk_slices, 1)
+    v = transform_ext.extract_handle(slice_producers(pv_matmul), 0)
+
+    # The scale is the constant feeding the multiply that produces the row max's
+    # input. Elementwise fusion has folded it into that multiply's body, so it is
+    # reached through the scalar ops rather than through a `linalg.fill`.
+    arith_max = match_and_split(
+        func, ops=["arith.maximumf", "arith.maxnumf"], nhandles=1
+    )[0]
+    max_reduction = transform.get_parent_op(
+        anytype, arith_max, op_name="linalg.generic"
+    )
+    scale_mul = match_and_split(
+        transform_ext.extract_handle(
+            transform_ext.filter_by_name(
+                transform_ext.trace_producers(max_reduction),
+                op_names="linalg.generic",
+            ),
+            0,
+        ),
+        ops={"arith.mulf"},
+        nhandles=1,
+    )[0]
+    scale = transform_ext.extract_handle(
+        transform_ext.filter_by_name(
+            transform_ext.trace_producers(scale_mul), op_names="arith.constant"
+        ),
+        0,
+    )
+
+    # The chain's leaf is the deferred divide, the last generic in program order.
+    divide_op = transform_ext.extract_handle(generics, -1)
 
     transform_ext.replace_with_fused_attention(
         q=q,
