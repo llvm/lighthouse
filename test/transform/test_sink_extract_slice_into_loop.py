@@ -69,7 +69,7 @@ run("matching", MATCHING)
 # match the pattern and must be left unchanged.
 NON_MATCHING = """
 module {
-  func.func @main() -> tensor<8x4xf32> {
+  func.func @main(%arg0: tensor<8x16xf32>) -> tensor<8x16xf32> {
     %c0 = arith.constant 0 : index
     %c2 = arith.constant 2 : index
     %c8 = arith.constant 8 : index
@@ -85,12 +85,162 @@ module {
           : tensor<2x4xf32> into tensor<8x4xf32>
       scf.yield %ins : tensor<8x4xf32>
     }
-    return %loop : tensor<8x4xf32>
+    %out = tensor.insert_slice %loop into %arg0[0, 4] [8, 4] [1, 1]
+        : tensor<8x4xf32> into tensor<8x16xf32>
+    return %out : tensor<8x16xf32>
   }
 }
 """
 
 # CHECK-LABEL: Test: non_matching
 # CHECK: %[[EMPTY:.*]] = tensor.empty() : tensor<8x4xf32>
-# CHECK: scf.for %{{.*}} iter_args(%{{.*}} = %[[EMPTY]]) -> (tensor<8x4xf32>)
+# CHECK: %[[LOOP:.*]] = scf.for %{{.*}} iter_args(%{{.*}} = %[[EMPTY]]) -> (tensor<8x4xf32>)
+# CHECK: tensor.insert_slice %[[LOOP]] into %arg0[0, 4] [8, 4] [1, 1]
 run("non_matching", NON_MATCHING)
+
+
+# The write-back must target the same slice as the initial extract.
+MISMATCHED_WRITEBACK = """
+module {
+  func.func @main(%arg0: tensor<8x16xf32>) -> tensor<8x16xf32> {
+    %c0 = arith.constant 0 : index
+    %c2 = arith.constant 2 : index
+    %c8 = arith.constant 8 : index
+    %cst = arith.constant 1.000000e+00 : f32
+    %ext = tensor.extract_slice %arg0[0, 4] [8, 4] [1, 1]
+        : tensor<8x16xf32> to tensor<8x4xf32>
+    %loop = scf.for %i = %c0 to %c8 step %c2 iter_args(%it = %ext)
+        -> (tensor<8x4xf32>) {
+      %s = tensor.extract_slice %it[%i, 0] [2, 4] [1, 1]
+          : tensor<8x4xf32> to tensor<2x4xf32>
+      %f = linalg.fill ins(%cst : f32) outs(%s : tensor<2x4xf32>)
+          -> tensor<2x4xf32>
+      %ins = tensor.insert_slice %f into %it[%i, 0] [2, 4] [1, 1]
+          : tensor<2x4xf32> into tensor<8x4xf32>
+      scf.yield %ins : tensor<8x4xf32>
+    }
+    %out = tensor.insert_slice %loop into %arg0[0, 5] [8, 4] [1, 1]
+        : tensor<8x4xf32> into tensor<8x16xf32>
+    return %out : tensor<8x16xf32>
+  }
+}
+"""
+
+# CHECK-LABEL: Test: mismatched_writeback
+# CHECK: %[[EXT:.*]] = tensor.extract_slice %arg0[0, 4] [8, 4] [1, 1]
+# CHECK: %[[LOOP:.*]] = scf.for %{{.*}} iter_args(%{{.*}} = %[[EXT]]) -> (tensor<8x4xf32>)
+# CHECK: tensor.insert_slice %[[LOOP]] into %arg0[0, 5] [8, 4] [1, 1]
+run("mismatched_writeback", MISMATCHED_WRITEBACK)
+
+
+# Rewriting is unsafe when the loop result has users besides its write-back.
+MULTIPLE_RESULT_USERS = """
+module {
+  func.func @main(%arg0: tensor<8x16xf32>) -> tensor<8x16xf32> {
+    %c0 = arith.constant 0 : index
+    %c2 = arith.constant 2 : index
+    %c8 = arith.constant 8 : index
+    %cst = arith.constant 1.000000e+00 : f32
+    %ext = tensor.extract_slice %arg0[0, 4] [8, 4] [1, 1]
+        : tensor<8x16xf32> to tensor<8x4xf32>
+    %loop = scf.for %i = %c0 to %c8 step %c2 iter_args(%it = %ext)
+        -> (tensor<8x4xf32>) {
+      %s = tensor.extract_slice %it[%i, 0] [2, 4] [1, 1]
+          : tensor<8x4xf32> to tensor<2x4xf32>
+      %f = linalg.fill ins(%cst : f32) outs(%s : tensor<2x4xf32>)
+          -> tensor<2x4xf32>
+      %ins = tensor.insert_slice %f into %it[%i, 0] [2, 4] [1, 1]
+          : tensor<2x4xf32> into tensor<8x4xf32>
+      scf.yield %ins : tensor<8x4xf32>
+    }
+    %out0 = tensor.insert_slice %loop into %arg0[0, 4] [8, 4] [1, 1]
+        : tensor<8x4xf32> into tensor<8x16xf32>
+    %out1 = tensor.insert_slice %loop into %out0[0, 8] [8, 4] [1, 1]
+        : tensor<8x4xf32> into tensor<8x16xf32>
+    return %out1 : tensor<8x16xf32>
+  }
+}
+"""
+
+# CHECK-LABEL: Test: multiple_result_users
+# CHECK: %[[EXT:.*]] = tensor.extract_slice %arg0[0, 4] [8, 4] [1, 1]
+# CHECK: %[[LOOP:.*]] = scf.for %{{.*}} iter_args(%{{.*}} = %[[EXT]]) -> (tensor<8x4xf32>)
+# CHECK: tensor.insert_slice %[[LOOP]] into %arg0[0, 4] [8, 4] [1, 1]
+# CHECK: tensor.insert_slice %[[LOOP]] into %{{.*}}[0, 8] [8, 4] [1, 1]
+run("multiple_result_users", MULTIPLE_RESULT_USERS)
+
+
+# Direct uses of the iter_arg cannot be rebased unless they are supported
+# extract_slice/insert_slice operations.
+UNSUPPORTED_ITER_ARG_USE = """
+module {
+  func.func @main(%arg0: tensor<8x16xf32>) -> tensor<8x16xf32> {
+    %c0 = arith.constant 0 : index
+    %c2 = arith.constant 2 : index
+    %c8 = arith.constant 8 : index
+    %cst = arith.constant 1.000000e+00 : f32
+    %ext = tensor.extract_slice %arg0[0, 4] [8, 4] [1, 1]
+        : tensor<8x16xf32> to tensor<8x4xf32>
+    %loop = scf.for %i = %c0 to %c8 step %c2 iter_args(%it = %ext)
+        -> (tensor<8x4xf32>) {
+      %filled = linalg.fill ins(%cst : f32) outs(%it : tensor<8x4xf32>)
+          -> tensor<8x4xf32>
+      %s = tensor.extract_slice %filled[%i, 0] [2, 4] [1, 1]
+          : tensor<8x4xf32> to tensor<2x4xf32>
+      %ins = tensor.insert_slice %s into %it[%i, 0] [2, 4] [1, 1]
+          : tensor<2x4xf32> into tensor<8x4xf32>
+      scf.yield %ins : tensor<8x4xf32>
+    }
+    %out = tensor.insert_slice %loop into %arg0[0, 4] [8, 4] [1, 1]
+        : tensor<8x4xf32> into tensor<8x16xf32>
+    return %out : tensor<8x16xf32>
+  }
+}
+"""
+
+# CHECK-LABEL: Test: unsupported_iter_arg_use
+# CHECK: %[[EXT:.*]] = tensor.extract_slice %arg0[0, 4] [8, 4] [1, 1]
+# CHECK: %[[LOOP:.*]] = scf.for %{{.*}} iter_args(%[[IT:.*]] = %[[EXT]]) -> (tensor<8x4xf32>)
+# CHECK: linalg.fill ins(%{{.*}} : f32) outs(%[[IT]] : tensor<8x4xf32>)
+# CHECK: tensor.insert_slice %[[LOOP]] into %arg0[0, 4] [8, 4] [1, 1]
+run("unsupported_iter_arg_use", UNSUPPORTED_ITER_ARG_USE)
+
+
+# Matching all scf.for ops may include nested loops. A nonmatching outer loop
+# must not prevent an independently matching inner loop from being rewritten.
+NESTED_MATCHING_INNER = """
+module {
+  func.func @main(%arg0: tensor<8x16xf32>) {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c2 = arith.constant 2 : index
+    %c8 = arith.constant 8 : index
+    %cst = arith.constant 1.000000e+00 : f32
+    scf.for %outer = %c0 to %c1 step %c1 {
+      %ext = tensor.extract_slice %arg0[0, 4] [8, 4] [1, 1]
+          : tensor<8x16xf32> to tensor<8x4xf32>
+      %loop = scf.for %i = %c0 to %c8 step %c2 iter_args(%it = %ext)
+          -> (tensor<8x4xf32>) {
+        %s = tensor.extract_slice %it[%i, 0] [2, 4] [1, 1]
+            : tensor<8x4xf32> to tensor<2x4xf32>
+        %f = linalg.fill ins(%cst : f32) outs(%s : tensor<2x4xf32>)
+            -> tensor<2x4xf32>
+        %ins = tensor.insert_slice %f into %it[%i, 0] [2, 4] [1, 1]
+            : tensor<2x4xf32> into tensor<8x4xf32>
+        scf.yield %ins : tensor<8x4xf32>
+      }
+      %out = tensor.insert_slice %loop into %arg0[0, 4] [8, 4] [1, 1]
+          : tensor<8x4xf32> into tensor<8x16xf32>
+    }
+    return
+  }
+}
+"""
+
+# CHECK-LABEL: Test: nested_matching_inner
+# CHECK: scf.for %{{.*}} = %{{.*}} to %{{.*}} step %{{.*}} {
+# CHECK-NOT: tensor.extract_slice %arg0[0, 4] [8, 4]
+# CHECK: scf.for %[[I:.*]] = %{{.*}} iter_args(%[[IT:.*]] = %arg0) -> (tensor<8x16xf32>)
+# CHECK: tensor.extract_slice %[[IT]][%[[I]], 4] [2, 4] [1, 1]
+# CHECK: tensor.insert_slice %{{.*}} into %[[IT]][%[[I]], 4] [2, 4] [1, 1]
+run("nested_matching_inner", NESTED_MATCHING_INNER)
