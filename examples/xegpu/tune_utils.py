@@ -1,7 +1,6 @@
 from time import perf_counter
 import multiprocessing
 import sys
-import json
 from csv_logger import CSVLogger
 from lighthouse.pipeline.helper import PipelineInterrupt
 
@@ -11,25 +10,39 @@ from mlir import ir
 from lighthouse import dialects as lh_dialects
 from lighthouse.execution.runner import Runner
 from lighthouse.pipeline.driver import TransformDriver
+from lighthouse.schedule.parameters import ScheduleParameters
 from matmul import XeGPUMatMul, check_results
+
+
+def param_dict_to_schedule_params(params: dict) -> ScheduleParameters:
+    sched_params = {
+        "layer_kind": "matmul",
+        "m": params["m"],
+        "n": params["n"],
+        "k": params["k"],
+        "transpose_a": params["transpose_a"],
+        "transpose_b": params["transpose_b"],
+    }
+    sched_params.update(params)
+    return ScheduleParameters([sched_params])
 
 
 def dump_configs_json(
     param_list: list[dict] | dict, filename_prefix: str = "matmul_params"
 ):
+    def _dump(params: dict, filename: str):
+        print(f"  {filename}")
+        sched_params = param_dict_to_schedule_params(params)
+        sched_params.to_json(filename, overwrite=True)
+
     print("\nSaving parameters:")
     if isinstance(param_list, dict):
         filename = f"{filename_prefix}.json"
-        params = param_list
-        with open(filename, "w") as f:
-            json.dump(params, f, indent=4)
-        print(f"  {filename}")
+        _dump(param_list, filename)
         return
     for i, params in enumerate(param_list):
         filename = f"{filename_prefix}_{i:02d}.json"
-        with open(filename, "w") as f:
-            json.dump(params, f, indent=4)
-        print(f"  {filename}")
+        _dump(params, filename)
 
 
 def run_with_timeout(
@@ -146,7 +159,8 @@ def execute_matmul(
             accumulate_c=accumulate_c,
             truncate_c=truncate_c,
         )
-        pipeline = TransformDriver(wload.schedule_modules(parameters=params))
+        sched_params = param_dict_to_schedule_params(params)
+        pipeline = TransformDriver(wload.schedule_modules(parameters=sched_params))
         payload = pipeline.apply(wload.payload_module())
 
         runner = Runner(
