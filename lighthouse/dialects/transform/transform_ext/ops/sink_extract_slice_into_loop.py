@@ -139,7 +139,8 @@ def _match(for_op: ir.OpView):
     for use in old_iter.uses:
         owner = use.owner
         if owner.operation.parent != for_op.operation:
-            raise ValueError("nested-region uses of the loop iter_arg are unsupported")
+            # nested-region uses of the loop iter_arg are unsupported
+            return None
         name = _op_name(owner)
         if name == "scf.yield":
             continue
@@ -310,29 +311,25 @@ class SinkExtractSliceIntoLoopOp(
                 seen.add(target)
                 targets.append(target)
 
-            for target in targets:
-                if _op_name(target) != "scf.for":
+            candidates = [
+                _match(target.opview) if _op_name(target) == "scf.for" else None
+                for target in targets
+            ]
+            for target, cand in zip(targets, candidates):
+                if cand is None:
                     continue
                 if any(
                     other != target
                     and _op_name(other) == "scf.for"
-                    and (_is_ancestor(target, other) or _is_ancestor(other, target))
+                    and _is_ancestor(target, other)
                     for other in targets
                 ):
                     return DiagnosedSilenceableFailure.emit_silenceable_error(
-                        "nested target scf.for ops are unsupported"
+                        "rewriting an scf.for containing another target is unsupported"
                     )
 
             updated = []
-            for target in targets:
-                try:
-                    cand = (
-                        _match(target.opview) if _op_name(target) == "scf.for" else None
-                    )
-                except ValueError as error:
-                    return DiagnosedSilenceableFailure.emit_silenceable_error(
-                        str(error)
-                    )
+            for target, cand in zip(targets, candidates):
                 if cand is None:
                     updated.append(target)
                     continue
