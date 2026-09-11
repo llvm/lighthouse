@@ -74,7 +74,8 @@ module {
 ELTWISE = """
 module {
   func.func @main(%a: tensor<64x64xf32>, %b: tensor<64x64xf32>) -> tensor<64x64xf32> {
-    %s = linalg.add ins(%a, %b : tensor<64x64xf32>, tensor<64x64xf32>)
+    %s = linalg.elementwise <add>
+        ins(%a, %b : tensor<64x64xf32>, tensor<64x64xf32>)
         outs(%a : tensor<64x64xf32>) -> tensor<64x64xf32>
     return %s : tensor<64x64xf32>
   }
@@ -122,10 +123,10 @@ run(
 
 # No reduction dim: the op must be left unannotated.
 # CHECK-LABEL: Test: register_reduction_no_reduction_dims
-# CHECK: linalg.add
+# CHECK: linalg.elementwise
 # CHECK-NOT: transform_ext.tile_sizes
 run(
     "register_reduction_no_reduction_dims",
     ELTWISE,
-    lambda: build_schedule("linalg.add"),
+    lambda: build_schedule("linalg.elementwise"),
 )

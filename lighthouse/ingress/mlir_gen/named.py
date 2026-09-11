@@ -22,14 +22,18 @@ def add_bias(inputs: ir.Value, bias: ir.Value) -> ir.Value:
 
     dimensions = {2: [0], 4: [0, 2]}[inputs.type.rank]
     bias_bcast = linalg.broadcast(bias, outs=(out_uninit,), dimensions=dimensions)
-    return linalg.add(bias_bcast, inputs, outs=(out_uninit,))
+    return linalg.elementwise(
+        bias_bcast, inputs, outs=(out_uninit,), kind=linalg.ElementwiseKind.add
+    )
 
 
 def relu(inputs: ir.Value) -> ir.Value:
     zero = arith.constant(inputs.type.element_type, 0.0)
     out_uninit = tensor.EmptyOp(inputs.type.shape, inputs.type.element_type)
     out = linalg.fill(zero, outs=out_uninit)
-    return linalg.max(inputs, out, outs=(out_uninit,))
+    return linalg.elementwise(
+        inputs, out, outs=(out_uninit,), kind=linalg.ElementwiseKind.max_signed
+    )
 
 
 def softmax(inputs: ir.Value, softmax_buf: ir.Value) -> ir.Value:

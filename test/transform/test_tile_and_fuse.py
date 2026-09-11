@@ -137,7 +137,7 @@ module {
 }
 """
 
-# A named elementwise op (linalg.add) followed by a relu generic.
+# A named elementwise op (linalg.elementwise) followed by a relu generic.
 # The elementwise anchor schedule must cover named variants, not just linalg.generic.
 NAMED_ELTWISE = """
 #id = affine_map<(d0, d1) -> (d0, d1)>
@@ -145,7 +145,8 @@ module {
   func.func @main(%a: tensor<64x256xf32>, %b: tensor<64x256xf32>) -> tensor<64x256xf32> {
     %cst = arith.constant 0.0 : f32
     %e = tensor.empty() : tensor<64x256xf32>
-    %add = linalg.add ins(%a, %b : tensor<64x256xf32>, tensor<64x256xf32>)
+    %add = linalg.elementwise <add>
+        ins(%a, %b : tensor<64x256xf32>, tensor<64x256xf32>)
         outs(%e : tensor<64x256xf32>) -> tensor<64x256xf32>
     %relu = linalg.generic {indexing_maps = [#id, #id],
         iterator_types = ["parallel", "parallel"]}
@@ -650,10 +651,11 @@ run("batch_matmul", BMM, assign_gemm)
 run("reduction", REDUCE, assign_elementwise)
 
 
-# The elementwise anchor schedule covers named variants: a linalg.add anchor is
-# annotated and its tiles propagate to the relu generic epilogue.
+# The elementwise anchor schedule covers named variants: a linalg.elementwise
+# anchor is annotated and its tiles propagate to the relu generic epilogue.
 # CHECK-LABEL: Test: named_elementwise_anchor
-# CHECK: linalg.add {transform_ext.tile_sizes = array<i64: 32, 32>}
+# CHECK: linalg.elementwise
+# CHECK-SAME: transform_ext.tile_sizes = array<i64: 32, 32>
 # CHECK: linalg.generic
 # CHECK-SAME: transform_ext.tile_sizes = array<i64: 32, 32>
 run("named_elementwise_anchor", NAMED_ELTWISE, assign_elementwise)

@@ -78,7 +78,8 @@ ADD_1D_PAYLOAD = """
 module {
     func.func @main(%a: tensor<128xf32>, %b: tensor<128xf32>) -> tensor<128xf32> {
         %e = tensor.empty() : tensor<128xf32>
-        %r = linalg.add ins(%a, %b : tensor<128xf32>, tensor<128xf32>)
+        %r = linalg.elementwise <add>
+                ins(%a, %b : tensor<128xf32>, tensor<128xf32>)
                 outs(%e : tensor<128xf32>) -> tensor<128xf32>
         return %r : tensor<128xf32>
     }
@@ -176,11 +177,12 @@ run(
 # 1D op with only 1D operands: compute_tile_sizes should tile its only parallel
 # dim with the default tile size.
 # CHECK-LABEL: Test: compute_tile_sizes_1d_op
-# CHECK: linalg.add {transform_ext.tile_sizes = array<i64: 32>}
+# CHECK: linalg.elementwise
+# CHECK-SAME: transform_ext.tile_sizes = array<i64: 32>
 run(
     "compute_tile_sizes_1d_op",
     ADD_1D_PAYLOAD,
-    lambda: build_assign_schedule("linalg.add"),
+    lambda: build_assign_schedule("linalg.elementwise"),
 )
 
 

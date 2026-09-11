@@ -103,7 +103,12 @@ def generate_gpu_attention_payload(
 
             # Elementwise multiply qkt with scale tensor
             scaled_qkt_init = tensor.empty(qkt_shape_3d, dtype)
-            scaled_qkt = linalg.mul(qkt, scale_tensor, outs=[scaled_qkt_init])
+            scaled_qkt = linalg.elementwise(
+                qkt,
+                scale_tensor,
+                outs=[scaled_qkt_init],
+                kind=linalg.ElementwiseKind.mul,
+            )
 
             # Step 4: Apply softmax along the last dimension (dim=2 in 3D)
             softmax_init = tensor.empty(qkt_shape_3d, dtype)

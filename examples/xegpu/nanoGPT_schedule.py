@@ -233,8 +233,10 @@ def _fuse_attention_in_region(anytype, forall, fa_params):
     # K reaches the QK^T matmul through the linalg.transpose that forms K^T.
     k = prod(anytype, prod(anytype, qk_bmm, operand_number=1), operand_number=0)
     v = prod(anytype, pv_bmm, operand_number=1)
-    # The scale is the fill value of the linalg.mul rhs operand.
-    mul_op = match_and_split(forall, ops={"linalg.mul"}, nhandles=1)[0]
+    # The scale is the fill value of the linalg.mul/elementwise rhs operand.
+    mul_op = match_and_split(
+        forall, ops={"linalg.elementwise", "linalg.mul"}, nhandles=1
+    )[0]
     scale = prod(anytype, prod(anytype, mul_op, operand_number=1), operand_number=0)
     # NB: the merged fused-attention op is non-causal only -- there is
     # no `causal` parameter yet, so the model runs as non-causal attention.
