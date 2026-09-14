@@ -42,7 +42,8 @@ module {
     %packed = linalg.pack %a inner_dims_pos = [0, 1] inner_tiles = [32, 32] into %d
         : tensor<128x256xf32> -> tensor<4x8x32x32xf32>
     %e = tensor.empty() : tensor<4x8x32x32xf32>
-    %r = linalg.exp ins(%packed : tensor<4x8x32x32xf32>)
+    %r = linalg.elementwise <exp>
+        ins(%packed : tensor<4x8x32x32xf32>)
         outs(%e : tensor<4x8x32x32xf32>) -> tensor<4x8x32x32xf32>
     %o = tensor.empty() : tensor<128x256xf32>
     %u = linalg.unpack %r inner_dims_pos = [0, 1] inner_tiles = [32, 32] into %o
@@ -61,7 +62,8 @@ module {
     %packed = linalg.pack %a inner_dims_pos = [1, 2] inner_tiles = [32, 32] into %d
         : tensor<2x128x256xf32> -> tensor<2x4x8x32x32xf32>
     %e = tensor.empty() : tensor<2x4x8x32x32xf32>
-    %r = linalg.exp ins(%packed : tensor<2x4x8x32x32xf32>)
+    %r = linalg.elementwise <exp>
+        ins(%packed : tensor<2x4x8x32x32xf32>)
         outs(%e : tensor<2x4x8x32x32xf32>) -> tensor<2x4x8x32x32xf32>
     %o = tensor.empty() : tensor<2x128x256xf32>
     %u = linalg.unpack %r inner_dims_pos = [1, 2] inner_tiles = [32, 32] into %o
@@ -85,7 +87,8 @@ module {
     %pmat = linalg.pack %mat inner_dims_pos = [0, 1] inner_tiles = [32, 32] into %dm
         : tensor<128x1024xf32> -> tensor<4x32x32x32xf32>
     %e = tensor.empty() : tensor<4x32x32x32xf32>
-    %r = linalg.exp ins(%pmat : tensor<4x32x32x32xf32>)
+    %r = linalg.elementwise <exp>
+        ins(%pmat : tensor<4x32x32x32xf32>)
         outs(%e : tensor<4x32x32x32xf32>) -> tensor<4x32x32x32xf32>
     %o = tensor.empty() : tensor<128x1024xf32>
     %u = linalg.unpack %r inner_dims_pos = [0, 1] inner_tiles = [32, 32] into %o
@@ -148,7 +151,7 @@ run("pack_unpack_tile_sizes", PACK_ASSIGN, assign_pack_tiles)
 # them is the payload, which the lowering does not produce, so it is left intact.
 # CHECK-LABEL: Test: pack_unpack_2d
 # CHECK-DAG: vector<32xf32>
-# CHECK-DAG: linalg.exp
+# CHECK-DAG: linalg.elementwise
 # CHECK-NOT: linalg.pack
 # CHECK-NOT: linalg.unpack
 # CHECK-NOT: linalg.transpose
@@ -160,7 +163,7 @@ run("pack_unpack_2d", PACK_UNPACK_2D, lower)
 # special handling. The payload elementwise op is again preserved.
 # CHECK-LABEL: Test: pack_unpack_3d
 # CHECK-DAG: vector<32xf32>
-# CHECK-DAG: linalg.exp
+# CHECK-DAG: linalg.elementwise
 # CHECK-NOT: linalg.pack
 # CHECK-NOT: linalg.unpack
 # CHECK-NOT: linalg.transpose
@@ -172,7 +175,7 @@ run("pack_unpack_3d", PACK_UNPACK_3D, lower)
 # the payload elementwise op left in place.
 # CHECK-LABEL: Test: mixed
 # CHECK-DAG: vector<32xf32>
-# CHECK-DAG: linalg.exp
+# CHECK-DAG: linalg.elementwise
 # CHECK-NOT: linalg.pack
 # CHECK-NOT: linalg.unpack
 # CHECK-NOT: linalg.transpose

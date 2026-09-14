@@ -249,8 +249,11 @@ class Builder:
         qkt = linalg.batch_matmul(Qh, Kt, outs=[qkt_init])
         sc = arith.constant(f16, scale)
         scale_t = linalg.fill(sc, outs=[tensor.empty((n_head, n_ctx, n_ctx), f16)])
-        scaled = linalg.mul(
-            qkt, scale_t, outs=[tensor.empty((n_head, n_ctx, n_ctx), f16)]
+        scaled = linalg.elementwise(
+            qkt,
+            scale_t,
+            outs=[tensor.empty((n_head, n_ctx, n_ctx), f16)],
+            kind=linalg.ElementwiseKind.mul,
         )
         aw = linalg.softmax(
             result=[ir.RankedTensorType.get((n_head, n_ctx, n_ctx), f16)],

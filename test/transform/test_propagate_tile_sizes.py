@@ -97,7 +97,7 @@ func.func @main(%a: tensor<128x64xf32>, %b: tensor<64x128xf32>,
       ins(%a, %b : tensor<128x64xf32>, tensor<64x128xf32>)
       outs(%f : tensor<128x128xf32>) -> tensor<128x128xf32>
   %out = tensor.empty() : tensor<128x128xf32>
-  %add = linalg.add
+  %add = linalg.elementwise <add>
       ins(%mm, %bias : tensor<128x128xf32>, tensor<128x128xf32>)
       outs(%out : tensor<128x128xf32>) -> tensor<128x128xf32>
   return %add : tensor<128x128xf32>
@@ -107,7 +107,7 @@ func.func @main(%a: tensor<128x64xf32>, %b: tensor<64x128xf32>,
 # CHECK-LABEL: Test: forward_and_backward
 # CHECK: linalg.fill {transform_ext.tile_sizes = array<i64: 32, 32>}
 # CHECK: linalg.matmul {transform_ext.tile_sizes = array<i64: 32, 32, 0>}
-# CHECK: linalg.add {transform_ext.tile_sizes = array<i64: 32, 32>}
+# CHECK: linalg.elementwise <add> {transform_ext.tile_sizes = array<i64: 32, 32>}
 # The add (epilogue) receives tile sizes propagated forward from the matmul.
 run(
     "forward_and_backward",
@@ -589,7 +589,7 @@ func.func @main(%a: tensor<128x256xf32>, %b: tensor<128x256xf32>)
     linalg.yield %e : f32
   } -> tensor<128x256xf32>
   %eo = tensor.empty() : tensor<128x256xf32>
-  %anchor = linalg.add {transform_ext.tile_sizes = array<i64: 16, 32>}
+  %anchor = linalg.elementwise <add> {transform_ext.tile_sizes = array<i64: 16, 32>}
       ins(%p0, %p1 : tensor<128x256xf32>, tensor<128x256xf32>)
       outs(%eo : tensor<128x256xf32>) -> tensor<128x256xf32>
   %ec0 = tensor.empty() : tensor<128x256xf32>
@@ -616,12 +616,14 @@ func.func @main(%a: tensor<128x256xf32>, %b: tensor<128x256xf32>)
 # Both producers (backward) and both consumers (forward) get the anchor's tiling.
 # CHECK: linalg.generic {{{.*}}transform_ext.tile_sizes = array<i64: 16, 32>
 # CHECK: linalg.generic {{{.*}}transform_ext.tile_sizes = array<i64: 16, 32>
-# CHECK: linalg.add {transform_ext.tile_sizes = array<i64: 16, 32>}
+# CHECK: linalg.elementwise <add> {transform_ext.tile_sizes = array<i64: 16, 32>}
 # CHECK: linalg.generic {{{.*}}transform_ext.tile_sizes = array<i64: 16, 32>
 # The transposing consumer tiles the same tensor dims, so its loop-order sizes swap.
 # CHECK: linalg.generic {{{.*}}transform_ext.tile_sizes = array<i64: 32, 16>
 run(
     "fan_in_and_fan_out",
     FAN_IN_OUT,
-    lambda: build_propagate_schedule("linalg.add", propagate_through_loops=False),
+    lambda: build_propagate_schedule(
+        "linalg.elementwise", propagate_through_loops=False
+    ),
 )

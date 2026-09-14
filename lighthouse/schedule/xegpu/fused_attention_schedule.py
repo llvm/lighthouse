@@ -151,11 +151,13 @@ def bundle_xegpu_fused_attention_schedule(
     # Match linalg.softmax operation if any and decompose it into generic ops
     softmax_ops = structured.structured_match(anytype, func, ops=["linalg.softmax"])
     structured.structured_decompose_interface(anytype, softmax_ops)
-    # Convert linalg.mul and linalg.batch_matmul to linalg.generic
+    # Convert linalg.elementwise and linalg.batch_matmul to linalg.generic
     structured.structured_generalize(
         anytype,
         structured.structured_match(
-            anytype, func, ops=["linalg.mul", "linalg.batch_matmul"]
+            anytype,
+            func,
+            ops=["linalg.elementwise", "linalg.batch_matmul"],
         ),
     )
 
@@ -202,7 +204,7 @@ def bundle_xegpu_fused_attention_schedule(
     # two batch matmuls inside the WG forall:
     #
     #   Q@K^T:  linalg.batch_matmul(q_slice, linalg.transpose(k_slice))
-    #   scale:  linalg.mul(qkt, linalg.fill(scale_constant))
+    #   scale:  linalg.elementwise <mul>(qkt, linalg.fill(scale_constant))
     #   P@V:    linalg.batch_matmul(softmax_out, v_slice)
 
     linalg_ops = structured.structured_match(

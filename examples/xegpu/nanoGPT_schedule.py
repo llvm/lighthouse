@@ -197,7 +197,9 @@ def _tile_one_fused_attention_region(anytype, pv_bmm, softmax_op, fa_params):
     den_fill = prod(anytype, den, operand_number=1)  # 0 fill (sum acc)
     mx = prod(anytype, num, operand_number=1)  # max-reduce generic
     mx_fill = prod(anytype, mx, operand_number=1)  # -inf fill (max acc)
-    scaled = prod(anytype, num, operand_number=0)  # linalg.mul (qkt*scale)
+    scaled = prod(
+        anytype, num, operand_number=0
+    )  # linalg.elementwise <mul> (qkt*scale)
     scale_fill = prod(anytype, scaled, operand_number=1)  # scale-constant fill
     qkt = prod(anytype, scaled, operand_number=0)  # QK^T batch_matmul
     kt = prod(anytype, qkt, operand_number=1)  # K^T transpose
@@ -233,8 +235,8 @@ def _fuse_attention_in_region(anytype, forall, fa_params):
     # K reaches the QK^T matmul through the linalg.transpose that forms K^T.
     k = prod(anytype, prod(anytype, qk_bmm, operand_number=1), operand_number=0)
     v = prod(anytype, pv_bmm, operand_number=1)
-    # The scale is the fill value of the linalg.mul rhs operand.
-    mul_op = match_and_split(forall, ops={"linalg.mul"}, nhandles=1)[0]
+    # The scale is the fill value of the linalg.elementwise mul rhs operand.
+    mul_op = match_and_split(forall, ops={"linalg.elementwise"}, nhandles=1)[0]
     scale = prod(anytype, prod(anytype, mul_op, operand_number=1), operand_number=0)
     # NB: the merged fused-attention op is non-causal only -- there is
     # no `causal` parameter yet, so the model runs as non-causal attention.
@@ -424,7 +426,7 @@ def _bundle(
     # per-op handle slices from `kinds`.
     # 'fa' softmax generics do NOT exist yet (fa is tiled last, softmax still
     # un-decomposed), so they are not in this pool. The fa core's linalg.transpose
-    # /linalg.mul/batch_matmul are not linalg.generic, so also excluded. (The head
+    # /linalg.elementwise/batch_matmul are not linalg.generic, so also excluded. (The head
     # reshape is a pure memref VIEW -- no generic, no kernel; see Builder.heads_view.)
     ngen_total = 3 * n_ln + n_ew
     gen_handles = transform.split_handle(

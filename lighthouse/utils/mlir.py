@@ -100,8 +100,17 @@ def inspect_payload(payload_module: ir.Module) -> dict:
                 def match_linalg(op: ir.Operation) -> ir.WalkResult:
                     op = op.opview
                     match op:
+                        case linalg.ElementwiseOp():
+                            outputs = op.outputs
+                            assert len(outputs) == 1, "Expected only one output"
+                            layers.append(
+                                {
+                                    "kind": "elemwise",
+                                    "shape": outputs[0].type.shape,
+                                    "elemtype": str(outputs[0].type.element_type),
+                                }
+                            )
                         case linalg.GenericOp():
-                            # TODO support ElementwiseOp and MapOp
                             iter_parallel = "#linalg.iterator_type<parallel>"
                             all_parallel = all(
                                 str(it) == iter_parallel for it in op.iterator_types
