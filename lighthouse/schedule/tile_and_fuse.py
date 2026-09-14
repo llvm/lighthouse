@@ -28,6 +28,7 @@ def assign_and_propagate_tile_sizes(
     tile_size: int = 32,
     strategy: str = "cache",
     propagate: bool = True,
+    propagate_through_loops: bool = False,
 ) -> ir.Module:
     """
     Assign tile sizes to anchor ops and propagate them to their neighbors.
@@ -42,6 +43,8 @@ def assign_and_propagate_tile_sizes(
         tile_size: Tiling size hint.
         strategy: Tiling strategy.
         propagate: Whether to propagate the tile sizes to neighboring ops.
+        propagate_through_loops: Whether to propagate through loop-carried
+            values instead of treating loops as barriers (default: False).
     Returns:
         Schedule
     """
@@ -56,7 +59,9 @@ def assign_and_propagate_tile_sizes(
             strategy=strategy,
         )
         if propagate:
-            transform_ext.propagate_tile_sizes(annotated)
+            transform_ext.propagate_tile_sizes(
+                annotated, propagate_through_loops=propagate_through_loops
+            )
         transform.yield_()
     return sched
 
@@ -65,6 +70,7 @@ def assign_elementwise_tile_sizes(
     tile_size: int = 32,
     strategy: str = "cache",
     propagate: bool = True,
+    propagate_through_loops: bool = False,
 ) -> ir.Module:
     """
     Anchor tiling on elementwise ops only.
@@ -76,6 +82,8 @@ def assign_elementwise_tile_sizes(
         tile_size: Tiling size hint.
         strategy: Tiling strategy.
         propagate: Whether to propagate the tile sizes to neighboring ops.
+        propagate_through_loops: Whether to propagate through loop-carried
+            values instead of treating loops as barriers (default: False).
     Returns:
         Schedule
     """
@@ -90,7 +98,9 @@ def assign_elementwise_tile_sizes(
             strategy=strategy,
         )
         if propagate:
-            transform_ext.propagate_tile_sizes(annotated)
+            transform_ext.propagate_tile_sizes(
+                annotated, propagate_through_loops=propagate_through_loops
+            )
         transform.yield_()
     return sched
 
