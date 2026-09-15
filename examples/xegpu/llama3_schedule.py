@@ -211,9 +211,9 @@ def _fuse_attention_in_region(anytype, forall, fa_params):
 
     # The scale is the fill value feeding the QK^T*scale mul's rhs, i.e. its
     # arith.constant. rhs (operand 1) -> linalg.fill -> constant.
-    mul_op = match_and_split(forall, ops=["linalg.mul", "linalg.elementwise"], nhandles=1)[
-        0
-    ]
+    mul_op = match_and_split(
+        forall, ops=["linalg.mul", "linalg.elementwise"], nhandles=1
+    )[0]
     scale = transform.get_producer_of_operand(
         anytype,
         transform.get_producer_of_operand(anytype, mul_op, operand_number=1),
