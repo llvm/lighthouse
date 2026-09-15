@@ -1,6 +1,3 @@
-import weakref
-
-from mlir import ir
 from mlir.dialects import ext
 
 
@@ -26,34 +23,10 @@ class DialectExtension(ext.Dialect, name="base_extension"):
           dialect stays loaded in every context it was loaded into.
         - Never loaded: perform a fresh load.
         """
-        # Per-subclass registry of the contexts this dialect is loaded in. A
-        # single "last context" is insufficient: a dialect stays loaded in every
-        # context it was loaded into, so interleaving contexts requires tracking
-        # all of them. Contexts are held weakly so they remain garbage
-        # collectable.
-        #
-        # FIXME: It is a workaround to simplify dialect loading.
-        #        Ideally, the `ext.Dialect` base class would handle this automatically.
-        #        See issue: #229
-        loaded_contexts = cls.__dict__.get("_loaded_contexts")
-        if loaded_contexts is None:
-            loaded_contexts = weakref.WeakSet()
-            cls._loaded_contexts = loaded_contexts
-
-        current = ir.Context.current
-        if current in loaded_contexts:
-            # Already present in this context; MLIR cannot load it again here.
+        try:
+            super().load(*args, **kwargs)
+        except ext.DialectAlreadyLoadedError:
             return
-
-        # If the dialect was loaded before (in any context), its process-global,
-        # context-independent registrations already exist and must be replaced
-        # rather than added again.
-        globals_registered = hasattr(cls, "_mlir_module")
-
-        # Registers the dialect and its op classes and loads them into the context.
-        kwargs["reload"] = globals_registered
-        super().load(*args, **kwargs)
-        loaded_contexts.add(current)
 
         # Attach interfaces to just registered/loaded operations.
         for op_cls in cls.operations:

@@ -1,4 +1,5 @@
-from typing import overload, Sequence, Callable
+from typing import overload
+from collections.abc import Sequence, Callable
 
 from mlir import ir
 from mlir.dialects import ext, smt, transform
@@ -77,11 +78,13 @@ class ConstrainParamsOp(
 
     class ConstrainParamsMemoryEffectsOpInterfaceModel(ir.MemoryEffectsOpInterface):
         @staticmethod
-        def get_effects(op: "ConstrainParamsOp", effects):
+        def get_effects(op: "ConstrainParamsOp"):
+            effects = []
             if op.op_operands:
-                transform.only_reads_handle(op.op_operands, effects)
-            transform.produces_handle(op.results, effects)
-            transform.only_reads_payload(effects)
+                effects += transform.only_reads_handle(op.op_operands)
+            effects += transform.produces_handle(op.results)
+            effects += transform.only_reads_payload()
+            return effects
 
 
 class MixedResultConstrainParamsOp(ConstrainParamsOp):

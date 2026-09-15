@@ -406,7 +406,12 @@ class Builder:
 
         sc = arith.constant(f16, scale)
         scale_t = linalg.fill(sc, outs=[tensor.empty((n_kv, n_rep, T, T), f16)])
-        scaled = linalg.mul(qkt, scale_t, outs=[tensor.empty((n_kv, n_rep, T, T), f16)])
+        scaled = linalg.elementwise(
+            qkt,
+            scale_t,
+            outs=[tensor.empty((n_kv, n_rep, T, T), f16)],
+            kind=linalg.ElementwiseKind.mul,
+        )
         aw = linalg.softmax(
             result=[ir.RankedTensorType.get((n_kv, n_rep, T, T), f16)],
             input=scaled,

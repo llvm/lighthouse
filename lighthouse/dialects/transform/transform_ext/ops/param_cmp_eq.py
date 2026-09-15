@@ -44,9 +44,11 @@ class ParamCmpEqOp(TransformExtensionDialect.Operation, name="param_cmp_eq"):
 
     class MemoryEffectsOpInterfaceModel(ir.MemoryEffectsOpInterface):
         @staticmethod
-        def get_effects(op: "ParamCmpEqOp", effects):
-            transform.only_reads_handle(op.op_operands, effects)
-            transform.only_reads_payload(effects)
+        def get_effects(op: "ParamCmpEqOp"):
+            return (
+                transform.only_reads_handle(op.op_operands)
+                + transform.only_reads_payload()
+            )
 
 
 def param_cmp_eq(lhs: ir.Value, rhs: ir.Value):

@@ -2,7 +2,8 @@ import random
 import sys
 
 from argparse import ArgumentParser
-from typing import Sequence, Dict, Any, Optional
+from typing import Any
+from collections.abc import Sequence
 from collections import namedtuple
 
 import numpy as np
@@ -16,7 +17,7 @@ from .utils import get_outputs, get_weights, get_bias, get_mlir_elem_type
 BlockFactors = namedtuple("BlockFactors", "m n k vnni")
 
 
-def config_from_args(args: Sequence[str]) -> Dict[str, Any]:
+def config_from_args(args: Sequence[str]) -> dict[str, Any]:
     def csints(s: str) -> Sequence[int]:
         return [int(n) for n in s.split(",")]
 
@@ -102,14 +103,12 @@ def config_from_args(args: Sequence[str]) -> Dict[str, Any]:
 
 
 class TensorType:
-    def __init__(
-        self, block_factors: BlockFactors, elem_type: Optional[ir.Type] = None
-    ):
+    def __init__(self, block_factors: BlockFactors, elem_type: ir.Type | None = None):
         self.block_factors = block_factors
         self.elem_type = elem_type
 
     def input(
-        self, shape: Sequence[int], elem_type: Optional[ir.Type] = None
+        self, shape: Sequence[int], elem_type: ir.Type | None = None
     ) -> ir.RankedTensorType:
         elem_type, block = elem_type or self.elem_type, self.block_factors
 
@@ -127,7 +126,7 @@ class TensorType:
         return ir.RankedTensorType.get(shape, elem_type)
 
     def weights(
-        self, shape: Sequence[int], elem_type: Optional[ir.Type] = None
+        self, shape: Sequence[int], elem_type: ir.Type | None = None
     ) -> ir.RankedTensorType:
         elem_type, block = elem_type or self.elem_type, self.block_factors
 
@@ -160,7 +159,7 @@ class TensorType:
         return ir.RankedTensorType.get(shape, elem_type)
 
     def bias(
-        self, shape: Sequence[int], elem_type: Optional[ir.Type] = None
+        self, shape: Sequence[int], elem_type: ir.Type | None = None
     ) -> ir.RankedTensorType:
         elem_type, block = elem_type or self.elem_type, self.block_factors
 
@@ -172,7 +171,7 @@ class TensorType:
         return ir.RankedTensorType.get(shape, elem_type)
 
     def output(
-        self, shape: Sequence[int], elem_type: Optional[ir.Type] = None
+        self, shape: Sequence[int], elem_type: ir.Type | None = None
     ) -> ir.RankedTensorType:
         elem_type, block = elem_type or self.elem_type, self.block_factors
         if block.m and block.n:
@@ -189,7 +188,7 @@ class TensorType:
 
 
 def neural_net_as_func(
-    overall_args_types: Sequence[ir.Type], config: Dict[str, Any]
+    overall_args_types: Sequence[ir.Type], config: dict[str, Any]
 ) -> ir.Operation:
     keys = ["times_weights", "add_bias", "relu", "softmax"]
     times_weights, add_bias, relu, softmax = {
@@ -239,7 +238,7 @@ def neural_net_as_func(
     return entry
 
 
-def create_metadata(config: Dict[str, Any]) -> str:
+def create_metadata(config: dict[str, Any]) -> str:
     flops = 0
     for layer_num_neurons, next_layer_num_neurons in zip(
         config["layers"][:-1], config["layers"][1:]

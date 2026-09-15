@@ -25,3 +25,11 @@
   output_shape: 64x512
   gflops: (64 * 512) / 1e9
   pipeline: element_wise
+
+- kernel: level3/1_MLP.py
+  input_shapes: [64x128]
+  initializations: [rnd]
+  output_shape: 64x128
+  init_args: (128,[128],128)
+  gflops: (2 * (64 * 128 * 128) + (64 * 128 * 128) + (64 * 128)) / 1e9
+  pipeline: matmul

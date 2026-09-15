@@ -2,7 +2,7 @@
 
 # RUN: bash %s
 
-PROJECT_ROOT="$(dirname "$(dirname "$(dirname "$(dirname "$(readlink -fm "$0")")")")")"
+PROJECT_ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
 CACHE_DIR=$PROJECT_ROOT/cache/ingress/mlir_gen
 
 LAYERS=1024,2048,4096,512

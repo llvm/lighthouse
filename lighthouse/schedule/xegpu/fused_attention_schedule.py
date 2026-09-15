@@ -1,60 +1,110 @@
-"""Generate MLIR transform schedule for XeGPU fused attention operation."""
-
-from typing import Optional
+"""Generate MLIR transform schedule for XeGPU fused attention layer."""
 
 from mlir import ir
 from mlir.dialects import transform
-from mlir.dialects.transform import structured, loop, xegpu
-from mlir.dialects.transform import bufferization as transform_bufferization
-from mlir.dialects.bufferization import LayoutMapOption
-from mlir.dialects.transform.vector import (
-    apply_patterns_vector_cast_away_vector_leading_one_dim,
-    apply_patterns_vector_drop_unit_dims_with_shape_cast,
-)
-
+from mlir.dialects.transform import structured, xegpu, tensor
+import lighthouse.transform as lh_transform
 from lighthouse.pipeline.helper import (
+    apply_registered_pass,
     canonicalize,
     match,
     match_and_split,
     PipelineInterrupt,
-    apply_registered_pass,
+)
+from .lowering_common import (
+    get_payload_func,
+    vectorize,
+    bufferize,
+    convert_to_gpu_launch,
+    convert_vector_to_xegpu,
 )
 from lighthouse.schedule import schedule_boilerplate
-from lighthouse.dialects.transform.transform_ext import (
-    replace_with_fused_attention,
-)
+from lighthouse.schedule.parameters import ScheduleParameters
+from lighthouse.dialects.transform import transform_ext
 
 
 def fused_attention_schedule(
-    stop_at_stage: Optional[str] = None,
-    parameters: Optional[dict] = None,
+    stop_at_stage: str | None = None,
+    params: ScheduleParameters | None = None,
 ) -> ir.Module:
     """
     Generate transform schedule for attention kernel.
 
-    The schedule performs the following transformations:
-    1. Tile the fuse the strandard attention computation along parallel dims
-    2. Vectorize operations
-    3. Bufferize tensors
-    4. Perform the fused attention optimization for the innermost computation
-    5. Convert to GPU dialect
-    6. Lower to XeGPU operations
+    Input matrices are Q, K, V. All inputs, as well as the layer output, have
+    the same shape [batch_size, n_head, n_ctx, d_head] where
 
-    Args:
-        stop_at_stage: Optional stage name to stop early (for debugging)
-        parameters: Dictionary with scheduling parameters:
-            - batch_size: Batch size (Z)
-            - num_heads: Number of attention heads (H)
-            - n_ctx: Context length
-            - n_head: Head dimension
-            - wg_rows: Number of Q*K^T*V rows computed by each work group
-            - sg_rows: Number of Q*K^T*V rows computed by each subgroup
-            - subgroup_size: Size of subgroup
+        - batch_size: number of sequences in the batch
+        - n_head: number of attention heads
+        - n_ctx: sequence length (number of tokens)
+        - d_head: dimension of each attention head
+
+    The attention layer computes the following operations:
+
+        1. S = Q @ K^T - batch matmul, contraction over last d_head dim of Q
+            S has shape [batch_size, n_head, n_ctx, n_ctx]
+        2. P = Softmax(S, axis=-1)  - softmax over the last dimension
+            P has shape [batch_size, n_head, n_ctx, n_ctx]
+        3. O = P @ V - batch matmul, contraction over the last n_ctx dim of P
+
+    The schedule performs the following transformations:
+
+        1. Tile and fuse the attention computation along parallel dims
+        2. Perform the fused attention optimization for the innermost block
+        3. Vectorize operations
+        4. Bufferize tensors
+        5. Convert to GPU dialect
+        6. Lower to XeGPU operations
+
+    Step 1. applies parallel tiling for the workgroup and subgroup levels
+    over the first (batch_size, n_head, n_ctx) dimensions, controlled by the
+    `wg_tile` and `sg_rows` parameters.
+
+    If the linalg ops operate on the 4d input tensors, the `wg_tile` parameter
+    should take the form [1, 1, wg_rows] where wg_rows denotes the workgroup
+    n_ctx tile size. If the batch_size and n_head dimensions have been
+    collapsed into a single batch dimension, the `wg_tile` parameter should
+    take the form [1, wg_rows].
+
+    The `sg_rows` parameter controls the number of rows per subgroup, applied
+    over the n_ctx dimension.
+
+    Given the `wg_tile` and `sg_rows` parameters, the WG tile is expected to be
+    of form [1, ..., wg_rows], depending on the number of leading parallel
+    dimensions, and the `sg_rows` tiling is applied over the n_ctx dimension.
+
+    In step 2., the inner attention block is tiled and fused over the
+    reduction dimension (n_ctx) of the final P@V operation, controlled by the
+    `reduction_tile` parameter. The Q@K^T and softmax operations are fused into
+    the P@V loop, implementing online softmax. This happens at tensor level, so
+    the tiling and fusion decisions stay at the level the rest of the schedule
+    works on and the emitted loop is lowered by the regular vectorization step.
+
+    Prefetching of K and V tiles is controlled by the `prefetch_tile` and
+    `nb_prefetch` parameters.
+
+    Expects a `ScheduleParameters` object with a single dictionary containing
+    the following keys:
+
+        - layer_kind: "attention"
+        - batch_size: int
+        - n_head: int
+        - n_ctx: int
+        - d_head: int
+        - wg_tile: list[int, ...]
+        - sg_rows: int, applied on n_ctx dim
+        - reduction_tile: int, applied on last n_ctx dim of P
+        - subgroup_size: int
+        - q_load_tile: list[int, int]
+        - v_load_tile: list[int, int]
+        - prefetch_tile: list[int, int]
+        - nb_prefetch: int
 
     Returns:
         MLIR module containing the transform schedule
     """
-    assert parameters is not None, "Schedule parameters must be provided"
+    assert params is not None and len(params) > 0, (
+        "Schedule parameters must be provided"
+    )
 
     with schedule_boilerplate() as (schedule, named_seq):
         # match the payload module
@@ -70,8 +120,8 @@ def fused_attention_schedule(
         try:
             bundle_xegpu_fused_attention_schedule(
                 payload_mod,
-                parameters=parameters,
-                stop_at_stage=stop_at_stage or "",
+                params=params,
+                stop_at_stage=stop_at_stage,
             )
         except PipelineInterrupt:
             pass
@@ -83,225 +133,176 @@ def fused_attention_schedule(
 
 def bundle_xegpu_fused_attention_schedule(
     mod: ir.Value[transform.AnyOpType],
-    parameters: dict,
+    params: ScheduleParameters,
     stop_at_stage: str = "",
 ) -> ir.Value[transform.AnyOpType]:
     """Schedule for lowering attention payload to xegpu wg level."""
+
+    layer_params = params[0]
 
     if stop_at_stage == "initial":
         raise PipelineInterrupt()
 
     anytype = transform.AnyOpType.get()
-    # Match all matmul operations - there should be 2:
-    # 1. Q @ K^T
-    # 2. attention_weights @ V
-    matmul_ops = match_and_split(mod, ops={"linalg.batch_matmul"}, nhandles=2)
 
-    # Get the last matmul (attention_weights @ V)
-    last_matmul = matmul_ops[1]
-    func = transform.get_parent_op(
+    # Match payload function
+    func = get_payload_func(mod, op_name=["linalg.generic", "linalg.batch_matmul"])
+
+    # Match linalg.softmax operation if any and decompose it into generic ops
+    softmax_ops = structured.structured_match(anytype, func, ops=["linalg.softmax"])
+    structured.structured_decompose_interface(anytype, softmax_ops)
+    # Convert linalg.elementwise and linalg.batch_matmul to linalg.generic
+    structured.structured_generalize(
         anytype,
-        last_matmul,
-        op_name="func.func",
-        deduplicate=True,
+        structured.structured_match(
+            anytype,
+            func,
+            ops=["linalg.elementwise", "linalg.batch_matmul"],
+        ),
     )
 
-    # Tile the last matmul in both batch and M dimensions.
-    wg_rows = parameters["wg_rows"]
+    # Normalize possible singleton dimensions so tile+fuse logic works.
+    with ir.InsertionPoint(transform.apply_patterns(func).patterns):
+        # fold unit dims in linalg.generic op inputs
+        structured.apply_patterns_linalg_fold_unit_extent_dims_via_slices()
+        # fold tensor.extract_slice(tensor.expand_shape(x)) into x
+        tensor.apply_patterns_tensor_reassociative_reshape_folding()
+        # swap tensor.extract_slice(linalg.fill(...)) ops
+        structured.apply_patterns_linalg_swap_extract_slice_with_fill()
+        # fold tensor.extract_slice(tensor.empty(...)) into tensor.tensor_empty(...)
+        tensor.apply_patterns_tensor_fold_tensor_empty(fold_single_use_only=True)
+    lh_transform.cleanup(func)
 
-    tiled_matmul, forall_loop = structured.structured_tile_using_forall(
-        anytype,
-        anytype,
-        last_matmul,
-        num_threads=[],
-        tile_sizes=[],
-        static_tile_sizes=(1, wg_rows, 0, 0),
+    # Fuse elementwise ops, also removes unused linalg op results (if any).
+    func = apply_registered_pass(func, "linalg-fuse-elementwise-ops")
+    lh_transform.cleanup(func)
+
+    # Apply WG tiling
+    wg_tile = layer_params["wg_tile"]
+    for wg in wg_tile[:-1]:
+        assert wg == 1, "WG tile must be of form [1, ..., wg_rows]"
+    wg_rows = wg_tile[-1]
+
+    linalg_ops = structured.structured_match(
+        anytype, func, ops=["linalg.generic", "linalg.batch_matmul"]
     )
-    # Fuse the zero initialization of the output of the last matmul (tensor.empty) into the forall loop.
-    tiled_matmul_init = transform.get_producer_of_operand(
-        anytype, forall_loop, operand_number=0
+    leaf_linalg_op = transform_ext.extract_handle(linalg_ops, -1)
+    leaf_generic_wg, _, _ = lh_transform.tile(
+        leaf_linalg_op,
+        tile_sizes=wg_tile,
+        fuse_producers=True,
+        use_forall=True,
+        apply_cleanup=False,
     )
-    _, forall_loop = structured.structured_fuse_into_containing_op(
-        anytype,
-        anytype,
-        producer_op=tiled_matmul_init,
-        containing_op=forall_loop,
+    lh_transform.cleanup(func)
+
+    if stop_at_stage == "tiled":
+        raise PipelineInterrupt()
+
+    # Apply reduction tiling and fusion, still at tensor level. The Q, K, V
+    # tensors and the scale constant are found by walking the SSA chain of the
+    # two batch matmuls inside the WG forall:
+    #
+    #   Q@K^T:  linalg.batch_matmul(q_slice, linalg.transpose(k_slice))
+    #   scale:  linalg.elementwise <mul>(qkt, linalg.fill(scale_constant))
+    #   P@V:    linalg.batch_matmul(softmax_out, v_slice)
+
+    linalg_ops = structured.structured_match(
+        anytype, func, ops=["linalg.generic", "linalg.batch_matmul"]
+    )
+    contraction_ops = transform_ext.filter_contraction_ops(linalg_ops)
+
+    # Match max reduction op. Assumes there's only one arith.max* op.
+    arith_max_op = match_and_split(
+        func, ops=["arith.maximumf", "arith.maxnumf"], nhandles=1
+    )[0]
+    max_reduction = transform.get_parent_op(
+        anytype, arith_max_op, op_name="linalg.generic"
+    )
+
+    def get_producers_by_name(target, op_names):
+        producers = transform_ext.trace_producers(target)
+        return transform_ext.filter_by_name(producers, op_names=op_names)
+
+    # Trace the scalar from max reduction producer chain.
+    max_producer_generics = get_producers_by_name(
+        max_reduction, op_names="linalg.generic"
+    )
+    # Assume the scaling happens in the first ancestor.
+    max_producer = transform_ext.extract_handle(max_producer_generics, 0)
+    max_scale_mul_op = match_and_split(max_producer, ops={"arith.mulf"}, nhandles=1)[0]
+    scale_producers = transform_ext.trace_producers(max_scale_mul_op)
+    scale_const_op = transform_ext.extract_handle(
+        transform_ext.filter_by_name(scale_producers, op_names="arith.constant"), 0
+    )
+
+    matmul_ops = transform.split_handle(2 * [anytype], contraction_ops)
+    qk_matmul, pv_matmul = matmul_ops[0], matmul_ops[1]
+
+    # Find the tensor.extract_slice producers for the Q@K^T matmul.
+    qk_extract_slice_producers = get_producers_by_name(
+        qk_matmul, op_names="tensor.extract_slice"
+    )
+    q = transform_ext.extract_handle(qk_extract_slice_producers, 0)
+    k = transform_ext.extract_handle(qk_extract_slice_producers, 1)
+
+    # Find handle to v as the first tensor.extract_slice producer of PV matmul
+    pv_extract_slice_producers = get_producers_by_name(
+        pv_matmul, op_names="tensor.extract_slice"
+    )
+    v = transform_ext.extract_handle(pv_extract_slice_producers, 0)
+
+    # Replace the P@V batch matmul with a loop over the K/V sequence length that
+    # implements online softmax, fusing Q@K^T and the softmax into it.
+    reduction_tile = layer_params[
+        "reduction_tile"
+    ]  # Tile size for reduction dimension (K/V sequence length)
+    transform_ext.replace_with_fused_attention(
+        q=q,
+        k=k,
+        v=v,
+        scale=scale_const_op,
+        output=pv_matmul,
+        tile_size=reduction_tile,
     )
     transform.apply_cse(func)
-    canonicalize(func)
+    lh_transform.cleanup(func)
 
-    # Decompose softmax into generic ops
-    softmax_ops = match_and_split(func, ops={"linalg.softmax"}, nhandles=1)
-    softmax_op = softmax_ops[0]
-    structured.structured_decompose_interface(anytype, softmax_op)
-    transform.apply_cse(func)
-    canonicalize(func)
-
-    # Fuse all linalg.generic ops from softmax decomposition (4 ops: max, sub+exp, sum, div)
-    # Match and fuse in reverse order (from consumer to producer)
-    generic_ops = match_and_split(func, ops={"linalg.generic"}, nhandles=4)
-    for generic_op in reversed(generic_ops):
-        _, forall_loop = structured.structured_fuse_into_containing_op(
-            anytype,
-            anytype,
-            producer_op=generic_op,
-            containing_op=forall_loop,
-        )
-    transform.apply_cse(func)
-    canonicalize(func)
-
-    # Max and add reductions use linalg.fill to intialize the reduction output. Fuse these fill ops as well.
-    fill_ops = match_and_split(func, ops={"linalg.fill"}, nhandles=5)
-    # Max fill is the third fill op and add fill is the fourth fill op (based on the pattern of decomposition)
-    max_fill_op = fill_ops[2]
-    add_fill_op = fill_ops[3]
-    for fill_op in [max_fill_op, add_fill_op]:
-        _, forall_loop = structured.structured_fuse_into_containing_op(
-            anytype,
-            anytype,
-            producer_op=fill_op,
-            containing_op=forall_loop,
-        )
-    transform.apply_cse(func)
-    canonicalize(func)
-
-    # Fuse the remaining operations into the scf.forall loop.
-    linalg_mul_op = match_and_split(func, ops={"linalg.mul"}, nhandles=1)[0]
-    first_matmul = transform.get_producer_of_operand(
-        anytype, linalg_mul_op, operand_number=0
-    )
-    scale_fill_op = transform.get_producer_of_operand(
-        anytype, linalg_mul_op, operand_number=1
-    )
-    transpose_op = transform.get_producer_of_operand(
-        anytype, first_matmul, operand_number=1
-    )
-    matmul_fill_op = transform.get_producer_of_operand(
-        anytype, first_matmul, operand_number=2
-    )
-    for op in [
-        linalg_mul_op,
-        scale_fill_op,
-        first_matmul,
-        matmul_fill_op,
-        transpose_op,
-    ]:
-        _, forall_loop = structured.structured_fuse_into_containing_op(
-            anytype,
-            anytype,
-            producer_op=op,
-            containing_op=forall_loop,
-        )
-    transform.apply_cse(func)
-    canonicalize(func)
-
-    if stop_at_stage == "outer-tiled":
+    if stop_at_stage == "reduction-tiled":
         raise PipelineInterrupt()
 
     # Vectorize
-    func = structured.VectorizeChildrenAndApplyPatternsOp(
-        func,
-        fold_type_extensions_into_contract=True,
-    ).result
-    transform.apply_cse(func)
-    canonicalize(func)
-    # Try to remove any unit dimensions that may have been introduced due to tiling (e.g. batch dim of 1)
-    with ir.InsertionPoint(transform.apply_patterns(func).patterns):
-        apply_patterns_vector_cast_away_vector_leading_one_dim()
-        apply_patterns_vector_drop_unit_dims_with_shape_cast()
+    func = vectorize(mod, payload_func=func)
+
+    # The accumulators of the flash loop are tensors at linalg level, so
+    # vectorization turns them into a transfer_read/transfer_write pair per
+    # iteration. Repeat the subset hoisting now that CSE has run, so that all
+    # accumulators are carried as vector iter_args, i.e. in registers.
+    reduction_loop = match(func, ops={"scf.for"})
+    lh_transform.loop_hoisting(reduction_loop)
+    lh_transform.cleanup(func)
 
     if stop_at_stage == "vectorized":
         raise PipelineInterrupt()
 
     # Bufferize
-    mod = apply_registered_pass(mod, "eliminate-empty-tensors")
-    identity_layout = LayoutMapOption.IdentityLayoutMap
-    mod = transform_bufferization.OneShotBufferizeOp(
-        mod,
-        allow_return_allocs_from_loops=True,
-        bufferize_function_boundaries=True,
-        function_boundary_type_conversion=identity_layout,
-    ).result
-    # fold memref.subviews into vector.transfer_read/write ops
-    mod = apply_registered_pass(mod, "fold-memref-alias-ops")
-    transform.apply_cse(mod)
-    canonicalize(mod)
+    mod = bufferize(mod)
 
     if stop_at_stage == "bufferized":
         raise PipelineInterrupt()
 
-    # Extract q, k, v memrefs from the bufferized IR
-    # Match vector.contract ops to find the q, k, v loads
     for_all = match(mod, ops={"scf.forall"})
     func = transform.get_parent_op(anytype, for_all, op_name="func.func")
-    contract_ops = match_and_split(func, ops={"vector.contract"}, nhandles=2)
 
-    # First vector.contract is Q @ K^T
-    # Its first operand is the q load (vector.transfer_read)
-    # Its second operand is the k load (vector.transfer_read)
-    first_contract = contract_ops[0]
-    q_load = transform.get_producer_of_operand(
-        anytype, first_contract, operand_number=0
-    )
-    k_load = transform.get_producer_of_operand(
-        anytype, first_contract, operand_number=1
-    )
+    func = convert_to_gpu_launch(mod, payload_func=func)
 
-    # Second vector.contract is attention_weights @ V
-    # Its second operand is the v load (vector.transfer_read)
-    second_contract = contract_ops[1]
-    v_load = transform.get_producer_of_operand(
-        anytype, second_contract, operand_number=1
-    )
-
-    # Match arith.mulf to get the scale parameter
-    # The scale is the second operand of arith.mulf (the constant)
-    mulf_op = match_and_split(func, ops={"arith.mulf"}, nhandles=1)[0]
-    scale = transform.get_producer_of_operand(anytype, mulf_op, operand_number=1)
-
-    # Apply the fused attention optimization. This replaces the second vector.contract
-    # (attention_weights @ V) with a tiled loop that implements online softmax for
-    # efficient memory usage
-    tile_size = parameters.get(
-        "inner_loop_tile_size", 64
-    )  # Tile size for reduction dimension (K/V sequence length)
-    replace_with_fused_attention(
-        q_load=q_load,
-        k_load=k_load,
-        v_load=v_load,
-        scale=scale,
-        output=second_contract,
-        tile_size=tile_size,
-    )
-    transform.apply_cse(func)
-    canonicalize(func)
-
-    if stop_at_stage == "inner-tiled":
-        raise PipelineInterrupt()
-
-    # Convert forall to parallel
-    wg_loops = match_and_split(mod, ops={"scf.forall"})
-    for wg_loop in wg_loops:
-        wg_loop = loop.loop_forall_to_parallel([anytype], wg_loop)
-    func = transform.get_parent_op(anytype, wg_loop)
-
-    # Convert scf.parallel to gpu.launch
-    func = apply_registered_pass(func, "gpu-map-parallel-loops")
-    func = apply_registered_pass(func, "convert-parallel-loops-to-gpu")
-    func = apply_registered_pass(func, "lower-affine")
-    transform.apply_cse(func)
-    canonicalize(func)
-
-    # Set the number of threads for the gpu.launch operation
+    # set the number of threads for the gpu.launch operation
     launch_op = match_and_split(func, ops={"gpu.launch"})
-    wg_rows = parameters["wg_rows"]
-    sg_rows = parameters["sg_rows"]
-    subgroup_size = parameters["subgroup_size"]
-    num_subgroups = wg_rows // sg_rows
-    num_threads = num_subgroups * subgroup_size
+    num_subgroups = wg_rows // layer_params["sg_rows"]
+    num_threads = num_subgroups * layer_params["subgroup_size"]
     xegpu.set_gpu_launch_threads(launch_op[0], threads=[num_threads, 1, 1])
 
-    # Outline gpu func
+    # outline gpu func
     func = apply_registered_pass(func, "lower-affine")
     canonicalize(func)
     func = apply_registered_pass(func, "gpu-launch-sink-index-computations")
@@ -311,54 +312,68 @@ def bundle_xegpu_fused_attention_schedule(
     if stop_at_stage == "gpu-outlining":
         raise PipelineInterrupt()
 
-    # Set xevm target
-    mod = apply_registered_pass(
-        mod,
-        "xevm-attach-target",
-        options={"O": "3", "chip": "bmg"},
-    )
-
-    # Convert vectot to xegpu
-    gpu_mod_ops = match_and_split(mod, ops={"gpu.module"})
-    for gpu_mod in gpu_mod_ops:
-        gpu_func = match(gpu_mod, ops={"gpu.func"})
-        gpu_func = apply_registered_pass(gpu_func, "convert-vector-to-xegpu")
-        transform.apply_cse(gpu_func)
-        gpu_func = apply_registered_pass(gpu_func, "loop-invariant-code-motion")
+    mod = convert_vector_to_xegpu(mod)
+    lh_transform.cleanup(mod)
 
     if stop_at_stage == "xegpu-initial":
         raise PipelineInterrupt()
 
+    gpu_mod = match(mod, ops={"gpu.module"})
+    gpu_func = match(gpu_mod, ops={"gpu.func"})
+
+    # Insert prefetches for the K and V tiles of the reduction loop. Each
+    # inserts nb_prefetch prefetches ahead of the loop plus one per iteration,
+    # at induction_var + nb_prefetch * step. This must run before the wg-level
+    # layouts are set below, since the prefetch descriptor is cloned from the
+    # load's descriptor. The layouts of the emitted prefetch_nd ops are set
+    # together with the other wg-level layouts.
+    nb_prefetch = layer_params.get("nb_prefetch", 1)
+    if nb_prefetch > 0:
+        reduction_loop = match(gpu_func, ops={"scf.for"})
+        kv_load_ops = match_and_split(reduction_loop, ops={"xegpu.load_nd"}, nhandles=2)
+        for load_op in kv_load_ops:
+            xegpu.insert_prefetch(load_op, nb_prefetch=nb_prefetch)
+        transform.apply_cse(gpu_func)
+        canonicalize(gpu_func)
+
     # Define XeGPU layout parameters
-    n_head = parameters["n_head"]
+    d_head = layer_params["d_head"]
+    sg_rows = layer_params["sg_rows"]
+
+    # Q, the attention weights and the output are all [wg_rows, d_head] tiles
+    # that are split by rows over the subgroups. Only the memory ops carry
+    # inst_data, the DPAS operands are left to the default DPAS blocking.
     q_sg_layout = [num_subgroups, 1]
-    q_sg_data = [16, n_head]
-    q_inst_data = [8, 16]
-
-    k_sg_layout = [num_subgroups, 1]
-    k_sg_data = [16, n_head]
-    k_inst_data = [16, 16]
-
-    v_sg_layout = k_sg_layout
-    v_sg_data = k_sg_data
-    v_inst_data = k_inst_data
-
-    kt_sg_layout = [1, num_subgroups]
-    kt_sg_data = [n_head, 16]
-    kt_inst_data = [16, 16]
-    kt_order = [0, 1]
+    q_sg_data = [sg_rows, d_head]
+    q_load_inst_data = layer_params["q_load_tile"]
 
     out_sg_layout = q_sg_layout
     out_sg_data = q_sg_data
-    out_inst_data = q_inst_data
 
-    layout_128x16_sg_layout = [num_subgroups, 1]
-    layout_128x16_sg_data = [16, 16]
-    layout_128x16_inst_data = [8, 16]
+    qk_sg_layout = q_sg_layout
+    qk_sg_data = [sg_rows, reduction_tile]
 
-    qk_sg_layout = layout_128x16_sg_layout
-    qk_sg_data = layout_128x16_sg_data
-    qk_inst_data = layout_128x16_inst_data
+    # The K and V tiles are consumed in full by every subgroup (each subgroup
+    # owns its own rows of Q).
+    kv_sg_layout = [1, 1]
+    kv_load_sg_data = [reduction_tile, d_head]
+    v_load_inst_data = layer_params["v_load_tile"]
+    # Load K column-major so that the transpose feeding the DPAS is a no-op.
+    k_load_order = [0, 1]
+
+    # K^T operand of the Q@K^T DPAS: [d_head, reduction_tile]
+    kt_sg_data = [d_head, reduction_tile]
+    # V operand of the P@V DPAS: [reduction_tile, d_head]
+    v_sg_data = [reduction_tile, d_head]
+
+    # The K/V prefetches cover the same [reduction_tile, d_head] tile as the
+    # loads, but are distributed over the subgroups.
+    prefetch_sg_data = layer_params["prefetch_tile"]
+    prefetch_sg_layout = [
+        reduction_tile // prefetch_sg_data[0],
+        d_head // prefetch_sg_data[1],
+    ]
+    prefetch_inst_data = list(prefetch_sg_data)
 
     # Set layout attributes for xegpu.store_nd ops.
     store_nd_op = match_and_split(gpu_func, ops={"xegpu.store_nd"}, nhandles=1)[0]
@@ -366,92 +381,95 @@ def bundle_xegpu_fused_attention_schedule(
         store_nd_op,
         sg_layout=out_sg_layout,
         sg_data=out_sg_data,
-        inst_data=out_inst_data,
     )
 
-    # Set layout for xegpu.load_nd ops (9 total: 1 Q, 4 K, 4 V)
-    load_nd_ops = match_and_split(gpu_func, ops={"xegpu.load_nd"}, nhandles=9)
+    # Set layout for xegpu.load_nd ops (3 total: Q, K, V)
+    load_nd_ops = match_and_split(gpu_func, ops={"xegpu.load_nd"}, nhandles=3)
 
     # First load_nd: Q layout
     xegpu.set_anchor_layout(
-        load_nd_ops[0], sg_layout=q_sg_layout, sg_data=q_sg_data, inst_data=q_inst_data
+        load_nd_ops[0],
+        sg_layout=q_sg_layout,
+        sg_data=q_sg_data,
+        inst_data=q_load_inst_data,
     )
 
-    # Next 4 load_nd ops: K layout
-    for load_op in load_nd_ops[:4]:
+    # Second load_nd: K layout
+    xegpu.set_anchor_layout(
+        load_nd_ops[1],
+        sg_layout=kv_sg_layout,
+        sg_data=kv_load_sg_data,
+        order=k_load_order,
+    )
+
+    # Third load_nd: V layout
+    xegpu.set_anchor_layout(
+        load_nd_ops[2],
+        sg_layout=kv_sg_layout,
+        sg_data=kv_load_sg_data,
+        inst_data=v_load_inst_data,
+    )
+
+    # Set layout for all K/V xegpu.prefetch_nd ops
+    if nb_prefetch > 0:
+        prefetch_ops = match(gpu_func, ops={"xegpu.prefetch_nd"})
         xegpu.set_anchor_layout(
-            load_op,
-            sg_layout=k_sg_layout,
-            sg_data=k_sg_data,
-            inst_data=k_inst_data,
+            prefetch_ops,
+            sg_layout=prefetch_sg_layout,
+            sg_data=prefetch_sg_data,
+            inst_data=prefetch_inst_data,
         )
 
-    # Last 4 load_nd ops: V layout
-    for load_op in load_nd_ops[4:]:
-        xegpu.set_anchor_layout(
-            load_op,
-            sg_layout=v_sg_layout,
-            sg_data=v_sg_data,
-            inst_data=v_inst_data,
-        )
+    # Set layout for xegpu.dpas ops (2 total: Q@K^T and P@V)
+    dpas_ops = match_and_split(gpu_func, ops={"xegpu.dpas"}, nhandles=2)
 
-    # Set layout for xegpu.dpas ops (8 total: 4 for Q@K, 4 for P@V)
-    dpas_ops = match_and_split(gpu_func, ops={"xegpu.dpas"}, nhandles=8)
+    # Layouts for the Q@K^T dpas:
+    qk_dpas_op = dpas_ops[0]
+    # Index 0: Q layout
+    xegpu.set_anchor_layout(
+        qk_dpas_op,
+        sg_layout=q_sg_layout,
+        sg_data=q_sg_data,
+        index=0,
+    )
+    # Index 1: K^T layout
+    xegpu.set_anchor_layout(
+        qk_dpas_op,
+        sg_layout=kv_sg_layout,
+        sg_data=kt_sg_data,
+        index=1,
+    )
+    # Index 2: QK output layout
+    xegpu.set_anchor_layout(
+        qk_dpas_op,
+        sg_layout=qk_sg_layout,
+        sg_data=qk_sg_data,
+        index=2,
+    )
 
-    # Layouts for first 4 dpas ops (Q@K^T):
-    for qk_dpas_op in dpas_ops[:4]:
-        # Index 0: Q layout
-        xegpu.set_anchor_layout(
-            qk_dpas_op,
-            sg_layout=q_sg_layout,
-            sg_data=q_sg_data,
-            inst_data=q_inst_data,
-            index=0,
-        )
-        # Index 1: K^T layout
-        xegpu.set_anchor_layout(
-            qk_dpas_op,
-            sg_layout=kt_sg_layout,
-            sg_data=kt_sg_data,
-            inst_data=kt_inst_data,
-            order=kt_order,
-            index=1,
-        )
-        # Index 2: QK output layout (128x16)
-        xegpu.set_anchor_layout(
-            qk_dpas_op,
-            sg_layout=layout_128x16_sg_layout,
-            sg_data=layout_128x16_sg_data,
-            inst_data=layout_128x16_inst_data,
-            index=2,
-        )
-
-    # Layouts for second 4 dpas ops (P@V):
-    for pv_dpas_op in dpas_ops[4:]:
-        # Index 0: QK (attention weights) layout
-        xegpu.set_anchor_layout(
-            pv_dpas_op,
-            sg_layout=qk_sg_layout,
-            sg_data=qk_sg_data,
-            inst_data=qk_inst_data,
-            index=0,
-        )
-        # Index 1: V layout
-        xegpu.set_anchor_layout(
-            pv_dpas_op,
-            sg_layout=v_sg_layout,
-            sg_data=v_sg_data,
-            inst_data=v_inst_data,
-            index=1,
-        )
-        # Index 2: Output layout
-        xegpu.set_anchor_layout(
-            pv_dpas_op,
-            sg_layout=out_sg_layout,
-            sg_data=out_sg_data,
-            inst_data=out_inst_data,
-            index=2,
-        )
+    # Layouts for the P@V dpas:
+    pv_dpas_op = dpas_ops[1]
+    # Index 0: QK (attention weights) layout
+    xegpu.set_anchor_layout(
+        pv_dpas_op,
+        sg_layout=qk_sg_layout,
+        sg_data=qk_sg_data,
+        index=0,
+    )
+    # Index 1: V layout
+    xegpu.set_anchor_layout(
+        pv_dpas_op,
+        sg_layout=kv_sg_layout,
+        sg_data=v_sg_data,
+        index=1,
+    )
+    # Index 2: Output layout
+    xegpu.set_anchor_layout(
+        pv_dpas_op,
+        sg_layout=out_sg_layout,
+        sg_data=out_sg_data,
+        index=2,
+    )
 
     if stop_at_stage == "xegpu-wg":
         raise PipelineInterrupt()

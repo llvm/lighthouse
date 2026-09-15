@@ -5,7 +5,10 @@ import os
 
 class CSVLogger:
     def __init__(
-        self, filename: str = None, echo_stdout: bool = True, verbose: bool = False
+        self,
+        filename: str | None = None,
+        echo_stdout: bool = True,
+        verbose: bool = False,
     ):
         def gen_unique(path):
             base, ext = os.path.splitext(path)

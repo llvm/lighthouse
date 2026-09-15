@@ -23,7 +23,7 @@ class MemoryManager(abc.ABC):
     execution_engine: ExecutionEngine
 
     @abc.abstractmethod
-    def alloc(self, name: str = None, **kwargs) -> ctypes.Structure:
+    def alloc(self, name: str | None = None, **kwargs) -> ctypes.Structure:
         """Allocate a device buffer and return a memref descriptor."""
         pass
 
@@ -56,7 +56,7 @@ class ExternalMemoryManager(MemoryManager, abc.ABC):
         """Convert inputs to memref descriptors."""
         pass
 
-    def alloc(self, name: str = None, **kwargs) -> ctypes.Structure:
+    def alloc(self, name: str | None = None, **kwargs) -> ctypes.Structure:
         raise NotImplementedError("Allocation not supported.")
 
     def get(self, name: str) -> ctypes.Structure:
@@ -79,7 +79,7 @@ class DeviceMemoryManager(MemoryManager, abc.ABC):
 
     @abc.abstractmethod
     def clone_host_buffers(
-        self, host_inputs: list[np.ndarray], names: list[str] = None
+        self, host_inputs: list[np.ndarray], names: list[str] | None = None
     ):
         """Context manager for creating device buffers from host inputs."""
         pass
@@ -95,7 +95,7 @@ class GPUMemoryManager(DeviceMemoryManager):
     buf_counter: int = 0
 
     def alloc(
-        self, shape: tuple[int, ...], elem_type: type, name: str = None
+        self, shape: tuple[int, ...], elem_type: type, name: str | None = None
     ) -> ctypes.Structure:
         if name is None:
             name = f"buffer_{self.buf_counter}"
@@ -152,7 +152,7 @@ class GPUMemoryManager(DeviceMemoryManager):
 
     @contextmanager
     def clone_host_buffers(
-        self, host_inputs: list[np.ndarray], names: list[str] = None
+        self, host_inputs: list[np.ndarray], names: list[str] | None = None
     ):
         buffers = []
         try:
@@ -170,8 +170,8 @@ class GPUMemoryManager(DeviceMemoryManager):
     @staticmethod
     def emit_memory_management_funcs(
         payload_module: ir.Module,
-        host_inputs: list[np.ndarray] = None,
-        ranks_and_types: list[tuple[int, type]] = None,
+        host_inputs: list[np.ndarray] | None = None,
+        ranks_and_types: list[tuple[int, type]] | None = None,
     ):
         """Emit utility functions required by this class into the payload module."""
         assert host_inputs is not None or ranks_and_types is not None, (

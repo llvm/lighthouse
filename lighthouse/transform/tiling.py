@@ -1,4 +1,4 @@
-from typing import Sequence
+from collections.abc import Sequence
 
 from mlir import ir
 from mlir.dialects import transform

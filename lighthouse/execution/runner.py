@@ -8,7 +8,7 @@ import ctypes
 import os
 from contextlib import contextmanager
 from functools import partial
-from typing import Optional, Callable
+from collections.abc import Callable
 
 from mlir import ir
 from mlir.dialects import transform
@@ -21,7 +21,7 @@ from lighthouse.utils.sys_config import enable_amx
 from lighthouse.dialects.transform import transform_ext
 from lighthouse.schedule import schedule_boilerplate
 from lighthouse.utils.memref import to_packed_args
-from lighthouse.utils.mlir import get_mlir_library_path
+from lighthouse.utils.mlir import get_mlir_library_path, _SHARED_EXT
 from lighthouse.utils.lib_finder import find_openmp_library
 from .memory_manager import GPUMemoryManager, ExternalMemoryManager, MemoryManager
 
@@ -35,7 +35,7 @@ class RunnerCallable(typing.Protocol):
         self,
         inputs: list[ctypes.Structure],
         execution_engine: ExecutionEngine,
-        memory_manager: Optional[MemoryManager],
+        memory_manager: MemoryManager | None,
     ) -> None: ...
 
 
@@ -49,18 +49,18 @@ class Runner:
     def __init__(
         self,
         module: ir.Module,
-        mem_manager_cls: type = None,
-        shared_libs: list[str] = None,
+        mem_manager_cls: type | None = None,
+        shared_libs: list[str] | None = None,
         opt_level: int = 3,
         target: TargetInfo = None,
     ):
         self.payload = module
-        self.target = target if target else TargetInfo()
+        self.target = target if target else TargetInfo.host()
         self.mem_manager_cls = mem_manager_cls
         if shared_libs is None:
             shared_libs = []
         # get execution engine, rtclock requires mlir_c_runner
-        c_runner_lib = "libmlir_c_runner_utils.so"
+        c_runner_lib = f"libmlir_c_runner_utils{_SHARED_EXT}"
         if c_runner_lib not in shared_libs:
             shared_libs.append(c_runner_lib)
         self.lib_dir = get_mlir_library_path()
@@ -147,9 +147,10 @@ class Runner:
         self,
         host_input_buffers: list,
         payload_function_name: str = "",
-        argument_access_callback: Optional[
-            Callable[[list[ctypes.Structure], ExecutionEngine, MemoryManager], None]
-        ] = None,
+        argument_access_callback: Callable[
+            [list[ctypes.Structure], ExecutionEngine, MemoryManager], None
+        ]
+        | None = None,
         nruns: int = 100,
         nwarmup: int = 10,
         benchmark: bool = True,

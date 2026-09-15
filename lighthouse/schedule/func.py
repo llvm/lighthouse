@@ -6,7 +6,7 @@ from lighthouse.dialects.transform import transform_ext
 from .builders import schedule_boilerplate
 
 
-def convert_function_results(payload_func: str = None) -> ir.Module:
+def convert_function_results(payload_func: str | None = None) -> ir.Module:
     """
     A schedule that converts the payload function's return values to arguments.
 

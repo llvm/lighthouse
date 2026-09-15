@@ -6,7 +6,6 @@ XeGPU softmax benchmark.
 """
 
 import argparse
-from typing import Optional
 from functools import cached_property
 
 import numpy as np
@@ -19,7 +18,8 @@ from lighthouse.execution import GPUMemoryManager
 from lighthouse.utils.numpy import mlir_to_numpy_dtype
 from lighthouse.ingress.mlir_gen import get_mlir_elem_type
 from lighthouse.ingress.mlir_gen.gpu_softmax_payload import generate_gpu_softmax_payload
-from lighthouse.schedule.xegpu import softmax_schedule, xegpu_to_binary
+from lighthouse.schedule.parameters import ScheduleParameters
+from lighthouse.schedule.xegpu import reduction_schedule, xegpu_to_binary
 
 
 def softmax_complexity(M: int, N: int, nbytes: int):
@@ -131,16 +131,19 @@ class XeGPUSoftmax:
         )
 
     def schedule_modules(
-        self, stop_at_stage: Optional[str] = None, parameters: Optional[dict] = None
+        self,
+        stop_at_stage: str | None = None,
+        parameters: ScheduleParameters | None = None,
     ) -> list[ir.Module]:
         """Generate transform schedule for softmax."""
         schedules = []
         schedules.append(Runner.get_bench_wrapper_schedule(self.payload_function_name))
 
         schedules.append(
-            softmax_schedule(
+            reduction_schedule(
+                payload_func_name=self.payload_function_name,
                 stop_at_stage=stop_at_stage,
-                parameters=parameters,
+                params=parameters,
             )
         )
 
@@ -194,13 +197,13 @@ def parse_cli():
     parser.add_argument(
         "--nruns",
         type=int,
-        default=500,
+        default=1000,
         help="Number of runs to average the execution time.",
     )
     parser.add_argument(
         "--nwarmup",
         type=int,
-        default=500,
+        default=1000,
         help="Number of warm-up iterations before benchmarking.",
     )
     parser.add_argument(
@@ -243,13 +246,18 @@ def parse_cli():
 if __name__ == "__main__":
     args = parse_cli()
 
-    params = {
-        "sizes": args.sizes,
-        "wg_rows": args.wg_rows,
-        "sg_rows": args.sg_rows,
-        "subgroup_size": args.subgroup_size,
-        "reduction_step_size": args.reduction_step_size,
-    }
+    params = ScheduleParameters(
+        [
+            {
+                "layer_kind": "reduction",
+                "sizes": args.sizes,
+                "wg_tile": [args.wg_rows, 0],
+                "sg_tile": [args.sg_rows, 0],
+                "reduction_tile": [0, args.reduction_step_size],
+                "subgroup_size": args.subgroup_size,
+            }
+        ]
+    )
 
     M, N = args.sizes
     dtype = "f32"

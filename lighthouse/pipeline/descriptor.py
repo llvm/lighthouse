@@ -23,10 +23,10 @@ class Descriptor:
     def __init__(
         self,
         descriptor: str = "",
-        args: dict = None,
-        opts: dict = None,
-        type: str = None,
-        base_path: str = None,
+        args: dict | None = None,
+        opts: dict | None = None,
+        type: str | None = None,
+        base_path: str | None = None,
     ):
         self.type = type
         self.base_path = base_path
@@ -225,7 +225,7 @@ class PipelineDescriptor:
         self.base_path = (
             os.path.dirname(desc.basename) if desc.basename else desc.base_path
         )
-        with open(desc.basename, "r") as f:
+        with open(desc.basename) as f:
             self.pipeline_desc = yaml.safe_load(f)
         self._apply_variables()
         self.stages: list[str] = []

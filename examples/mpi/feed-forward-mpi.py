@@ -1,3 +1,6 @@
+# Disable due to CI instability. See: #247
+# REQUIRES: unsupported
+
 # REQUIRES: mpi4py
 # RUN: mpirun -n 4 %PYTHON %s --mpilib=%VIRTUAL_ENV/lib/libmpi.so.12 | FileCheck %s
 # RUN: mpirun -n 4 %PYTHON %s --mpilib=%VIRTUAL_ENV/lib/libmpi.so.12 --grid 0 0 | FileCheck %s

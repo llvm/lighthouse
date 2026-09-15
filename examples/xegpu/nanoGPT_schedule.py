@@ -10,8 +10,8 @@ it rewrites the payload from high-level linalg ops down to GPU (XeGPU) kernels.
      `_tile_one_matmul` / `_tile_one_layernorm` / `_tile_one_fused_attention_region`
      helpers.
 
-We can't reuse the repo's per-op schedules (layer_norm_schedule, mlp_schedule,
-softmax_schedule) directly, because each assumes the module contains only its op.
+We can't reuse the repo's per-op schedules (reduction_schedule, mlp_schedule)
+directly, because each assumes the module contains only its op.
 The nanoGPT module is mixed (matmul + layernorm + softmax + elementwise), so we
 build one combined schedule that handles all op classes. The strategy:
 
@@ -59,7 +59,7 @@ from lighthouse.schedule.xegpu.mlp_schedule import xegpu_wg_annotation_for_mlp_l
 from nanoGPT_payload import F32
 
 
-def _tile_one_matmul(matmul_op, anytype, mm_params):
+def _tile_one_matmul(matmul_op, mm_params):
     """Tile one matmul for DPAS: a work-group `forall` tile (wg_m x wg_n) with any
     elementwise consumer fused in, then an inner reduction (k) loop. Tile sizes
     come from `mm_params` (chosen by xegpu_parameter_selector for the GPU)."""
@@ -78,7 +78,7 @@ def _tile_one_matmul(matmul_op, anytype, mm_params):
 
 
 def _tile_one_layernorm(
-    mod, anytype, wg_rows, rss, mean_red, var_red, normalize, ln_untiled, n_mm, T_ROWS
+    anytype, wg_rows, rss, mean_red, var_red, normalize, ln_untiled, n_ctx
 ):
     """Tile one layernorm into its own forall, using preserved handles to its 3
     generics (mean_red, var_red, normalize). Handles to other ops stay valid.
@@ -103,14 +103,14 @@ def _tile_one_layernorm(
     )
     # Fuse this ln's 2 accumulator fills into the forall. Robustly select ONLY the
     # layernorm accumulator fills (NOT matmul fills) by filtering on result type:
-    # ln accumulators are rank-1 tensor<T x f32>; matmul accumulators are rank-2.
+    # ln accumulators are rank-1 tensor<n_ctx x f32>; matmul accumulators are rank-2.
     # This avoids fragile positional counting across the whole block. There are
     # 2*ln_untiled such rank-1 fills (this ln + other untiled lns); this ln's are
     # the FIRST 2 in IR order.
     ln_func = transform.get_parent_op(
         anytype, ln_forall, op_name="func.func", deduplicate=True
     )
-    reduce_t = ir.RankedTensorType.get((T_ROWS,), F32())  # ln accumulator type (T,)
+    reduce_t = ir.RankedTensorType.get((n_ctx,), F32())  # ln accumulator type (n_ctx,)
     fill_match = structured.MatchOp(
         anytype, ln_func, ops=["linalg.fill"], filter_result_type=reduce_t
     )
@@ -144,13 +144,13 @@ def _tile_one_layernorm(
     canonicalize(ln_forall)
 
 
-def _tile_one_fused_attention_region(anytype, qkt_bmm, pv_bmm, softmax_op, fa_params):
+def _tile_one_fused_attention_region(anytype, pv_bmm, softmax_op, fa_params):
     """Tile + fuse one attention region (QK^T -> scale -> softmax -> @V) into a
     SINGLE scf.forall, so it vectorizes/bufferizes into one kernel body that
     `replace_with_fused_attention` later rewrites into the flash loop.
 
     Operates on PRE-SPLIT, per-region
-    handles (qkt_bmm, pv_bmm, softmax_op) so it is region-local and works at any
+    handles (pv_bmm, softmax_op) so it is region-local and works at any
     multiplicity. All further producers are pulled in via get_producer_of_operand
     (SSA-walk = inherently scoped to this region)."""
     prod = transform.get_producer_of_operand
@@ -197,7 +197,9 @@ def _tile_one_fused_attention_region(anytype, qkt_bmm, pv_bmm, softmax_op, fa_pa
     den_fill = prod(anytype, den, operand_number=1)  # 0 fill (sum acc)
     mx = prod(anytype, num, operand_number=1)  # max-reduce generic
     mx_fill = prod(anytype, mx, operand_number=1)  # -inf fill (max acc)
-    scaled = prod(anytype, num, operand_number=0)  # linalg.mul (qkt*scale)
+    scaled = prod(
+        anytype, num, operand_number=0
+    )  # linalg.elementwise <mul> (qkt*scale)
     scale_fill = prod(anytype, scaled, operand_number=1)  # scale-constant fill
     qkt = prod(anytype, scaled, operand_number=0)  # QK^T batch_matmul
     kt = prod(anytype, qkt, operand_number=1)  # K^T transpose
@@ -222,58 +224,54 @@ def _tile_one_fused_attention_region(anytype, qkt_bmm, pv_bmm, softmax_op, fa_pa
 
 
 def _fuse_attention_in_region(anytype, forall, fa_params):
-    """After the shared bufferize+vectorize, rewrite one attention region's
-    vector.contract pair (QK^T, @V) into the flash loop via the transform
-    op. Scoped to `forall` so counts are exact at any multiplicity."""
-    contract_ops = match_and_split(forall, ops={"vector.contract"}, nhandles=2)
-    first_contract, second_contract = contract_ops[0], contract_ops[1]
-    q_load = transform.get_producer_of_operand(
-        anytype, first_contract, operand_number=0
-    )
-    k_load = transform.get_producer_of_operand(
-        anytype, first_contract, operand_number=1
-    )
-    v_load = transform.get_producer_of_operand(
-        anytype, second_contract, operand_number=1
-    )
-    mulf_op = match_and_split(forall, ops={"arith.mulf"}, nhandles=1)[0]
-    scale = transform.get_producer_of_operand(anytype, mulf_op, operand_number=1)
+    """Rewrite one attention region's tensor-level batch_matmul pair (QK^T, @V)
+    into the flash loop via the transform op. Scoped to `forall` so counts are
+    exact at any multiplicity. Runs right after the region was tiled, i.e. still
+    on tensors, so the shared vectorize tail lowers the emitted loop."""
+    prod = transform.get_producer_of_operand
+    bmms = match_and_split(forall, ops={"linalg.batch_matmul"}, nhandles=2)
+    qk_bmm, pv_bmm = bmms[0], bmms[1]
+    q = prod(anytype, qk_bmm, operand_number=0)
+    # K reaches the QK^T matmul through the linalg.transpose that forms K^T.
+    k = prod(anytype, prod(anytype, qk_bmm, operand_number=1), operand_number=0)
+    v = prod(anytype, pv_bmm, operand_number=1)
+    # The scale is the fill value of the linalg.elementwise mul rhs operand.
+    mul_op = match_and_split(forall, ops={"linalg.elementwise"}, nhandles=1)[0]
+    scale = prod(anytype, prod(anytype, mul_op, operand_number=1), operand_number=0)
     # NB: the merged fused-attention op is non-causal only -- there is
     # no `causal` parameter yet, so the model runs as non-causal attention.
     transform_ext.replace_with_fused_attention(
-        q_load=q_load,
-        k_load=k_load,
-        v_load=v_load,
+        q=q,
+        k=k,
+        v=v,
         scale=scale,
-        output=second_contract,
+        output=pv_bmm,
         tile_size=fa_params["inner_loop_tile_size"],
     )
 
 
-def xegpu_fa_annotation(gf, anytype, fa_params):
+def xegpu_fa_annotation(gf, fa_params):
     """Attach XeGPU layouts to one fused-attention gpu.func."""
     num_subgroups = fa_params["wg_rows"] // fa_params["sg_rows"]
-    n_head = fa_params["n_head"]
+    d_head = fa_params["d_head"]
+    tile_size = fa_params["inner_loop_tile_size"]
     q_sg_layout = [num_subgroups, 1]
-    q_sg_data = [16, n_head]
+    q_sg_data = [16, d_head]
     q_inst_data = [8, 16]
+    # K and V tiles are [tile_size, d_head], shared by all subgroups.
     k_sg_layout = [num_subgroups, 1]
-    k_sg_data = [16, n_head]
+    k_sg_data = [tile_size, d_head]
     k_inst_data = [16, 16]
     v_sg_layout, v_sg_data, v_inst_data = k_sg_layout, k_sg_data, k_inst_data
     kt_sg_layout = [1, num_subgroups]
-    kt_sg_data = [n_head, 16]
+    kt_sg_data = [d_head, tile_size]
     kt_inst_data = [16, 16]
     kt_order = [0, 1]
     out_sg_layout, out_sg_data, out_inst_data = q_sg_layout, q_sg_data, q_inst_data
-    l128_sg_layout = [num_subgroups, 1]
-    l128_sg_data = [16, 16]
-    l128_inst_data = [8, 16]
-    qk_sg_layout, qk_sg_data, qk_inst_data = (
-        l128_sg_layout,
-        l128_sg_data,
-        l128_inst_data,
-    )
+    # Q@K^T (attention weights) tile is [wg_rows, tile_size].
+    qk_sg_layout = [num_subgroups, 1]
+    qk_sg_data = [16, tile_size]
+    qk_inst_data = [8, 16]
 
     store_nd_op = match_and_split(gf, ops={"xegpu.store_nd"}, nhandles=1)[0]
     xegpu.set_anchor_layout(
@@ -282,64 +280,68 @@ def xegpu_fa_annotation(gf, anytype, fa_params):
         sg_data=out_sg_data,
         inst_data=out_inst_data,
     )
-    load_nd_ops = match_and_split(gf, ops={"xegpu.load_nd"}, nhandles=9)
+    # 3 load_nd ops: Q (hoisted out of the loop), then K and V in the loop.
+    load_nd_ops = match_and_split(gf, ops={"xegpu.load_nd"}, nhandles=3)
     xegpu.set_anchor_layout(
         load_nd_ops[0], sg_layout=q_sg_layout, sg_data=q_sg_data, inst_data=q_inst_data
     )
-    for i in range(1, 5):
-        xegpu.set_anchor_layout(
-            load_nd_ops[i],
-            sg_layout=k_sg_layout,
-            sg_data=k_sg_data,
-            inst_data=k_inst_data,
-        )
-    for i in range(5, 9):
-        xegpu.set_anchor_layout(
-            load_nd_ops[i],
-            sg_layout=v_sg_layout,
-            sg_data=v_sg_data,
-            inst_data=v_inst_data,
-        )
-    dpas_ops = match_and_split(gf, ops={"xegpu.dpas"}, nhandles=8)
-    for i in range(4):
-        d = dpas_ops[i]
-        xegpu.set_anchor_layout(
-            d, sg_layout=q_sg_layout, sg_data=q_sg_data, inst_data=q_inst_data, index=0
-        )
-        xegpu.set_anchor_layout(
-            d,
-            sg_layout=kt_sg_layout,
-            sg_data=kt_sg_data,
-            inst_data=kt_inst_data,
-            order=kt_order,
-            index=1,
-        )
-        xegpu.set_anchor_layout(
-            d,
-            sg_layout=l128_sg_layout,
-            sg_data=l128_sg_data,
-            inst_data=l128_inst_data,
-            index=2,
-        )
-    for i in range(4, 8):
-        d = dpas_ops[i]
-        xegpu.set_anchor_layout(
-            d,
-            sg_layout=qk_sg_layout,
-            sg_data=qk_sg_data,
-            inst_data=qk_inst_data,
-            index=0,
-        )
-        xegpu.set_anchor_layout(
-            d, sg_layout=v_sg_layout, sg_data=v_sg_data, inst_data=v_inst_data, index=1
-        )
-        xegpu.set_anchor_layout(
-            d,
-            sg_layout=out_sg_layout,
-            sg_data=out_sg_data,
-            inst_data=out_inst_data,
-            index=2,
-        )
+    xegpu.set_anchor_layout(
+        load_nd_ops[1],
+        sg_layout=k_sg_layout,
+        sg_data=k_sg_data,
+        inst_data=k_inst_data,
+    )
+    xegpu.set_anchor_layout(
+        load_nd_ops[2],
+        sg_layout=v_sg_layout,
+        sg_data=v_sg_data,
+        inst_data=v_inst_data,
+    )
+    # 2 dpas ops: Q@K^T and P@V.
+    qk_dpas, pv_dpas = match_and_split(gf, ops={"xegpu.dpas"}, nhandles=2)
+    xegpu.set_anchor_layout(
+        qk_dpas,
+        sg_layout=q_sg_layout,
+        sg_data=q_sg_data,
+        inst_data=q_inst_data,
+        index=0,
+    )
+    xegpu.set_anchor_layout(
+        qk_dpas,
+        sg_layout=kt_sg_layout,
+        sg_data=kt_sg_data,
+        inst_data=kt_inst_data,
+        order=kt_order,
+        index=1,
+    )
+    xegpu.set_anchor_layout(
+        qk_dpas,
+        sg_layout=qk_sg_layout,
+        sg_data=qk_sg_data,
+        inst_data=qk_inst_data,
+        index=2,
+    )
+    xegpu.set_anchor_layout(
+        pv_dpas,
+        sg_layout=qk_sg_layout,
+        sg_data=qk_sg_data,
+        inst_data=qk_inst_data,
+        index=0,
+    )
+    xegpu.set_anchor_layout(
+        pv_dpas,
+        sg_layout=v_sg_layout,
+        sg_data=v_sg_data,
+        inst_data=v_inst_data,
+        index=1,
+    )
+    xegpu.set_anchor_layout(
+        pv_dpas,
+        sg_layout=out_sg_layout,
+        sg_data=out_sg_data,
+        inst_data=out_inst_data,
+        index=2,
+    )
 
 
 def build_combined_schedule(
@@ -424,7 +426,7 @@ def _bundle(
     # per-op handle slices from `kinds`.
     # 'fa' softmax generics do NOT exist yet (fa is tiled last, softmax still
     # un-decomposed), so they are not in this pool. The fa core's linalg.transpose
-    # /linalg.mul/batch_matmul are not linalg.generic, so also excluded. (The head
+    # /linalg.elementwise/batch_matmul are not linalg.generic, so also excluded. (The head
     # reshape is a pure memref VIEW -- no generic, no kernel; see Builder.heads_view.)
     ngen_total = 3 * n_ln + n_ew
     gen_handles = transform.split_handle(
@@ -451,7 +453,6 @@ def _bundle(
     for i, (mean_red, var_red, normalize) in enumerate(ln_slices):
         ln_untiled = n_ln - i
         _tile_one_layernorm(
-            mod,
             anytype,
             wg_rows,
             rss,
@@ -459,8 +460,7 @@ def _bundle(
             var_red,
             normalize,
             ln_untiled,
-            n_mm,
-            ln_params["T"],
+            ln_params["n_ctx"],
         )
 
     # 2) Tile EW generics into own foralls (handles preserved across ln tiling).
@@ -477,7 +477,7 @@ def _bundle(
     # 4) Matmuls (their EW producers already wrapped in foralls)
     mms = match_and_split(mod, ops={"linalg.matmul"}, nhandles=n_mm)
     for mm in mms:
-        _tile_one_matmul(mm, anytype, mm_params)
+        _tile_one_matmul(mm, mm_params)
 
     # 5) Fused-attention regions. Done last so the generic pre-split above ran while
     #    each fa softmax was still one linalg.softmax (its decomposition generics
@@ -488,9 +488,13 @@ def _bundle(
         fa_bmms = match_and_split(mod, ops={"linalg.batch_matmul"}, nhandles=2 * n_fa)
         fa_softmaxes = match_and_split(mod, ops={"linalg.softmax"}, nhandles=n_fa)
         for r in range(n_fa):
-            _tile_one_fused_attention_region(
-                anytype, fa_bmms[2 * r], fa_bmms[2 * r + 1], fa_softmaxes[r], fa_params
+            _, fa_forall = _tile_one_fused_attention_region(
+                anytype, fa_bmms[2 * r + 1], fa_softmaxes[r], fa_params
             )
+            # Rewrite the region into the flash online-softmax loop while it is
+            # still on tensors, so the shared vectorize tail lowers it like any
+            # other tiled region.
+            _fuse_attention_in_region(anytype, fa_forall, fa_params)
 
     func = match(mod, ops={"func.func"})
     lh_transform.cleanup(func)
@@ -502,9 +506,17 @@ def _bundle(
         anytype, func, fold_type_extensions_into_contract=True
     )
     lh_transform.cleanup(func)
-    # Fused-attention regions carry a batch-of-1 dim from the (1,wg_rows,0,0) tiling;
-    # drop leading unit dims so the QK^T/@V vector.contracts become 2D, as the flash
-    # rewrite expects.
+    # Accumulators of the tiled reduction loops (the flash loop's running max /
+    # sum / @V accumulator, the layernorm partial reductions) are tensors at
+    # linalg level, so vectorization turns them into a transfer_read/write pair
+    # per iteration. Hoist those subsets so they are carried as vector iter_args,
+    # i.e. in registers instead of through a scratch buffer.
+    with lh_transform.foreach(match(mod, ops={"scf.for"})) as reduction_loop:
+        lh_transform.loop_hoisting(reduction_loop)
+        transform.yield_()
+    lh_transform.cleanup(func)
+    # Drop any leading unit dims left over from the (1, wg_rows, 0, 0) tiling of
+    # the attention regions so the QK^T/@V vector.contracts stay 2D.
     if n_fa:
         with ir.InsertionPoint(transform.apply_patterns(func).patterns):
             apply_patterns_vector_cast_away_vector_leading_one_dim()
@@ -537,24 +549,8 @@ def _bundle(
     if stop_at_stage == "bufferized":
         raise PipelineInterrupt()
 
-    # ===== FUSED-ATTENTION REWRITE (after bufferize+vectorize, before gpu.launch) =====
-    # Re-find each attention forall by kinds index (forall IR order == kinds order,
-    # the invariant the launch/gpu_mods loops below also rely on) and rewrite its
-    # QK^T/@V vector.contract pair into the flash online-softmax loop. Must run
-    # BEFORE forall->gpu.launch so the producer-walks for q/k/v loads stay in-region.
-    if n_fa:
-        all_foralls = match_and_split(mod, ops={"scf.forall"}, nhandles=nkernels)
-        for idx, kind in enumerate(kinds):
-            if kind == "fa":
-                _fuse_attention_in_region(anytype, all_foralls[idx], fa_params)
-        func = match(mod, ops={"func.func"})
-        transform.apply_cse(func)
-        canonicalize(func)
-    if stop_at_stage == "inner-tiled":
-        raise PipelineInterrupt()
-
     # Shared with the per-op xegpu schedules: forall -> scf.parallel -> gpu.launch.
-    func = convert_to_gpu_launch(mod, "payload", nlayers=nkernels)
+    func = convert_to_gpu_launch(mod, payload_func_name="payload")
 
     # launch threads per kernel, in IR (build) order = `kinds`.
     launches = match_and_split(mod, ops={"gpu.launch"}, nhandles=nkernels)
@@ -625,7 +621,7 @@ def _bundle(
         if kind == "mm":
             xegpu_wg_annotation_for_mlp_layer(gf, **mm_params)
         elif kind == "fa":
-            xegpu_fa_annotation(gf, anytype, fa_params)
+            xegpu_fa_annotation(gf, fa_params)
         else:
             # ln/sm/ew: anchor-layout their store_nd, and (ln/sm) their SLM
             # store_matrix. Pass the whole match handle to set_anchor_layout (it

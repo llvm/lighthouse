@@ -11,15 +11,13 @@ from lighthouse.pipeline.helper import (
 )
 
 from lighthouse.schedule import schedule_boilerplate
-from lighthouse.dialects import smt_ext
-from lighthouse.dialects.transform import smt_ext as td_smt_ext
-from lighthouse.dialects.transform.tune_ext import KnobValue
+from lighthouse.schedule.parameters import ScheduleParameters
 from .xegpu_specs import XeGPUSpecs
 from .xegpu_parameter_selector import XeGPUParameterSelector
 from .lowering_common import (
     vectorize_bufferize_and_outline_gpu_func,
     convert_vector_to_xegpu,
-    get_named_func,
+    get_payload_func,
 )
 from .matmul_constraints import (
     LOAD_MAX_ROWS,
@@ -28,22 +26,20 @@ from .matmul_constraints import (
 
 
 def elemwise_schedule(
-    params: list[dict[str, int | None]],
+    params: ScheduleParameters,
     payload_func_name: str = "payload",
+    device: str | None = None,
     stop_at_stage: str = "",
 ) -> ir.Module:
     """Generate transform schedule module for elemwise payload."""
     assert params is not None and len(params) > 0, "params must be provided."
-    devices = {p.get("device") for p in params if "device" in p}
-    assert len(devices) <= 1, f"Multiple devices specified in params list: {devices}"
-    device = devices.pop() if devices else None
     param_selector = XeGPUParameterSelector(device=device)
     gpu_specs = param_selector.gpu_specs
 
     with schedule_boilerplate() as (schedule, named_seq):
         # match the payload module
         anytype = transform.AnyOpType.get()
-        func = get_named_func(named_seq.bodyTarget, payload_func_name)
+        func = get_payload_func(named_seq.bodyTarget, func_name=payload_func_name)
         payload_mod = transform.get_parent_op(
             anytype,
             func,
@@ -70,7 +66,7 @@ def bundle_xegpu_elemwise_schedule(
     mod: ir.Value[transform.AnyOpType],
     payload_func_name: str,
     gpu_specs: XeGPUSpecs,
-    params: list[dict[str, int | KnobValue]],
+    params: ScheduleParameters,
     stop_at_stage: str = "",
 ) -> ir.Value[transform.AnyOpType]:
     """Schedule for lowering elemwise-like payload to xegpu wg level."""
@@ -80,7 +76,7 @@ def bundle_xegpu_elemwise_schedule(
         raise PipelineInterrupt()
 
     # fuse all elementwise ops first
-    func = get_named_func(mod, payload_func_name)
+    func = get_payload_func(mod, func_name=payload_func_name)
     func = apply_registered_pass(func, "linalg-fuse-elementwise-ops")
 
     # tile each layer separately
@@ -103,12 +99,11 @@ def bundle_xegpu_elemwise_schedule(
     mod = vectorize_bufferize_and_outline_gpu_func(
         mod,
         payload_func_name=payload_func_name,
-        nlayers=nlayers,
         gpu_specs=gpu_specs,
         params=params,
         stop_at_stage=stop_at_stage,
     )
-    mod = convert_vector_to_xegpu(mod, nlayers=nlayers)
+    mod = convert_vector_to_xegpu(mod)
     if stop_at_stage == "xegpu-initial":
         raise PipelineInterrupt()
 
@@ -129,12 +124,12 @@ def xegpu_wg_annotation_for_elemwise_layer(
     gpu_func: ir.Value,
     gpu_specs: XeGPUSpecs,
     *,
-    wg_m: int | KnobValue,
-    wg_n: int | KnobValue,
-    sg_m: int | KnobValue,
-    sg_n: int | KnobValue,
-    load_m: int | KnobValue,
-    load_n: int | KnobValue,
+    wg_m: int,
+    wg_n: int,
+    sg_m: int,
+    sg_n: int,
+    load_m: int,
+    load_n: int,
     **_catch_all,
 ):
     """
@@ -143,18 +138,13 @@ def xegpu_wg_annotation_for_elemwise_layer(
     Should be applied after the payload has been converted to XeGPU using
     the convert-vector-to-xegpu pass.
     """
-
-    @td_smt_ext.constrain_params(wg_m, wg_n, sg_m, sg_n, load_m, load_n)
-    def calc_sg_layout(WG_M, WG_N, SG_M, SG_N, LD_M, LD_N):
-        smt_ext.assert_(WG_M % SG_M == 0)
-        smt_ext.assert_(WG_N % SG_N == 0)
-        smt_ext.assert_(SG_M % LD_M == 0)
-        smt_ext.assert_(SG_N % LD_N == 0)
-        smt_ext.assert_(LD_M <= LOAD_MAX_ROWS)
-        smt_ext.assert_(LD_N <= LOAD_MAX_COLS)
-        return WG_M // SG_M, WG_N // SG_N
-
-    sg_layout = calc_sg_layout.results
+    assert wg_m % sg_m == 0
+    assert wg_n % sg_n == 0
+    assert sg_m % load_m == 0
+    assert sg_n % load_n == 0
+    assert load_m <= LOAD_MAX_ROWS
+    assert load_n <= LOAD_MAX_COLS
+    sg_layout = [wg_m // sg_m, wg_n // sg_n]
 
     sg_tile = [sg_m, sg_n]
     load_tile = [load_m, load_n]

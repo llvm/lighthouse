@@ -1,356 +1,278 @@
-"""Transform extension to generate fused attention computation."""
+"""Transform extension to generate fused attention computation at tensor level."""
 
-import numpy as np
 from mlir import ir
-from mlir.dialects import ext, transform, arith, scf, math, vector
+from mlir.dialects import ext, transform, arith, scf, math, linalg, tensor
 from mlir.dialects.transform import DiagnosedSilenceableFailure
 
 from lighthouse.dialects.transform.transform_ext import TransformExtensionDialect
 
 
-def emit_vector_constant(shape, fill_value, element_type):
-    """Emit an arith.constant of vector type, filled with fill_value."""
-    vector_type = ir.VectorType.get(list(shape), element_type)
-    np_dtype = np.float16 if element_type == ir.F16Type.get() else np.float32
-    values = np.full(shape, fill_value, dtype=np_dtype)
-    attr = ir.DenseElementsAttr.get(values, type=vector_type)
-    return arith.constant(vector_type, attr)
+def _scalar_constant(value, element_type):
+    """Emit a scalar arith.constant of the given float type."""
+    return arith.constant(element_type, ir.FloatAttr.get(element_type, value))
 
 
-def compute_qkt_chunks(
-    q_value,
-    k_load_op,
-    loop_idx,
-    k_tile_offsets,
-    wg_rows,
-    d_head,
-    k_subtile_size,
-    num_k_tiles,
-    element_type,
-):
-    """Load K tiles, transpose, and contract with Q to produce Q@K^T chunks.
+def _empty(shape, element_type):
+    """Emit a tensor.empty of the given static shape."""
+    return tensor.empty(list(shape), element_type)
 
-    Each K tile is [k_subtile_size, d_head], transposed to [d_head, k_subtile_size]
-    and contracted with q_value [wg_rows, d_head] to produce [wg_rows, k_subtile_size].
-    Returns a list of `num_k_tiles` such chunks.
+
+def _filled(shape, element_type, value):
+    """Emit a tensor.empty initialized with `value` through a linalg.fill."""
+    return linalg.fill(
+        _scalar_constant(value, element_type), outs=[_empty(shape, element_type)]
+    )
+
+
+def _iterators(num_parallel, num_reduction):
+    """Build a linalg iterator_types array attribute."""
+    parallel = ir.Attribute.parse("#linalg.iterator_type<parallel>")
+    reduction = ir.Attribute.parse("#linalg.iterator_type<reduction>")
+    return ir.ArrayAttr.get([parallel] * num_parallel + [reduction] * num_reduction)
+
+
+def _generic(ins, outs, maps, iterators, body):
+    """Emit a single-result linalg.generic.
+
+    `maps` holds the indexing maps of `ins` followed by those of `outs`,
+    `iterators` the iterator_types attribute and `body` a callable receiving the
+    block arguments (inputs then outputs) and returning the value to yield.
     """
-    k_memref = k_load_op.operands[0]
-    k_load_indices = list(k_load_op.operands[1:-1])
-    padding = k_load_op.operands[-1]
-    in_bounds = k_load_op.attributes.get("in_bounds", None)
-    k_perm_map = k_load_op.attributes.get("permutation_map", None)
-
-    affine_d0 = ir.AffineExpr.get_dim(0)
-    affine_d1 = ir.AffineExpr.get_dim(1)
-    affine_d2 = ir.AffineExpr.get_dim(2)
-
-    q_map = ir.AffineMap.get(3, 0, [affine_d0, affine_d2])
-    k_map = ir.AffineMap.get(3, 0, [affine_d2, affine_d1])
-    out_map = ir.AffineMap.get(3, 0, [affine_d0, affine_d1])
-
-    indexing_maps = ir.ArrayAttr.get(
-        [
-            ir.AffineMapAttr.get(q_map),
-            ir.AffineMapAttr.get(k_map),
-            ir.AffineMapAttr.get(out_map),
+    generic = linalg.GenericOp(
+        result_tensors=[out.type for out in outs],
+        inputs=ins,
+        outputs=outs,
+        indexing_maps=ir.ArrayAttr.get([ir.AffineMapAttr.get(m) for m in maps]),
+        iterator_types=iterators,
+    )
+    block = generic.regions[0].blocks.append(
+        *[
+            ir.ShapedType(operand.type).element_type
+            for operand in list(ins) + list(outs)
         ]
     )
+    with ir.InsertionPoint(block):
+        linalg.yield_([body(*block.arguments)])
+    return generic.results[0]
 
-    iterator_types = ir.ArrayAttr.get(
-        [
-            ir.Attribute.parse("#vector.iterator_type<parallel>"),
-            ir.Attribute.parse("#vector.iterator_type<parallel>"),
-            ir.Attribute.parse("#vector.iterator_type<reduction>"),
-        ]
+
+def _tile_and_row_maps(nb):
+    """Maps over the [*batch, m, trailing] iteration space (nb + 2 dims).
+
+    Returns the identity map onto the full tile and the map dropping the
+    trailing dim, i.e. the one used by the [*batch, m] row vectors (either as
+    reduction results or as operands broadcast over the trailing dim).
+    """
+    dims = [ir.AffineExpr.get_dim(i) for i in range(nb + 2)]
+    return ir.AffineMap.get(nb + 2, 0, dims), ir.AffineMap.get(nb + 2, 0, dims[:-1])
+
+
+def _contract(lhs, rhs, acc, batch_shape):
+    """Emit a batched contraction `acc += lhs @ rhs` as a linalg.contract.
+
+    lhs is [*batch, m, k], rhs is [*batch, k, n] and acc is [*batch, m, n],
+    reducing over k. linalg.contract casts operands narrower than `acc` up to its
+    element type, which the vectorizer then folds back into the resulting
+    vector.contract (see `fold_type_extensions_into_contract`), so the DPAS keeps
+    its narrow operands and wide accumulator.
+    """
+    nb = len(batch_shape)
+    dims = [ir.AffineExpr.get_dim(i) for i in range(nb + 3)]
+    batch = dims[:nb]
+    m, n, k = dims[nb], dims[nb + 1], dims[nb + 2]
+
+    return linalg.contract(
+        lhs,
+        rhs,
+        outs=[acc],
+        indexing_maps=[
+            ir.AffineMap.get(nb + 3, 0, batch + [m, k]),
+            ir.AffineMap.get(nb + 3, 0, batch + [k, n]),
+            ir.AffineMap.get(nb + 3, 0, batch + [m, n]),
+        ],
     )
 
-    qkt_chunk_type = ir.VectorType.get([wg_rows, k_subtile_size], element_type)
-    qkt_chunk_acc = emit_vector_constant((wg_rows, k_subtile_size), 0.0, element_type)
 
-    qkt_chunks = []
-    for tile_idx in range(num_k_tiles):
-        k_tile_offset = arith.addi(loop_idx, k_tile_offsets[tile_idx])
-
-        k_tile_indices = k_load_indices.copy()
-        k_tile_indices[-2] = k_tile_offset
-
-        k_tile_type = ir.VectorType.get([k_subtile_size, d_head], element_type)
-        k_tile = vector.TransferReadOp(
-            k_tile_type,
-            k_memref,
-            k_tile_indices,
-            k_perm_map,
-            padding,
-            in_bounds=in_bounds,
-        ).result
-
-        k_transpose_type = ir.VectorType.get([d_head, k_subtile_size], element_type)
-        k_transpose = vector.transpose(k_transpose_type, k_tile, [1, 0])
-
-        qkt_chunk = vector.contract(
-            qkt_chunk_type,
-            q_value,
-            k_transpose,
-            qkt_chunk_acc,
-            indexing_maps=indexing_maps,
-            iterator_types=iterator_types,
-        )
-        qkt_chunks.append(qkt_chunk)
-
-    return qkt_chunks
+def _row_reduce(source, acc, combiner, batch_shape):
+    """Reduce a [*batch, m, trailing] tile to [*batch, m] over the trailing dim."""
+    nb = len(batch_shape)
+    tile_map, row_map = _tile_and_row_maps(nb)
+    return _generic(
+        [source],
+        [acc],
+        [tile_map, row_map],
+        _iterators(nb + 1, 1),
+        combiner,
+    )
 
 
-def apply_causal_mask(
-    qkt_chunks,
-    q_row_offset,
-    loop_idx,
-    k_tile_offsets,
-    wg_rows,
-    k_subtile_size,
-    num_k_tiles,
-    element_type,
-):
-    """Mask future keys in each Q@K^T chunk for causal attention.
+def _elemwise(ins, out, batch_shape, body, broadcast_row_operands=()):
+    """Emit an elementwise linalg.generic writing into `out`.
 
-    Chunk `tile_idx` entry [r, c] holds score(query row, key col) where the global
-    positions are query_row = q_row_offset + r and key_col = loop_idx +
-    k_tile_offsets[tile_idx] + c. A key is in the future when key_col > query_row;
-    such entries are overwritten with -6e4 (f16-safe "-inf") so their exp() is 0 and
-    they drop out of the online softmax. Returns the masked chunk list.
+    `out` is either a [*batch, m] row vector or a [*batch, m, trailing] tile.
+    Operands listed in `broadcast_row_operands` (by index into `ins`) are row
+    vectors broadcast over the trailing dim of `out`.
+    """
+    nb = len(batch_shape)
+    is_tile = ir.ShapedType(out.type).rank == nb + 2
+    if is_tile:
+        out_map, row_map = _tile_and_row_maps(nb)
+    else:
+        out_map = row_map = ir.AffineMap.get_identity(nb + 1)
+    in_maps = [
+        row_map if i in broadcast_row_operands else out_map for i in range(len(ins))
+    ]
+    return _generic(
+        ins,
+        [out],
+        in_maps + [out_map],
+        _iterators(nb + 2 if is_tile else nb + 1, 0),
+        body,
+    )
 
-    q_row_offset is the Q load's row index (the forall query-block offset); the query
-    dim is tiled (wg_rows < seq_len), so masking uses global, not tile-local, rows.
+
+def _drop_leading_dims(source, num_dims):
+    """Rank-reduce `source` by slicing away its `num_dims` leading unit dims."""
+    source_type = ir.RankedTensorType(source.type)
+    sizes = list(source_type.shape)
+    return tensor.ExtractSliceOp(
+        ir.RankedTensorType.get(sizes[num_dims:], source_type.element_type),
+        source,
+        [],
+        [],
+        [],
+        [0] * source_type.rank,
+        sizes,
+        [1] * source_type.rank,
+    ).result
+
+
+def _restore_leading_dims(source, destination):
+    """Insert a rank-reduced `source` back under the leading unit dims of `destination`."""
+    destination_type = ir.RankedTensorType(destination.type)
+    return tensor.InsertSliceOp(
+        source,
+        destination,
+        [],
+        [],
+        [],
+        [0] * destination_type.rank,
+        list(destination_type.shape),
+        [1] * destination_type.rank,
+    ).result
+
+
+def _extract_kv_tile(source, loop_idx, tile_size):
+    """Slice a [*batch, n_ctx, d_head] K/V tensor down to `tile_size` rows.
+
+    Extracts [*batch, tile_size, d_head] starting at `loop_idx` along the n_ctx
+    dim, i.e. at offset [0, ..., loop_idx, 0].
+    """
+    source_type = ir.RankedTensorType(source.type)
+    rank = source_type.rank
+    sizes = list(source_type.shape)
+    sizes[-2] = tile_size
+
+    static_offsets = [0] * rank
+    static_offsets[-2] = ir.ShapedType.get_dynamic_size()
+
+    return tensor.ExtractSliceOp(
+        ir.RankedTensorType.get(sizes, source_type.element_type),
+        source,
+        [loop_idx],
+        [],
+        [],
+        static_offsets,
+        sizes,
+        [1] * rank,
+    ).result
+
+
+def _slice_row_offset(source_op, m_dim):
+    """Global first row of a tiled Q tile: its extract_slice offset along `m_dim`.
+
+    Returns the offset as an index value (a fresh constant for a static offset,
+    the existing operand for a dynamic one) or a zero constant when the producer
+    is not an extract_slice (untiled query dim).
     """
     index_type = ir.IndexType.get()
-
-    # Global query rows [wg_rows]: iota + q_row_offset, broadcast to [wg_rows, k_sub]
-    # (broadcast to [k_sub, wg_rows] then transpose, matching the m_ij pattern).
-    row_iota = vector.step(ir.VectorType.get([wg_rows], index_type))
-    row_off = vector.broadcast(ir.VectorType.get([wg_rows], index_type), q_row_offset)
-    row_global = arith.addi(row_iota, row_off)
-    row_bcast = vector.broadcast(
-        ir.VectorType.get([k_subtile_size, wg_rows], index_type), row_global
-    )
-    row_2d = vector.transpose(
-        ir.VectorType.get([wg_rows, k_subtile_size], index_type), row_bcast, [1, 0]
-    )
-
-    neg_inf = emit_vector_constant((wg_rows, k_subtile_size), -6e4, element_type)
-    col_iota = vector.step(ir.VectorType.get([k_subtile_size], index_type))
-
-    masked_chunks = []
-    for tile_idx in range(num_k_tiles):
-        # Global key columns [k_sub] for this tile: loop_idx + tile_offset + iota.
-        k_tile_offset = arith.addi(loop_idx, k_tile_offsets[tile_idx])
-        col_off = vector.broadcast(
-            ir.VectorType.get([k_subtile_size], index_type), k_tile_offset
-        )
-        col_global = arith.addi(col_iota, col_off)
-        col_2d = vector.broadcast(
-            ir.VectorType.get([wg_rows, k_subtile_size], index_type), col_global
-        )
-        # future key when col_global > row_global -> select -6e4, else keep score.
-        is_future = arith.cmpi(arith.CmpIPredicate.sgt, col_2d, row_2d)
-        masked_chunks.append(arith.select(is_future, neg_inf, qkt_chunks[tile_idx]))
-
-    return masked_chunks
+    if not isinstance(source_op.opview, tensor.ExtractSliceOp):
+        return arith.constant(index_type, 0)
+    slice_op = source_op.opview
+    static_offsets = list(slice_op.static_offsets)
+    dynamic = ir.ShapedType.get_dynamic_size()
+    if static_offsets[m_dim] != dynamic:
+        return arith.constant(index_type, static_offsets[m_dim])
+    dynamic_before = sum(1 for o in static_offsets[:m_dim] if o == dynamic)
+    return slice_op.offsets[dynamic_before]
 
 
-def compute_qkt_max_scaled(qkt_chunks, num_k_tiles, m_i_init, scale_vector):
-    """Reduce Q@K^T chunks to a row-wise scaled max.
-
-    Combines chunks elementwise with maximumf, reduces along the inner dim with
-    multi_reduction(maxnumf, acc=m_i_init), and multiplies by scale_vector.
-    Returns a [wg_rows] vector.
-    """
-    qkt_max_combined = qkt_chunks[0]
-    for i in range(1, num_k_tiles):
-        qkt_max_combined = arith.maximumf(qkt_max_combined, qkt_chunks[i])
-
-    qkt_max = vector.multi_reduction(
-        kind="maxnumf",
-        source=qkt_max_combined,
-        acc=m_i_init,
-        reduction_dims=[1],
-    )
-
-    return arith.mulf(qkt_max, scale_vector)
-
-
-def compute_online_softmax_and_sum(
-    qkt_chunks,
-    m_ij,
-    l_i_init,
-    scale_value,
-    wg_rows,
-    k_subtile_size,
-    num_k_tiles,
-    element_type,
+def _causal_mask(
+    qkt_scaled, qkt_shape, q_row_offset, loop_idx, batch_shape, element_type
 ):
-    """Apply online softmax to Q@K^T chunks and reduce to a row-wise sum.
+    """Overwrite future-key scores with -inf so they vanish from the softmax.
 
-    For each chunk: exp(chunk * scale - m_ij), broadcast over the inner dim.
-    Returns (qkt_exp_chunks, l_ij) where qkt_exp_chunks is the list of
-    [wg_rows, k_subtile_size] exp tiles and l_ij is their row-wise sum
-    [wg_rows] (added into l_i_init).
+    Entry [*batch, r, c] scores query row `q_row_offset + r` against key column
+    `loop_idx + c`; keys past the query row (above the diagonal) are masked.
     """
-    scale_chunk = emit_vector_constant(
-        (wg_rows, k_subtile_size), scale_value, element_type
-    )
+    nb = len(batch_shape)
+    tile_map, _ = _tile_and_row_maps(nb)
 
-    # Broadcast m_ij from [wg_rows] to [wg_rows, k_subtile_size]
-    m_ij_bcasted_type = ir.VectorType.get([k_subtile_size, wg_rows], element_type)
-    m_ij_bcasted = vector.broadcast(m_ij_bcasted_type, m_ij)
-    m_ij_transposed_type = ir.VectorType.get([wg_rows, k_subtile_size], element_type)
-    m_ij_transposed = vector.transpose(m_ij_transposed_type, m_ij_bcasted, [1, 0])
-
-    qkt_exp_chunks = []
-    for qkt_chunk in qkt_chunks:
-        qkt_scaled = arith.mulf(qkt_chunk, scale_chunk)
-        qkt_centered = arith.subf(qkt_scaled, m_ij_transposed)
-        qkt_exp = math.exp(qkt_centered)
-        qkt_exp_chunks.append(qkt_exp)
-
-    qkt_exp_combined = qkt_exp_chunks[0]
-    for i in range(1, num_k_tiles):
-        qkt_exp_combined = arith.addf(qkt_exp_combined, qkt_exp_chunks[i])
-
-    l_ij = vector.multi_reduction(
-        kind="add",
-        source=qkt_exp_combined,
-        acc=l_i_init,
-        reduction_dims=[1],
-    )
-
-    return qkt_exp_chunks, l_ij
-
-
-def rescale_pv_out_accumulator(acc, alpha, wg_rows, d_head, element_type):
-    """Rescale the running P@V accumulator by broadcasting alpha across d_head.
-
-    Broadcasts alpha [wg_rows] to [wg_rows, d_head] and multiplies acc by it
-    elementwise. Returns the rescaled accumulator.
-    """
-    alpha_bcasted_type = ir.VectorType.get([d_head, wg_rows], element_type)
-    alpha_bcasted = vector.broadcast(alpha_bcasted_type, alpha)
-    alpha_transposed_type = ir.VectorType.get([wg_rows, d_head], element_type)
-    alpha_transposed = vector.transpose(alpha_transposed_type, alpha_bcasted, [1, 0])
-    return arith.mulf(acc, alpha_transposed)
-
-
-def compute_pv_chunks(
-    qkt_exp_chunks,
-    v_load_op,
-    pv_init,
-    loop_idx,
-    k_tile_offsets,
-    acc_vector_type,
-    d_head,
-    k_subtile_size,
-    num_k_tiles,
-    element_type,
-):
-    """Load V tiles and contract with softmax chunks, accumulating into pv_init.
-
-    For each tile: load V tile [k_subtile_size, d_head] and contract with the
-    matching exp chunk [wg_rows, k_subtile_size] into the running [wg_rows, d_head]
-    accumulator. Returns the final accumulated result.
-    """
-    v_memref = v_load_op.operands[0]
-    v_load_indices = list(v_load_op.operands[1:-1])
-    v_padding = v_load_op.operands[-1]
-    v_in_bounds = v_load_op.attributes.get("in_bounds", None)
-    v_perm_map = v_load_op.attributes.get("permutation_map", None)
-
-    affine_d0 = ir.AffineExpr.get_dim(0)
-    affine_d1 = ir.AffineExpr.get_dim(1)
-    affine_d2 = ir.AffineExpr.get_dim(2)
-    qkt_exp_map = ir.AffineMap.get(3, 0, [affine_d0, affine_d2])
-    v_map = ir.AffineMap.get(3, 0, [affine_d2, affine_d1])
-    pv_out_map = ir.AffineMap.get(3, 0, [affine_d0, affine_d1])
-
-    indexing_maps_pv = ir.ArrayAttr.get(
-        [
-            ir.AffineMapAttr.get(qkt_exp_map),
-            ir.AffineMapAttr.get(v_map),
-            ir.AffineMapAttr.get(pv_out_map),
-        ]
-    )
-
-    iterator_types_pv = ir.ArrayAttr.get(
-        [
-            ir.Attribute.parse("#vector.iterator_type<parallel>"),
-            ir.Attribute.parse("#vector.iterator_type<parallel>"),
-            ir.Attribute.parse("#vector.iterator_type<reduction>"),
-        ]
-    )
-
-    pv_out = pv_init
-    for tile_idx in range(num_k_tiles):
-        v_tile_offset = arith.addi(loop_idx, k_tile_offsets[tile_idx])
-
-        v_tile_indices = v_load_indices.copy()
-        v_tile_indices[-2] = v_tile_offset
-
-        v_tile_type = ir.VectorType.get([k_subtile_size, d_head], element_type)
-        v_tile = vector.TransferReadOp(
-            v_tile_type,
-            v_memref,
-            v_tile_indices,
-            v_perm_map,
-            v_padding,
-            in_bounds=v_in_bounds,
-        ).result
-
-        pv_out = vector.contract(
-            acc_vector_type,
-            qkt_exp_chunks[tile_idx],
-            v_tile,
-            pv_out,
-            indexing_maps=indexing_maps_pv,
-            iterator_types=iterator_types_pv,
+    def mask(score, _out):
+        row = arith.addi(q_row_offset, linalg.IndexOp(nb).result)
+        col = arith.addi(loop_idx, linalg.IndexOp(nb + 1).result)
+        is_future = arith.cmpi(arith.CmpIPredicate.sgt, col, row)
+        return arith.select(
+            is_future, _scalar_constant(float("-inf"), element_type), score
         )
 
-    return pv_out
-
-
-def normalize_ouput_by_sum(pv_out, l_i_out, wg_rows, d_head, element_type):
-    """Divide pv_out [wg_rows, d_head] by l_i_out [wg_rows] (broadcast over d_head)."""
-    l_i_out_bcasted_type = ir.VectorType.get([d_head, wg_rows], element_type)
-    l_i_out_bcasted = vector.broadcast(l_i_out_bcasted_type, l_i_out)
-    l_i_out_transposed_type = ir.VectorType.get([wg_rows, d_head], element_type)
-    l_i_out_transposed = vector.transpose(
-        l_i_out_transposed_type, l_i_out_bcasted, [1, 0]
+    return _generic(
+        [qkt_scaled],
+        [_empty(qkt_shape, element_type)],
+        [tile_map, tile_map],
+        _iterators(nb + 2, 0),
+        mask,
     )
-    return arith.divf(pv_out, l_i_out_transposed)
 
 
 class ReplaceWithFusedAttentionOp(
     TransformExtensionDialect.Operation, name="generate_fused_attention"
 ):
-    """Replace a given (standard) attention output with an equivalent output that is
-    computed in a fused fashion (fused attention optimization).
+    """Replace a tensor-level attention output with a fused (flash) attention loop.
 
-    Takes Q, K, V loads and scale constant from bufferized IR, and generates an inner
-    tiled loop that computes fused attention with online softmax using running max and sum.
+    Takes the Q, K, V tensors and the scale constant of a tiled but not yet
+    vectorized attention region and replaces the P@V linalg contraction with an
+    `scf.for` over the K/V sequence length that computes the same result with
+    online softmax:
 
-    This implements the flash attention algorithm where:
-    1. The computation is tiled along the reduction dimension (K/V sequence length)
-    2. Online max and sum are maintained across tiles
-    3. Output is incrementally updated with rescaled contributions
+        m, l, acc = -inf, 0, 0
+        for j in range(0, n_ctx, tile_size):
+            s     = (Q @ K[j:j+tile]^T) * scale
+            m_new = max(m, rowmax(s))
+            p     = exp(s - m_new)
+            alpha = exp(m - m_new)
+            l     = l * alpha + rowsum(p)
+            acc   = acc * alpha + p @ V[j:j+tile]
+            m     = m_new
+        out = acc / l
+
+    Doing this at tensor level keeps the tiling and fusion decisions at the
+    level where the rest of the schedule makes them; the regular vectorization
+    stage then lowers the emitted loop. The dead softmax and Q@K^T producers
+    left behind are removed by DCE.
 
     Args:
-        q_load: Handle to Q load operation (vector.transfer_read)
-        k_load: Handle to K load operation (vector.transfer_read)
-        v_load: Handle to V load operation (vector.transfer_read)
-        scale: Handle to scale constant operation (arith.constant)
-        output: Handle to the output operation to replace (vector.contract)
-        tile_size: Tile size for the reduction dimension tiling (K/V sequence length)
+        q: Handle to the op producing the Q tile [*batch, wg_rows, d_head]
+        k: Handle to the op producing the K tensor [*batch, n_ctx, d_head]
+        v: Handle to the op producing the V tensor [*batch, n_ctx, d_head]
+        scale: Handle to the scale constant op (scalar arith.constant)
+        output: Handle to the P@V linalg contraction to replace
+        tile_size: Tile size for the reduction dimension (K/V sequence length)
     """
 
-    q_load: ext.Operand[transform.AnyOpType]
-    k_load: ext.Operand[transform.AnyOpType]
-    v_load: ext.Operand[transform.AnyOpType]
+    q: ext.Operand[transform.AnyOpType]
+    k: ext.Operand[transform.AnyOpType]
+    v: ext.Operand[transform.AnyOpType]
     scale: ext.Operand[transform.AnyOpType]
     output: ext.Operand[transform.AnyOpType]
     tile_size: ir.IntegerAttr
@@ -370,233 +292,243 @@ class ReplaceWithFusedAttentionOp(
             results: transform.TransformResults,
             state: transform.TransformState,
         ) -> DiagnosedSilenceableFailure:
-            # Get payload operations
-            q_load_ops = state.get_payload_ops(op.q_load)
-            k_load_ops = state.get_payload_ops(op.k_load)
-            v_load_ops = state.get_payload_ops(op.v_load)
-            scale_ops = state.get_payload_ops(op.scale)
-            output_ops = state.get_payload_ops(op.output)
+            payloads = []
+            for handle in (op.q, op.k, op.v, op.scale, op.output):
+                handle_ops = state.get_payload_ops(handle)
+                if len(handle_ops) != 1:
+                    return DiagnosedSilenceableFailure.emit_silenceable_error(
+                        "Expected exactly one operation for each operand"
+                    )
+                payloads.append(handle_ops[0])
+            q_op, k_op, v_op, scale_op, output_op = payloads
 
-            if (
-                len(q_load_ops) != 1
-                or len(k_load_ops) != 1
-                or len(v_load_ops) != 1
-                or len(scale_ops) != 1
-                or len(output_ops) != 1
-            ):
-                return DiagnosedSilenceableFailure.emit_silenceable_error(
-                    "Expected exactly one operation for each operand"
-                )
-
-            q_load_op = q_load_ops[0]
-            k_load_op = k_load_ops[0]
-            v_load_op = v_load_ops[0]
-            scale_op = scale_ops[0]
-            output_op = output_ops[0]
-
-            # Verify operation types
-            if not isinstance(q_load_op.opview, vector.TransferReadOp):
-                return DiagnosedSilenceableFailure.emit_silenceable_error(
-                    f"Expected q_load to be vector.transfer_read, got {q_load_op.operation.name}"
-                )
-            if not isinstance(k_load_op.opview, vector.TransferReadOp):
-                return DiagnosedSilenceableFailure.emit_silenceable_error(
-                    f"Expected k_load to be vector.transfer_read, got {k_load_op.operation.name}"
-                )
-            if not isinstance(v_load_op.opview, vector.TransferReadOp):
-                return DiagnosedSilenceableFailure.emit_silenceable_error(
-                    f"Expected v_load to be vector.transfer_read, got {v_load_op.operation.name}"
-                )
             if not isinstance(scale_op.opview, arith.ConstantOp):
                 return DiagnosedSilenceableFailure.emit_silenceable_error(
-                    f"Expected scale to be arith.constant, got {scale_op.operation.name}"
+                    f"Expected scale to be arith.constant, got {scale_op.name}"
                 )
-            if not isinstance(output_op.opview, vector.ContractionOp):
+            if not output_op.name.startswith("linalg."):
                 return DiagnosedSilenceableFailure.emit_silenceable_error(
-                    f"Expected output to be vector.contract, got {output_op.operation.name}"
+                    f"Expected output to be a linalg op, got {output_op.name}"
                 )
 
-            # Extract the scale scalar value from scale_op (arith.constant)
-            scale_attr = scale_op.attributes["value"]
-            scale_dense_attr = ir.DenseElementsAttr(scale_attr)
-            scale_np_array = np.array(scale_dense_attr)
-            scale_value = float(scale_np_array.flat[0])
+            q, k, v = (payload.results[0] for payload in (q_op, k_op, v_op))
+            for name, value in (("q", q), ("k", k), ("v", v)):
+                if not isinstance(value.type, ir.RankedTensorType):
+                    return DiagnosedSilenceableFailure.emit_silenceable_error(
+                        f"Expected {name} to produce a ranked tensor, got {value.type}"
+                    )
 
-            # Extract wg_rows and d_head from q_load result type
-            q_load_result = q_load_op.results[0]
-            q_vector_type = ir.VectorType(q_load_result.type)
-            wg_rows = q_vector_type.shape[0]
-            d_head = q_vector_type.shape[1]
+            # The last two dims of Q are [wg_rows(M), d_head]; any leading dims
+            # are batch dims carried through unchanged. Nothing is assumed about
+            # the rank, so batched and non-batched payloads both work.
+            q_type = ir.RankedTensorType(q.type)
+            batch_shape = list(q_type.shape[:-2])
+            wg_rows, d_head = q_type.shape[-2], q_type.shape[-1]
+            n_ctx = ir.RankedTensorType(k.type).shape[-2]
+            tile_size = ir.IntegerAttr(op.tile_size).value
 
-            # Get tile size
-            tile_size_value = ir.IntegerAttr(op.tile_size).value
+            # Element types are read from the matched ops since Q, K, V and the
+            # softmax weights (P) may each use a different (possibly mixed)
+            # precision. Both matmul accumulators and the online softmax run in
+            # f32 for numerical accuracy; only the matmul operands keep their
+            # narrower element types.
+            k_element_type = ir.RankedTensorType(k.type).element_type
+            # P is the lhs operand of the contraction being replaced, so its
+            # element type is the precision the rest of the graph expects.
+            p_element_type = ir.RankedTensorType(
+                output_op.operands[0].type
+            ).element_type
+            out_element_type = ir.RankedTensorType(
+                output_op.results[0].type
+            ).element_type
+            compute_type = ir.F32Type.get()
 
-            # Causal masking flag (opt-in; default 0 leaves IR unchanged)
+            scale_value = ir.FloatAttr(scale_op.attributes["value"]).value
+
             causal = bool(ir.IntegerAttr(op.causal).value)
 
-            # Query-row block offset: the Q load's sequence-row index. Indices are
-            # operands[1:-1] (drop the memref and the trailing padding); the row is
-            # the second-to-last index (same convention as the K load in
-            # compute_qkt_chunks), with the head-dim column index last. When the
-            # query dim is tiled this is the forall block offset, so causal masking
-            # can compare global query rows against global key columns.
-            q_row_offset = list(q_load_op.operands[1:-1])[-2]
+            # WG tiling leaves the batch dims at extent one. Slice them away, as
+            # the XeGPU layout propagation cannot distribute the rank-3
+            # broadcasts and reductions of the online softmax.
+            squeeze = len(batch_shape) if all(d == 1 for d in batch_shape) else 0
+            if squeeze:
+                batch_shape = []
 
-            # Get element type from q_load result
-            element_type = q_vector_type.element_type
+            row_shape = (*batch_shape, wg_rows)
+            acc_shape = (*batch_shape, wg_rows, d_head)
+            qkt_shape = (*batch_shape, wg_rows, tile_size)
+            nb = len(batch_shape)
 
-            # Build the fused attention computation
             with ir.InsertionPoint(output_op):
-                # Define m_i_init: vector of shape [wg_rows] with neg_inf values
-                # NOTE: We use float32 for the initial neg_inf values and cast to the element type
-                # to avoid issues with representing -inf.
-                m_i_vector_type = ir.VectorType.get([wg_rows], element_type)
-                m_i_init_f32 = emit_vector_constant(
-                    (wg_rows,), float("-inf"), ir.F32Type.get()
-                )
-                m_i_init = arith.truncf(m_i_vector_type, m_i_init_f32)
+                if squeeze:
+                    # Squeeze each operand to rank 2 independently: GQA shares K/V
+                    # across query-repeat heads, so Q is [1, 1, wg_rows, d_head]
+                    # while K/V are [1, n_ctx, d_head] -- different leading-unit
+                    # counts, so a single uniform squeeze would over-slice K/V.
+                    q, k, v = (
+                        _drop_leading_dims(t, ir.RankedTensorType(t.type).rank - 2)
+                        for t in (q, k, v)
+                    )
 
-                # Define l_i_init: vector of shape [wg_rows] with zero values
-                l_i_init = emit_vector_constant((wg_rows,), 0.0, element_type)
+                if causal:
+                    q_row_offset = _slice_row_offset(
+                        q_op, ir.RankedTensorType(q_op.results[0].type).rank - 2
+                    )
 
-                # Define acc_init: vector of shape [wg_rows, d_head] with zero values
-                acc_vector_type = ir.VectorType.get([wg_rows, d_head], element_type)
-                acc_init = emit_vector_constant((wg_rows, d_head), 0.0, element_type)
+                scale_tile = _filled(qkt_shape, compute_type, scale_value)
 
-                # Get n_ctx from k_load result type (first dimension size)
-                k_load_result = k_load_op.results[0]
-                k_vector_type = ir.VectorType(k_load_result.type)
-                n_ctx = k_vector_type.shape[0]
-                # Define scale vector: vector of shape [wg_rows] with the scale value
-                scale_vector = emit_vector_constant(
-                    (wg_rows,), scale_value, element_type
-                )
-
-                # Create loop bounds
                 index_type = ir.IndexType.get()
-                c0 = arith.constant(index_type, 0)
-                c_n_ctx = arith.constant(index_type, n_ctx)
-                c_tile_size = arith.constant(index_type, tile_size_value)
-
-                # Create scf.for loop that iterates from 0 to n_ctx in steps of tile_size
                 loop = scf.ForOp(
-                    c0, c_n_ctx, c_tile_size, [m_i_init, l_i_init, acc_init]
+                    arith.constant(index_type, 0),
+                    arith.constant(index_type, n_ctx),
+                    arith.constant(index_type, tile_size),
+                    [
+                        _filled(row_shape, compute_type, float("-inf")),
+                        _filled(row_shape, compute_type, 0.0),
+                        _filled(acc_shape, compute_type, 0.0),
+                    ],
                 )
 
                 with ir.InsertionPoint(loop.body):
-                    # Get the loop induction variable and iter_args
                     loop_idx = loop.induction_variable
-                    m_i = loop.inner_iter_args[0]
-                    l_i = loop.inner_iter_args[1]
-                    acc = loop.inner_iter_args[2]
+                    m_i, l_i, acc = loop.inner_iter_args
 
-                    q_value = q_load_op.results[0]
-
-                    # Constants for K/V tiling (tile into chunks of 16)
-                    k_subtile_size = 16
-                    num_k_tiles = tile_size_value // k_subtile_size
-
-                    # Create offset constants for each K tile
-                    k_tile_offsets = []
-                    for i in range(num_k_tiles):
-                        offset = arith.constant(index_type, i * k_subtile_size)
-                        k_tile_offsets.append(offset)
-
-                    # Load K tiles, transpose, and contract with Q to get Q@K^T chunks
-                    qkt_chunks = compute_qkt_chunks(
-                        q_value,
-                        k_load_op,
-                        loop_idx,
-                        k_tile_offsets,
-                        wg_rows,
-                        d_head,
-                        k_subtile_size,
-                        num_k_tiles,
-                        element_type,
+                    # S = (Q @ K[j:j+tile]^T) * scale, accumulated in f32. K is
+                    # transposed explicitly so that the vectorized contraction
+                    # takes the same operand layouts as the untiled kernel.
+                    k_tile = _extract_kv_tile(k, loop_idx, tile_size)
+                    k_transposed = linalg.transpose(
+                        k_tile,
+                        outs=[
+                            _empty((*batch_shape, d_head, tile_size), k_element_type)
+                        ],
+                        permutation=[*range(nb), nb + 1, nb],
+                    ).results[0]
+                    qkt = _contract(
+                        q,
+                        k_transposed,
+                        _filled(qkt_shape, compute_type, 0.0),
+                        batch_shape,
+                    )
+                    qkt_scaled = _elemwise(
+                        [qkt, scale_tile],
+                        _empty(qkt_shape, compute_type),
+                        batch_shape,
+                        lambda a, b, out: arith.mulf(a, b),
                     )
 
-                    # Causal mask: overwrite future-key scores with -6e4 before the
-                    # running max/exp so they vanish from the online softmax. Masking
-                    # the chunks here covers both the max-reduce and the exp below.
+                    # Causal mask: keys past the query row get -inf before the
+                    # running max/exp, dropping them from the online softmax
+                    # across both the max-reduce and the exp below.
                     if causal:
-                        qkt_chunks = apply_causal_mask(
-                            qkt_chunks,
+                        qkt_scaled = _causal_mask(
+                            qkt_scaled,
+                            qkt_shape,
                             q_row_offset,
                             loop_idx,
-                            k_tile_offsets,
-                            wg_rows,
-                            k_subtile_size,
-                            num_k_tiles,
-                            element_type,
+                            batch_shape,
+                            compute_type,
                         )
 
-                    # Reduce Q@K^T chunks to row-wise scaled max: [wg_rows]
-                    qkt_max_scaled = compute_qkt_max_scaled(
-                        qkt_chunks, num_k_tiles, m_i_init, scale_vector
+                    # m_new = max(m, rowmax(S)), accumulated straight into m so
+                    # that the carried value stays a register once vectorized.
+                    m_new = _row_reduce(
+                        qkt_scaled,
+                        m_i,
+                        lambda value, out: arith.maximumf(value, out),
+                        batch_shape,
                     )
 
-                    # Compute m_ij = max(m_i, qkt_max_scaled)
-                    # Both have shape [wg_rows]
-                    m_ij = arith.maximumf(m_i, qkt_max_scaled)
-
-                    # Apply online softmax to chunks and reduce to row-wise sum
-                    qkt_exp_chunks, l_ij = compute_online_softmax_and_sum(
-                        qkt_chunks,
-                        m_ij,
-                        l_i_init,
-                        scale_value,
-                        wg_rows,
-                        k_subtile_size,
-                        num_k_tiles,
-                        element_type,
+                    # P = exp(S - m_new). fastmath<fast> lets the exp lower to
+                    # the native hardware exp; without it the accurate expansion
+                    # doubles the exp count and scalarizes part of it.
+                    p = _elemwise(
+                        [qkt_scaled, m_new],
+                        _empty(qkt_shape, compute_type),
+                        batch_shape,
+                        lambda a, b, out: math.exp(arith.subf(a, b), fastmath="fast"),
+                        broadcast_row_operands={1},
                     )
 
-                    # Compute alpha = exp(m_i - m_ij)
-                    m_diff = arith.subf(m_i, m_ij)
-                    alpha = math.exp(m_diff)
-
-                    # Update l_i: l_i_updated = l_i * alpha + l_ij
-                    l_i_scaled = arith.mulf(l_i, alpha)
-                    l_i_updated = arith.addf(l_i_scaled, l_ij)
-
-                    # Rescale running P@V accumulator by alpha
-                    acc_updated = rescale_pv_out_accumulator(
-                        acc, alpha, wg_rows, d_head, element_type
+                    # alpha = exp(m - m_new) rescales the running row sum and
+                    # the P@V accumulator to the new row maximum.
+                    alpha = _elemwise(
+                        [m_i, m_new],
+                        _empty(row_shape, compute_type),
+                        batch_shape,
+                        lambda a, b, out: math.exp(arith.subf(a, b), fastmath="fast"),
                     )
 
-                    # Load V tiles and contract with softmax chunks into pv_out
-                    pv_out = compute_pv_chunks(
-                        qkt_exp_chunks,
-                        v_load_op,
-                        acc_updated,
-                        loop_idx,
-                        k_tile_offsets,
-                        acc_vector_type,
-                        d_head,
-                        k_subtile_size,
-                        num_k_tiles,
-                        element_type,
+                    # l = l * alpha + rowsum(P)
+                    l_scaled = _elemwise(
+                        [l_i, alpha],
+                        l_i,
+                        batch_shape,
+                        lambda a, b, out: arith.mulf(a, b),
+                    )
+                    l_new = _row_reduce(
+                        p,
+                        l_scaled,
+                        lambda value, out: arith.addf(value, out),
+                        batch_shape,
                     )
 
-                    # Yield the updated iter args
-                    scf.yield_([m_ij, l_i_updated, pv_out])
+                    # acc = acc * alpha + P @ V[j:j+tile], with P narrowed to
+                    # the dtype the replaced contraction expects.
+                    acc_scaled = _elemwise(
+                        [acc, alpha],
+                        acc,
+                        batch_shape,
+                        lambda a, b, out: arith.mulf(a, b),
+                        broadcast_row_operands={1},
+                    )
+                    p_operand = p
+                    if p_element_type != compute_type:
+                        p_operand = _elemwise(
+                            [p],
+                            _empty(qkt_shape, p_element_type),
+                            batch_shape,
+                            lambda value, out: arith.truncf(p_element_type, value),
+                        )
+                    v_tile = _extract_kv_tile(v, loop_idx, tile_size)
+                    acc_new = _contract(p_operand, v_tile, acc_scaled, batch_shape)
 
-            # Extract the final accumulator result (3rd output) from the loop
-            pv_out = loop.results[2]
-            l_i_out = loop.results[1]
+                    scf.yield_([m_new, l_new, acc_new])
+
+            # out = acc / l, narrowed back to the element type of the replaced
+            # op. Its destination is reused so that bufferization writes the
+            # result in place; the destination's now dead zero fill is dropped
+            # by DCE.
+            destination = output_op.operands[-1]
+            if isinstance(destination, ir.OpResult) and isinstance(
+                destination.owner, linalg.FillOp
+            ):
+                destination = destination.owner.operands[1]
+
             with ir.InsertionPoint.after(loop):
-                # Normalize the output: output_final = pv_out / l_i_out
-                output_final = normalize_ouput_by_sum(
-                    pv_out, l_i_out, wg_rows, d_head, element_type
+                _, l_out, acc_out = loop.results
+
+                def normalize(value, row_sum, out):
+                    normalized = arith.divf(value, row_sum)
+                    if out_element_type != compute_type:
+                        normalized = arith.truncf(out_element_type, normalized)
+                    return normalized
+
+                output_final = _elemwise(
+                    [acc_out, l_out],
+                    _drop_leading_dims(destination, squeeze)
+                    if squeeze
+                    else destination,
+                    batch_shape,
+                    normalize,
+                    broadcast_row_operands={1},
                 )
+                if squeeze:
+                    output_final = _restore_leading_dims(output_final, destination)
 
-            # Replace all uses of the original output operation with the final loop result
             output_op.results[0].replace_all_uses_with(output_final)
-
-            # Erase the original output operation
             rewriter.erase_op(output_op)
 
-            # Return the final output handle
             results.set_ops(op.new_output, [output_final.owner])
             return DiagnosedSilenceableFailure.Success
 
@@ -606,38 +538,39 @@ class ReplaceWithFusedAttentionOp(
 
     class MemoryEffectsOpInterfaceModel(ir.MemoryEffectsOpInterface):
         @staticmethod
-        def get_effects(op: ir.Operation, effects):
-            # Read Q, K, scale, V slices
-            transform.only_reads_handle(op.op_operands[:4], effects)
-            # Consume and replace output
-            transform.consumes_handle(op.op_operands[4:5], effects)
-            # Produce new output handle
-            transform.produces_handle(op.results, effects)
-            # Modify the payload
-            transform.modifies_payload(effects)
+        def get_effects(op: ir.Operation):
+            return (
+                # Read Q, K, V and scale
+                transform.only_reads_handle(op.op_operands[:4])
+                # Consume and replace output
+                + transform.consumes_handle(op.op_operands[4:5])
+                # Produce new output handle
+                + transform.produces_handle(op.results)
+                # Modify the payload
+                + transform.modifies_payload()
+            )
 
 
 def replace_with_fused_attention(
-    q_load: ir.Value,
-    k_load: ir.Value,
-    v_load: ir.Value,
+    q: ir.Value,
+    k: ir.Value,
+    v: ir.Value,
     scale: ir.Value,
     output: ir.Value,
     tile_size: int | ir.IntegerAttr,
     causal: bool | ir.IntegerAttr = False,
 ) -> ir.Value:
-    """Replace a given (standard) attention output with an equivalent output
-    that is computed in a fused fashion (fused attention optimization).
+    """Replace a tensor-level attention output with a fused attention loop.
 
     Args:
-        q_load: Handle to Q load operation (vector.transfer_read)
-        k_load: Handle to K load operation (vector.transfer_read)
-        v_load: Handle to V load operation (vector.transfer_read)
-        scale: Handle to scale constant operation (arith.constant)
-        output: Handle to output operation to replace (vector.contract)
-        tile_size: Tile size for the reduction dimension tiling (K/V sequence length)
-        causal: When True, mask future keys (key_col > query_row) so attention is
-            causal/autoregressive. Default False (non-causal, IR unchanged).
+        q: Handle to the op producing the Q tile [*batch, wg_rows, d_head]
+        k: Handle to the op producing the K tensor [*batch, n_ctx, d_head]
+        v: Handle to the op producing the V tensor [*batch, n_ctx, d_head]
+        scale: Handle to the scale constant op (scalar arith.constant)
+        output: Handle to the P@V linalg contraction to replace
+        tile_size: Tile size for the reduction dimension (K/V sequence length)
+        causal: When True, mask future keys (key column past the query row) so
+            attention is autoregressive. Default False leaves the IR unchanged.
 
     Returns:
         Handle to the new output operation
@@ -648,5 +581,5 @@ def replace_with_fused_attention(
         causal = ir.IntegerAttr.get(ir.IntegerType.get_signless(64), int(causal))
 
     return ReplaceWithFusedAttentionOp(
-        q_load, k_load, v_load, scale, output, tile_size=tile_size, causal=causal
+        q, k, v, scale, output, tile_size=tile_size, causal=causal
     ).new_output

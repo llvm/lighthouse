@@ -13,9 +13,7 @@ def run(payload_fn):
     def decorator(f):
         print("Test: ", f.__name__, flush=True)
         with ir.Context(), ir.Location.unknown():
-            lh_dialects.register_and_load(
-                reload=True
-            )  # reload across @run-s to ensure interfaces are registered for new contexts
+            lh_dialects.register_and_load()
 
             mod = ir.Module.create()
             mod.operation.attributes["transform.with_named_sequence"] = (

@@ -3,9 +3,14 @@ name = "lighthouse"
 dynamic = ["version"]
 requires-python = ">=3.10,<3.13"  # Bounds are due to torch-mlir's packaging
 dependencies = [
-    "mlir-python-bindings==20260618+b2ffc0d9c",
+    "mlir-python-bindings==20260914+6d7e7fbaf",
     "pyyaml>=6.0",
 ]
+
+[project.scripts]
+lh-opt = "lighthouse.lh_opt:main"
+lh-run = "lighthouse.lh_run:main"
+lh-tune = "lighthouse.lh_tune:main"
 
 [dependency-groups]
 dev = [
@@ -18,24 +23,25 @@ dev = [
 
 [project.optional-dependencies]
 ingress_torch_mlir = [
-    "torch-mlir==20260529.826",
+    "torch-mlir==20260805.836",
     "ml_dtypes",
+    "transformers",
 ]
 # Additional "targets" which pull in optional dependencies -- use `uv sync --extra TARGET`
 ingress_torch_cpu = [
-    "torch==v2.12.1+cpu",
+    "torch==v2.13.0+cpu",
     "lighthouse[ingress_torch_mlir]"
 ]
 ingress_torch_nvidia = [
-    "torch==2.12.1+cu130",  # Nvidia-enabled version of torch
+    "torch==2.13.0+cu130",  # Nvidia-enabled version of torch
     "lighthouse[ingress_torch_mlir]"
 ]
 ingress_torch_rocm = [
-    "torch==2.12.1+rocm7.2",  # AMD-enabled version of torch
+    "torch==2.13.0+rocm7.2",  # AMD-enabled version of torch
     "lighthouse[ingress_torch_mlir]"
 ]
 ingress_torch_xpu = [
-    "torch==2.12.1+xpu",  # Intel-enabled version of torch
+    "torch==2.13.0+xpu",  # Intel-enabled version of torch
     "lighthouse[ingress_torch_mlir]"
 ]
 runtime_mpich = [
@@ -90,7 +96,7 @@ build-backend = "setuptools.build_meta"
 include = ["lighthouse*"]
 
 [tool.setuptools.package-data]
-"lighthouse" = ["**/*.yaml"]
+"lighthouse" = ["**/*.yaml", "**/*.json"]
 
 [tool.setuptools.dynamic]
 version = {attr = "lighthouse.__version__"}
@@ -112,11 +118,14 @@ select = [
   "E", # Error
   "F", # Pyflakes
   "PERF", # Perflint
+  "RUF013", # ban implicit optional
+  "RUF018", # assignment in assert
   "RUF022", # __all__ is not sorted
   "RUF030", # print() call in assert
   "RUF034", # useless if-else
   "RUF047", # empty else
   "RUF200", # invalid pyproject.toml
+  "UP", # upgrade syntax to target version
   "W", # Warning
 ]
 ignore = [

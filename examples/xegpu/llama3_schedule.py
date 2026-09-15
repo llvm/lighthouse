@@ -178,58 +178,81 @@ def _tile_one_fused_attention_region(
 
 
 def _fuse_attention_in_region(anytype, forall, fa_params):
-    """After the shared bufferize+vectorize, rewrite one attention region's
-    vector.contract pair (QK^T, @V) into the flash loop via the transform
-    op. Scoped to `forall` so counts are exact at any multiplicity."""
-    contract_ops = match_and_split(forall, ops={"vector.contract"}, nhandles=2)
-    first_contract, second_contract = contract_ops[0], contract_ops[1]
-    q_load = transform.get_producer_of_operand(
-        anytype, first_contract, operand_number=0
+    """Rewrite one attention region's tensor-level contraction pair (QK^T, @V)
+    into the flash loop via the transform op. Scoped to `forall` so counts are
+    exact at any multiplicity. Runs right after the region was tiled, still on
+    tensors, so the shared vectorize tail lowers the emitted loop.
+
+    `causal` (default False) makes the flash op mask future keys per query row.
+    """
+
+    def producers_by_name(target, op_names):
+        return transform_ext.filter_by_name(
+            transform_ext.trace_producers(target), op_names=op_names
+        )
+
+    # The two contractions (QK^T then @V) are the only contraction-like ops among
+    # the region's generics (the softmax reductions are not contractions).
+    linalg_ops = structured.structured_match(
+        anytype, forall, ops=["linalg.generic", "linalg.batch_matmul"]
     )
-    k_load = transform.get_producer_of_operand(
-        anytype, first_contract, operand_number=1
+    contraction_ops = transform_ext.filter_contraction_ops(linalg_ops)
+    qk_matmul, pv_matmul = transform.split_handle(2 * [anytype], contraction_ops)
+
+    # Q and K are the two tensor.extract_slice producers of QK^T (Q first); V is
+    # the first extract_slice producer of @V. Passing the slices as q/k/v lets the
+    # flash op recover the query-row offset for causal masking.
+    qk_slices = producers_by_name(qk_matmul, "tensor.extract_slice")
+    q = transform_ext.extract_handle(qk_slices, 0)
+    k = transform_ext.extract_handle(qk_slices, 1)
+    v = transform_ext.extract_handle(
+        producers_by_name(pv_matmul, "tensor.extract_slice"), 0
     )
-    v_load = transform.get_producer_of_operand(
-        anytype, second_contract, operand_number=1
+
+    # The scale is the fill value feeding the QK^T*scale mul's rhs, i.e. its
+    # arith.constant. rhs (operand 1) -> linalg.fill -> constant.
+    mul_op = match_and_split(forall, ops=["linalg.mul", "linalg.elementwise"], nhandles=1)[
+        0
+    ]
+    scale = transform.get_producer_of_operand(
+        anytype,
+        transform.get_producer_of_operand(anytype, mul_op, operand_number=1),
+        operand_number=0,
     )
-    mulf_op = match_and_split(forall, ops={"arith.mulf"}, nhandles=1)[0]
-    scale = transform.get_producer_of_operand(anytype, mulf_op, operand_number=1)
-    # `causal` (default False) makes the flash op mask future keys per Q row.
+
     transform_ext.replace_with_fused_attention(
-        q_load=q_load,
-        k_load=k_load,
-        v_load=v_load,
+        q=q,
+        k=k,
+        v=v,
         scale=scale,
-        output=second_contract,
+        output=pv_matmul,
         tile_size=fa_params["inner_loop_tile_size"],
         causal=fa_params.get("causal", False),
     )
 
 
-def xegpu_fa_annotation(gf, anytype, fa_params):
+def xegpu_fa_annotation(gf, fa_params):
     """Attach XeGPU layouts to one fused-attention gpu.func."""
     num_subgroups = fa_params["wg_rows"] // fa_params["sg_rows"]
-    n_head = fa_params["n_head"]
+    d_head = fa_params["n_head"]
+    tile_size = fa_params["inner_loop_tile_size"]
     q_sg_layout = [num_subgroups, 1]
-    q_sg_data = [16, n_head]
+    q_sg_data = [16, d_head]
     q_inst_data = [8, 16]
+    # K and V tiles are [tile_size, d_head], shared by all subgroups.
     k_sg_layout = [num_subgroups, 1]
-    k_sg_data = [16, n_head]
+    k_sg_data = [tile_size, d_head]
     k_inst_data = [16, 16]
     v_sg_layout, v_sg_data, v_inst_data = k_sg_layout, k_sg_data, k_inst_data
     kt_sg_layout = [1, num_subgroups]
-    kt_sg_data = [n_head, 16]
+    kt_sg_data = [d_head, tile_size]
     kt_inst_data = [16, 16]
     kt_order = [0, 1]
     out_sg_layout, out_sg_data, out_inst_data = q_sg_layout, q_sg_data, q_inst_data
-    l128_sg_layout = [num_subgroups, 1]
-    l128_sg_data = [16, 16]
-    l128_inst_data = [8, 16]
-    qk_sg_layout, qk_sg_data, qk_inst_data = (
-        l128_sg_layout,
-        l128_sg_data,
-        l128_inst_data,
-    )
+    # Q@K^T (attention weights) tile is [wg_rows, tile_size].
+    qk_sg_layout = [num_subgroups, 1]
+    qk_sg_data = [16, tile_size]
+    qk_inst_data = [8, 16]
 
     store_nd_op = match_and_split(gf, ops={"xegpu.store_nd"}, nhandles=1)[0]
     xegpu.set_anchor_layout(
@@ -238,64 +261,68 @@ def xegpu_fa_annotation(gf, anytype, fa_params):
         sg_data=out_sg_data,
         inst_data=out_inst_data,
     )
-    load_nd_ops = match_and_split(gf, ops={"xegpu.load_nd"}, nhandles=9)
+    # 3 load_nd ops: Q (hoisted out of the loop), then K and V in the loop.
+    load_nd_ops = match_and_split(gf, ops={"xegpu.load_nd"}, nhandles=3)
     xegpu.set_anchor_layout(
         load_nd_ops[0], sg_layout=q_sg_layout, sg_data=q_sg_data, inst_data=q_inst_data
     )
-    for i in range(1, 5):
-        xegpu.set_anchor_layout(
-            load_nd_ops[i],
-            sg_layout=k_sg_layout,
-            sg_data=k_sg_data,
-            inst_data=k_inst_data,
-        )
-    for i in range(5, 9):
-        xegpu.set_anchor_layout(
-            load_nd_ops[i],
-            sg_layout=v_sg_layout,
-            sg_data=v_sg_data,
-            inst_data=v_inst_data,
-        )
-    dpas_ops = match_and_split(gf, ops={"xegpu.dpas"}, nhandles=8)
-    for i in range(4):
-        d = dpas_ops[i]
-        xegpu.set_anchor_layout(
-            d, sg_layout=q_sg_layout, sg_data=q_sg_data, inst_data=q_inst_data, index=0
-        )
-        xegpu.set_anchor_layout(
-            d,
-            sg_layout=kt_sg_layout,
-            sg_data=kt_sg_data,
-            inst_data=kt_inst_data,
-            order=kt_order,
-            index=1,
-        )
-        xegpu.set_anchor_layout(
-            d,
-            sg_layout=l128_sg_layout,
-            sg_data=l128_sg_data,
-            inst_data=l128_inst_data,
-            index=2,
-        )
-    for i in range(4, 8):
-        d = dpas_ops[i]
-        xegpu.set_anchor_layout(
-            d,
-            sg_layout=qk_sg_layout,
-            sg_data=qk_sg_data,
-            inst_data=qk_inst_data,
-            index=0,
-        )
-        xegpu.set_anchor_layout(
-            d, sg_layout=v_sg_layout, sg_data=v_sg_data, inst_data=v_inst_data, index=1
-        )
-        xegpu.set_anchor_layout(
-            d,
-            sg_layout=out_sg_layout,
-            sg_data=out_sg_data,
-            inst_data=out_inst_data,
-            index=2,
-        )
+    xegpu.set_anchor_layout(
+        load_nd_ops[1],
+        sg_layout=k_sg_layout,
+        sg_data=k_sg_data,
+        inst_data=k_inst_data,
+    )
+    xegpu.set_anchor_layout(
+        load_nd_ops[2],
+        sg_layout=v_sg_layout,
+        sg_data=v_sg_data,
+        inst_data=v_inst_data,
+    )
+    # 2 dpas ops: Q@K^T and P@V.
+    qk_dpas, pv_dpas = match_and_split(gf, ops={"xegpu.dpas"}, nhandles=2)
+    xegpu.set_anchor_layout(
+        qk_dpas,
+        sg_layout=q_sg_layout,
+        sg_data=q_sg_data,
+        inst_data=q_inst_data,
+        index=0,
+    )
+    xegpu.set_anchor_layout(
+        qk_dpas,
+        sg_layout=kt_sg_layout,
+        sg_data=kt_sg_data,
+        inst_data=kt_inst_data,
+        order=kt_order,
+        index=1,
+    )
+    xegpu.set_anchor_layout(
+        qk_dpas,
+        sg_layout=qk_sg_layout,
+        sg_data=qk_sg_data,
+        inst_data=qk_inst_data,
+        index=2,
+    )
+    xegpu.set_anchor_layout(
+        pv_dpas,
+        sg_layout=qk_sg_layout,
+        sg_data=qk_sg_data,
+        inst_data=qk_inst_data,
+        index=0,
+    )
+    xegpu.set_anchor_layout(
+        pv_dpas,
+        sg_layout=v_sg_layout,
+        sg_data=v_sg_data,
+        inst_data=v_inst_data,
+        index=1,
+    )
+    xegpu.set_anchor_layout(
+        pv_dpas,
+        sg_layout=out_sg_layout,
+        sg_data=out_sg_data,
+        inst_data=out_inst_data,
+        index=2,
+    )
 
 
 def build_combined_schedule(
@@ -474,9 +501,10 @@ def _bundle(
     if n_fa:
         fa_softmaxes = match_and_split(mod, ops={"linalg.softmax"}, nhandles=n_fa)
         for r, (qkt_gen, pv_gen) in enumerate(fa_slices):
-            _tile_one_fused_attention_region(
+            _, forall = _tile_one_fused_attention_region(
                 qkt_gen, pv_gen, fa_softmaxes[r], fa_params
             )
+            _fuse_attention_in_region(anytype, forall, fa_params)
 
     func = match(mod, ops={"func.func"})
     lh_transform.cleanup(func)
@@ -488,10 +516,18 @@ def _bundle(
         anytype, func, fold_type_extensions_into_contract=True
     )
     lh_transform.cleanup(func)
-    # Fused-attention regions carry a batch-of-1 dim from the (1,wg_rows,0,0) tiling;
-    # drop leading unit dims so the QK^T/@V vector.contracts become 2D, as the flash
-    # rewrite expects.
+    # The flash loop's accumulators (max/sum/acc) are tensors at linalg level;
+    # vectorization turns them into a transfer_read/transfer_write pair per
+    # iteration. Hoist them so each is carried as a vector iter_arg (in registers).
     if n_fa:
+        foralls = match_and_split(mod, ops={"scf.forall"}, nhandles=nkernels)
+        for idx, kind in enumerate(kinds):
+            if kind == "fused_attention":
+                lh_transform.loop_hoisting(match(foralls[idx], ops={"scf.for"}))
+        lh_transform.cleanup(func)
+        # Kernels tiled with a batch-of-1 head/row dim (fused attention, RoPE)
+        # carry a leading unit dim; drop it so the 3D vectors collapse to the 2D
+        # shapes the XeGPU layouts distribute over.
         with ir.InsertionPoint(transform.apply_patterns(func).patterns):
             apply_patterns_vector_cast_away_vector_leading_one_dim()
             apply_patterns_vector_drop_unit_dims_with_shape_cast()
@@ -523,24 +559,11 @@ def _bundle(
     if stop_at_stage == "bufferized":
         raise PipelineInterrupt()
 
-    # ===== Fused-attention rewrite (after bufferize+vectorize, before gpu.launch) =====
-    # Re-find each attention forall by kinds index (forall IR order == kinds order,
-    # the invariant the launch/gpu_mods loops below also rely on) and rewrite its
-    # QK^T/@V vector.contract pair into the flash online-softmax loop. Must run
-    # before forall->gpu.launch so the producer-walks for q/k/v loads stay in-region.
-    if n_fa:
-        all_foralls = match_and_split(mod, ops={"scf.forall"}, nhandles=nkernels)
-        for idx, kind in enumerate(kinds):
-            if kind == "fused_attention":
-                _fuse_attention_in_region(anytype, all_foralls[idx], fa_params)
-        func = match(mod, ops={"func.func"})
-        transform.apply_cse(func)
-        canonicalize(func)
     if stop_at_stage == "inner-tiled":
         raise PipelineInterrupt()
 
     # Shared with the per-op xegpu schedules: forall -> scf.parallel -> gpu.launch.
-    func = convert_to_gpu_launch(mod, "payload", nlayers=nkernels)
+    func = convert_to_gpu_launch(mod, "payload")
 
     # launch threads per kernel, in IR (build) order = `kinds`.
     launches = match_and_split(mod, ops={"gpu.launch"}, nhandles=nkernels)
@@ -617,7 +640,7 @@ def _bundle(
             xegpu_wg_annotation_for_mlp_layer(gf, **mm_params_list[mi])
             mi += 1
         elif kind == "fused_attention":
-            xegpu_fa_annotation(gf, anytype, fa_params)
+            xegpu_fa_annotation(gf, fa_params)
         else:
             # rmsnorm/elementwise/rope: anchor-layout their store_nd(s), and
             # (rmsnorm) its SLM store_matrix. Pass the whole match handle to

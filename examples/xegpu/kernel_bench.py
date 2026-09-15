@@ -1,4 +1,5 @@
 # RUN: %PYTHON %s -l 2 -b 9 --dump-kernel=xegpu-wg | FileCheck %s
+# REQUIRES: torch
 # CHECK: module attributes {gpu.container_module} {
 """
 This script executes KernelBench benchmarks using the XEGPU lowering pipeline.
@@ -31,10 +32,6 @@ Run using bfloat16 datatype
 Increase verbosity
     python xegpu_kernel_bench.py -l 1 -b 1 -vv
 
-Run a single benchmark in debug mode (no timeout, exceptions raised
-immediately)
-    python xegpu_kernel_bench.py -l 1 -b 1 -vv --debug
-
 Dump the kernel at a specific stage of the pipeline, does not execute the
 benchmark
     python xegpu_kernel_bench.py -l 1 -b 1 --dump-kernel bufferized
@@ -52,7 +49,6 @@ import warnings
 import torch
 import torch._dynamo as dynamo
 import os
-import json
 import numpy as np
 from mlir import ir
 
@@ -62,14 +58,27 @@ from lighthouse import dialects as lh_dialects
 from lighthouse.utils.mlir import inspect_payload
 from lighthouse.execution.runner import Runner
 from lighthouse.schedule.xegpu import XeGPUParameterSelector
+from lighthouse.schedule.parameters import ScheduleParameters
 from lighthouse.pipeline.driver import TransformDriver
-from lighthouse.schedule.xegpu import mlp_schedule, elemwise_schedule, xegpu_to_binary
+from lighthouse.schedule.xegpu import (
+    mlp_schedule,
+    elemwise_schedule,
+    xegpu_to_binary,
+    reduction_schedule,
+    fused_attention_schedule,
+)
 from lighthouse.pipeline.helper import PipelineInterrupt
 from lighthouse.ingress.torch import gpu_backend, TargetDialect
 from lighthouse.ingress.torch.compile import TorchMemoryManager
-from tune_matmul_costmodel import optimize_payload, dump_configs_json
-from tune_utils import run_with_timeout
+from tune_matmul_costmodel import optimize_payload
 from csv_logger import CSVLogger
+
+
+def dtype_to_torch_dtype(datatype: str) -> torch.dtype:
+    return {
+        "f16": torch.float16,
+        "bf16": torch.bfloat16,
+    }[datatype]
 
 
 def inspect_kb_payload(module: ir.Module) -> tuple[str, dict]:
@@ -85,14 +94,16 @@ def inspect_kb_payload(module: ir.Module) -> tuple[str, dict]:
     return payload_func_name, func_metadata
 
 
-def infer_parameters(mod: ir.Module, verbose: int = 0) -> tuple[dict, str, list[dict]]:
+def infer_parameters(
+    mod: ir.Module, verbose: int = 0
+) -> tuple[dict, str, ScheduleParameters]:
     """
     Inspects payload and selects lowering schedule and tile size parameters.
 
     Returns:
         func_metadata: Payload function metadata dict.
         schedule kind: Name of selected lowering schedule.
-        schedule_parameters: List of parameter dicts, one per layer.
+        schedule_parameters: ScheduleParameters for the lowering schedule.
     """
     payload_func_name, func_metadata = inspect_kb_payload(mod)
     if verbose > 0:
@@ -103,16 +114,25 @@ def infer_parameters(mod: ir.Module, verbose: int = 0) -> tuple[dict, str, list[
                 f"  {i}: shape={input_type.shape}, element_type={input_type.element_type}"
             )
 
-    # get tile size parameters for each matmul layer
+    # Keep layer order in metadata and derive kind-specific views when needed.
     layer_metadata = func_metadata["layers"]
-    matmuls = layer_metadata["matmul"]
-    elemwise = layer_metadata["elemwise"]
+    matmuls = [layer for layer in layer_metadata if layer["kind"] == "matmul"]
+    batch_matmuls = [
+        layer for layer in layer_metadata if layer["kind"] == "batch_matmul"
+    ]
+    elemwise = [layer for layer in layer_metadata if layer["kind"] == "elemwise"]
+    reduction = [layer for layer in layer_metadata if layer["kind"] == "reduction"]
     elemtype_bytes = {
         "f16": 2,
         "bf16": 2,
         "f32": 4,
     }
-    if len(matmuls) > 0:
+    if verbose > 1:
+        for i, layer in enumerate(layer_metadata):
+            print(f"Layer {i}")
+            for k, v in layer.items():
+                print(f"  {k}: {v}")
+    if len(matmuls) > 0 and len(batch_matmuls) == 0:
         schedule_params = XeGPUParameterSelector().get_parameters_for_layers(matmuls)
         # check that all matmul dims are powers of 2
         for mmul in matmuls:
@@ -134,21 +154,22 @@ def infer_parameters(mod: ir.Module, verbose: int = 0) -> tuple[dict, str, list[
             # assuming result is also cast to ab type
             ab_elemtype = mmul["ab_elemtype"]
             ab_bytes = elemtype_bytes[ab_elemtype]
-            read_bytes += (np.prod(a_shape) + np.prod(b_shape)) * ab_bytes
-            write_bytes += np.prod(c_shape) * ab_bytes
+            read_bytes += int(np.prod(a_shape) + np.prod(b_shape)) * ab_bytes
+            write_bytes += int(np.prod(c_shape)) * ab_bytes
 
         schedule_kind = "mlp"
-    elif len(elemwise) > 0:
+    elif len(elemwise) > 0 and len(reduction) == 0 and len(batch_matmuls) == 0:
         # TODO estimate flops in a reliable way, now assuming 1 flop per element
         shape = elemwise[0]["shape"]
         res_elemtype = elemwise[0]["elemtype"]
-        total_flops = np.prod(shape)
+        total_flops = int(np.prod(shape))
         res_bytes = elemtype_bytes[res_elemtype]
-        read_bytes = np.prod(shape) * res_bytes
-        write_bytes = np.prod(shape) * res_bytes
+        read_bytes = int(np.prod(shape)) * res_bytes
+        write_bytes = int(np.prod(shape)) * res_bytes
 
         # Use fixed tile sizes for now
         layer_params = {
+            "layer_kind": "elemwise",
             "wg_m": 128,
             "wg_n": 256,
             "sg_m": 32,
@@ -157,12 +178,101 @@ def infer_parameters(mod: ir.Module, verbose: int = 0) -> tuple[dict, str, list[
             "load_n": 16,
         }
         # NOTE assume all elemwise layers will be fused to a single layer
-        schedule_params = [layer_params]
+        schedule_params = ScheduleParameters([layer_params])
         schedule_kind = "elemwise"
+    elif len(elemwise) > 0 and len(reduction) > 0 and len(batch_matmuls) == 0:
+        # Elementwise + reduction kernel
+        iter_space = reduction[0]["iterators"]
+        n_reduction_dims = sum(s == "reduction" for s in iter_space)
+        # elemwise + reduction kernel, e.g. softmax or layer norm
+        shape = elemwise[-1]["shape"]
+        res_elemtype = elemwise[-1]["elemtype"]
+        # Note this is scaled by factor in the flop scaling dict
+        total_flops = int(np.prod(shape))
+        res_bytes = elemtype_bytes[res_elemtype]
+        read_bytes = int(np.prod(shape)) * res_bytes
+        write_bytes = int(np.prod(shape)) * res_bytes
+        if len(shape) == 2:
+            # 2d softmax like kernel
+            layer_params = {
+                "layer_kind": "reduction",
+                "wg_tile": [64, 0],
+                "sg_tile": [8, 0],
+                "subgroup_size": 16,
+                "reduction_tile": [0, 32],
+            }
+
+        elif len(shape) == 4 and iter_space[1] == "reduction" and n_reduction_dims == 1:
+            # 4d rms norm like kernel
+            layer_params = {
+                "layer_kind": "reduction",
+                "sizes": shape,
+                "wg_tile": [1, 0, 128, 128],
+                "wg_subtile": [0, 0, 64, 128],
+                "sg_tile": [0, 0, 8, 32],
+                "reduction_tile": [0, 8, 0, 0],
+                "subgroup_size": 16,
+            }
+        else:
+            raise ValueError(
+                f"Unsupported kernel shape {shape} with iter_space {iter_space}"
+            )
+
+        # Ensure shape is divisible by tile sizes.
+        # Padding or remainder handling is not implemented yet.
+        wg_sizes = (
+            layer_params["wg_subtile"]
+            if "wg_subtile" in layer_params
+            else layer_params["wg_tile"]
+        )
+        reduction_tile = layer_params["reduction_tile"]
+        for i, (size, wg, red) in enumerate(zip(shape, wg_sizes, reduction_tile)):
+            if wg > 0 and size % wg != 0:
+                raise ValueError(
+                    f"Shape {shape} dimension {i} not divisible by wg_tile={wg_sizes}"
+                )
+            if red > 0 and size % red != 0:
+                raise ValueError(
+                    f"Shape {shape} dimension {i} not divisible by reduction_tile={reduction_tile}"
+                )
+
+        schedule_params = ScheduleParameters([layer_params])
+        schedule_kind = "reduction"
+    elif len(elemwise) > 0 and len(reduction) > 0 and len(batch_matmuls) > 0:
+        # elemwise + reduction + batch_matmul kernel, e.g. attention layer
+        shape = func_metadata["inputs"][0].shape
+        elemtype = str(func_metadata["inputs"][0].element_type)
+        nbytes = elemtype_bytes[elemtype]
+        batch_size, n_head, n_ctx, d_head = shape
+        # 2 matmuls, 2 * n_ctx^2 * d_head FLOPs each, per batch and head
+        total_flops = int(batch_size * n_head * 4 * n_ctx * n_ctx * d_head)
+        # Memory: read Q, K, V and write output
+        read_bytes = int(3 * batch_size * n_head * n_ctx * d_head * nbytes)
+        write_bytes = int(batch_size * n_head * n_ctx * d_head * nbytes)
+
+        assert d_head == 64, f"d_head must be 64, got {d_head}"
+        layer_params = {
+            "layer_kind": "attention",
+            "batch_size": batch_size,
+            "n_head": n_head,
+            "n_ctx": n_ctx,
+            "d_head": d_head,
+            "wg_tile": [1, 1, 128],
+            "sg_rows": 16,
+            "subgroup_size": 16,
+            "reduction_tile": 64,
+            "q_load_tile": [16, 32],
+            "v_load_tile": [32, 32],
+            "prefetch_tile": [16, 32],
+            "nb_prefetch": 1,
+        }
+
+        schedule_params = ScheduleParameters([layer_params])
+        schedule_kind = "attention"
     else:
         print("Layers:")
-        for k, v in layer_metadata.items():
-            print(f"  {k}: {v}")
+        for layer in layer_metadata:
+            print(f"  {layer}")
         raise ValueError("Unsupported payload type")
     func_metadata["total_flops"] = total_flops
     func_metadata["read_bytes"] = read_bytes
@@ -199,6 +309,25 @@ def copy_module(module: ir.Module) -> ir.Module:
     return copied_module
 
 
+def is_caused_by_pipeline_interrupt(exc: BaseException) -> bool:
+    pending = [exc]
+    visited = set()
+
+    while pending:
+        current = pending.pop()
+        if current is None or current in visited:
+            continue
+        visited.add(current)
+
+        if isinstance(current, PipelineInterrupt):
+            return True
+
+        pending.append(getattr(current, "__cause__", None))
+        pending.append(getattr(current, "__context__", None))
+
+    return False
+
+
 def tune_matmul_layer(
     gemm_specs: dict,
     mod: ir.Module,
@@ -220,7 +349,8 @@ def tune_matmul_layer(
         final_mod = lower_to_llvm(
             copy_module(mod),
             schedule_kind="mlp",
-            schedule_params=[kwparams],
+            schedule_params=ScheduleParameters([kwparams]),
+            device="B70",
             stop_at_stage=None,
             benchmark=True,
             payload_func_name=payload_func_name,
@@ -266,6 +396,7 @@ def infer_params_and_lower(
     payload_func_name: str = "main",
     stop_at_stage: str | None = None,
     params_cache_json: str | None = "kb_params.json",
+    dump_parameters: bool = True,
     enable_tuning: bool = True,
     verbose: int = 0,
 ) -> ir.Module:
@@ -287,6 +418,7 @@ def infer_params_and_lower(
         payload_func_name: Name of the payload function.
         stop_at_stage: Stage at which to stop the lowering pipeline.
         params_cache_json: Path to the JSON file for caching parameters.
+        dump_parameters: Whether to save the applied parameters as JSON.
         enable_tuning: Whether to enable runtime tuning.
         verbose: Verbosity level.
     Returns:
@@ -301,39 +433,50 @@ def infer_params_and_lower(
     # store for external use
     kernel_metadata.update(func_metadata)
 
-    matmuls = func_metadata["layers"]["matmul"]
+    matmuls = [layer for layer in func_metadata["layers"] if layer["kind"] == "matmul"]
     if enable_tuning and len(matmuls) == 1 and schedule_kind == "mlp":
         # runtime tuning for matmul kernels
         if os.path.isfile(params_cache_json):
             print(f"Loading cached parameters from {params_cache_json}")
-            with open(params_cache_json, "r") as f:
-                params_dict = json.load(f)
-            schedule_params = [params_dict]
+            schedule_params = ScheduleParameters.from_json(filename=params_cache_json)
         else:
-            print(f"Tuning parameters and saving to {params_cache_json}")
+            # construct a buffer for kernel result
+            res_type = kernel_metadata["inputs"][-1]  # result is last input
+            shape = res_type.shape
+            dtype = dtype_to_torch_dtype(str(res_type.element_type))
+            res_buffer = torch.zeros(shape, dtype=dtype).to("xpu")
+            kernel_inputs = [*torch_all_inputs, res_buffer]
             # tune matmul parameters
             configs = tune_matmul_layer(
                 matmuls[0],
                 mod,
                 payload_func_name,
-                torch_all_inputs,
+                kernel_inputs,
                 func_metadata["total_flops"],
                 func_metadata["read_bytes"],
                 func_metadata["write_bytes"],
             )
-            schedule_params = [configs[0][1]]
-            dump_configs_json(
-                schedule_params[0], filename_prefix=params_cache_json.rsplit(".", 1)[0]
-            )
+            schedule_params = ScheduleParameters([configs[0][1]])
+            if dump_parameters:
+                print(f"Saving tuned parameters to {params_cache_json}")
+                schedule_params.to_json(filename=params_cache_json, overwrite=True)
     else:
         print(f"Using default parameters for {schedule_kind} schedule")
+        if dump_parameters:
+            print(f"Saving applied parameters to {params_cache_json}")
+            schedule_params.to_json(filename=params_cache_json, overwrite=True)
 
     if verbose > 2:
         print("Payload module before lowering:")
         print(mod)
     if verbose > 1:
         print(f"Applying '{schedule_kind}' schedule with params:")
-        for i, param_dict in enumerate(schedule_params):
+        param_list = (
+            schedule_params
+            if isinstance(schedule_params, (list, ScheduleParameters))
+            else [schedule_params]
+        )
+        for i, param_dict in enumerate(param_list):
             print(f" Parameters for layer {i}:")
             for k, v in param_dict.items():
                 print(f"  {k}: {v}")
@@ -342,6 +485,7 @@ def infer_params_and_lower(
         mod=mod,
         schedule_kind=schedule_kind,
         schedule_params=schedule_params,
+        device="B70" if schedule_kind == "mlp" else None,
         stop_at_stage=stop_at_stage,
         benchmark=benchmark,
         payload_func_name=payload_func_name,
@@ -360,7 +504,8 @@ def infer_params_and_lower(
 def lower_to_llvm(
     mod: ir.Module,
     schedule_kind: str,
-    schedule_params: list[dict],
+    schedule_params: ScheduleParameters,
+    device: str | None,
     stop_at_stage: str | None,
     benchmark: bool,
     payload_func_name: str,
@@ -371,12 +516,24 @@ def lower_to_llvm(
         schedule = mlp_schedule(
             params=schedule_params,
             payload_func_name=payload_func_name,
+            device=device,
             stop_at_stage=stop_at_stage,
         )
     elif schedule_kind == "elemwise":
         schedule = elemwise_schedule(
             params=schedule_params,
             payload_func_name=payload_func_name,
+            stop_at_stage=stop_at_stage,
+        )
+    elif schedule_kind == "reduction":
+        schedule = reduction_schedule(
+            params=schedule_params,
+            payload_func_name=payload_func_name,
+            stop_at_stage=stop_at_stage,
+        )
+    elif schedule_kind == "attention":
+        schedule = fused_attention_schedule(
+            params=schedule_params,
             stop_at_stage=stop_at_stage,
         )
     else:
@@ -403,10 +560,11 @@ def lower_and_execute_benchmark(
     ctx: ir.Context = None,
     nwarmup: int = 500,
     nruns: int = 500,
+    compute_reference_on_cpu: bool = False,
     verify: bool = True,
     stop_at_stage: str | None = None,
     verbose: int = 0,
-    debug: bool = False,
+    dump_parameters: bool = True,
 ) -> dict:
     """
     High-level function to lower and execute a KernelBench benchmark.
@@ -422,15 +580,12 @@ def lower_and_execute_benchmark(
         verify: Whether to verify the result against PyTorch reference.
         stop_at_stage: Stage at which to stop the lowering pipeline.
         verbose: Verbosity level.
-        debug: Run without timeout and raise exceptions immediately.
+        dump_parameters: Whether to save applied schedule parameters as JSON.
     Returns:
         A dictionary containing benchmark performance metrics.
     """
     assert datatype in ["f16", "bf16"], "Unsupported datatype"
-    model_dtype = {
-        "f16": torch.float16,
-        "bf16": torch.bfloat16,
-    }[datatype]
+    model_dtype = dtype_to_torch_dtype(datatype)
     execute = stop_at_stage is None
 
     # import torch model
@@ -454,12 +609,19 @@ def lower_and_execute_benchmark(
             param.data /= param.data.norm(dim=0, keepdim=True) + 1e-6
 
     if execute:
-        # execute torch model on the device
-        torch_inputs = [inp.to("xpu") for inp in torch_inputs]
-        with torch.no_grad():
+        if compute_reference_on_cpu:
+            # execute torch model on CPU to get reference result
+            with torch.no_grad():
+                result_ref = torch_model(*torch_inputs).to("cpu")
+            # move inputs and the model to the device for MLIR execution
+            torch_inputs = [inp.to("xpu") for inp in torch_inputs]
             torch_model = torch_model.to("xpu")
-            result_ref = torch_model(*torch_inputs).to("cpu")
-        torch.xpu.synchronize()
+        else:
+            # execute torch model on the device
+            torch_inputs = [inp.to("xpu") for inp in torch_inputs]
+            with torch.no_grad():
+                torch_model = torch_model.to("xpu")
+                result_ref = torch_model(*torch_inputs).to("cpu")
 
     # compile and execute the model with the MLIR backend
     torch_all_inputs = [*torch_model.parameters(), *torch_inputs]
@@ -473,8 +635,9 @@ def lower_and_execute_benchmark(
         payload_func_name="main",
         stop_at_stage=stop_at_stage,
         params_cache_json=f"kb_params_level{level}-{id}.json",
+        dump_parameters=dump_parameters,
         enable_tuning=execute,
-        verbose=2,
+        verbose=verbose,
     )
     backend = gpu_backend(
         fn_compile,
@@ -492,8 +655,8 @@ def lower_and_execute_benchmark(
             gm, _ = dynamo.export(torch_model)(*torch_inputs)
             backend(gm, list(torch_inputs))
         except dynamo.exc.BackendCompilerFailed as e:
-            if debug:
-                raise e
+            if not is_caused_by_pipeline_interrupt(e):
+                raise
         return {}
 
     with warnings.catch_warnings():
@@ -508,12 +671,26 @@ def lower_and_execute_benchmark(
 
     verified = 0
     if verify:
+        is_attention = any(
+            layer.get("kind") == "batch_matmul"
+            for layer in kernel_metadata.get("layers", [])
+        )
+        is_reduction = any(
+            layer.get("kind") == "reduction"
+            for layer in kernel_metadata.get("layers", [])
+        )
         atol = abs(result_ref).max() * 1e-3
         rtol = 1e-3
         if result_ref.dtype == torch.bfloat16:
-            if is_mlp:
-                atol = 7e-3
             rtol = 2e-2
+            if is_attention:
+                # Attention fuses 2 matmuls and a softmax.
+                atol = 2e-2
+            elif is_reduction:
+                # RMS norm currently uses bf16 accumulator.
+                atol = 6e-2
+            elif is_mlp:
+                atol = 7e-3
         success = torch.allclose(result, result_ref, rtol=rtol, atol=atol)
         verified = 1 if success else 0
         print(f"Verification {'PASSED' if success else 'FAILED'}")
@@ -580,12 +757,12 @@ def lower_and_execute_benchmark(
     print(f"{total_flops=}")
 
     layers = kernel_metadata["layers"]
-    if "matmul" in layers and len(layers["matmul"]) > 0:
-        matmuls = layers["matmul"]
-        shape_str = " ".join(str(shape) for shape in matmuls)
-    elif "elemwise" in layers and len(layers["elemwise"]) > 0:
-        elemwise = layers["elemwise"]
-        shape_str = elemwise[0]["shape"] if len(elemwise) > 0 else ""
+    matmuls = [layer for layer in layers if layer["kind"] == "matmul"]
+    elemwise = [layer for layer in layers if layer["kind"] == "elemwise"]
+    if len(matmuls) > 0:
+        shape_str = " ".join(str(mmul["shape"]) for mmul in matmuls)
+    elif len(elemwise) > 0:
+        shape_str = str(elemwise[0]["shape"])
     else:
         shape_str = ""
     entry["flops"] = total_flops
@@ -599,18 +776,10 @@ def lower_and_execute_benchmark(
     return entry
 
 
-def run_experiment(use_timeout: bool = True, timeout: int = 1200, **kwargs) -> dict:
-    def ctx_wrapper(*args, **kwargs) -> dict:
-        with ir.Context() as ctx, ir.Location.unknown():
-            lh_dialects.register_and_load()
-            results = lower_and_execute_benchmark(*args, **kwargs, ctx=ctx)
-        return results
-
-    if use_timeout:
-        exec_func = partial(ctx_wrapper, **kwargs)
-        results = run_with_timeout(experiment_func=exec_func, timeout=timeout)
-    else:
-        results = ctx_wrapper(**kwargs)
+def run_experiment(**kwargs) -> dict:
+    with ir.Context() as ctx, ir.Location.unknown():
+        lh_dialects.register_and_load()
+        results = lower_and_execute_benchmark(**kwargs, ctx=ctx)
     return results
 
 
@@ -690,7 +859,7 @@ def parser_cli_args():
         "--nruns",
         type=int,
         default=500,
-        help="Number of runs for benchmarking (default: 1000)",
+        help="Number of runs for benchmarking (default: 500)",
     )
     parser.add_argument(
         "--nwarmup",
@@ -699,9 +868,19 @@ def parser_cli_args():
         help="Number of warmup runs (default: 500)",
     )
     parser.add_argument(
-        "--debug",
+        "--compute-reference-on-cpu",
         action="store_true",
-        help="Run in single process and raise exceptions immediately.",
+        help="Compute the reference result on CPU instead of the device.",
+    )
+    parser.add_argument(
+        "--dump-parameters",
+        action="store_true",
+        help="Store used schedule parameters to disk in JSON format.",
+    )
+    parser.add_argument(
+        "--dump-csv",
+        action="store_true",
+        help="Dump the benchmarking results to a CSV file.",
     )
     parser.add_argument(
         "--verbose",
@@ -722,18 +901,18 @@ if __name__ == "__main__":
     kb_pattern = f"level{kb_level}/*.py"
     bench_list = get_benchmarks(kb_pattern, include=benchmarks)
 
-    if not stop_at_stage:
+    if args.dump_csv and not stop_at_stage:
         csv_file = "out_kernelbench.csv"
         csv_logger = CSVLogger(csv_file, echo_stdout=False, verbose=True)
     else:
         csv_logger = None
 
-    for id, bench_path in bench_list:
+    for bench_id, bench_path in bench_list:
         short_path = bench_path.parent.name + "/" + bench_path.name
         print("-" * 80)
         print(f"Executing benchmark: {short_path}", flush=True)
         entry = {
-            "id": id,
+            "id": bench_id,
             "file": bench_path.name,
             "shapes": "",
             "flops": 0,
@@ -750,14 +929,14 @@ if __name__ == "__main__":
             results = run_experiment(
                 filepath=str(bench_path),
                 level=kb_level,
-                id=id,
+                id=bench_id,
                 datatype=args.datatype,
                 nruns=args.nruns,
                 nwarmup=args.nwarmup,
+                compute_reference_on_cpu=args.compute_reference_on_cpu,
                 verbose=args.verbose,
                 stop_at_stage=stop_at_stage,
-                use_timeout=not args.debug,
-                debug=args.debug,
+                dump_parameters=args.dump_parameters,
             )
             if stop_at_stage:
                 continue
@@ -773,10 +952,9 @@ if __name__ == "__main__":
             entry["executed"] = 1 if err_msg == "" else 0
             entry["error"] = err_msg
         except Exception as e:
-            if args.debug:
-                raise e
             print(f"Benchmark {short_path} failed with error: {e}", flush=True)
             entry["error"] = str(e)
+            raise e
 
         # Store intermediate results
         if csv_logger is not None:

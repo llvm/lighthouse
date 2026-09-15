@@ -1,81 +1,35 @@
 from mlir import ir
-from mlir.dialects import ext, transform, linalg
-from mlir.dialects.transform import DiagnosedSilenceableFailure
+from mlir.dialects import transform, linalg
 
-from lighthouse.dialects.transform.transform_ext import TransformExtensionDialect
+from lighthouse.dialects.transform.transform_ext.utils.make_filter_handles_op import (
+    make_filter_handles_op,
+)
 
 
-class FilterNumLoopsOp(TransformExtensionDialect.Operation, name="filter_num_loops"):
-    """
-    Returns ops that have at least `num_loops` loops.
-    Supports Linalg operations only.
+def _parse_num_loops(params) -> int | None:
+    if len(params) == 1 and isinstance(params[0], ir.IntegerAttr):
+        return params[0].value
+    return None
 
-    Unsupported ops or ops for which the number of loops cannot be determined
-    are ignored and not returned.
 
-    Args:
-        target: Handle to target op
-        num_loops: Number of loops to filter by
-    Returns:
-        Matching ops
-    """
+def _has_at_least_num_loops(op: ir.Operation | ir.OpView, num_loops: int) -> bool:
+    if "linalg" not in op.name:
+        return False
+    if hasattr(op, "indexing_maps"):
+        map: ir.AffineMap = op.indexing_maps[0].value
+        return map.n_dims >= num_loops
+    if hasattr(op, "iterator_types"):
+        return len(op.iterator_types) >= num_loops
+    if isinstance(op.opview, linalg.FillOp):
+        return op.outputs[0].type.rank >= num_loops
+    return False
 
-    target: ext.Operand[transform.AnyOpType]
-    num_loops: ext.Operand[transform.AnyParamType]
-    ops: ext.Result[transform.AnyOpType[()]] = ext.infer_result()
 
-    @classmethod
-    def attach_interface_impls(cls, ctx=None):
-        cls.TransformOpInterfaceModel.attach(cls.OPERATION_NAME, context=ctx)
-        cls.MemoryEffectsOpInterfaceModel.attach(cls.OPERATION_NAME, context=ctx)
-
-    class TransformOpInterfaceModel(transform.TransformOpInterface):
-        @staticmethod
-        def apply(
-            op: "FilterNumLoopsOp",
-            _rewriter: transform.TransformRewriter,
-            results: transform.TransformResults,
-            state: transform.TransformState,
-        ) -> DiagnosedSilenceableFailure:
-            targets = state.get_payload_ops(op.target)
-            num_loops_attr = state.get_params(op.num_loops)
-            if len(num_loops_attr) == 1 and isinstance(
-                num_loops_attr[0], ir.IntegerAttr
-            ):
-                num_loops = num_loops_attr[0].value
-            else:
-                return DiagnosedSilenceableFailure.SilenceableFailure
-
-            matching_ops = []
-            for target in targets:
-                if "linalg" not in target.name:
-                    continue
-                if hasattr(target, "indexing_maps"):
-                    map: ir.AffineMap = target.indexing_maps[0].value
-                    if map.n_dims >= num_loops:
-                        matching_ops.append(target)
-                elif hasattr(target, "iterator_types"):
-                    if len(target.iterator_types) >= num_loops:
-                        matching_ops.append(target)
-                elif isinstance(target.opview, linalg.FillOp):
-                    if target.outputs[0].type.rank >= num_loops:
-                        matching_ops.append(target)
-                else:
-                    continue
-
-            results.set_ops(op.ops, matching_ops)
-            return DiagnosedSilenceableFailure.Success
-
-        @staticmethod
-        def allow_repeated_handle_operands(_op: "FilterNumLoopsOp") -> bool:
-            return False
-
-    class MemoryEffectsOpInterfaceModel(ir.MemoryEffectsOpInterface):
-        @staticmethod
-        def get_effects(op: ir.Operation, effects):
-            transform.only_reads_handle(op.op_operands, effects)
-            transform.produces_handle(op.results, effects)
-            transform.only_reads_payload(effects)
+FilterNumLoopsOp = make_filter_handles_op(
+    "filter_num_loops",
+    _has_at_least_num_loops,
+    parse_param=_parse_num_loops,
+)
 
 
 def filter_num_loops(
@@ -95,4 +49,4 @@ def filter_num_loops(
         param_attr = ir.IntegerAttr.get(ir.IntegerType.get_signless(64), num_loops)
         num_loops = transform.ParamConstantOp(transform.AnyParamType.get(), param_attr)
 
-    return FilterNumLoopsOp(target=target, num_loops=num_loops).ops
+    return FilterNumLoopsOp(target=target, param=num_loops).ops

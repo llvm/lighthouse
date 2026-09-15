@@ -1,4 +1,4 @@
-from typing import Sequence, Optional
+from collections.abc import Sequence
 
 from mlir import ir
 from mlir.dialects import ext, transform
@@ -101,19 +101,22 @@ class ReplaceOp(TransformExtensionDialect.Operation, name="replace"):
 
     class MemoryEffectsOpInterfaceModel(ir.MemoryEffectsOpInterface):
         @staticmethod
-        def get_effects(op: ir.Operation, effects):
-            transform.consumes_handle(op.op_operands[:1], effects)
+        def get_effects(op: ir.Operation):
+            effects = transform.consumes_handle(op.op_operands[:1])
             if new_operands_handles := op.op_operands[1:]:
-                transform.only_reads_handle(new_operands_handles, effects)
-            transform.produces_handle(op.results, effects)
-            transform.modifies_payload(effects)
+                effects += transform.only_reads_handle(new_operands_handles)
+            return (
+                effects
+                + transform.produces_handle(op.results)
+                + transform.modifies_payload()
+            )
 
 
 def replace(
     target: ir.Value,
     op_kind: str | ir.StringAttr,
     *new_operands: ir.Value,
-    new_result_types: Optional[ir.TupleType | Sequence[ir.Type]] = None,
+    new_result_types: ir.TupleType | Sequence[ir.Type] | None = None,
     new_attrs=None,
 ) -> ir.Value:
     if not isinstance(op_kind, ir.StringAttr):

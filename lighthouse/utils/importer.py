@@ -2,7 +2,7 @@ import importlib
 import importlib.util
 import os
 import sys
-from functools import lru_cache
+from functools import cache
 from pathlib import Path
 from types import ModuleType
 
@@ -23,11 +23,11 @@ def import_mlir_module(path: str, context: ir.Context) -> ir.Module:
         raise ValueError("Path to the module must be provided.")
     if not os.path.exists(path):
         raise ValueError(f"Path to the module does not exist: {path}")
-    with open(path, "r") as f:
+    with open(path) as f:
         return ir.Module.parse(f.read(), context=context)
 
 
-@lru_cache(maxsize=None)
+@cache
 def _resolve_package(directory: Path) -> tuple[str, str]:
     """
     Resolve the enclosing package for a directory.

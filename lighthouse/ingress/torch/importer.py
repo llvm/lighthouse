@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import Iterable, Mapping
+from collections.abc import Iterable, Mapping
 import warnings
 
 from lighthouse.ingress.torch.utils import (
@@ -176,7 +176,7 @@ def import_model(
 def import_from_model(
     model: nn.Module,
     sample_args: Iterable,
-    sample_kwargs: Mapping = None,
+    sample_kwargs: Mapping | None = None,
     dialect: OutputType | str = OutputType.LINALG_ON_TENSORS,
     ir_context: ir.Context | None = None,
     **kwargs,
