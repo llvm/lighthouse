@@ -87,7 +87,7 @@ def run_with_timeout(
             print("TIMEOUT")
             proc.kill()
             proc.join()
-            return 0, "TIMEOUT"
+            return {"time": 0.0, "throughput": 0.0, "error": "TIMEOUT"}
         if proc.exitcode != 0:
             if res["error"] == "":
                 res["error"] = f"Execution failed with exit code: {proc.exitcode}"
