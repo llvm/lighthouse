@@ -1,8 +1,8 @@
-# This is an optimizing pipeline for kernel_bench matmul-like kernels.
+# The default optimizing pipeline for x86 architecture.
 Pipeline:
   - include: pack-and-tile.yaml {
-                                  block_factors=$block_factors
-                                  tile_size=$tile_size
+                                  block_factors=[32,32,32]
+                                  tile_size=32
                                 }
   - schedule: "sfc.py[gen=remap]"
 
