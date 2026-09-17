@@ -274,81 +274,6 @@ def _derive_flash_attention(anytype, func, layer_params):
     transform.apply_cse(func)
 
 
-def _replace_with_reference_flash_attention(anytype, func, layer_params):
-    """Emit the flash loop from the hand-written generator instead of deriving it.
-
-    `replace_with_fused_attention` builds the whole online-softmax loop from
-    scratch given Q, K, V and the scale, replacing the chain's leaf. It is kept as
-    a reference point: the derived path (the default, see
-    `fuse_dependant_reduction_ops`) should converge on the same loop, and diffing
-    the two at `--dump-kernel=reduction-tiled` is how that is tracked.
-
-    Both paths consume the same payload. The generator's own output *is* the
-    normalized result, so its `output` is the payload's deferred divide -- the
-    chain's leaf -- rather than the `P@V` contraction; everything upstream of it
-    (max, exp, row sum, `P@V`) is left dead for DCE.
-    """
-    # Every op in the chain is a `linalg.generic` by now, so Q, K, V and the scale
-    # are found structurally rather than by op name. The two contractions are
-    # Q@K^T and P@V, in program order; each tensor is the corresponding
-    # contraction's `tensor.extract_slice` producer (Q and K^T's source for the
-    # first, V for the second).
-    generics = match(func, ops={"linalg.generic"})
-    qk_matmul, pv_matmul = transform.split_handle(
-        [anytype] * 2, transform_ext.filter_contraction_ops(generics)
-    )
-
-    def slice_producers(target):
-        producers = transform_ext.trace_producers(target)
-        return transform_ext.filter_by_name(producers, op_names="tensor.extract_slice")
-
-    qk_slices = slice_producers(qk_matmul)
-    q = transform_ext.extract_handle(qk_slices, 0)
-    k = transform_ext.extract_handle(qk_slices, 1)
-    v = transform_ext.extract_handle(slice_producers(pv_matmul), 0)
-
-    # The scale is the constant feeding the multiply that produces the row max's
-    # input. Elementwise fusion has folded it into that multiply's body, so it is
-    # reached through the scalar ops rather than through a `linalg.fill`.
-    arith_max = match_and_split(
-        func, ops=["arith.maximumf", "arith.maxnumf"], nhandles=1
-    )[0]
-    max_reduction = transform.get_parent_op(
-        anytype, arith_max, op_name="linalg.generic"
-    )
-    scale_mul = match_and_split(
-        transform_ext.extract_handle(
-            transform_ext.filter_by_name(
-                transform_ext.trace_producers(max_reduction),
-                op_names="linalg.generic",
-            ),
-            0,
-        ),
-        ops={"arith.mulf"},
-        nhandles=1,
-    )[0]
-    scale = transform_ext.extract_handle(
-        transform_ext.filter_by_name(
-            transform_ext.trace_producers(scale_mul), op_names="arith.constant"
-        ),
-        0,
-    )
-
-    # The chain's leaf is the deferred divide, the last generic in program order.
-    divide_op = transform_ext.extract_handle(generics, -1)
-
-    transform_ext.replace_with_fused_attention(
-        q=q,
-        k=k,
-        v=v,
-        scale=scale,
-        output=divide_op,
-        tile_size=layer_params["reduction_tile"],
-    )
-    transform.apply_cse(func)
-    lh_transform.cleanup(func)
-
-
 def bundle_xegpu_fused_attention_schedule(
     mod: ir.Value[transform.AnyOpType],
     params: ScheduleParameters,
@@ -418,22 +343,14 @@ def bundle_xegpu_fused_attention_schedule(
         raise PipelineInterrupt()
 
     # Build the fused (flash) attention inner loop -- a single loop over the
-    # key/value axis -- while still at linalg level. Two paths produce it, and both
-    # consume the same payload, so their output can be diffed at
-    # `--dump-kernel=reduction-tiled`:
+    # key/value axis -- by deriving it from the payload's chain, while still at
+    # linalg level.
     #
-    #   * the default derives it from the payload's chain with
-    #     `fuse_dependant_reduction_ops` (below);
-    #   * `reference_flash` emits it from the hand-written generator instead, as a
-    #     reference point for how close the derived version gets.
     # Tile size for the reduction dimension (the K/V sequence length); also drives
     # the K/V prefetch and the XeGPU layouts further down.
     reduction_tile = layer_params["reduction_tile"]
 
-    if layer_params.get("reference_flash", False):
-        _replace_with_reference_flash_attention(anytype, func, layer_params)
-    else:
-        _derive_flash_attention(anytype, func, layer_params)
+    _derive_flash_attention(anytype, func, layer_params)
 
     if stop_at_stage == "reduction-tiled":
         raise PipelineInterrupt()

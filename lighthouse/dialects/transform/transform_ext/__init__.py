@@ -7,7 +7,6 @@ from .ops.get_named_attribute import get_named_attribute
 from .ops.get_tile_sizes import get_tile_sizes
 from .ops.param_cmp_eq import param_cmp_eq
 from .ops.replace import replace
-from .ops.replace_with_fused_attention import replace_with_fused_attention
 from .ops.convert_func_results_to_args import convert_func_results_to_args
 from .ops.enable_fastmath_optimizations import enable_fastmath_optimizations
 from .ops.extract_handle import extract_handle
@@ -57,7 +56,6 @@ __all__ = [
     "propagate_tile_sizes",
     "register_and_load",
     "replace",
-    "replace_with_fused_attention",
     "reverse_handles",
     "sfc_remap_forall",
     "sink_extract_slice_into_loop",
