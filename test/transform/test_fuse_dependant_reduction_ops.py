@@ -336,8 +336,8 @@ def test_softmax_structure() -> None:
 # CHECK:           %[[TOLD:.+]] = linalg.generic {{.*}}ins(%[[MOLD]] :
 # CHECK:             arith.subf %{{.+}}, %in
 # CHECK:             math.exp
-# CHECK:           %[[F:.+]] = linalg.elementwise kind=#linalg.elementwise_kind<div> ins(%[[TNEW]], %[[TOLD]]
-# CHECK:           %[[SCALED:.+]] = linalg.elementwise kind=#linalg.elementwise_kind<mul> ins(%[[SOLD]], %[[F]]
+# CHECK:           %[[F:.+]] = linalg.elementwise <div> ins(%[[TNEW]], %[[TOLD]]
+# CHECK:           %[[SCALED:.+]] = linalg.elementwise <mul> ins(%[[SOLD]], %[[F]]
 
 # The fused R2 accumulates this tile's terms into the rescaled running sum.
 # CHECK:           %[[SNEW:.+]] = linalg.generic
@@ -386,8 +386,8 @@ def test_attention_structure() -> None:
 # CHECK:           %[[P1:.+]] = linalg.generic
 # CHECK-SAME:          ins(%{{.+}}, %[[MNEW]] : tensor<64x32xf32>, tensor<64xf32>)
 # CHECK:             math.exp
-# CHECK:           linalg.elementwise kind=#linalg.elementwise_kind<div>
-# CHECK:           %[[LSCALED:.+]] = linalg.elementwise kind=#linalg.elementwise_kind<mul>
+# CHECK:           linalg.elementwise <div>
+# CHECK:           %[[LSCALED:.+]] = linalg.elementwise <mul>
 # CHECK:           linalg.generic
 # CHECK-SAME:          ins(%[[P1]] : tensor<64x32xf32>)
 # CHECK-SAME:          outs(%[[LSCALED]] : tensor<64xf32>)
@@ -400,8 +400,8 @@ def test_attention_structure() -> None:
 # CHECK-SAME:          ins(%{{.+}}, %[[MNEW]] : tensor<64x32xf32>, tensor<64xf32>)
 # CHECK:             math.exp
 # CHECK:           linalg.generic {{.*}}ins(%[[MNEW]] : tensor<64xf32>) outs(%{{.+}} : tensor<64x128xf32>)
-# CHECK:           linalg.elementwise kind=#linalg.elementwise_kind<div>
-# CHECK:           %[[OSCALED:.+]] = linalg.elementwise kind=#linalg.elementwise_kind<mul>
+# CHECK:           linalg.elementwise <div>
+# CHECK:           %[[OSCALED:.+]] = linalg.elementwise <mul>
 
 # The contraction reads V sliced along the shared reduction axis.
 # CHECK:           %[[VT:.+]] = tensor.extract_slice %[[V]][%[[IV]], 0] [32, 128] [1, 1]
@@ -447,8 +447,8 @@ def test_mixed_precision_softmax() -> None:
 # CHECK:             math.exp %{{.+}} : f32
 
 # The factor already has R2's element type, so it rescales the running sum directly.
-# CHECK:           linalg.elementwise kind=#linalg.elementwise_kind<div> ins(%{{.+}} : tensor<64xf32>, tensor<64xf32>)
-# CHECK:           %[[SCALED:.+]] = linalg.elementwise kind=#linalg.elementwise_kind<mul>
+# CHECK:           linalg.elementwise <div> ins(%{{.+}} : tensor<64xf32>, tensor<64xf32>)
+# CHECK:           %[[SCALED:.+]] = linalg.elementwise <mul>
 # CHECK-SAME:          tensor<64xf32>, tensor<64xf32>
 # CHECK:           linalg.generic
 # CHECK-SAME:          ins(%[[P]] : tensor<64x32xf16>)

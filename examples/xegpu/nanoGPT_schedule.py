@@ -225,7 +225,7 @@ def _fuse_attention_in_region(anytype, forall, fa_params):
     the online correction that rescales that reduction's running accumulator
     whenever the running max changes. Inside `forall` the chain reads:
 
-        %s   = linalg.mul(batch_matmul(q, k^T), fill(scale))   the scaled scores
+        %s   = elementwise<mul>(batch_matmul(q, k^T), fill(scale))  the scaled scores
         %m   = max_j %s                                        the producer reduction
         %p   = exp(%s - %m)                                    the elementwise term
         %o   = batch_matmul(%p, v)                             consumer reduction
@@ -244,10 +244,17 @@ def _fuse_attention_in_region(anytype, forall, fa_params):
     max_op, p_op, sum_op, _ = match_and_split(
         forall, ops={"linalg.generic"}, nhandles=4
     )
-    _, pv_bmm = match_and_split(forall, ops={"linalg.batch_matmul"}, nhandles=2)
+    qk_bmm, pv_bmm = match_and_split(forall, ops={"linalg.batch_matmul"}, nhandles=2)
     # The fusion op wants both the elementwise term and the consumer reduction as
     # linalg.generic ops, so generalize the contraction.
     pv_op = structured.structured_generalize(anytype, pv_bmm)
+
+    # The scaled scores feed the row max, and K^T is Q@K^T's rhs; both are sunk into
+    # the reduction loop further down. Derived now rather than matched later: the
+    # fusion emits its own `linalg.elementwise` correction ops inside the loop, so a
+    # name-based match for the scale multiply would no longer be unique.
+    scale_mul_op = prod(anytype, max_op, operand_number=0)
+    transpose_op = prod(anytype, qk_bmm, operand_number=1)
 
     # Tile the row max along the key/value axis. This is the producer reduction loop
     # the rest of the chain gets folded into; the marker attribute is what the
@@ -282,9 +289,15 @@ def _fuse_attention_in_region(anytype, forall, fa_params):
     # Sink the score computation into the reduction loop as well, so only one
     # [wg_rows, tile_size] score tile -- rather than the full [wg_rows, n_ctx]
     # matrix -- is ever live.
-    for producer_name in ["linalg.mul", "linalg.batch_matmul", "linalg.transpose"]:
-        producer_op = match_and_split(forall, ops={producer_name}, nhandles=1)[0]
-        _, reduction_loop = structured.structured_fuse_into_containing_op(
+    # Consumer before producer, and the in-loop copies of the first two are kept:
+    # their accumulator fills are sunk next.
+    in_loop = {}
+    for key, producer_op in [
+        ("mul", scale_mul_op),
+        ("qk", qk_bmm),
+        ("transpose", transpose_op),
+    ]:
+        in_loop[key], reduction_loop = structured.structured_fuse_into_containing_op(
             anytype,
             anytype,
             producer_op=producer_op,
@@ -298,11 +311,7 @@ def _fuse_attention_in_region(anytype, forall, fa_params):
     # they initialize -- one hop for the slice the fusion left behind, one more for
     # the fill itself. The remaining fills initialize the loop's running
     # accumulators and must stay outside.
-    scale_mul_op = match_and_split(reduction_loop, ops={"linalg.mul"}, nhandles=1)[0]
-    qk_matmul = match_and_split(
-        reduction_loop, ops={"linalg.batch_matmul"}, nhandles=1
-    )[0]
-    for consumer_op, operand_number in [(scale_mul_op, 1), (qk_matmul, 2)]:
+    for consumer_op, operand_number in [(in_loop["mul"], 1), (in_loop["qk"], 2)]:
         fill_slice = prod(anytype, consumer_op, operand_number=operand_number)
         fill_op = prod(anytype, fill_slice, operand_number=0)
         _, reduction_loop = structured.structured_fuse_into_containing_op(
@@ -329,7 +338,6 @@ def _fuse_attention_in_region(anytype, forall, fa_params):
         forall,
         ops={
             "linalg.batch_matmul",
-            "linalg.mul",
             "linalg.transpose",
             "linalg.fill",
             "linalg.elementwise",
