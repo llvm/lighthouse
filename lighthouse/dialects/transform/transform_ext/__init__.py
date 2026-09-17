@@ -20,6 +20,10 @@ from .ops.filter_elementwise import filter_elementwise
 from .ops.filter_by_name import filter_by_name
 from .ops.filter_reduction_ops import filter_reduction_ops
 from .ops.fuse_dependant_reduction_ops import fuse_dependant_reduction_ops
+from .ops.fuse_same_rank_elementwise_chains import fuse_same_rank_elementwise_chains
+from .ops.sink_normalization_past_contraction import (
+    sink_normalization_past_contraction,
+)
 from .ops.filter_contraction_ops import filter_contraction_ops
 from .ops.get_leading_unit_tile_sizes import get_leading_unit_tile_sizes
 from .ops.move_offsets_to_subview import move_offsets_to_subview
@@ -44,6 +48,7 @@ __all__ = [
     "filter_num_loops",
     "filter_reduction_ops",
     "fuse_dependant_reduction_ops",
+    "fuse_same_rank_elementwise_chains",
     "get_fusion_roots",
     "get_leading_unit_tile_sizes",
     "get_named_attribute",
@@ -59,6 +64,7 @@ __all__ = [
     "reverse_handles",
     "sfc_remap_forall",
     "sink_extract_slice_into_loop",
+    "sink_normalization_past_contraction",
     "trace_producers",
     "update_address_space",
     "wrap_in_benching_func",

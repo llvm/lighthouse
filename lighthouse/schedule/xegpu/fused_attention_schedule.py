@@ -176,14 +176,22 @@ def _derive_flash_attention(anytype, func, layer_params):
     # Tile the row max along the key/value axis. This is the producer reduction
     # loop the rest of the chain gets folded into; the marker attribute is what
     # the fusion op recognizes it by.
+    #
+    # The row max has one loop per WG-tiled parallel dim plus the reduction, which
+    # is last, so the tile sizes are all-zero except the final entry. The rank is
+    # payload-dependent -- a chain on collapsed (batch, row, col) tensors has three
+    # loops, one on (batch, head, row, col) has four -- hence deriving the length
+    # from `wg_tile` rather than hardcoding it.
+    n_parallel = len(layer_params["wg_tile"])
+    static_sizes = [0] * n_parallel + [reduction_tile]
     _, reduction_loop = structured.structured_tile_using_for(
         anytype,
         [anytype],
         max_op,
         dynamic_sizes=[],
         interchange=[],
-        static_sizes=[0, 0, reduction_tile],
-        scalable_sizes=[False, False, False],
+        static_sizes=static_sizes,
+        scalable_sizes=[False] * len(static_sizes),
     )
     transform.annotate(reduction_loop, transform_ext.REDUCTION_LOOP_ATTR_NAME)
 
@@ -316,8 +324,26 @@ def bundle_xegpu_fused_attention_schedule(
         tensor.apply_patterns_tensor_fold_tensor_empty(fold_single_use_only=True)
     lh_transform.cleanup(func)
 
-    # Fuse elementwise ops, also removes unused linalg op results (if any).
+    # Bring the chain into the `R1 -> E -> R2` shape the reduction fusion expects.
+    #
+    # First collapse a multi-op per-element term into one op: torch-mlir emits
+    # `exp(x - m)` as a separate `sub` and `exp`, and the fusion needs the whole
+    # term in a single op. This runs *before* the pass below so the term is formed
+    # by the narrow rewrite, which cannot fuse across a reduction.
+    func = transform_ext.fuse_same_rank_elementwise_chains(func)
+
+    # Fuse elementwise ops, also removes unused linalg op results (if any). This
+    # is also what folds the `collapse_shape`/`expand_shape` pairs around a
+    # 3-D-batched matmul away, by expanding the contraction's iteration space.
     func = apply_registered_pass(func, "linalg-fuse-elementwise-ops")
+    lh_transform.cleanup(func)
+
+    # The pass is deliberately aggressive and will have sunk a softmax's
+    # normalizing divide into the `@V` contraction. Lift it back out, so the divide
+    # happens once per output element rather than once per (row, key) element and
+    # the chain regains the deferred-divide (flash) shape. A payload that already
+    # defers the divide is unaffected.
+    func = transform_ext.sink_normalization_past_contraction(func)
     lh_transform.cleanup(func)
 
     # Apply WG tiling
