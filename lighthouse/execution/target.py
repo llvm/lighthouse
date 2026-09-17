@@ -1,3 +1,4 @@
+import os
 import platform
 import subprocess
 from contextlib import contextmanager
@@ -25,12 +26,14 @@ class TargetInfo:
     _cached_host: "TargetInfo | None" = None
     _override_features_stack: list[list[str] | None] = []
     _override_arch_stack: list[str | None] = []
+    _override_core_count_stack: list[int | None] = []
 
     def __init__(
         self,
         arch: str | None = None,
         features: list[str] | None = None,
         filter: list[str] | None = None,
+        core_count: int | None = None,
     ):
         if arch is None and self.__class__._override_arch_stack:
             arch = self.__class__._override_arch_stack[-1]
@@ -38,9 +41,12 @@ class TargetInfo:
             override = self.__class__._override_features_stack[-1]
             if override is not None:
                 features = list(override)
+        if core_count is None and self.__class__._override_core_count_stack:
+            core_count = self.__class__._override_core_count_stack[-1]
 
         self.arch = arch if arch is not None else platform.machine()
         self.features = features if features is not None else self._get_feature_list()
+        self._core_count = self._resolve_core_count(core_count)
         # Pre-filter, if requested.
         if filter is not None:
             self.features = self.has_features(filter)
@@ -48,7 +54,11 @@ class TargetInfo:
     @classmethod
     def host(cls) -> "TargetInfo":
         """Return a cached host TargetInfo honoring active test overrides."""
-        if cls._override_features_stack or cls._override_arch_stack:
+        if (
+            cls._override_features_stack
+            or cls._override_arch_stack
+            or cls._override_core_count_stack
+        ):
             return cls()
         if cls._cached_host is None:
             cls._cached_host = cls()
@@ -66,18 +76,21 @@ class TargetInfo:
         *,
         features: list[str] | None = None,
         arch: str | None = None,
+        core_count: int | None = None,
     ):
         """Temporarily override auto-detected host target info for tests."""
         cls._override_features_stack.append(
             None if features is None else list(features)
         )
         cls._override_arch_stack.append(arch)
+        cls._override_core_count_stack.append(core_count)
         cls.reset_host_cache()
         try:
             yield
         finally:
             cls._override_features_stack.pop()
             cls._override_arch_stack.pop()
+            cls._override_core_count_stack.pop()
             cls.reset_host_cache()
 
     def _get_feature_list(self) -> list[str]:
@@ -153,6 +166,23 @@ class TargetInfo:
         """
         hw_extension = hw_extension.lower()
         return any(feature.startswith(hw_extension) for feature in self.features)
+
+    @staticmethod
+    def _resolve_core_count(core_count: int | None) -> int:
+        """Return a host- or env-derived core count, unless explicitly overridden."""
+        if core_count is not None:
+            return max(1, int(core_count))
+        omp_threads = os.environ.get("OMP_NUM_THREADS")
+        if omp_threads is not None:
+            try:
+                return max(1, int(omp_threads))
+            except ValueError:
+                pass
+        return max(1, os.cpu_count() or 1)
+
+    def core_count(self) -> int:
+        """Return the target's available core count for sizing heuristics."""
+        return self._core_count
 
     def vector_register_info(self) -> RegisterInfo | None:
         """Infer SIMD register info from target features."""

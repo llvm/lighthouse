@@ -84,7 +84,7 @@ run("strategy_attr_cache", PAYLOAD, "linalg.matmul", "cache")
 
 # CHECK-LABEL: Test: eltwise_non_default_tile_size
 # CHECK: linalg.elementwise
-# CHECK-SAME: transform_ext.tile_sizes = array<i64: 16, 16>
+# CHECK-SAME: transform_ext.tile_sizes = array<i64: 4, 16>
 run(
     "eltwise_non_default_tile_size",
     PAYLOAD_ELTWISE,
