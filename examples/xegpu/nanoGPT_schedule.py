@@ -189,7 +189,9 @@ def _tile_one_fused_attention_region(anytype, divide_op, fa_params):
     den_fill = prod(anytype, den, operand_number=1)  # 0 fill (sum acc)
     mx = prod(anytype, num, operand_number=1)  # max-reduce generic
     mx_fill = prod(anytype, mx, operand_number=1)  # -inf fill (max acc)
-    scaled = prod(anytype, num, operand_number=0)  # linalg.mul (qkt*scale)
+    scaled = prod(
+        anytype, num, operand_number=0
+    )  # linalg.elementwise <mul> (qkt*scale)
     scale_fill = prod(anytype, scaled, operand_number=1)  # scale-constant fill
     qkt = prod(anytype, scaled, operand_number=0)  # QK^T batch_matmul
     kt = prod(anytype, qkt, operand_number=1)  # K^T transpose

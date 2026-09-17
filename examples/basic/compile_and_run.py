@@ -25,7 +25,7 @@ def create_kernel(ctx: ir.Context) -> ir.Module:
             r"""
     // Compute element-wise addition.
     func.func @add(%a: memref<16x32xf32>, %b: memref<16x32xf32>, %out: memref<16x32xf32>) {
-        linalg.add ins(%a, %b : memref<16x32xf32>, memref<16x32xf32>)
+        linalg.elementwise <add> ins(%a, %b : memref<16x32xf32>, memref<16x32xf32>)
                    outs(%out : memref<16x32xf32>)
         return
     }

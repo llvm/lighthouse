@@ -27,7 +27,8 @@ module {
 PAYLOAD_ELTWISE = """
 module {
     func.func @main(%a: tensor<64x64xf32>, %b: tensor<64x64xf32>) -> tensor<64x64xf32> {
-        %sum = linalg.add ins(%a, %b : tensor<64x64xf32>, tensor<64x64xf32>)
+        %sum = linalg.elementwise <add>
+                ins(%a, %b : tensor<64x64xf32>, tensor<64x64xf32>)
                 outs(%a : tensor<64x64xf32>) -> tensor<64x64xf32>
         return %sum : tensor<64x64xf32>
     }
@@ -82,12 +83,12 @@ run("strategy_attr_register_reduction", PAYLOAD, "linalg.matmul", "register_redu
 run("strategy_attr_cache", PAYLOAD, "linalg.matmul", "cache")
 
 # CHECK-LABEL: Test: eltwise_non_default_tile_size
-# CHECK: linalg.add
+# CHECK: linalg.elementwise
 # CHECK-SAME: transform_ext.tile_sizes = array<i64: 16, 16>
 run(
     "eltwise_non_default_tile_size",
     PAYLOAD_ELTWISE,
-    "linalg.add",
+    "linalg.elementwise",
     "cache",
     tile_size=16,
 )

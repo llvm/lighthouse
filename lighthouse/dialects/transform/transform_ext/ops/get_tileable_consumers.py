@@ -1,5 +1,5 @@
 from mlir import ir
-from mlir.dialects import ext, transform, linalg
+from mlir.dialects import ext, transform
 from mlir.dialects.transform import DiagnosedSilenceableFailure
 
 from lighthouse.dialects.transform.transform_ext import TransformExtensionDialect
@@ -40,19 +40,14 @@ class GetTileableConsumersOp(
     @staticmethod
     def is_tileable_op(op: ir.Operation) -> bool:
         # TODO expand list as needed and/or check traits/interfaces
-        linalg_ops = [
-            linalg.ElementwiseOp,
-            linalg.AddOp,
-            linalg.SubOp,
-            linalg.MulOp,
-            linalg.DivOp,
-            linalg.ExpOp,
-            linalg.MaxOp,
-            linalg.MinOp,
-            linalg.FillOp,
-            linalg.GenericOp,
-        ]
-        return isinstance(op.opview, tuple(linalg_ops))
+        # Match by op name: mlir.dialects.linalg.ElementwiseOp is a distinct
+        # class from the generated opview instances, so isinstance fails.
+        tileable_op_names = {
+            "linalg.elementwise",
+            "linalg.fill",
+            "linalg.generic",
+        }
+        return op.name in tileable_op_names
 
     class TransformOpInterfaceModel(transform.TransformOpInterface):
         @staticmethod

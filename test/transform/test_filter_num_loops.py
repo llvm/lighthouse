@@ -36,7 +36,8 @@ module {
       %x: tensor<2x4x8xf32>,
       %y: tensor<2x8x4xf32>) -> (tensor<64xf32>, tensor<8x8xf32>, tensor<2x4x4xf32>) {
     %e1 = tensor.empty() : tensor<64xf32>
-    %add = linalg.add ins(%a, %a : tensor<64xf32>, tensor<64xf32>)
+    %add = linalg.elementwise <add>
+        ins(%a, %a : tensor<64xf32>, tensor<64xf32>)
         outs(%e1 : tensor<64xf32>) -> tensor<64xf32>
 
     %e2 = tensor.empty() : tensor<8x8xf32>
@@ -59,5 +60,5 @@ module {
 # CHECK-LABEL: IR printer: AT_LEAST_2
 # CHECK: linalg.generic
 # CHECK: linalg.batch_matmul
-# CHECK-NOT: linalg.add
+# CHECK-NOT: linalg.elementwise
 apply_filter(PAYLOAD, num_loops=2, name="AT_LEAST_2")

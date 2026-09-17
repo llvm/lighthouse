@@ -23,8 +23,8 @@ def apply_schedule(payload_str, build_roots, name):
 
 
 # Four independent elementwise ops, each its own fusion root, alternating
-# linalg.generic / linalg.add in program order and each with a unique shape so
-# it can be identified in the printed output.
+# linalg.generic / linalg.elementwise in program order and each with a unique
+# shape so it can be identified in the printed output.
 SCRAMBLED = """
 #id = affine_map<(d0, d1) -> (d0, d1)>
 module {
@@ -41,7 +41,8 @@ module {
       linalg.yield %i : f32
     } -> tensor<10x10xf32>
     %e1 = tensor.empty() : tensor<11x11xf32>
-    %addB = linalg.add {transform_ext.tile_sizes = array<i64: 32, 32>}
+    %addB = linalg.elementwise <add>
+        {transform_ext.tile_sizes = array<i64: 32, 32>}
         ins(%b, %b : tensor<11x11xf32>, tensor<11x11xf32>)
         outs(%e1 : tensor<11x11xf32>) -> tensor<11x11xf32>
     %e2 = tensor.empty() : tensor<12x12xf32>
@@ -54,7 +55,8 @@ module {
       linalg.yield %i : f32
     } -> tensor<12x12xf32>
     %e3 = tensor.empty() : tensor<13x13xf32>
-    %addD = linalg.add {transform_ext.tile_sizes = array<i64: 32, 32>}
+    %addD = linalg.elementwise <add>
+        {transform_ext.tile_sizes = array<i64: 32, 32>}
         ins(%d, %d : tensor<13x13xf32>, tensor<13x13xf32>)
         outs(%e3 : tensor<13x13xf32>) -> tensor<13x13xf32>
     return %gA, %addB, %gC, %addD
@@ -184,7 +186,7 @@ def scrambled_roots(named_seq):
     # generics first, then all adds, so it is deliberately *not* in program
     # order. get_fusion_roots must still return the roots top-down.
     gens = lh_transform.match_op(named_seq.bodyTarget, "linalg.generic")
-    adds = lh_transform.match_op(named_seq.bodyTarget, "linalg.add")
+    adds = lh_transform.match_op(named_seq.bodyTarget, "linalg.elementwise")
     merged = transform.merge_handles([gens, adds])
     return transform_ext.get_fusion_roots(merged)
 

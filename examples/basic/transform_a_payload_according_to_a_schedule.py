@@ -40,8 +40,10 @@ def example_payload() -> Module:
             A_x_weights = linalg.matmul(matrixA, weights, outs=[zero_init])
             # CHECK: %[[RES:.*]] = linalg.matmul ins(%[[MATRIX_B]], %[[WEIGHTS]]{{.*}}) outs(%[[A_X_WEIGHTS]]
             B_x_weights = linalg.matmul(matrixB, weights, outs=[zero_init])
-            # CHECK-NOT: linalg.add
-            added = linalg.add(A_x_weights, B_x_weights, outs=[empty])
+            # CHECK-NOT: linalg.elementwise
+            added = linalg.elementwise(
+                A_x_weights, B_x_weights, outs=[empty], kind=linalg.ElementwiseKind.add
+            )
             # CHECK: return %[[RES]]
             return added
 

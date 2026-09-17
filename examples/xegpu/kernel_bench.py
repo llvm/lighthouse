@@ -181,6 +181,9 @@ def infer_parameters(
         schedule_params = ScheduleParameters([layer_params])
         schedule_kind = "elemwise"
     elif len(elemwise) > 0 and len(reduction) > 0 and len(batch_matmuls) == 0:
+        # Elementwise + reduction kernel
+        iter_space = reduction[0]["iterators"]
+        n_reduction_dims = sum(s == "reduction" for s in iter_space)
         # elemwise + reduction kernel, e.g. softmax or layer norm
         shape = elemwise[-1]["shape"]
         res_elemtype = elemwise[-1]["elemtype"]
@@ -189,25 +192,50 @@ def infer_parameters(
         res_bytes = elemtype_bytes[res_elemtype]
         read_bytes = int(np.prod(shape)) * res_bytes
         write_bytes = int(np.prod(shape)) * res_bytes
+        if len(shape) == 2:
+            # 2d softmax like kernel
+            layer_params = {
+                "layer_kind": "reduction",
+                "wg_tile": [64, 0],
+                "sg_tile": [8, 0],
+                "subgroup_size": 16,
+                "reduction_tile": [0, 32],
+            }
 
-        layer_params = {
-            "layer_kind": "reduction",
-            "wg_rows": 64,
-            "sg_rows": 8,
-            "subgroup_size": 16,
-            "reduction_step_size": 32,
-        }
+        elif len(shape) == 4 and iter_space[1] == "reduction" and n_reduction_dims == 1:
+            # 4d rms norm like kernel
+            layer_params = {
+                "layer_kind": "reduction",
+                "sizes": shape,
+                "wg_tile": [1, 0, 128, 128],
+                "wg_subtile": [0, 0, 64, 128],
+                "sg_tile": [0, 0, 8, 32],
+                "reduction_tile": [0, 8, 0, 0],
+                "subgroup_size": 16,
+            }
+        else:
+            raise ValueError(
+                f"Unsupported kernel shape {shape} with iter_space {iter_space}"
+            )
 
         # Ensure shape is divisible by tile sizes.
         # Padding or remainder handling is not implemented yet.
-        if shape[0] % layer_params["wg_rows"] != 0:
-            raise ValueError(
-                f"Shape {shape} dimension 0 not divisible by wg_rows={layer_params['wg_rows']}"
-            )
-        if shape[1] % layer_params["reduction_step_size"] != 0:
-            raise ValueError(
-                f"Shape {shape} dimension 1 not divisible by reduction_step_size={layer_params['reduction_step_size']}"
-            )
+        wg_sizes = (
+            layer_params["wg_subtile"]
+            if "wg_subtile" in layer_params
+            else layer_params["wg_tile"]
+        )
+        reduction_tile = layer_params["reduction_tile"]
+        for i, (size, wg, red) in enumerate(zip(shape, wg_sizes, reduction_tile)):
+            if wg > 0 and size % wg != 0:
+                raise ValueError(
+                    f"Shape {shape} dimension {i} not divisible by wg_tile={wg_sizes}"
+                )
+            if red > 0 and size % red != 0:
+                raise ValueError(
+                    f"Shape {shape} dimension {i} not divisible by reduction_tile={reduction_tile}"
+                )
+
         schedule_params = ScheduleParameters([layer_params])
         schedule_kind = "reduction"
     elif len(elemwise) > 0 and len(reduction) > 0 and len(batch_matmuls) > 0:
@@ -609,7 +637,7 @@ def lower_and_execute_benchmark(
         params_cache_json=f"kb_params_level{level}-{id}.json",
         dump_parameters=dump_parameters,
         enable_tuning=execute,
-        verbose=2,
+        verbose=verbose,
     )
     backend = gpu_backend(
         fn_compile,
@@ -647,13 +675,20 @@ def lower_and_execute_benchmark(
             layer.get("kind") == "batch_matmul"
             for layer in kernel_metadata.get("layers", [])
         )
+        is_reduction = any(
+            layer.get("kind") == "reduction"
+            for layer in kernel_metadata.get("layers", [])
+        )
         atol = abs(result_ref).max() * 1e-3
         rtol = 1e-3
         if result_ref.dtype == torch.bfloat16:
             rtol = 2e-2
             if is_attention:
-                # Attention fuses 2 matmuls and a softmax, needs a looser atol.
+                # Attention fuses 2 matmuls and a softmax.
                 atol = 2e-2
+            elif is_reduction:
+                # RMS norm currently uses bf16 accumulator.
+                atol = 6e-2
             elif is_mlp:
                 atol = 7e-3
         success = torch.allclose(result, result_ref, rtol=rtol, atol=atol)

@@ -53,7 +53,8 @@ module {
 ELTWISE = """
 module {
     func.func @main(%a: tensor<64x64xf32>, %b: tensor<64x64xf32>) -> tensor<64x64xf32> {
-        %sum = linalg.add ins(%a, %b : tensor<64x64xf32>, tensor<64x64xf32>)
+        %sum = linalg.elementwise <add>
+                ins(%a, %b : tensor<64x64xf32>, tensor<64x64xf32>)
                 outs(%a : tensor<64x64xf32>) -> tensor<64x64xf32>
         return %sum : tensor<64x64xf32>
     }
@@ -125,7 +126,7 @@ with TargetInfo.override(features=[]):
 
 def build_register_parallel_eltwise():
     with schedule_boilerplate() as (sched, named_seq):
-        ops = lh_transform.match_op(named_seq.bodyTarget, "linalg.add")
+        ops = lh_transform.match_op(named_seq.bodyTarget, "linalg.elementwise")
         assign_tile_sizes(
             ops,
             strategy="register_parallel",
@@ -136,7 +137,7 @@ def build_register_parallel_eltwise():
 
 # 512-bit vectors (AVX-512): 32-bit lanes -> inner tile of 16.
 # CHECK-LABEL: Test: eltwise_register_parallel_avx512
-# CHECK: linalg.add
+# CHECK: linalg.elementwise
 # CHECK-SAME: transform_ext.tile_sizes = array<i64: 1, 16>
 with TargetInfo.override(features=["avx512f"]):
     run(
@@ -148,7 +149,7 @@ with TargetInfo.override(features=["avx512f"]):
 
 # 256-bit vectors (AVX2): 32-bit lanes -> inner tile of 8.
 # CHECK-LABEL: Test: eltwise_register_parallel_avx2
-# CHECK: linalg.add
+# CHECK: linalg.elementwise
 # CHECK-SAME: transform_ext.tile_sizes = array<i64: 1, 8>
 with TargetInfo.override(features=["avx2"]):
     run(
@@ -160,7 +161,7 @@ with TargetInfo.override(features=["avx2"]):
 
 # 128-bit vectors (SSE): 32-bit lanes -> inner tile of 4.
 # CHECK-LABEL: Test: eltwise_register_parallel_sse
-# CHECK: linalg.add
+# CHECK: linalg.elementwise
 # CHECK-SAME: transform_ext.tile_sizes = array<i64: 1, 4>
 with TargetInfo.override(features=["sse4_1"]):
     run(
@@ -172,7 +173,7 @@ with TargetInfo.override(features=["sse4_1"]):
 
 # No recognized vector extension: falls back to the 512-bit assumption -> 16.
 # CHECK-LABEL: Test: eltwise_register_parallel_no_features
-# CHECK: linalg.add
+# CHECK: linalg.elementwise
 # CHECK-SAME: transform_ext.tile_sizes = array<i64: 1, 16>
 with TargetInfo.override(features=[]):
     run(
