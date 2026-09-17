@@ -1,12 +1,16 @@
 # The default optimizing pipeline for x86 architecture.
 Pipeline:
+  ## Layout packing and cache tiling - exposes workload parallelism.
   - include: pack-and-tile.yaml {
                                   block_factors=[32,32,32]
                                   tile_size=32
                                 }
+  - include: cleanup.yaml
+
+  ## Remap iteration space of parallel loops for communication avoidance.
   - schedule: "sfc.py[gen=remap]"
 
-  ## CPU register-level tiling flow (strategy-driven)
+  ## CPU register-level tiling.
   - pass: "linalg-morph-ops{named-to-category generic-to-named}"
 
   ## 2a) Parallel register tiles: assign/propagate from contraction anchors and fuse.
@@ -19,6 +23,7 @@ Pipeline:
                                                                     propagate=True
                                                                   }"
   - schedule: "tile_and_fuse.py[gen=tile_and_fuse_annotated]"
+  - include: cleanup.yaml
 
   ## 2b) Reduction register tiles: annotate K-like dims and tile ops individually.
   - schedule: "tile_and_fuse.py[gen=assign_and_propagate_tile_sizes]{
@@ -26,6 +31,7 @@ Pipeline:
                                                                       propagate=False
                                                                     }"
   - schedule: "tile_and_fuse.py[gen=tile_annotated]{target_op=linalg.contract use_forall=False}"
+  - include: cleanup.yaml
 
   ## 3) Tile+unroll: annotate final unrolled tiles, optionally propagate, then tile+unroll.
   # TODO: Enable propagation after LLVM fix #222513
@@ -39,6 +45,7 @@ Pipeline:
                                                                     propagate=False
                                                                   }"
   - schedule: "tile_and_fuse.py[gen=tile_and_unroll_annotated]"
+  - include: cleanup.yaml
 
   - include: vectorize.yaml
 
