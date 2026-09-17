@@ -170,7 +170,7 @@ def generate_gpu_attention_payload(
             # this way rather than as a `linalg.softmax` -- whose decomposition
             # normalizes *before* the contraction -- it leaves the
             # `max -> exp -> {sum, P@V}` chain explicit, which is what
-            # `transform_ext.fuse_dependant_reduction_ops` folds into one loop.
+            # `transform_ext.fuse_dependent_reduction_ops` folds into one loop.
             d0, d1, d2 = (ir.AffineDimExpr.get(i) for i in range(3))
             # (batch, row, col) -> (batch, row, col) and -> (batch, row): the
             # per-row statistics are broadcast over the reduced axis.

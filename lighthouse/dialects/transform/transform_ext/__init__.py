@@ -19,7 +19,7 @@ from .ops.filter_num_loops import filter_num_loops
 from .ops.filter_elementwise import filter_elementwise
 from .ops.filter_by_name import filter_by_name
 from .ops.filter_reduction_ops import filter_reduction_ops
-from .ops.fuse_dependant_reduction_ops import fuse_dependant_reduction_ops
+from .ops.fuse_dependent_reduction_ops import fuse_dependent_reduction_ops
 from .ops.fuse_same_rank_elementwise_chains import fuse_same_rank_elementwise_chains
 from .ops.sink_normalization_past_contraction import (
     sink_normalization_past_contraction,
@@ -30,7 +30,7 @@ from .ops.move_offsets_to_subview import move_offsets_to_subview
 from .ops.clear_tile_and_fuse_annotations import clear_tile_and_fuse_annotations
 from .ops.get_fusion_roots import get_fusion_roots
 from .ops.propagate_tile_sizes import propagate_tile_sizes
-from .utils.dependant_reduction_legality import REDUCTION_LOOP_ATTR_NAME
+from .utils.dependent_reduction_legality import REDUCTION_LOOP_ATTR_NAME
 from .ops.sfc_remap_forall import sfc_remap_forall
 from .ops.sink_extract_slice_into_loop import sink_extract_slice_into_loop
 
@@ -47,7 +47,7 @@ __all__ = [
     "filter_elementwise",
     "filter_num_loops",
     "filter_reduction_ops",
-    "fuse_dependant_reduction_ops",
+    "fuse_dependent_reduction_ops",
     "fuse_same_rank_elementwise_chains",
     "get_fusion_roots",
     "get_leading_unit_tile_sizes",

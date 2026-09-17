@@ -2,7 +2,7 @@
 
 Fuses an ``R1 -> E -> R2`` chain into ``R1``'s already-tiled reduction loop,
 turning a two-pass reduction into an online one-pass loop. See
-`dependant_reduction_legality` for the chain's shape and the conditions checked
+`dependent_reduction_legality` for the chain's shape and the conditions checked
 before this runs.
 
 The rewrite *rebuilds* the loop rather than mutating it: MLIR cannot grow an
@@ -45,7 +45,7 @@ from mlir.dialects import arith, linalg, scf, tensor
 from lighthouse.utils.mlir import opview
 from lighthouse.dialects.transform.transform_ext.utils import ir_rewrite as irr
 from lighthouse.dialects.transform.transform_ext.utils import linalg_structured as ls
-from lighthouse.dialects.transform.transform_ext.utils.dependant_reduction_legality import (
+from lighthouse.dialects.transform.transform_ext.utils.dependent_reduction_legality import (
     FusionRejected,
     collect_r1_as_elementwise_inputs,
     find_r2_elementwise_operand,
@@ -53,7 +53,7 @@ from lighthouse.dialects.transform.transform_ext.utils.dependant_reduction_legal
     needs_elementwise_clone,
 )
 
-__all__ = ["fuse_dependant_reduction_ops"]
+__all__ = ["fuse_dependent_reduction_ops"]
 
 
 def _tile_bounds(
@@ -421,7 +421,7 @@ def _correction_factor(
     return _cast_tensor(factor, element_type)
 
 
-def fuse_dependant_reduction_ops(
+def fuse_dependent_reduction_ops(
     rewriter,
     r1_loop: ir.OpView,
     e: ir.OpView,

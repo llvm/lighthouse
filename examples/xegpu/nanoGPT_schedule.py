@@ -220,7 +220,7 @@ def _tile_one_fused_attention_region(anytype, divide_op, fa_params):
 def _fuse_attention_in_region(anytype, forall, fa_params):
     """Fold one attention region's chain into the flash loop.
 
-    `fuse_dependant_reduction_ops` does the work: it moves the elementwise term and
+    `fuse_dependent_reduction_ops` does the work: it moves the elementwise term and
     one consumer reduction into an already-tiled producer reduction loop and inserts
     the online correction that rescales that reduction's running accumulator
     whenever the running max changes. Inside `forall` the chain reads:
@@ -274,14 +274,14 @@ def _fuse_attention_in_region(anytype, forall, fa_params):
     # fuses a clone of it and leaves the original in place for the second chain.
     # Fusing replaces the loop, but the replacement inherits the marker attribute,
     # so it is ready to serve as the producer reduction of the second chain.
-    reduction_loop = transform_ext.fuse_dependant_reduction_ops(
+    reduction_loop = transform_ext.fuse_dependent_reduction_ops(
         p_op, sum_op, reduction_loop
     )
 
     # Second chain: max -> p -> @V, into that same loop. The first fusion consumed
     # the handle to `p`; the original is still the contraction's operand.
     p_op = prod(anytype, pv_op, operand_number=0)
-    reduction_loop = transform_ext.fuse_dependant_reduction_ops(
+    reduction_loop = transform_ext.fuse_dependent_reduction_ops(
         p_op, pv_op, reduction_loop
     )
     transform.apply_cse(forall)

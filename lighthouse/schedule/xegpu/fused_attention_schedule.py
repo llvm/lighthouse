@@ -135,7 +135,7 @@ def fused_attention_schedule(
 def _derive_flash_attention(anytype, func, layer_params):
     """Derive the flash loop from the payload chain with the reduction fusion.
 
-    `fuse_dependant_reduction_ops` moves the elementwise term and one consumer
+    `fuse_dependent_reduction_ops` moves the elementwise term and one consumer
     reduction into an already-tiled producer reduction loop and inserts the online
     correction that rescales that reduction's running accumulator whenever the
     running max changes. Applied once per consumer reduction -- the row sum and the
@@ -199,14 +199,14 @@ def _derive_flash_attention(anytype, func, layer_params):
     # fuses a clone of it and leaves the original in place for the second chain.
     # Fusing replaces the loop, but the replacement inherits the marker attribute,
     # so it is ready to serve as the producer reduction of the second chain.
-    reduction_loop = transform_ext.fuse_dependant_reduction_ops(
+    reduction_loop = transform_ext.fuse_dependent_reduction_ops(
         p_op, sum_op, reduction_loop
     )
 
     # Second chain: max -> p -> P@V, into that same loop. The first fusion
     # consumed the handle to `p`; the original is still the contraction's operand.
     p_op = prod(anytype, pv_op, operand_number=0)
-    reduction_loop = transform_ext.fuse_dependant_reduction_ops(
+    reduction_loop = transform_ext.fuse_dependent_reduction_ops(
         p_op, pv_op, reduction_loop
     )
     transform.apply_cse(func)
@@ -256,7 +256,7 @@ def _derive_flash_attention(anytype, func, layer_params):
     # reductions and the correction's broadcasts would keep a unit dim and drag
     # shape_casts (and rank-3 XeGPU layouts) along with them.
     #
-    # Done here, after the reduction fusion, so `fuse_dependant_reduction_ops` runs
+    # Done here, after the reduction fusion, so `fuse_dependent_reduction_ops` runs
     # on the shape it already handles.
     #
     # `fold_unit_extent_dims` only rewrites linalg.generic, hence the generalize;

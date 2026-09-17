@@ -6,10 +6,10 @@ from mlir.dialects.transform import DiagnosedSilenceableFailure
 
 from lighthouse.dialects.transform.transform_ext import TransformExtensionDialect
 from lighthouse.dialects.transform.transform_ext.utils import (
-    dependant_reduction_legality as legality,
+    dependent_reduction_legality as legality,
 )
-from lighthouse.dialects.transform.transform_ext.utils.dependant_reduction_fusion import (
-    fuse_dependant_reduction_ops as apply_fusion,
+from lighthouse.dialects.transform.transform_ext.utils.dependent_reduction_fusion import (
+    fuse_dependent_reduction_ops as apply_fusion,
 )
 
 
@@ -18,7 +18,7 @@ def _single(payload_ops, what: str):
     ops = list(payload_ops)
     if len(ops) != 1:
         print(
-            f"fuse_dependant_reduction_ops: requires exactly one {what}, got "
+            f"fuse_dependent_reduction_ops: requires exactly one {what}, got "
             f"{len(ops)}",
             file=sys.stderr,
         )
@@ -26,8 +26,8 @@ def _single(payload_ops, what: str):
     return ops[0].opview if isinstance(ops[0], ir.Operation) else ops[0]
 
 
-class FuseDependantReductionOpsOp(
-    TransformExtensionDialect.Operation, name="fuse_dependant_reduction_ops"
+class FuseDependentReductionOpsOp(
+    TransformExtensionDialect.Operation, name="fuse_dependent_reduction_ops"
 ):
     """
     Fuses a dependency chain ``R1 -> E -> R2`` into a single online (one-pass)
@@ -98,7 +98,7 @@ class FuseDependantReductionOpsOp(
     class TransformOpInterfaceModel(transform.TransformOpInterface):
         @staticmethod
         def apply(
-            op: "FuseDependantReductionOpsOp",
+            op: "FuseDependentReductionOpsOp",
             rewriter: transform.TransformRewriter,
             results: transform.TransformResults,
             state: transform.TransformState,
@@ -114,7 +114,7 @@ class FuseDependantReductionOpsOp(
 
             if not isinstance(r1_loop, scf.ForOp):
                 print(
-                    "fuse_dependant_reduction_ops: expected the tiled reduction "
+                    "fuse_dependent_reduction_ops: expected the tiled reduction "
                     "loop to be an scf.for op",
                     file=sys.stderr,
                 )
@@ -122,7 +122,7 @@ class FuseDependantReductionOpsOp(
             for name, candidate in (("elementwise", e), ("reduction", r2)):
                 if not isinstance(candidate, linalg.GenericOp):
                     print(
-                        f"fuse_dependant_reduction_ops: expected the {name} op to "
+                        f"fuse_dependent_reduction_ops: expected the {name} op to "
                         f"be a linalg.generic op",
                         file=sys.stderr,
                     )
@@ -130,7 +130,7 @@ class FuseDependantReductionOpsOp(
 
             if not legality.collect_inner_reduction_generics(r1_loop):
                 print(
-                    "fuse_dependant_reduction_ops: the reduction loop body does "
+                    "fuse_dependent_reduction_ops: the reduction loop body does "
                     "not contain any reduction linalg.generic",
                     file=sys.stderr,
                 )
@@ -144,7 +144,7 @@ class FuseDependantReductionOpsOp(
                 fused = apply_fusion(rewriter, r1_loop, e, r2, e_tiled_dim, tile_size)
             except legality.FusionRejected as rejected:
                 print(
-                    f"fuse_dependant_reduction_ops: could not fuse the elementwise "
+                    f"fuse_dependent_reduction_ops: could not fuse the elementwise "
                     f"op and the consumer reduction into the producer reduction "
                     f"loop -- {rejected}",
                     file=sys.stderr,
@@ -155,12 +155,12 @@ class FuseDependantReductionOpsOp(
             return DiagnosedSilenceableFailure.Success
 
         @staticmethod
-        def allow_repeated_handle_operands(_op: "FuseDependantReductionOpsOp") -> bool:
+        def allow_repeated_handle_operands(_op: "FuseDependentReductionOpsOp") -> bool:
             return False
 
     class MemoryEffectsOpInterfaceModel(ir.MemoryEffectsOpInterface):
         @staticmethod
-        def get_effects(op: "FuseDependantReductionOpsOp"):
+        def get_effects(op: "FuseDependentReductionOpsOp"):
             return (
                 transform.consumes_handle(op.op_operands)
                 + transform.produces_handle(op.results)
@@ -168,13 +168,13 @@ class FuseDependantReductionOpsOp(
             )
 
 
-def fuse_dependant_reduction_ops(
+def fuse_dependent_reduction_ops(
     elementwise_op: ir.Value[transform.AnyOpType],
     reduction_op: ir.Value[transform.AnyOpType],
     tiled_reduction_loop: ir.Value[transform.AnyOpType],
 ) -> ir.Value[transform.AnyOpType]:
     """
-    snake_case wrapper to create a FuseDependantReductionOpsOp.
+    snake_case wrapper to create a FuseDependentReductionOpsOp.
 
     Args:
         elementwise_op: Handle to the elementwise term ``E``.
@@ -183,7 +183,7 @@ def fuse_dependant_reduction_ops(
     Returns:
         Handle to the fused loop.
     """
-    op = FuseDependantReductionOpsOp(
+    op = FuseDependentReductionOpsOp(
         elementwise_op=elementwise_op,
         reduction_op=reduction_op,
         tiled_reduction_loop=tiled_reduction_loop,

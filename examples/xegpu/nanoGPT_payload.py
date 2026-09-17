@@ -240,7 +240,7 @@ class Builder:
         # algebraically identical to `softmax(s) @ V` -- dividing by the per-row `l`
         # commutes with a contraction that reduces the other axis -- but it leaves
         # the `max -> exp -> {sum, @V}` dependency chain explicit, which is what
-        # `transform_ext.fuse_dependant_reduction_ops` consumes to derive the online
+        # `transform_ext.fuse_dependent_reduction_ops` consumes to derive the online
         # one-pass loop (see `_fuse_attention_in_region` in nanoGPT_schedule.py).
         # A `linalg.softmax` would not do: its decomposition normalizes *before* the
         # contraction, leaving @V reading the normalized P and breaking the chain.

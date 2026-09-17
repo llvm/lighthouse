@@ -1,6 +1,6 @@
 # RUN: %PYTHON %s | FileCheck %s
 
-"""Tests for `transform_ext.fuse_dependant_reduction_ops`.
+"""Tests for `transform_ext.fuse_dependent_reduction_ops`.
 
 The op fuses a dependency chain ``R1 -> E -> R2`` into ``R1``'s already-tiled
 reduction loop, turning a two-pass reduction into an online (one-pass) one. Three
@@ -233,7 +233,7 @@ def online_softmax_schedule(tile_size: int = 32) -> ir.Module:
         _tiled_r1, r1_loop = structured.TileUsingForOp(r1, sizes=[0, tile_size]).results
         transform.annotate(r1_loop, transform_ext.REDUCTION_LOOP_ATTR_NAME)
 
-        fused = transform_ext.fuse_dependant_reduction_ops(e, r2, r1_loop)
+        fused = transform_ext.fuse_dependent_reduction_ops(e, r2, r1_loop)
         transform.annotate(fused, "online_softmax_loop")
         transform.yield_([])
     return sched
@@ -250,7 +250,7 @@ def mixed_softmax_schedule(tile_size: int = 32) -> ir.Module:
         _tiled_r1, r1_loop = structured.TileUsingForOp(r1, sizes=[0, tile_size]).results
         transform.annotate(r1_loop, transform_ext.REDUCTION_LOOP_ATTR_NAME)
 
-        fused = transform_ext.fuse_dependant_reduction_ops(e, r2, r1_loop)
+        fused = transform_ext.fuse_dependent_reduction_ops(e, r2, r1_loop)
         transform.annotate(fused, "mixed_softmax_loop")
         transform.yield_([])
     return sched
@@ -270,12 +270,12 @@ def flash_attention_schedule(tile_size: int = 32) -> ir.Module:
 
         # First chain: the row sum. This fuses a *clone* of E, since E still feeds
         # the contraction, and leaves the original E in place for it.
-        loop = transform_ext.fuse_dependant_reduction_ops(e, r2a, r1_loop)
+        loop = transform_ext.fuse_dependent_reduction_ops(e, r2a, r1_loop)
         # The first fusion consumed the handle to E; the original E is still the
         # contraction's operand, so re-derive it from there.
         e_again = transform.get_producer_of_operand(anyop, r2b, 0)
         # Second chain: the contraction, into the same (now replaced) loop.
-        loop = transform_ext.fuse_dependant_reduction_ops(e_again, r2b, loop)
+        loop = transform_ext.fuse_dependent_reduction_ops(e_again, r2b, loop)
         transform.annotate(loop, "flash_attention_loop")
         transform.yield_([])
     return sched
