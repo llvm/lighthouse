@@ -22,7 +22,7 @@ Pipeline:
                                                                     strategy=register_parallel
                                                                     propagate=True
                                                                   }"
-  - schedule: "tile_and_fuse.py[gen=tile_and_fuse_annotated]"
+  - schedule: "tile_and_fuse.py[gen=tile_and_fuse_annotated]{ use_forall=False }"
   - include: cleanup.yaml
 
   ## 2b) Reduction register tiles: annotate K-like dims and tile ops individually.

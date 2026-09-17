@@ -135,10 +135,10 @@ def build_register_parallel_eltwise():
     return sched
 
 
-# 512-bit vectors (AVX-512): 32-bit lanes -> inner tile of 16.
+# 512-bit vectors (AVX-512): use the full register bank across the trailing parallel dims.
 # CHECK-LABEL: Test: eltwise_register_parallel_avx512
 # CHECK: linalg.elementwise
-# CHECK-SAME: transform_ext.tile_sizes = array<i64: 1, 16>
+# CHECK-SAME: transform_ext.tile_sizes = array<i64: 8, 64>
 with TargetInfo.override(features=["avx512f"]):
     run(
         "eltwise_register_parallel_avx512",
@@ -147,10 +147,10 @@ with TargetInfo.override(features=["avx512f"]):
     )
 
 
-# 256-bit vectors (AVX2): 32-bit lanes -> inner tile of 8.
+# 256-bit vectors (AVX2): the smaller register bank still fills the trailing dim, but only to 2x64 here.
 # CHECK-LABEL: Test: eltwise_register_parallel_avx2
 # CHECK: linalg.elementwise
-# CHECK-SAME: transform_ext.tile_sizes = array<i64: 1, 8>
+# CHECK-SAME: transform_ext.tile_sizes = array<i64: 2, 64>
 with TargetInfo.override(features=["avx2"]):
     run(
         "eltwise_register_parallel_avx2",
@@ -159,10 +159,10 @@ with TargetInfo.override(features=["avx2"]):
     )
 
 
-# 128-bit vectors (SSE): 32-bit lanes -> inner tile of 4.
+# 128-bit vectors (SSE): the smaller register bank caps the leading axis at 1 while the trailing dim stays at 64.
 # CHECK-LABEL: Test: eltwise_register_parallel_sse
 # CHECK: linalg.elementwise
-# CHECK-SAME: transform_ext.tile_sizes = array<i64: 1, 4>
+# CHECK-SAME: transform_ext.tile_sizes = array<i64: 1, 64>
 with TargetInfo.override(features=["sse4_1"]):
     run(
         "eltwise_register_parallel_sse",
@@ -170,15 +170,58 @@ with TargetInfo.override(features=["sse4_1"]):
         lambda: build_register_parallel_eltwise(),
     )
 
+# Floating-point elementwise ops evaluate at least as f32, even for bf16 inputs.
+# CHECK-LABEL: Test: bf16_eltwise_register_parallel_avx2_promotes_to_f32
+# CHECK: linalg.elementwise
+# CHECK-SAME: transform_ext.tile_sizes = array<i64: 2, 64>
+with TargetInfo.override(features=["avx2"]):
+    run(
+        "bf16_eltwise_register_parallel_avx2_promotes_to_f32",
+        """
+module {
+    func.func @main(%a: tensor<64x64xbf16>, %b: tensor<64x64xbf16>) -> tensor<64x64xbf16> {
+        %sum = linalg.elementwise <add>
+                ins(%a, %b : tensor<64x64xbf16>, tensor<64x64xbf16>)
+                outs(%a : tensor<64x64xbf16>) -> tensor<64x64xbf16>
+        return %sum : tensor<64x64xbf16>
+    }
+}
+        """,
+        lambda: build_register_parallel_eltwise(),
+    )
 
-# No recognized vector extension: falls back to the 512-bit assumption -> 16.
+
+# Without recognized vector extension, the default register bank still fills the trailing dim.
 # CHECK-LABEL: Test: eltwise_register_parallel_no_features
 # CHECK: linalg.elementwise
-# CHECK-SAME: transform_ext.tile_sizes = array<i64: 1, 16>
+# CHECK-SAME: transform_ext.tile_sizes = array<i64: 8, 64>
 with TargetInfo.override(features=[]):
     run(
         "eltwise_register_parallel_no_features",
         ELTWISE,
+        lambda: build_register_parallel_eltwise(),
+    )
+
+
+ND_ELTWISE = """
+module {
+    func.func @main(%a: tensor<32x64x64xf32>, %b: tensor<32x64x64xf32>) -> tensor<32x64x64xf32> {
+        %sum = linalg.elementwise <add>
+                ins(%a, %b : tensor<32x64x64xf32>, tensor<32x64x64xf32>)
+                outs(%a : tensor<32x64x64xf32>) -> tensor<32x64x64xf32>
+        return %sum : tensor<32x64x64xf32>
+    }
+}
+"""
+
+# The heuristic should tile the trailing parallel axis and remain shape-aware for ND operands.
+# CHECK-LABEL: Test: eltwise_register_parallel_nd_shape
+# CHECK: linalg.elementwise
+# CHECK-SAME: transform_ext.tile_sizes = array<i64: 1, 2, 64>
+with TargetInfo.override(features=["avx2"]):
+    run(
+        "eltwise_register_parallel_nd_shape",
+        ND_ELTWISE,
         lambda: build_register_parallel_eltwise(),
     )
 

@@ -49,7 +49,7 @@ def is_f32_contraction(op: ir.Operation | ir.OpView) -> bool:
 
 
 def vector_lane_count(target: TargetInfo | None, elem_type: ir.Type) -> int:
-    """SIMD lane count for `elem_type` on `target` (defaults assume 512-bit)."""
+    """SIMD lane count for a single vector register; does not include the full register bank."""
     vector_bits = (
         target.vector_register_width_bits
         if target is not None and target.vector_register_width_bits is not None
@@ -58,10 +58,6 @@ def vector_lane_count(target: TargetInfo | None, elem_type: ir.Type) -> int:
     if isinstance(elem_type, (ir.FloatType, ir.IntegerType)):
         return max(1, vector_bits // max(1, elem_type.width))
     return 16
-
-
-# Backward-compatible alias for older internal call sites.
-_vector_lane_count = vector_lane_count
 
 
 def generic_parallel_tiles(
