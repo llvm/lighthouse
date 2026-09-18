@@ -4,10 +4,10 @@ Pipeline:
   - pass: "linalg-fuse-elementwise-ops"
 
   ## CPU layout packing.
-  - include: pack.yaml {
-                          block_factors=[32,32,32]
-                          tile_size=32
-                        }
+  # Disable packing as its too costly for mat-vec.
+  # TODO: Collapse this descriptor into the default pipeline.
+  #       Steer packing directly in the schedule when more granular
+  #       control is available in underlying transforms.
 
   ## 1) CPU cache-level tiling - improves data locality and exposes parallelism.
   - include: tile-and-fuse.yaml {

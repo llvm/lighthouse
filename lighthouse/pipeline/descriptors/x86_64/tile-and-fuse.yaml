@@ -1,0 +1,13 @@
+# CPU tiling and fusion.
+Pipeline:
+  - schedule: "tile_and_fuse.py[gen=assign_and_propagate_tile_sizes]{
+      strategy=$strategy
+      propagate=$propagate
+    }"
+  - schedule: "tile_and_fuse.py[gen=assign_elementwise_tile_sizes]{
+      strategy=$strategy
+      propagate=$propagate
+    }"
+  - schedule: "tile_and_fuse.py[gen=tile_and_fuse_annotated]{
+      use_forall=$use_forall
+    }"
