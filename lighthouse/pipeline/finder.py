@@ -20,6 +20,7 @@ def find_pipeline_file(
     complete the following directory structure:
      - base_path/<arch>/<feature>/<pipeline>/<dtype>.yaml
      - base_path/<arch>/<pipeline>/<dtype>.yaml
+     - base_path/<arch>/<pipeline>.yaml
      - base_path/<arch>/default.yaml
 
     The lookup uses an externally provided ``base_path`` first, when given, to allow
@@ -90,7 +91,13 @@ def _find_pipeline_in_base(
         if pipeline_path.exists():
             return str(pipeline_path), None
 
-    # Third, check if there's a default pipeline file for the target architecture.
+    # Third, check if there's a pipeline file directly under the architecture directory.
+    if target.arch:
+        pipeline_path = arch_path / f"{pipeline}.yaml"
+        if pipeline_path.exists():
+            return str(pipeline_path), None
+
+    # Fourth, check if there's a default pipeline file for the target architecture.
     if target.arch:
         default_path = arch_path / "default.yaml"
         if default_path.exists():

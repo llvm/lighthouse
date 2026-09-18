@@ -88,6 +88,15 @@ with mock.patch.object(pipeline.finder, "DESCRIPTORS_REPO", INTERNAL):
     )
     # CHECK: external-missing-dir: INTERNAL/x86_64/matmul/f32.yaml feature=None
 
+    # A pipeline file found directly under the architecture directory (no dtype subdir).
+    show(
+        "arch-file-internal",
+        pipeline.find_pipeline_file(
+            TargetInfo(arch="x86_64", features=[]), "mat-vec", "f32"
+        ),
+    )
+    # CHECK: arch-file-internal: INTERNAL/x86_64/mat-vec.yaml feature=None
+
     # An unknown pipeline name falls back to default.yaml when present for the architecture.
     show(
         "default-fallback",

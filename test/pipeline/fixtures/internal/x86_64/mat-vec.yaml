@@ -1,0 +1,4 @@
+# Fixture for the mocked "internal" (packaged) descriptor repository.
+# Architecture-level pipeline file directly under x86_64/.
+Pipeline:
+  - pass: canonicalize
