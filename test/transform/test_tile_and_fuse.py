@@ -11,22 +11,26 @@ Exercises the three-step approach on linalg payloads:
 from mlir import ir
 
 import lighthouse.dialects as lh_dialects
+from lighthouse.execution.target import TargetInfo
 from lighthouse.schedule import tile_and_fuse as tf
 
 
 def run(name: str, payload_str: str, *schedules):
     """Parse a payload, apply the given schedules in order and print it."""
     print(f"Test: {name}", flush=True)
-    with ir.Context(), ir.Location.unknown():
-        lh_dialects.register_and_load()
-        payload = ir.Module.parse(payload_str)
-        # Keep schedule modules alive while applying them.
-        modules = []
-        for make_schedule in schedules:
-            sched = make_schedule()
-            modules.append(sched)
-            sched.body.operations[0].apply(payload.operation)
-        print(payload)
+    # Pin arch/features/core_count: elementwise anchors use the cache strategy,
+    # whose tile sizes otherwise depend on the host's SIMD width and core count.
+    with TargetInfo.override(arch="x86_64", features=["avx512f"], core_count=16):
+        with ir.Context(), ir.Location.unknown():
+            lh_dialects.register_and_load()
+            payload = ir.Module.parse(payload_str)
+            # Keep schedule modules alive while applying them.
+            modules = []
+            for make_schedule in schedules:
+                sched = make_schedule()
+                modules.append(sched)
+                sched.body.operations[0].apply(payload.operation)
+            print(payload)
 
 
 def assign_gemm():
