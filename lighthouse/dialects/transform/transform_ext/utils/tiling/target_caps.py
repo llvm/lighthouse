@@ -35,6 +35,12 @@ def is_amx_bf16_contraction(
     if types is None:
         return False
     lhs, rhs, acc = types
+    ov = opview(op)
+    inputs = linalg_inputs(ov)
+    outputs = linalg_outputs(ov)
+    # AMX requires matrix-shaped (rank >= 2) operands; reject vector/scalar contractions.
+    if any(ir.ShapedType(v.type).rank < 2 for v in (inputs[0], inputs[1], outputs[0])):
+        return False
     return (
         isinstance(lhs, ir.BF16Type)
         and isinstance(rhs, ir.BF16Type)
