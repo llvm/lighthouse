@@ -30,6 +30,7 @@ class EltwiseRegisterTiling:
             else RegisterInfo(width_bits=512, count=32)
         )
         if isinstance(elem_type, ir.FloatType):
+            # Assumes that native sub-32bit float computation is not supported.
             elem_bits = max(32, elem_type.width)
         elif isinstance(elem_type, ir.IntegerType):
             elem_bits = elem_type.width
