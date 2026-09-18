@@ -108,6 +108,43 @@ func.func @pv_varying(%p: tensor<64x512xf32>, %n: tensor<512xf32>,
 )
 
 
+#: The contraction accumulates in f32 while the numerator and the row scale are
+#: bf16, as torch-mlir emits attention. The scale has to be widened to the
+#: accumulator type when the divide moves after the contraction.
+MIXED_PRECISION_SCALE = (
+    _MAPS
+    + """
+func.func @pv_mixed(%p: tensor<64x512xbf16>, %l: tensor<64xbf16>,
+                    %v: tensor<512x128xbf16>) -> tensor<64x128xf32> {
+  %zero = arith.constant 0.000000e+00 : f32
+  %pn_init = tensor.empty() : tensor<64x512xbf16>
+  %pn = linalg.generic {indexing_maps = [#rc, #r, #rc],
+                        iterator_types = ["parallel", "parallel"]}
+      ins(%p, %l : tensor<64x512xbf16>, tensor<64xbf16>)
+      outs(%pn_init : tensor<64x512xbf16>) {
+  ^bb0(%a: bf16, %b: bf16, %o: bf16):
+    %d = arith.divf %a, %b : bf16
+    linalg.yield %d : bf16
+  } -> tensor<64x512xbf16>
+  %o_init = tensor.empty() : tensor<64x128xf32>
+  %o_fill = linalg.fill ins(%zero : f32) outs(%o_init : tensor<64x128xf32>) -> tensor<64x128xf32>
+  %o = linalg.generic {indexing_maps = [#ik, #kj, #ij],
+                       iterator_types = ["parallel", "parallel", "reduction"]}
+      ins(%pn, %v : tensor<64x512xbf16>, tensor<512x128xbf16>)
+      outs(%o_fill : tensor<64x128xf32>) {
+  ^bb0(%a: bf16, %b: bf16, %acc: f32):
+    %ae = arith.extf %a : bf16 to f32
+    %be = arith.extf %b : bf16 to f32
+    %m = arith.mulf %ae, %be : f32
+    %s = arith.addf %acc, %m : f32
+    linalg.yield %s : f32
+  } -> tensor<64x128xf32>
+  return %o : tensor<64x128xf32>
+}
+"""
+)
+
+
 def sink_schedule() -> ir.Module:
     with schedule_boilerplate() as (sched, seq):
         func = transform.structured.MatchOp(
@@ -174,6 +211,28 @@ def test_fused_scale() -> None:
 # CHECK:         return %[[N]]
 
 
+def test_mixed_precision_scale() -> None:
+    """A bf16 scale is widened to the f32 accumulator it now divides."""
+    with ir.Context(), ir.Location.unknown():
+        lh_dialects.register_and_load()
+        print(apply(MIXED_PRECISION_SCALE))
+
+
+# CHECK-LABEL: func.func @pv_mixed
+# CHECK:         linalg.generic
+# CHECK-SAME:      iterator_types = ["parallel", "parallel", "reduction"]
+# CHECK-NOT:       arith.divf
+# CHECK:           linalg.yield
+#
+# The moved divide runs in the accumulator's type, so the bf16 scale is extended.
+# CHECK:         %[[N:.+]] = linalg.generic
+# CHECK-SAME:      iterator_types = ["parallel", "parallel"]
+# CHECK:         ^bb0(%[[ACC:.+]]: f32, %[[S:.+]]: bf16, %{{.+}}: f32):
+# CHECK:           %[[W:.+]] = arith.extf %[[S]] : bf16 to f32
+# CHECK:           arith.divf %[[ACC]], %[[W]] : f32
+# CHECK:         return %[[N]]
+
+
 def test_reduction_varying_scale_is_rejected() -> None:
     """A divisor indexed by the reduction dim does not factor out."""
     with ir.Context(), ir.Location.unknown():
@@ -193,4 +252,5 @@ def test_reduction_varying_scale_is_rejected() -> None:
 if __name__ == "__main__":
     test_separate_scale()
     test_fused_scale()
+    test_mixed_precision_scale()
     test_reduction_varying_scale_is_rejected()

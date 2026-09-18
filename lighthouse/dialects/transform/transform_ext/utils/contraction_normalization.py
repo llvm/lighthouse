@@ -296,7 +296,11 @@ def _rewrite_inbody(contraction, scale_op, scale_operand, scale_map, rewriter):
             elem, ir.ShapedType(scale.type).element_type, elem
         )
         with ir.InsertionPoint(block):
-            value = type(scale_op)(block.arguments[0], block.arguments[1]).result
+            # The contraction accumulates in its own (often wider) type, so the
+            # scale may need widening to match: the original scale ran on the
+            # operand's element type, this one runs on the accumulator's.
+            operand = irr.cast_float(block.arguments[1], elem)
+            value = type(scale_op)(block.arguments[0], operand).result
             linalg.yield_([value])
 
     for owner, index in downstream:
@@ -356,7 +360,11 @@ def _rewrite(contraction, operand, producer, num_map, scale_map, scale_op, rewri
             elem, ir.ShapedType(scale.type).element_type, elem
         )
         with ir.InsertionPoint(block):
-            value = type(scale_op)(block.arguments[0], block.arguments[1]).result
+            # The contraction accumulates in its own (often wider) type, so the
+            # scale may need widening to match: the original scale ran on the
+            # operand's element type, this one runs on the accumulator's.
+            operand = irr.cast_float(block.arguments[1], elem)
+            value = type(scale_op)(block.arguments[0], operand).result
             linalg.yield_([value])
 
     for owner, index in downstream:
