@@ -58,10 +58,9 @@ def generate_gpu_attention_payload(
     Computes attention:
     output = softmax(Q @ K^T / sqrt(d_head)) @ V
 
-    The softmax is emitted in the flash-attention form -- ``max``, ``exp``, row
-    ``sum`` and the ``P@V`` contraction as separate ops, with the normalizing
-    divide *after* the contraction -- rather than as a `linalg.softmax`. See
-    step 4 for why.
+    The softmax is spelled out as separate ``max``, ``exp``, row ``sum`` and divide
+    ops rather than as a `linalg.softmax`, in the conventional order with the divide
+    before the ``P@V`` contraction. See step 4.
 
     Args:
         func_name: Name of the payload function

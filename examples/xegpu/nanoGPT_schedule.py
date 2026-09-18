@@ -181,7 +181,7 @@ def _tile_one_fused_attention_region(anytype, divide_op, fa_params):
     # each once in consumer->producer topological order. The divide's two operands
     # are extract_slices inside the forall, so hop through each to its producer.
     o_slice = prod(anytype, tiled_div, operand_number=0)
-    pv = prod(anytype, o_slice, operand_number=0)  # @V batch_matmul (unnormalized)
+    pv = prod(anytype, o_slice, operand_number=0)  # @V contraction (unnormalized)
     l_slice = prod(anytype, tiled_div, operand_number=1)
     den = prod(anytype, l_slice, operand_number=0)  # row-sum generic
     num = prod(anytype, pv, operand_number=0)  # exp generic, feeds @V and the sum
@@ -228,7 +228,7 @@ def _fuse_attention_in_region(anytype, forall, fa_params):
         %s   = elementwise<mul>(batch_matmul(q, k^T), fill(scale))  the scaled scores
         %m   = max_j %s                                        the producer reduction
         %p   = exp(%s - %m)                                    the elementwise term
-        %o   = batch_matmul(%p, v)                             consumer reduction
+        %o   = contract(%p, v)                                 consumer reduction
         %l   = sum_j %p                                        consumer reduction
         %out = %o / %l                                         the deferred divide
 

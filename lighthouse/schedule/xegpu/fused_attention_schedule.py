@@ -338,11 +338,12 @@ def bundle_xegpu_fused_attention_schedule(
     func = apply_registered_pass(func, "linalg-fuse-elementwise-ops")
     lh_transform.cleanup(func)
 
-    # The pass is deliberately aggressive and will have sunk a softmax's
-    # normalizing divide into the `@V` contraction. Lift it back out, so the divide
-    # happens once per output element rather than once per (row, key) element and
-    # the chain regains the deferred-divide (flash) shape. A payload that already
-    # defers the divide is unaffected.
+    # Payloads write the softmax in the conventional order, with the normalizing
+    # divide before the `@V` contraction (and the pass above will have sunk that
+    # divide into the contraction's body). Move it past the contraction, so the
+    # divide happens once per output element rather than once per (row, key) element
+    # and the chain takes the deferred-divide (flash) shape the reduction fusion
+    # folds into one loop.
     func = transform_ext.sink_normalization_past_contraction(func)
     lh_transform.cleanup(func)
 

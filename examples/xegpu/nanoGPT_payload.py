@@ -230,26 +230,21 @@ class Builder:
     def attention_4d(
         self, Qh, Kh, Vh, n_head, n_ctx, d_head, out_view, out_view_memref
     ):
-        # batch_matmul QK^T -> scale-mul -> softmax -> batch_matmul @V, with the
-        # softmax spelled out in the flash-attention form:
+        # batch_matmul QK^T -> scale-mul -> softmax -> @V contraction, with the
+        # softmax spelled out rather than emitted as a `linalg.softmax` so the
+        # `max -> exp -> sum` chain stays explicit as f16 generics:
         #
-        #   m   = max_j s          l   = sum_j p
-        #   p   = exp(s - m)       o   = p @ V         out = o / l
+        #   m = max_j s      p = exp(s - m)      l = sum_j p      pn = p / l
         #
-        # i.e. the normalizing divide comes *after* the contraction. That is
-        # algebraically identical to `softmax(s) @ V` -- dividing by the per-row `l`
-        # commutes with a contraction that reduces the other axis -- but it leaves
-        # the `max -> exp -> {sum, @V}` dependency chain explicit, which is what
-        # `transform_ext.fuse_dependent_reduction_ops` consumes to derive the online
+        # The normalizing divide sits here, before the contraction -- the textbook
+        # `softmax(s) @ V` order. The schedule moves it past the contraction
+        # (`transform_ext.sink_normalization_past_contraction`), giving the flash form
+        # that `transform_ext.fuse_dependent_reduction_ops` folds into the online
         # one-pass loop (see `_fuse_attention_in_region` in nanoGPT_schedule.py).
-        # A `linalg.softmax` would not do: its decomposition normalizes *before* the
-        # contraction, leaving @V reading the normalized P and breaking the chain.
         #
         # Same chain shape as `generate_gpu_attention_payload`, but not the same ops:
-        # this one stays f16 throughout and keeps @V a named `linalg.batch_matmul`,
-        # while that one accumulates in f32 and writes @V as a `linalg.generic` so the
-        # narrowing of P can sit in its body. Hence the extra `generalize` on the
-        # `_fuse_attention_in_region` path -- the fusion needs @V as a generic.
+        # this one stays f16 throughout, while that one accumulates in f32 and narrows
+        # the contraction's lhs inside its body.
         #
         # After the per-region fused tiling, all these ops fuse into one scf.forall
         # -> one GPU kernel (the flash/online-softmax kernel). Counts as one 'fa'.
