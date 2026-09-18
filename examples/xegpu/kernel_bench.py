@@ -49,6 +49,7 @@ import warnings
 import torch
 import torch._dynamo as dynamo
 import os
+import gc
 import numpy as np
 from mlir import ir
 
@@ -755,6 +756,8 @@ def lower_and_execute_benchmark(
         total_flops *= factor
         gflops *= factor
     print(f"{total_flops=}")
+    print(f"{read_bytes=}")
+    print(f"{write_bytes=}")
 
     layers = kernel_metadata["layers"]
     matmuls = [layer for layer in layers if layer["kind"] == "matmul"]
@@ -955,6 +958,15 @@ if __name__ == "__main__":
             print(f"Benchmark {short_path} failed with error: {e}", flush=True)
             entry["error"] = str(e)
             raise e
+        finally:
+            # torch.compile caches the JIT'd kernels (and the Level Zero GPU
+            # modules and scratch buffers they own) for the process lifetime.
+            # Drop those references so the ExecutionEngines are destroyed and
+            # the device memory they hold can be reclaimed before the next run.
+            dynamo.reset()
+            gc.collect()
+            if not stop_at_stage:
+                torch.xpu.memory.empty_cache()
 
         # Store intermediate results
         if csv_logger is not None:
