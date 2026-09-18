@@ -230,7 +230,7 @@ class CacheTilingStrategy(TilingStrategy):
             for dim, tile in zip(inner_dims, inner_tiles):
                 sizes[dim] = tile
             return sizes
-        if op.operation.name == "linalg.elementwise" or (
+        if ov.operation.name == "linalg.elementwise" or (
             isinstance(ov, linalg.GenericOp) and self._all_loops_parallel(ov)
         ):
             out_map = self.output_map(ov)
