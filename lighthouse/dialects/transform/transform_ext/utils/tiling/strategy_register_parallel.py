@@ -1,9 +1,8 @@
 from mlir import ir
 
-from mlir.dialects import linalg
 
 from lighthouse.execution.target import RegisterInfo, TargetInfo
-from lighthouse.utils.mlir import linalg_outputs, opview
+from lighthouse.utils.mlir import linalg_outputs, opview, is_linalg_eltwise_op
 
 from .strategy_base import StrategyContext, TilingStrategy
 from .common import (
@@ -24,10 +23,8 @@ class EltwiseRegisterTiling:
     @staticmethod
     def register_bank_tile_count(target: TargetInfo | None, elem_type: ir.Type) -> int:
         """Return the number of scalar elements that fit inside the target SIMD register bank."""
-        register = (
-            target.vector_register_info()
-            if target is not None and target.vector_register_info() is not None
-            else RegisterInfo(width_bits=512, count=32)
+        register = (target and target.vector_register_info()) or RegisterInfo(
+            width_bits=512, count=32
         )
         if isinstance(elem_type, ir.FloatType):
             # Assumes that native sub-32bit float computation is not supported.
@@ -47,7 +44,7 @@ class EltwiseRegisterTiling:
         without exceeding shape extents.
         """
         assert len(parallel_dims) == len(shape), (
-            f"parallel dims {parallel_dims} exceed output rank {len(shape)}"
+            f"parallel dims {parallel_dims} do not match output rank {len(shape)}"
         )
 
         tiles = [1] * len(parallel_dims)
@@ -56,8 +53,7 @@ class EltwiseRegisterTiling:
 
         remaining = max(1, tile_size)
         for axis_index in reversed(range(len(parallel_dims))):
-            dim = parallel_dims[axis_index]
-            extent = shape[dim]
+            extent = shape[axis_index]
             if ir.ShapedType.is_dynamic_size(extent):
                 tile = remaining
             else:
@@ -70,14 +66,13 @@ class EltwiseRegisterTiling:
     def choose_parallel_tile_shape(
         cls,
         op: ir.Operation | ir.OpView,
-        out_map: ir.AffineMap,
+        parallel_dims: list[int],
         target: TargetInfo | None,
     ) -> list[int]:
         """
         Choose elementwise parallel tiles from the target register bank
         and the output-shape footprint.
         """
-        parallel_dims, _ = parallel_and_reduction_dims(out_map)
         if not parallel_dims:
             return []
 
@@ -91,13 +86,6 @@ class EltwiseRegisterTiling:
 
 class RegisterParallelTilingStrategy(TilingStrategy):
     """Register-level tiling of parallel dimensions; target-derived defaults."""
-
-    @staticmethod
-    def _all_loops_parallel(op: ir.OpView) -> bool:
-        """Return True when all iterator types are parallel."""
-        build = ir.AttrBuilder.get("linalg.IteratorTypeEnum")
-        parallel = build(linalg.IteratorType.parallel, context=op.context)
-        return all(it == parallel for it in op.iterator_types)
 
     def compute(
         self, op: ir.Operation | ir.OpView, ctx: StrategyContext
@@ -116,11 +104,9 @@ class RegisterParallelTilingStrategy(TilingStrategy):
             inner_tiles = [32, 32]
         elif is_f32_contraction(ov):
             inner_tiles = [8, 32]
-        elif op.operation.name == "linalg.elementwise" or (
-            isinstance(ov, linalg.GenericOp) and self._all_loops_parallel(ov)
-        ):
+        elif is_linalg_eltwise_op(ov):
             inner_tiles = EltwiseRegisterTiling.choose_parallel_tile_shape(
-                ov, out_map, ctx.target
+                ov, parallel_dims, ctx.target
             )
         else:
             inner_tiles = generic_parallel_tiles(ov, out_map, ctx.target)
