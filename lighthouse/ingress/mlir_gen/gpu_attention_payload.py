@@ -158,19 +158,18 @@ def generate_gpu_attention_payload(
                 kind=linalg.ElementwiseKind.mul,
             )
 
-            # Step 4: softmax over the last dimension, written in the
-            # flash-attention form -- with the normalizing divide deferred past the
-            # P@V contraction:
+            # Step 4: softmax over the last dimension, spelled out rather than as a
+            # `linalg.softmax` so the `max -> exp -> sum` chain stays explicit:
             #
-            #   m   = max_k s          l   = sum_k P
-            #   P   = exp(s - m)       O   = P @ V         out = O / l
+            #   m = max_k s      P = exp(s - m)      l = sum_k P      Pn = P / l
             #
-            # Algebraically identical to `softmax(s) @ V`: dividing by the per-row
-            # `l` commutes with a contraction that reduces the *other* axis. Written
-            # this way rather than as a `linalg.softmax` -- whose decomposition
-            # normalizes *before* the contraction -- it leaves the
-            # `max -> exp -> {sum, P@V}` chain explicit, which is what
-            # `transform_ext.fuse_dependent_reduction_ops` folds into one loop.
+            # The normalizing divide goes here, before the contraction, i.e. the
+            # textbook `softmax(s) @ V` order. The schedule moves it past the
+            # contraction (`transform_ext.sink_normalization_past_contraction`),
+            # giving the flash form that `fuse_dependent_reduction_ops` folds into a
+            # single loop. Keeping the payload in the conventional order means it
+            # reads like the reference implementation and matches what an importer
+            # (e.g. torch-mlir) would produce.
             d0, d1, d2 = (ir.AffineDimExpr.get(i) for i in range(3))
             # (batch, row, col) -> (batch, row, col) and -> (batch, row): the
             # per-row statistics are broadcast over the reduced axis.
@@ -211,18 +210,27 @@ def generate_gpu_attention_payload(
                 lambda p, acc: arith.addf(p, acc),
             )
 
-            # Step 5: O = P @ V, still unnormalized. A `linalg.generic` rather than a
-            # `linalg.batch_matmul` so the narrowing of P can live *inside* the body:
-            # trunc P, widen it and V back to f32, multiply, accumulate. The two
+            # Pn = P / l, the normalization. A bare `divf` and nothing else, which is
+            # the shape `sink_normalization_past_contraction` matches when it moves
+            # the divide past the contraction below.
+            normalized_probs = _generic(
+                [probs, row_sum],
+                tensor.empty(qkt_shape_3d, compute_type),
+                [elementwise_map, row_map, elementwise_map],
+                ["parallel", "parallel", "parallel"],
+                lambda p, denom, out: arith.divf(p, denom),
+            )
+
+            # Step 5: O = Pn @ V. A `linalg.generic` rather than a
+            # `linalg.batch_matmul` so the narrowing of the lhs can live *inside* the
+            # body: trunc it, widen it and V back to f32, multiply, accumulate. The two
             # widenings are what `fold_type_extensions_into_contract` matches -- it
             # folds both into the `vector.contract`, leaving a narrow x narrow -> f32
             # contraction (the DPAS shape) with just the `truncf` outside.
             #
             # A named matmul cannot express this: it casts every operand to the
-            # accumulator type, so an f32 P leaves nothing to fold on the lhs and V
-            # gets widened instead, losing the f16 DPAS. Keeping the cast in the body
-            # also keeps P readable straight from the elementwise term, so the fusion
-            # still sees the chain.
+            # accumulator type, so an f32 lhs leaves nothing to fold on that side and V
+            # gets widened instead, losing the f16 DPAS.
             b, m, n, k = (ir.AffineDimExpr.get(i) for i in range(4))
             pv_lhs_map = ir.AffineMap.get(4, 0, [b, m, k])
             pv_rhs_map = ir.AffineMap.get(4, 0, [b, k, n])
@@ -237,29 +245,21 @@ def generate_gpu_attention_payload(
 
             output_3d_init = tensor.empty(collapsed_shape_3d, compute_type)
             output_3d_init_filled = linalg.fill(zero, outs=[output_3d_init])
-            unnormalized = _generic(
-                [probs, V_3d],
+            attention = _generic(
+                [normalized_probs, V_3d],
                 output_3d_init_filled,
                 [pv_lhs_map, pv_rhs_map, pv_out_map],
                 ["parallel", "parallel", "parallel", "reduction"],
                 contract,
             )
 
-            # Step 6: out = O / l, the deferred normalization, narrowed back to the
-            # payload's element type. `l` is broadcast over d_head, the contraction's
-            # free axis.
-            def normalize(o, denom, out):
-                normalized = arith.divf(o, denom)
-                if narrow:
-                    return arith.truncf(dtype, normalized)
-                return normalized
-
+            # Step 6: narrow the result back to the payload's element type.
             result_3d = _generic(
-                [unnormalized, row_sum],
+                [attention],
                 tensor.empty(collapsed_shape_3d, dtype),
-                [elementwise_map, row_map, elementwise_map],
+                [elementwise_map, elementwise_map],
                 ["parallel", "parallel", "parallel"],
-                normalize,
+                lambda o, out: arith.truncf(dtype, o) if narrow else o,
             )
 
             # Materialize 3D result back to 3D output memref

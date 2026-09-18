@@ -241,18 +241,20 @@ def _fuse_attention_in_region(anytype, forall, fa_params):
     prod = transform.get_producer_of_operand
     tile_size = fa_params["inner_loop_tile_size"]
 
-    max_op, p_op, sum_op, _ = match_and_split(
-        forall, ops={"linalg.generic"}, nhandles=4
+    # The region's reduction generics, in program order: the row max, the row sum and
+    # the @V contraction. Q@K^T is a `linalg.batch_matmul`, so it is not in this pool.
+    reductions = transform_ext.filter_reduction_ops(
+        match(forall, ops={"linalg.generic"})
     )
-    qk_bmm, pv_bmm = match_and_split(forall, ops={"linalg.batch_matmul"}, nhandles=2)
-    # The fusion op wants both the elementwise term and the consumer reduction as
-    # linalg.generic ops, so generalize the contraction.
-    pv_op = structured.structured_generalize(anytype, pv_bmm)
+    max_op, sum_op, pv_op = transform.split_handle([anytype] * 3, reductions)
+    qk_bmm = match_and_split(forall, ops={"linalg.batch_matmul"}, nhandles=1)[0]
 
-    # The scaled scores feed the row max, and K^T is Q@K^T's rhs; both are sunk into
-    # the reduction loop further down. Derived now rather than matched later: the
-    # fusion emits its own `linalg.elementwise` correction ops inside the loop, so a
-    # name-based match for the scale multiply would no longer be unique.
+    # The elementwise term `p` is the row sum's input; the scaled scores feed the row
+    # max, and K^T is Q@K^T's rhs. The latter two are sunk into the reduction loop
+    # further down. Derived now rather than matched later: the fusion emits its own
+    # `linalg.elementwise` correction ops inside the loop, so a name-based match for
+    # the scale multiply would no longer be unique.
+    p_op = prod(anytype, sum_op, operand_number=0)
     scale_mul_op = prod(anytype, max_op, operand_number=0)
     transpose_op = prod(anytype, qk_bmm, operand_number=1)
 
@@ -518,6 +520,15 @@ def _bundle(
     if stop_at_stage == "initial":
         raise PipelineInterrupt()
 
+    # The attention payload is built in the conventional `softmax(s) @ V` order, with
+    # the normalizing divide before the contraction. Move it past the contraction
+    # first, so each region becomes the flash chain -- max, exp, @V, sum, divide --
+    # that `fuse_dependent_reduction_ops` can fold into a single loop. Done before
+    # the generic handles are split below, so the counting sees the final order.
+    if n_fa:
+        payload_func = match(mod, ops={"func.func"})
+        transform_ext.sink_normalization_past_contraction(payload_func)
+
     # ===== TILE each op-class into its own forall =====
     # Key problem: match(linalg.generic) is not scoped -- once an op is tiled into
     # a forall, its generic is still matched (it's just nested), so we can't
@@ -530,12 +541,13 @@ def _bundle(
     # Generic build order: each layernorm contributes [mean, var, normalize] (3),
     # in block build order; each elementwise contributes 1. We reconstruct the
     # per-op handle slices from `kinds`.
-    # Each 'fa' region contributes 4 bare generics -- row max, exp term, row sum
-    # and the deferred normalizing divide (see Builder.attention_4d) -- so they ARE
-    # in this pool, in that build order. The fa core's linalg.transpose /linalg.mul
-    # /batch_matmul are not linalg.generic, so those stay excluded. (The head
-    # reshape is a pure memref VIEW -- no generic, no kernel; see Builder.heads_view.)
-    ngen_total = 3 * n_ln + n_ew + 4 * n_fa
+    # Each 'fa' region contributes 5 bare generics -- row max, exp term, row sum, the
+    # @V contraction and the normalizing divide -- so they ARE in this pool. The
+    # divide is last because `sink_normalization_past_contraction` above moved it
+    # past the contraction. The fa core's linalg.transpose / linalg.elementwise /
+    # batch_matmul are not linalg.generic, so those stay excluded. (The head reshape
+    # is a pure memref VIEW -- no generic, no kernel; see Builder.heads_view.)
+    ngen_total = 3 * n_ln + n_ew + 5 * n_fa
     gen_handles = transform.split_handle(
         (anytype,) * ngen_total, match(mod, ops={"linalg.generic"})
     )
@@ -552,9 +564,9 @@ def _bundle(
             ew_handles.append(gen_handles[gi])
             gi += 1
         elif k == "fa":
-            # (row_max, probs, row_sum, divide)
-            fa_slices.append(tuple(gen_handles[gi : gi + 4]))
-            gi += 4
+            # (row_max, probs, row_sum, pv_contraction, divide)
+            fa_slices.append(tuple(gen_handles[gi : gi + 5]))
+            gi += 5
         # mm contributes no bare linalg.generic here
 
     # 1) Tile layernorms FIRST, using preserved (mean,var,normalize) handles.
@@ -596,7 +608,7 @@ def _bundle(
     #    the flash loop is then folded out of the chain inside it.
     for divide_op in fa_slices:
         _, fa_forall = _tile_one_fused_attention_region(
-            anytype, divide_op[3], fa_params
+            anytype, divide_op[4], fa_params
         )
         # Fold the region into the flash online-softmax loop while it is still on
         # tensors, so the shared vectorize tail lowers it like any other tiled

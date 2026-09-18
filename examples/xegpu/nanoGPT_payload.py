@@ -311,24 +311,41 @@ class Builder:
         def row_sum(p, acc):
             return arith.AddFOp(p, acc)
 
-        # @V: (n_head,n_ctx,n_ctx) @ (n_head,n_ctx,d_head) -> (n_head,n_ctx,d_head)
-        # f16, still unnormalized.
-        unnorm_init = linalg.fill(
-            zero, outs=[tensor.empty((n_head, n_ctx, d_head), f16)]
-        )
-        unnormalized = linalg.batch_matmul(probs, Vh, outs=[unnorm_init])
-
-        # out = o / l, the deferred normalization, materialized into the
-        # (n_ctx,n_embd) view. `l` broadcasts over d_head, the contraction's free
-        # axis.
+        # pn = p / l, the softmax normalization. A bare `divf` and nothing else: the
+        # schedule moves it past the @V contraction below
+        # (`transform_ext.sink_normalization_past_contraction`), turning this
+        # conventional `softmax(s) @ V` order into the flash form that
+        # `fuse_dependent_reduction_ops` folds into one loop.
         @linalg.generic(
-            [unnormalized, row_sum],
-            [out_view],
+            [probs, row_sum],
+            [tensor.empty((n_head, n_ctx, n_ctx), f16)],
             [ew_map, row_map, ew_map],
             [parallel, parallel, parallel],
         )
-        def out(o, denom, dst):
-            return arith.DivFOp(o, denom)
+        def normalized(p, denom, out):
+            return arith.DivFOp(p, denom)
+
+        # @V: (n_head,n_ctx,n_ctx) @ (n_head,n_ctx,d_head) -> (n_head,n_ctx,d_head),
+        # f16 throughout, materialized into the (n_ctx,n_embd) view. Written as a
+        # `linalg.generic` rather than a `linalg.batch_matmul` because
+        # `sink_normalization_past_contraction` works off indexing maps and iterator
+        # types, which the named op does not expose.
+        b, m, n, k = (ir.AffineDimExpr.get(i) for i in range(4))
+        pv_maps = [
+            affine_map(4, [b, m, k]),
+            affine_map(4, [b, k, n]),
+            affine_map(4, [b, m, n]),
+        ]
+        pv_init = linalg.fill(zero, outs=[out_view])
+
+        @linalg.generic(
+            [normalized, Vh],
+            [pv_init],
+            pv_maps,
+            [parallel, parallel, parallel, reduction],
+        )
+        def out(p, v, acc):
+            return arith.AddFOp(acc, arith.MulFOp(p, v).result)
 
         bufferization.materialize_in_destination(
             None, out, out_view_memref, restrict=True, writable=True
