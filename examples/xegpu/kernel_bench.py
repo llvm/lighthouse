@@ -44,6 +44,7 @@ from pathlib import Path
 import glob
 from functools import partial
 import argparse
+import re
 import warnings
 
 import torch
@@ -80,6 +81,24 @@ def dtype_to_torch_dtype(datatype: str) -> torch.dtype:
         "f16": torch.float16,
         "bf16": torch.bfloat16,
     }[datatype]
+
+
+def parse_input_shapes(shape_args: list[str] | str) -> list[tuple[int, ...]] | None:
+    """
+    Parse `--input-shapes` values into a list of integer tuples.
+
+    Each argument is a single shape in `AxBxC` format, so `["1024x4096", "8192"]`
+    becomes `[(1024, 4096), (8192,)]`. Returns None when no shapes are given.
+    """
+    if not shape_args:
+        return None
+    if isinstance(shape_args, str):
+        shape_args = [shape_args]
+    shapes = []
+    for shape_str in shape_args:
+        dims = tuple(int(dim) for dim in shape_str.lower().split("x"))
+        shapes.append(dims)
+    return shapes
 
 
 def inspect_kb_payload(module: ir.Module) -> tuple[str, dict]:
@@ -558,6 +577,7 @@ def lower_and_execute_benchmark(
     level: int,
     id: int,
     datatype: str,
+    input_shapes: list[tuple[int, ...]] | None = None,
     ctx: ir.Context = None,
     nwarmup: int = 500,
     nruns: int = 500,
@@ -576,6 +596,8 @@ def lower_and_execute_benchmark(
         id: Benchmark ID.
         datatype: Data type for the model ('f16' or 'bf16').
         ctx: MLIR context to use. If None, a new context is created.
+        input_shapes: List of input shapes for the model. If None, default
+        model shapes will be used.
         nwarmup: Number of warmup runs for benchmarking.
         nruns: Number of runs for benchmarking.
         verify: Whether to verify the result against PyTorch reference.
@@ -590,8 +612,16 @@ def lower_and_execute_benchmark(
     execute = stop_at_stage is None
 
     # import torch model
+    forced_inputs = None
+    if input_shapes is not None:
+        # TODO verify the number of input shapes matches the model's expected inputs
+        forced_inputs = [
+            torch.randn(shape, dtype=model_dtype) for shape in input_shapes
+        ]
     torch_model, torch_inputs, _torch_kwargs = lh_ingress.torch.import_model(
-        filepath, model_datatype=model_dtype
+        filepath,
+        model_datatype=model_dtype,
+        sample_args=forced_inputs,
     )
     # convert inputs to correct datatype
     torch_inputs = [inp.to(model_dtype) for inp in torch_inputs]
@@ -655,6 +685,15 @@ def lower_and_execute_benchmark(
             # is not available.
             gm, _ = dynamo.export(torch_model)(*torch_inputs)
             backend(gm, list(torch_inputs))
+        except TypeError as e:
+            msg = str(e)
+            is_arg_mismatch = (
+                re.fullmatch(r"missing a required argument: '.+'", msg) is not None
+                or msg == "too many positional arguments"
+            )
+            if not is_arg_mismatch:
+                raise
+            raise TypeError(f"Wrong number of torch model input arguments: {e}")
         except dynamo.exc.BackendCompilerFailed as e:
             if not is_caused_by_pipeline_interrupt(e):
                 raise
@@ -844,6 +883,13 @@ def parser_cli_args():
         help="Data type for the model (default: bf16)",
     )
     parser.add_argument(
+        "--input-shapes",
+        type=str,
+        default="",
+        nargs="+",
+        help="Input shapes for the model, e.g., 1024x4096. The number of inputs must match the model's expected number of inputs.",
+    )
+    parser.add_argument(
         "--dump-kernel",
         type=str,
         help="Stop the pipeline at the specified stage",
@@ -900,6 +946,7 @@ if __name__ == "__main__":
     kb_level = args.level
     benchmarks = args.benchmark
     stop_at_stage = args.dump_kernel
+    input_shapes = parse_input_shapes(args.input_shapes)
 
     kb_pattern = f"level{kb_level}/*.py"
     bench_list = get_benchmarks(kb_pattern, include=benchmarks)
@@ -934,6 +981,7 @@ if __name__ == "__main__":
                 level=kb_level,
                 id=bench_id,
                 datatype=args.datatype,
+                input_shapes=input_shapes,
                 nruns=args.nruns,
                 nwarmup=args.nwarmup,
                 compute_reference_on_cpu=args.compute_reference_on_cpu,
