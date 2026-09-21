@@ -2,6 +2,7 @@ from .xegpu_to_binary import xegpu_to_binary
 from .mlp_schedule import mlp_schedule, matmul_schedule
 from .elemwise_schedule import elemwise_schedule
 from .reduction_schedule import reduction_schedule
+from .outline_gpu_func import outline_gpu_func
 from .fused_attention_schedule import fused_attention_schedule
 from .xegpu_parameter_selector import XeGPUParameterSelector
 from .matmul_constraints import check_constraints
@@ -26,6 +27,7 @@ __all__ = [
     "fused_attention_schedule",
     "matmul_schedule",
     "mlp_schedule",
+    "outline_gpu_func",
     "outline_gpu_function",
     "reduction_schedule",
     "vectorize",
