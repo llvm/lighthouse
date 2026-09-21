@@ -31,7 +31,7 @@ def get_payload_func(
     """
     Returns a handle to the payload function in the module.
 
-    If neither `op_name` nor `func_name` is provided, returns the first `func.func` in the module.
+    If neither `op_name` nor `func_name` is provided, returns the first `func.func` in the module. If both are provided, `func_name` takes precedence.
 
     Args:
         mod: The MLIR module containing the payload function.
@@ -43,21 +43,8 @@ def get_payload_func(
     """
     anytype = transform.AnyOpType.get()
 
-    if op_name is not None and func_name is not None:
-        raise ValueError("Both op_name and func_name should not be provided.")
-
-    if op_name is not None:
-        # Filter by containing ops
-        if isinstance(op_name, str):
-            op_name = [op_name]
-        matching_children = structured.structured_match(anytype, mod, ops=op_name)
-        func_ops = transform.get_parent_op(
-            anytype,
-            matching_children,
-            op_name="func.func",
-            deduplicate=True,
-        )
-    else:
+    neither_is_set = op_name is None and func_name is None
+    if func_name is not None or neither_is_set:
         op_attrs = None
         if func_name is not None:
             op_attrs = {"sym_name": ir.StringAttr.get(func_name)}
@@ -67,6 +54,15 @@ def get_payload_func(
             ops={"func.func"},
             op_attrs=op_attrs,
         )
+    else:
+        # Filter by containing ops
+        matching_children = lh_transform.match_op(mod, op_name)
+        func_ops = transform.get_parent_op(
+            anytype,
+            matching_children,
+            op_name="func.func",
+            deduplicate=True,
+        )
     # Return the first function
     func = transform_ext.extract_handle(func_ops, 0)
     return func
@@ -74,40 +70,78 @@ def get_payload_func(
 
 def vectorize_bufferize_and_outline_gpu_func(
     mod: transform.AnyOpType,
-    payload_func_name: str,
     *,
+    payload_func_name: str | None = None,
+    payload_anchor_ops: str | list[str] | None = None,
+    payload_func: transform.AnyOpType | None = None,
     gpu_specs: XeGPUSpecs,
     params: list[dict[str, int]],
     stop_at_stage: str = "",
 ) -> transform.AnyOpType:
     """Vectorizes and bufferizes the payload function and outlines it to gpu.func."""
-    vectorize(mod, payload_func_name=payload_func_name)
+
+    def match_func():
+        return get_payload_func(
+            mod, func_name=payload_func_name, op_name=payload_anchor_ops
+        )
+
+    if payload_func is None:
+        payload_func = match_func()
+    vectorize(
+        mod,
+        payload_func_name=payload_func_name,
+        payload_anchor_ops=payload_anchor_ops,
+        payload_func=payload_func,
+    )
     if stop_at_stage == "vectorized":
         raise PipelineInterrupt()
 
     mod = bufferize(mod)
-    convert_allocs_to_gpu(mod, payload_func_name=payload_func_name)
+    payload_func = match_func()
+    convert_allocs_to_gpu(
+        mod,
+        payload_func_name=payload_func_name,
+        payload_anchor_ops=payload_anchor_ops,
+        payload_func=payload_func,
+    )
     if stop_at_stage == "bufferized":
         raise PipelineInterrupt()
 
-    convert_to_gpu_launch(mod, payload_func_name=payload_func_name)
-    mod = outline_gpu_function(
-        mod, payload_func_name=payload_func_name, gpu_specs=gpu_specs, params=params
+    payload_func = match_func()
+    convert_to_gpu_launch(
+        mod,
+        payload_func_name=payload_func_name,
+        payload_anchor_ops=payload_anchor_ops,
+        payload_func=payload_func,
     )
+    payload_func = match_func()
+    mod = outline_gpu_function(
+        mod,
+        payload_func_name=payload_func_name,
+        payload_anchor_ops=payload_anchor_ops,
+        payload_func=payload_func,
+        gpu_specs=gpu_specs,
+        params=params,
+    )
+    if stop_at_stage == "gpu-outlining":
+        raise PipelineInterrupt()
 
     return mod
 
 
 def vectorize(
     mod: transform.AnyOpType,
-    payload_func_name: str | None = None,
-    payload_func: transform.AnyOpType | None = None,
     *,
+    payload_func_name: str | None = None,
+    payload_anchor_ops: str | list[str] | None = None,
+    payload_func: transform.AnyOpType | None = None,
     disable_multi_reduction_to_contract_patterns: bool = False,
 ) -> transform.AnyOpType:
     """Vectorize and run loop-hoisting cleanup for the payload function."""
     if payload_func is None:
-        payload_func = get_payload_func(mod, func_name=payload_func_name)
+        payload_func = get_payload_func(
+            mod, func_name=payload_func_name, op_name=payload_anchor_ops
+        )
     payload_func = structured.structured_vectorize_children_and_apply_patterns(
         transform.any_op_t(),
         payload_func,
@@ -153,12 +187,16 @@ def bufferize(
 
 def convert_allocs_to_gpu(
     mod: transform.AnyOpType,
+    *,
     payload_func_name: str | None = None,
+    payload_anchor_ops: str | list[str] | None = None,
     payload_func: transform.AnyOpType | None = None,
 ) -> transform.AnyOpType:
     """Insert deallocs and convert memref alloc/dealloc ops to GPU variants."""
     if payload_func is None:
-        payload_func = get_payload_func(mod, func_name=payload_func_name)
+        payload_func = get_payload_func(
+            mod, func_name=payload_func_name, op_name=payload_anchor_ops
+        )
 
     payload_func = apply_registered_pass(payload_func, "buffer-deallocation-pipeline")
     alloc_ops = match(payload_func, ops={"memref.alloc"})
@@ -171,13 +209,16 @@ def convert_allocs_to_gpu(
 
 def convert_to_gpu_launch(
     mod: transform.AnyOpType,
+    *,
     payload_func_name: str | None = None,
+    payload_anchor_ops: str | list[str] | None = None,
     payload_func: transform.AnyOpType | None = None,
 ) -> transform.AnyOpType:
     """Convert scf.forall/scf.parallel structure to gpu.launch."""
-    # convert forall to parallel
     if payload_func is None:
-        payload_func = get_payload_func(mod, func_name=payload_func_name)
+        payload_func = get_payload_func(
+            mod, func_name=payload_func_name, op_name=payload_anchor_ops
+        )
 
     forall_loops = match(payload_func, ops={"scf.forall"})
     with lh_transform.foreach(forall_loops) as forall_op:
@@ -194,17 +235,21 @@ def convert_to_gpu_launch(
     return payload_func
 
 
+# TODO this should be deprecated or generalized and used in the outline schedule
 def outline_gpu_function(
     mod: transform.AnyOpType,
-    payload_func_name: str | None = None,
-    payload_func: transform.AnyOpType | None = None,
     *,
-    gpu_specs: XeGPUSpecs,
+    payload_func_name: str | None = None,
+    payload_anchor_ops: str | list[str] | None = None,
+    payload_func: transform.AnyOpType | None = None,
     params: list[dict[str, int]],
+    gpu_specs: dict[str, int],
 ) -> transform.AnyOpType:
     """Set gpu.launch threads and outline the payload to gpu.func."""
     if payload_func is None:
-        payload_func = get_payload_func(mod, func_name=payload_func_name)
+        payload_func = get_payload_func(
+            mod, func_name=payload_func_name, op_name=payload_anchor_ops
+        )
 
     nlayers = len(params)
 
