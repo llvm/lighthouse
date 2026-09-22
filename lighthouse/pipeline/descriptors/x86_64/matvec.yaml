@@ -24,7 +24,7 @@ Pipeline:
   - schedule: "sfc.py[gen=remap]"
 
   ## Normalize ops to category.
-  - pass: "linalg-morph-ops{named-to-category generic-to-named}"
+  - pass: "linalg-categorize-ops"
   
   ## 2) CPU register-level tiling - ensure data fits in registers.
   ## Parallel register tiles: assign/propagate from contraction anchors and fuse.
