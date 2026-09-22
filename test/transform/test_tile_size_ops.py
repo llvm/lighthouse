@@ -162,11 +162,11 @@ run(
 )
 
 
-# First static dim (16) is below default tile size (32), so _disable_small_tiles
-# must disable tiling there while keeping the larger dim tiled.
+# The cache heuristic keeps the tiny leading dim effectively disabled while the
+# larger axis gets a first-level cache tile that matches the L1-friendly shape.
 # CHECK-LABEL: Test: disable_small_tiles
 # CHECK: linalg.generic
-# CHECK-SAME: transform_ext.tile_sizes = array<i64: 0, 32>
+# CHECK-SAME: transform_ext.tile_sizes = array<i64: 1, 64>
 run(
     "disable_small_tiles",
     SMALL_DIM_ELTWISE_PAYLOAD,
@@ -174,11 +174,10 @@ run(
 )
 
 
-# 1D op with only 1D operands: compute_tile_sizes should tile its only parallel
-# dim with the default tile size.
+# 1D ops retain a full-range first-level cache tile in the only parallel dim.
 # CHECK-LABEL: Test: compute_tile_sizes_1d_op
 # CHECK: linalg.elementwise
-# CHECK-SAME: transform_ext.tile_sizes = array<i64: 32>
+# CHECK-SAME: transform_ext.tile_sizes = array<i64: 128>
 run(
     "compute_tile_sizes_1d_op",
     ADD_1D_PAYLOAD,

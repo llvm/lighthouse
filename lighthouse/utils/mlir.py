@@ -305,6 +305,22 @@ def linalg_outputs(op: ir.Operation | ir.OpView) -> list[ir.Value] | None:
     return operands[len(operands) - len(list(ov.results)) :]
 
 
+def is_linalg_all_loops_parallel(op: ir.Operation | ir.OpView) -> bool:
+    """Return True when all iterator types are parallel."""
+    ov = opview(op)
+    build = ir.AttrBuilder.get("linalg.IteratorTypeEnum")
+    parallel = build(linalg.IteratorType.parallel, context=op.context)
+    return all(it == parallel for it in ov.iterator_types)
+
+
+def is_linalg_eltwise_op(op: ir.Operation | ir.OpView) -> bool:
+    """Return True if it is an elementwise linalg operation."""
+    ov = opview(op)
+    return ov.operation.name == "linalg.elementwise" or (
+        isinstance(ov, linalg.GenericOp) and is_linalg_all_loops_parallel(ov)
+    )
+
+
 def op_users(value: ir.Value) -> list[ir.Operation]:
     """Return the ops that use `value`."""
     users = []

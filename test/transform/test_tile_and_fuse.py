@@ -11,22 +11,26 @@ Exercises the three-step approach on linalg payloads:
 from mlir import ir
 
 import lighthouse.dialects as lh_dialects
+from lighthouse.execution.target import TargetInfo
 from lighthouse.schedule import tile_and_fuse as tf
 
 
 def run(name: str, payload_str: str, *schedules):
     """Parse a payload, apply the given schedules in order and print it."""
     print(f"Test: {name}", flush=True)
-    with ir.Context(), ir.Location.unknown():
-        lh_dialects.register_and_load()
-        payload = ir.Module.parse(payload_str)
-        # Keep schedule modules alive while applying them.
-        modules = []
-        for make_schedule in schedules:
-            sched = make_schedule()
-            modules.append(sched)
-            sched.body.operations[0].apply(payload.operation)
-        print(payload)
+    # Pin arch/features/core_count: elementwise anchors use the cache strategy,
+    # whose tile sizes otherwise depend on the host's SIMD width and core count.
+    with TargetInfo.override(arch="x86_64", features=["avx512f"], core_count=16):
+        with ir.Context(), ir.Location.unknown():
+            lh_dialects.register_and_load()
+            payload = ir.Module.parse(payload_str)
+            # Keep schedule modules alive while applying them.
+            modules = []
+            for make_schedule in schedules:
+                sched = make_schedule()
+                modules.append(sched)
+                sched.body.operations[0].apply(payload.operation)
+            print(payload)
 
 
 def assign_gemm():
@@ -626,10 +630,10 @@ run("mlp_assign_propagate", MLP, assign_gemm)
 run("mlp_tile_and_fuse", MLP, assign_gemm, tile_and_fuse)
 
 
-# No GEMM: an elementwise op is anchored and its sizes propagated; the chain is
-# tiled into 2D tiles and fused.
+# No GEMM: an elementwise op is anchored and its sizes propagated; the first-level
+# cache heuristic selects a smaller fast axis with a wider trailing tile.
 # CHECK-LABEL: Test: elementwise_tile_and_fuse
-# CHECK: scf.forall ({{.*}}) = (0, 0) to (64, 256) step (32, 32)
+# CHECK: scf.forall ({{.*}}) = (0, 0) to (64, 256) step (4, 64)
 # CHECK: linalg.generic
 # CHECK: linalg.generic
 # CHECK: scf.forall.in_parallel
@@ -647,7 +651,7 @@ run("batch_matmul", BMM, assign_gemm)
 # untiled (0). A standalone reduction is not an elementwise anchor.
 # CHECK-LABEL: Test: reduction
 # CHECK: iterator_types = ["parallel", "reduction"]
-# CHECK-SAME: transform_ext.tile_sizes = array<i64: 32, 0>
+# CHECK-SAME: transform_ext.tile_sizes = array<i64: 4, 0>
 run("reduction", REDUCE, assign_elementwise)
 
 
@@ -655,9 +659,9 @@ run("reduction", REDUCE, assign_elementwise)
 # anchor is annotated and its tiles propagate to the relu generic epilogue.
 # CHECK-LABEL: Test: named_elementwise_anchor
 # CHECK: linalg.elementwise
-# CHECK-SAME: transform_ext.tile_sizes = array<i64: 32, 32>
+# CHECK-SAME: transform_ext.tile_sizes = array<i64: 4, 64>
 # CHECK: linalg.generic
-# CHECK-SAME: transform_ext.tile_sizes = array<i64: 32, 32>
+# CHECK-SAME: transform_ext.tile_sizes = array<i64: 4, 64>
 run("named_elementwise_anchor", NAMED_ELTWISE, assign_elementwise)
 
 
@@ -795,19 +799,19 @@ run("incompatible_annotations_split", INCOMPAT_SPLIT, tile_and_fuse)
 
 
 # A downstream op pre-annotated (64x64) conflicts with the propagated tiling
-# (32x32). Propagation records the split by marking the conflicting op with a
+# (8x32). Propagation records the split by marking the conflicting op with a
 # fusion attribute.
 # CHECK-LABEL: Test: boundary_marked_during_propagation
-# CHECK: tile_sizes = array<i64: 32, 32>
+# CHECK: tile_sizes = array<i64: 8, 32>
 # CHECK: transform_ext.fusion_boundary
 # CHECK-SAME: tile_sizes = array<i64: 64, 64>
 run("boundary_marked_during_propagation", PRE_ANNOTATED, assign_elementwise)
 
 
 # The pre-annotated conflict is honored end-to-end: the two ops are tiled into
-# separate loops (32-step then 64-step) rather than fused.
+# separate loops (8x32 then 64x64) rather than fused.
 # CHECK-LABEL: Test: boundary_split_tile_and_fuse
-# CHECK: %[[B0:.+]] = scf.forall ({{.*}}) step (32, 32)
+# CHECK: %[[B0:.+]] = scf.forall ({{.*}}) step (8, 32)
 # CHECK: math.exp
 # CHECK: scf.forall.in_parallel
 # CHECK: scf.forall ({{.*}}) step (64, 64)
@@ -822,7 +826,7 @@ run("boundary_split_tile_and_fuse", PRE_ANNOTATED, assign_elementwise, tile_and_
 # FuseOp fusing broadcast producers. The untiled/broadcast dim is treated as a
 # wildcard by the compatibility check, so it never forces a split.
 # CHECK-LABEL: Test: broadcast_stays_fused
-# CHECK: scf.forall ({{.*}}) = (0, 0) to (64, 128) step (32, 32)
+# CHECK: scf.forall ({{.*}}) = (0, 0) to (64, 128) step (4, 32)
 # CHECK: tensor.extract_slice %arg0[%{{.*}}] [32] [1]
 # CHECK: linalg.generic
 # CHECK: linalg.generic
@@ -836,8 +840,10 @@ run("broadcast_stays_fused", BROADCAST, assign_elementwise, tile_and_fuse)
 # CHECK: linalg.broadcast
 # CHECK-SAME: transform_ext.tile_sizes = array<i64: 32, 32>
 # CHECK: linalg.generic
-# CHECK-SAME: transform_ext.tile_sizes = array<i64: 32, 32>
+# CHECK-SAME: transform_ext.fusion_boundary
+# CHECK-SAME: transform_ext.tile_sizes = array<i64: 4, 32>
 # CHECK: linalg.transpose
+# CHECK-SAME: transform_ext.fusion_boundary
 # CHECK-SAME: transform_ext.tile_sizes = array<i64: 32, 32>
 run("named_broadcast_transpose_anchor", NAMED_BROADCAST_TRANSPOSE, assign_elementwise)
 
@@ -881,12 +887,12 @@ run("clears_annotations_after_fuse", MLP, assign_gemm, tile_and_fuse)
 
 
 # Clearing the annotations after each round leaves a clean slate, so a second
-# assign + tile-and-fuse round tiles the already-tiled ops again: a 64-wide outer
-# loop from round one, a 32-wide inner loop from round two, and no leftover
-# annotations that could confuse the second assignment.
+# assign + tile-and-fuse round tiles the already-tiled ops again: a first-level
+# 8x64 cache loop is followed by a nested 1x64 re-tile pass, and there are no
+# leftover annotations that could confuse the second assignment.
 # CHECK-LABEL: Test: retile_after_clear
-# CHECK: scf.forall ({{.*}}) = (0, 0) to (128, 256) step (64, 64)
-# CHECK: scf.forall ({{.*}}) = (0, 0) to (64, 64) step (32, 32)
+# CHECK: scf.forall ({{.*}}) = (0, 0) to (128, 256) step (8, 64)
+# CHECK: scf.forall ({{.*}}) in (8)
 # CHECK-NOT: transform_ext.tile_sizes
 # CHECK-NOT: transform_ext.fusion_boundary
 # CHECK: scf.forall.in_parallel

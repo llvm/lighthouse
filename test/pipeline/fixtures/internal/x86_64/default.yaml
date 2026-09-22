@@ -1,0 +1,5 @@
+# Fixture for the mocked "internal" (packaged) descriptor repository.
+# Architecture-level fallback: x86_64/default.yaml.
+# Only its existence matters for the discovery test.
+Pipeline:
+  - pass: canonicalize

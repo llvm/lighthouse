@@ -1,0 +1,52 @@
+# The default optimizing pipeline for x86 architecture.
+Pipeline:
+  ## Initial elementwise operations fusion to group them.
+  - pass: "linalg-fuse-elementwise-ops"
+
+  ## CPU layout packing.
+  - include: pack.yaml {
+                          block_factors=[32,32,32]
+                          tile_size=32
+                        }
+
+  ## 1) CPU cache-level tiling - improves data locality and exposes parallelism.
+  - include: tile-and-fuse.yaml {
+                                  strategy=cache
+                                  propagate=True
+                                  use_forall=True
+                                }
+  - include: cleanup.yaml
+  # Simplify shapes.
+  - schedule: "linalg.py[gen=linalg_contract_fold_unit_dims]"
+  - include: cleanup.yaml
+
+  ## Remap iteration space of parallel loops for communication avoidance.
+  - schedule: "sfc.py[gen=remap]"
+
+  ## Normalize ops to category.
+  - pass: "linalg-categorize-ops"
+  
+  ## 2) CPU register-level tiling - ensure data fits in registers.
+  ## Parallel register tiles: assign/propagate from contraction anchors and fuse.
+  - include: tile-and-fuse.yaml {
+                                  strategy=register_parallel
+                                  propagate=True
+                                  use_forall=False
+                                }
+  - include: cleanup.yaml
+
+  ## Reduction register tiles: annotate K-like dims and tile ops individually.
+  - include: tile.yaml {
+                          strategy=register_reduction
+                          propagate=False
+                          use_forall=False
+                        }
+  - include: cleanup.yaml
+
+  ## 3) CPU register-level unrolling via tiling - ensure hardware-friendly shapes.
+  - include: unroll-register.yaml
+  - include: cleanup.yaml
+
+  - include: vectorize.yaml
+
+  - include: lower.yaml

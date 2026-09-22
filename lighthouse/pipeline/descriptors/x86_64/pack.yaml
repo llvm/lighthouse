@@ -1,0 +1,8 @@
+# High-level layout packing.
+Pipeline:
+  ## Packing & Cache tiling (CPU generic)
+  - pass: "linalg-morph-ops{category-to-named}"
+  - schedule: "packing.py[gen=block_pack_matmuls]{block_factors=$block_factors rhs_transpose_outer_block=True rhs_transpose_inner_block=False}"
+  - schedule: "x86/pack_lowering.py[gen=lower_packs_unpacks]{tile_size=$tile_size}"
+  - pass: "linalg-categorize-ops"
+  - include: cleanup.yaml
