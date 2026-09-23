@@ -58,7 +58,7 @@ def get_tests(args: argparse.Namespace, target_info: TargetInfo) -> list[dict]:
         else:
             pipeline, feature = find_pipeline_file(
                 target_info,
-                test.get("pipeline", ""),
+                test.get("pipeline", "default"),
                 args.dtype,
             )
         test_list.append(

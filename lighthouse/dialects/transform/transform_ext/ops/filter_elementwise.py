@@ -5,13 +5,7 @@ from lighthouse.dialects.transform.transform_ext.utils.make_filter_handles_op im
     make_filter_handles_op,
 )
 from lighthouse.utils.mlir import indexing_maps, linalg_inputs
-
-
-def _all_loops_parallel(op: ir.OpView) -> bool:
-    """Check whether all iterator types of a (generic) op are parallel."""
-    build = ir.AttrBuilder.get("linalg.IteratorTypeEnum")
-    parallel = build(linalg.IteratorType.parallel, context=op.context)
-    return all(it == parallel for it in op.iterator_types)
+from lighthouse.utils.mlir import opview, is_linalg_all_loops_parallel
 
 
 def is_elementwise(op: ir.Operation | ir.OpView) -> bool:
@@ -20,11 +14,13 @@ def is_elementwise(op: ir.Operation | ir.OpView) -> bool:
     NOTE: Mimics corresponding Linalg util as it is not exposed
           in the Python bindings yet.
     """
-    ov = op.opview if isinstance(op, ir.Operation) else op
+    ov = opview(op)
+    if ov.operation.name == "linalg.elementwise":
+        return True
     maps = indexing_maps(ov)
     if maps is None:
         return False
-    if isinstance(ov, linalg.GenericOp) and not _all_loops_parallel(ov):
+    if isinstance(ov, linalg.GenericOp) and not is_linalg_all_loops_parallel(ov):
         return False
     if not all(m.is_projected_permutation for m in maps):
         return False

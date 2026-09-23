@@ -3,18 +3,15 @@
   initializations: [rnd]
   output_shape: 128x8192
   gflops: (2 * (128 * 16384 * 16384) + (128 * 16384 * 8192) + (128 * 8192)) / 1e9
-  pipeline: matmul
 
 - kernel: level3/2_ShallowWideMLP.py
   input_shapes: [128x16384]
   initializations: [rnd]
   output_shape: 128x16384
   gflops: (2 * (128 * 16384 * 16384) + (128 * 16384 * 16384) + (128 * 16384)) / 1e9
-  pipeline: matmul
 
 - kernel: level3/3_DeepNarrowMLP.py
   input_shapes: [1024x8192]
   initializations: [rnd]
   output_shape: 1024x8192
   gflops: (17 * (1024 * 1024 * 8192) + (1024 * 8192)) / 1e9
-  pipeline: matmul

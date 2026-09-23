@@ -59,6 +59,12 @@ with TargetInfo.override(arch="x86_64"):
     )
     # CHECK: arch_only=arch=x86_64 features_same=True
 
+# Explicit core-count override should be honored and remain stable under tests.
+with TargetInfo.override(core_count=7):
+    core_count_override = TargetInfo.host()
+    print(f"core_count_override={core_count_override.core_count()}")
+    # CHECK: core_count_override=7
+
 host_after_overrides = TargetInfo.host()
 same_info = (
     host_before_overrides.arch == host_after_overrides.arch

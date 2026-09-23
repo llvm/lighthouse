@@ -1,0 +1,15 @@
+# CPU register-level unrolling via tiling.
+Pipeline:
+  ## Tile+unroll: annotate final unrolled tiles, optionally propagate,
+  ## then tile+unroll.
+  # TODO: Enable propagation after LLVM fix #222513
+  - schedule: "tile_and_fuse.py[gen=assign_and_propagate_tile_sizes]{
+      strategy=register_unroll
+      propagate=False
+      propagate_through_loops=False
+    }"
+  - schedule: "tile_and_fuse.py[gen=assign_elementwise_tile_sizes]{
+      strategy=register_unroll
+      propagate=False
+    }"
+  - schedule: "tile_and_fuse.py[gen=tile_and_unroll_annotated]"

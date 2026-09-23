@@ -88,14 +88,32 @@ with mock.patch.object(pipeline.finder, "DESCRIPTORS_REPO", INTERNAL):
     )
     # CHECK: external-missing-dir: INTERNAL/x86_64/matmul/f32.yaml feature=None
 
-    # An unknown pipeline name.
+    # A pipeline file found directly under the architecture directory (no dtype subdir).
     show(
-        "not-found",
+        "arch-file-internal",
+        pipeline.find_pipeline_file(
+            TargetInfo(arch="x86_64", features=[]), "mat-vec", "f32"
+        ),
+    )
+    # CHECK: arch-file-internal: INTERNAL/x86_64/mat-vec.yaml feature=None
+
+    # An unknown pipeline name falls back to default.yaml when present for the architecture.
+    show(
+        "default-fallback",
         pipeline.find_pipeline_file(
             TargetInfo(arch="x86_64", features=[]), "no_such_pipeline", "f32"
         ),
     )
-    # CHECK: not-found: None feature=None
+    # CHECK: default-fallback: INTERNAL/x86_64/default.yaml feature=None
+
+    # An unknown architecture with no descriptors or default.
+    show(
+        "arch-not-found",
+        pipeline.find_pipeline_file(
+            TargetInfo(arch="unknown_arch", features=[]), "matmul", "f32"
+        ),
+    )
+    # CHECK: arch-not-found: None feature=None
 
     # Missing pipeline name or target.
     show(
@@ -106,3 +124,13 @@ with mock.patch.object(pipeline.finder, "DESCRIPTORS_REPO", INTERNAL):
 
     show("no-target", pipeline.find_pipeline_file(None, "matmul", "f32"))
     # CHECK: no-target: None feature=None
+
+# Test against the packaged Lighthouse descriptors repo (without mock).
+# Since specialized pipelines for x86_64 were consolidated, any pipeline name falls back to default.yaml.
+real_path, real_feature = pipeline.find_pipeline_file(
+    TargetInfo(arch="x86_64", features=[]), "matmul", "f32"
+)
+print(
+    f"packaged-x86_64-default: {os.path.basename(real_path) if real_path else None} feature={real_feature}"
+)
+# CHECK: packaged-x86_64-default: default.yaml feature=None
