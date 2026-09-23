@@ -27,7 +27,11 @@ class Pass:
         """serialize name + options dictionary for pass manager consumption"""
         if not self.options:
             return self.name
-        options_str = " ".join(f"{key}={value}" for key, value in self.options.items())
+        # MLIR boolean options take 1/0, not Python's `True`/`False`.
+        options_str = " ".join(
+            f"{key}={int(value)}" if isinstance(value, bool) else f"{key}={value}"
+            for key, value in self.options.items()
+        )
         return f"{self.name}{{{options_str}}}"
 
 
