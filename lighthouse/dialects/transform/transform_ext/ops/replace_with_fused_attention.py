@@ -188,6 +188,53 @@ def _extract_kv_tile(source, loop_idx, tile_size):
     ).result
 
 
+def _slice_row_offset(source_op, m_dim):
+    """Global first row of a tiled Q tile: its extract_slice offset along `m_dim`.
+
+    Returns the offset as an index value (a fresh constant for a static offset,
+    the existing operand for a dynamic one) or a zero constant when the producer
+    is not an extract_slice (untiled query dim).
+    """
+    index_type = ir.IndexType.get()
+    if not isinstance(source_op.opview, tensor.ExtractSliceOp):
+        return arith.constant(index_type, 0)
+    slice_op = source_op.opview
+    static_offsets = list(slice_op.static_offsets)
+    dynamic = ir.ShapedType.get_dynamic_size()
+    if static_offsets[m_dim] != dynamic:
+        return arith.constant(index_type, static_offsets[m_dim])
+    dynamic_before = sum(1 for o in static_offsets[:m_dim] if o == dynamic)
+    return slice_op.offsets[dynamic_before]
+
+
+def _causal_mask(
+    qkt_scaled, qkt_shape, q_row_offset, loop_idx, batch_shape, element_type
+):
+    """Overwrite future-key scores with -inf so they vanish from the softmax.
+
+    Entry [*batch, r, c] scores query row `q_row_offset + r` against key column
+    `loop_idx + c`; keys past the query row (above the diagonal) are masked.
+    """
+    nb = len(batch_shape)
+    tile_map, _ = _tile_and_row_maps(nb)
+
+    def mask(score, _out):
+        row = arith.addi(q_row_offset, linalg.IndexOp(nb).result)
+        col = arith.addi(loop_idx, linalg.IndexOp(nb + 1).result)
+        is_future = arith.cmpi(arith.CmpIPredicate.sgt, col, row)
+        return arith.select(
+            is_future, _scalar_constant(float("-inf"), element_type), score
+        )
+
+    return _generic(
+        [qkt_scaled],
+        [_empty(qkt_shape, element_type)],
+        [tile_map, tile_map],
+        _iterators(nb + 2, 0),
+        mask,
+    )
+
+
 class ReplaceWithFusedAttentionOp(
     TransformExtensionDialect.Operation, name="generate_fused_attention"
 ):
@@ -229,6 +276,7 @@ class ReplaceWithFusedAttentionOp(
     scale: ext.Operand[transform.AnyOpType]
     output: ext.Operand[transform.AnyOpType]
     tile_size: ir.IntegerAttr
+    causal: ir.IntegerAttr  # 0/1 flag (ext op attrs don't support BoolAttr)
     new_output: ext.Result[transform.AnyOpType[()]] = ext.infer_result()
 
     @classmethod
@@ -297,6 +345,8 @@ class ReplaceWithFusedAttentionOp(
 
             scale_value = ir.FloatAttr(scale_op.attributes["value"]).value
 
+            causal = bool(ir.IntegerAttr(op.causal).value)
+
             # WG tiling leaves the batch dims at extent one. Slice them away, as
             # the XeGPU layout propagation cannot distribute the rank-3
             # broadcasts and reductions of the online softmax.
@@ -311,7 +361,19 @@ class ReplaceWithFusedAttentionOp(
 
             with ir.InsertionPoint(output_op):
                 if squeeze:
-                    q, k, v = (_drop_leading_dims(t, squeeze) for t in (q, k, v))
+                    # Squeeze each operand to rank 2 independently: GQA shares K/V
+                    # across query-repeat heads, so Q is [1, 1, wg_rows, d_head]
+                    # while K/V are [1, n_ctx, d_head] -- different leading-unit
+                    # counts, so a single uniform squeeze would over-slice K/V.
+                    q, k, v = (
+                        _drop_leading_dims(t, ir.RankedTensorType(t.type).rank - 2)
+                        for t in (q, k, v)
+                    )
+
+                if causal:
+                    q_row_offset = _slice_row_offset(
+                        q_op, ir.RankedTensorType(q_op.results[0].type).rank - 2
+                    )
 
                 scale_tile = _filled(qkt_shape, compute_type, scale_value)
 
@@ -354,6 +416,19 @@ class ReplaceWithFusedAttentionOp(
                         batch_shape,
                         lambda a, b, out: arith.mulf(a, b),
                     )
+
+                    # Causal mask: keys past the query row get -inf before the
+                    # running max/exp, dropping them from the online softmax
+                    # across both the max-reduce and the exp below.
+                    if causal:
+                        qkt_scaled = _causal_mask(
+                            qkt_scaled,
+                            qkt_shape,
+                            q_row_offset,
+                            loop_idx,
+                            batch_shape,
+                            compute_type,
+                        )
 
                     # m_new = max(m, rowmax(S)), accumulated straight into m so
                     # that the carried value stays a register once vectorized.
@@ -483,6 +558,7 @@ def replace_with_fused_attention(
     scale: ir.Value,
     output: ir.Value,
     tile_size: int | ir.IntegerAttr,
+    causal: bool | ir.IntegerAttr = False,
 ) -> ir.Value:
     """Replace a tensor-level attention output with a fused attention loop.
 
@@ -493,13 +569,17 @@ def replace_with_fused_attention(
         scale: Handle to the scale constant op (scalar arith.constant)
         output: Handle to the P@V linalg contraction to replace
         tile_size: Tile size for the reduction dimension (K/V sequence length)
+        causal: When True, mask future keys (key column past the query row) so
+            attention is autoregressive. Default False leaves the IR unchanged.
 
     Returns:
         Handle to the new output operation
     """
     if not isinstance(tile_size, ir.IntegerAttr):
         tile_size = ir.IntegerAttr.get(ir.IntegerType.get_signless(64), tile_size)
+    if not isinstance(causal, ir.IntegerAttr):
+        causal = ir.IntegerAttr.get(ir.IntegerType.get_signless(64), int(causal))
 
     return ReplaceWithFusedAttentionOp(
-        q, k, v, scale, output, tile_size=tile_size
+        q, k, v, scale, output, tile_size=tile_size, causal=causal
     ).new_output
