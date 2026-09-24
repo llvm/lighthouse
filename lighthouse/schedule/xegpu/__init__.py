@@ -3,23 +3,21 @@ from .mlp_schedule import mlp_schedule, matmul_schedule
 from .elemwise_schedule import elemwise_schedule
 from .reduction_schedule import reduction_schedule
 from .outline_gpu_func import outline_gpu_func
+from .vectorize import vectorize
 from .fused_attention_schedule import fused_attention_schedule
 from .xegpu_parameter_selector import XeGPUParameterSelector
 from .matmul_constraints import check_constraints
 from .xegpu_specs import XeGPUSpecs
 from .lowering_common import (
-    bufferize,
     convert_to_gpu_launch,
     convert_vector_to_xegpu,
     outline_gpu_function,
-    vectorize,
     vectorize_bufferize_and_outline_gpu_func,
 )
 
 __all__ = [
     "XeGPUParameterSelector",
     "XeGPUSpecs",
-    "bufferize",
     "check_constraints",
     "convert_to_gpu_launch",
     "convert_vector_to_xegpu",
