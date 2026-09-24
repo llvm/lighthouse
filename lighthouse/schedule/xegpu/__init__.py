@@ -3,6 +3,7 @@ from .mlp_schedule import mlp_schedule, matmul_schedule
 from .elemwise_schedule import elemwise_schedule
 from .reduction_schedule import reduction_schedule
 from .outline_gpu_func import outline_gpu_func
+from .annotate_layouts import annotate_layouts
 from .vectorize import vectorize
 from .bufferize import bufferize
 from .vector_to_xegpu import vector_to_xegpu
@@ -20,6 +21,7 @@ from .lowering_common import (
 __all__ = [
     "XeGPUParameterSelector",
     "XeGPUSpecs",
+    "annotate_layouts",
     "bufferize",
     "check_constraints",
     "convert_to_gpu_launch",
