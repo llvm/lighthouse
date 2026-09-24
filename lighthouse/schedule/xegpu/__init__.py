@@ -4,6 +4,7 @@ from .elemwise_schedule import elemwise_schedule
 from .reduction_schedule import reduction_schedule
 from .outline_gpu_func import outline_gpu_func
 from .vectorize import vectorize
+from .bufferize import bufferize
 from .fused_attention_schedule import fused_attention_schedule
 from .xegpu_parameter_selector import XeGPUParameterSelector
 from .matmul_constraints import check_constraints
@@ -18,6 +19,7 @@ from .lowering_common import (
 __all__ = [
     "XeGPUParameterSelector",
     "XeGPUSpecs",
+    "bufferize",
     "check_constraints",
     "convert_to_gpu_launch",
     "convert_vector_to_xegpu",
