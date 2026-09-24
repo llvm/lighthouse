@@ -1,13 +1,6 @@
 # RUN: %PYTHON %s | FileCheck %s
 
-"""Tests for `transform_ext.sink_normalization_past_contraction`.
-
-The op rewrites ``contract(A / S, B)`` into ``contract(A, B) / S``, which is legal
-because ``S`` does not vary along the reduction axis. It takes the two payload ops
-explicitly. Covered here: a `linalg.generic` contraction, the named
-``linalg.matmul`` and ``linalg.batch_matmul``, a mixed-precision accumulator, and
-two cases the op must reject.
-"""
+"""Tests for `transform_ext.sink_normalization_past_contraction`."""
 
 from mlir import ir
 from mlir.dialects import transform
@@ -113,7 +106,7 @@ func.func @pv_batch_matmul(%p: tensor<4x64x512xf32>, %l: tensor<4x64xf32>,
 )
 
 #: The contraction accumulates in f32 while the numerator and the row scale are
-#: bf16, as torch-mlir emits attention. The scale has to be widened to the
+#: bf16. The scale has to be widened to the
 #: accumulator type when the divide moves after the contraction.
 MIXED_PRECISION_SCALE = (
     _MAPS
