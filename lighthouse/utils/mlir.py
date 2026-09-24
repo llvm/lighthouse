@@ -3,7 +3,7 @@ MLIR utility functions.
 """
 
 from mlir import ir
-from mlir.dialects import func, linalg
+from mlir.dialects import arith, func, linalg
 import os
 import platform
 from pathlib import Path
@@ -305,12 +305,48 @@ def linalg_outputs(op: ir.Operation | ir.OpView) -> list[ir.Value] | None:
     return operands[len(operands) - len(list(ov.results)) :]
 
 
+def iterator_types(op: ir.Operation | ir.OpView) -> list[str]:
+    """Iterator types of a structured linalg op as ``"parallel"``/``"reduction"``.
+
+    A `linalg.generic` carries them as ``#linalg.iterator_type<...>`` attrs, which
+    are compared against the built enum attr rather than parsed.
+
+    Named ops (``linalg.matmul``, ``linalg.batch_matmul``, ...) have no such
+    attribute, so their loop kinds are recovered from the indexing maps: a loop dim
+    is parallel iff some init map references it, a reduction otherwise. That is the
+    structured-op definition, and it holds for every named op whose maps are
+    projected permutations.
+    """
+    ov = opview(op)
+    if "iterator_types" in ov.operation.attributes:
+        build = ir.AttrBuilder.get("linalg.IteratorTypeEnum")
+        parallel = build(linalg.IteratorType.parallel, context=ov.context)
+        return [
+            "parallel" if it == parallel else "reduction" for it in ov.iterator_types
+        ]
+    maps = indexing_maps(ov)
+    parallel_dims: set[int] = set()
+    for imap in maps[len(linalg_inputs(ov)) :]:
+        parallel_dims.update(
+            expr.position for expr in imap.results if isinstance(expr, ir.AffineDimExpr)
+        )
+    return [
+        "parallel" if pos in parallel_dims else "reduction"
+        for pos in range(maps[0].n_dims)
+    ]
+
+
+def reduction_dims(op: ir.Operation | ir.OpView) -> list[int]:
+    """Positions of the reduction iterators of a structured linalg op, in order.
+
+    Stands in for ``LinalgOp::getReductionDims``, which has no binding.
+    """
+    return [i for i, it in enumerate(iterator_types(op)) if it == "reduction"]
+
+
 def is_linalg_all_loops_parallel(op: ir.Operation | ir.OpView) -> bool:
     """Return True when all iterator types are parallel."""
-    ov = opview(op)
-    build = ir.AttrBuilder.get("linalg.IteratorTypeEnum")
-    parallel = build(linalg.IteratorType.parallel, context=op.context)
-    return all(it == parallel for it in ov.iterator_types)
+    return all(it == "parallel" for it in iterator_types(op))
 
 
 def is_linalg_eltwise_op(op: ir.Operation | ir.OpView) -> bool:
@@ -344,3 +380,102 @@ def defining_op(value: ir.Value) -> ir.Operation | None:
     if isinstance(owner, ir.Operation):
         return owner
     return None
+
+
+#: Supported float element types with their bit widths. `f16` and `bf16` share a
+#: width but not a format, so neither widens into the other.
+_FLOAT_WIDTHS = (
+    (ir.F16Type, 16),
+    (ir.BF16Type, 16),
+    (ir.F32Type, 32),
+    (ir.F64Type, 64),
+)
+
+
+def float_width(element_type: ir.Type) -> int | None:
+    """Bit width of a supported float type, else None."""
+    for cls, width in _FLOAT_WIDTHS:
+        if isinstance(element_type, cls):
+            return width
+    return None
+
+
+def can_cast_float(from_type: ir.Type, to_type: ir.Type) -> bool:
+    """Whether `cast_float` can convert between the two types."""
+    if from_type == to_type:
+        return True
+    have, want = float_width(from_type), float_width(to_type)
+    return have is not None and want is not None and have != want
+
+
+def cast_float(value: ir.Value, element_type: ir.Type) -> ir.Value | None:
+    """`value` converted to `element_type` via ``extf``/``truncf``, or unchanged.
+
+    Returns None when there is no such conversion, i.e. for equal-width types of
+    different format (``f16`` vs ``bf16``).
+    """
+    if value.type == element_type:
+        return value
+    if not can_cast_float(value.type, element_type):
+        return None
+    if float_width(element_type) > float_width(value.type):
+        return arith.extf(element_type, value)
+    return arith.truncf(element_type, value)
+
+
+def remap_dims(imap: ir.AffineMap, dim_map: dict[int, int], num_dims: int):
+    """Rewrite a pure dim-projection map through `dim_map`, or None if not pure.
+
+    Renames the dims a map's results refer to, moving it into a different (usually
+    larger) iteration space of `num_dims` dims. `dim_map` sends each of the map's
+    own dim positions to a position in that space. The results keep their order and
+    count and only the names change.
+
+    Examples:
+
+        dim_map = {0: 0, 1: 2}, num_dims = 3
+        (d0, d1) -> (d0, d1)     ->  (d0, d1, d2) -> (d0, d2)
+        (d0, d1) -> (d0)         ->  (d0, d1, d2) -> (d0)
+        (d0, d1) -> (d1, d0)     ->  (d0, d1, d2) -> (d2, d0)
+
+    Returns None if a result is not a plain dim expr, or its position is
+    unmapped::
+
+        (d0, d1) -> (d0 + d1)    ->  None   # not a plain dim expr
+        (d0, d1) -> (d0, d1)     ->  None   # with dim_map = {0: 0}, d1 unmapped
+    """
+    results = []
+    for expr in imap.results:
+        if not isinstance(expr, ir.AffineDimExpr):
+            return None
+        if expr.position not in dim_map:
+            return None
+        results.append(ir.AffineDimExpr.get(dim_map[expr.position]))
+    return ir.AffineMap.get(num_dims, 0, results)
+
+
+def project_dims(imap: ir.AffineMap, projected: set[int]):
+    """Drop `projected` dims from the map's domain, renumbering the rest.
+
+    Shrinks the iteration space of the map by removing the specified projected dims.
+
+    Examples:
+
+        project {2}     (d0, d1, d2) -> (d0)         ->  (d0, d1) -> (d0)
+        project {3}     (d0, d1, d2, d3) -> (d0, d1) ->  (d0, d1, d2) -> (d0, d1)
+        project {1}     (d0, d1, d2) -> (d2, d0)     ->  (d0, d1) -> (d1, d0)
+
+    The caller guarantees the map does not reference the projected dims, so the projection is
+    lossless. Returns None if the map is not a pure dim projection, or does
+    reference a projected dim:
+
+        project {2}     (d0, d1, d2) -> (d2)         ->  None
+    """
+    renumber: dict[int, int] = {}
+    next_pos = 0
+    for pos in range(imap.n_dims):
+        if pos in projected:
+            continue
+        renumber[pos] = next_pos
+        next_pos += 1
+    return remap_dims(imap, renumber, next_pos)

@@ -27,6 +27,9 @@ from .ops.get_fusion_roots import get_fusion_roots
 from .ops.propagate_tile_sizes import propagate_tile_sizes
 from .ops.sfc_remap_forall import sfc_remap_forall
 from .ops.sink_extract_slice_into_loop import sink_extract_slice_into_loop
+from .ops.sink_normalization_past_contraction import (
+    sink_normalization_past_contraction,
+)
 
 __all__ = [
     "TransformExtensionDialect",
@@ -55,6 +58,7 @@ __all__ = [
     "reverse_handles",
     "sfc_remap_forall",
     "sink_extract_slice_into_loop",
+    "sink_normalization_past_contraction",
     "trace_producers",
     "update_address_space",
     "wrap_in_benching_func",
