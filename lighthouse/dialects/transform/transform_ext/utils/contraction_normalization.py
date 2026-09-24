@@ -8,260 +8,209 @@ from mlir.dialects import arith, linalg
 from lighthouse.utils.mlir import (
     can_cast_float,
     cast_float,
+    clone_block_body,
     indexing_maps,
-    is_linalg_all_loops_parallel,
     linalg_inputs,
     linalg_outputs,
     num_loops,
-    op_users,
     opview,
     project_dims,
     reduction_dims,
-    remap_dims,
 )
 
-__all__ = ["sink_normalization_past_contraction"]
+__all__ = ["SinkResult", "sink_normalization_past_contraction"]
 
 #: Body ops that factor out of a sum when their rhs is loop-invariant.
 _SCALE_OPS = (arith.DivFOp, arith.MulFOp)
 
 
-class _SinkPlan(NamedTuple):
-    """Everything the rewrite needs, once the pair has been found legal."""
+class SinkResult(NamedTuple):
+    """The ops the rewrite leaves behind."""
 
-    #: Operand index of the contraction input holding the normalized value.
-    operand_index: int
-    #: The value the normalization scaled, which the contraction will read instead.
-    numerator: ir.Value
-    #: The scale itself, which moves to after the contraction.
+    #: The rebuilt contraction, without the scale operand.
+    contraction: ir.OpView
+    #: The `linalg.generic` applying the scale to the contraction's result.
+    normalization: ir.OpView
+
+
+class _Plan(NamedTuple):
+    """The scale to move out, once found legal."""
+
+    #: Operand index of the scale.
+    scale_index: int
     scale: ir.Value
-    #: `numerator`'s indexing map in the contraction's loop space.
-    numerator_map: ir.AffineMap
     #: `scale`'s indexing map, with the reduction dim projected away.
     scale_map: ir.AffineMap
-    #: The ``divf``/``mulf`` to replicate after the contraction.
+    #: The body ``divf``/``mulf`` to replicate after the contraction.
     scale_op: ir.OpView
 
 
-def sink_normalization_past_contraction(normalization, contraction, rewriter):
-    """Sink `normalization` past `contraction`, if that is legal.
+def sink_normalization_past_contraction(contraction, rewriter):
+    """Sink `contraction`'s per-row scale past it, if that is legal.
 
-    Returns ``(new_normalization, None)`` on success -- the `linalg.generic` now
-    applying the scale to the contraction's result -- or ``(None, message)`` with a
-    message explaining why the rewrite does not apply. `contraction` is rewritten in
-    place, so a handle to it stays valid; `normalization` is erased.
+    Returns ``(SinkResult, None)`` on success, or ``(None, message)`` with a message
+    explaining why the rewrite does not apply.
     """
-    normalization, contraction = opview(normalization), opview(contraction)
-    plan, error = _plan_sink(normalization, contraction)
+    contraction = opview(contraction)
+    plan, error = _plan(contraction)
     if error is not None:
         return None, error
-    return _apply_sink(normalization, contraction, plan, rewriter), None
+    return _apply(contraction, plan, rewriter), None
 
 
-def _plan_sink(normalization: ir.OpView, contraction: ir.OpView):
-    """Check the pair and describe the rewrite: ``(plan, None)`` or ``(None, msg)``."""
-    contraction_maps = indexing_maps(contraction)
-    if contraction_maps is None:
-        return None, (
-            f"expected the contraction to be a structured linalg op, got "
-            f"'{contraction.operation.name}'"
-        )
-    error = _contraction_shape_error(contraction)
+def _plan(contraction: ir.OpView):
+    """Find the body scale to move out: ``(plan, None)`` or ``(None, message)``."""
+    name = contraction.operation.name
+    if not isinstance(contraction, linalg.GenericOp):
+        return None, f"expected a linalg.generic, got '{name}'"
+    error = _shape_error(contraction)
     if error is not None:
-        return None, f"contraction '{contraction.operation.name}': {error}"
+        return None, f"'{name}': {error}"
 
-    scale_body = _scale_body(normalization)
-    if scale_body is None:
-        return None, (
-            f"expected the normalization to be an all-parallel two-input "
-            f"linalg.generic whose body is a single arith.divf/arith.mulf of two "
-            f"block arguments, got '{normalization.operation.name}'"
-        )
-    scale_op, num_arg, scale_arg = scale_body
-
-    norm_maps = indexing_maps(normalization)
-    out_map = norm_maps[len(linalg_inputs(normalization))]
-    if not _is_identity_map(out_map):
-        return (
-            None,
-            f"expected the normalization's output map to be the identity, got {out_map}",
-        )
-
-    users = op_users(normalization.results[0])
-    if len(users) != 1:
-        return None, (
-            f"expected the contraction to be the normalization's only user, got "
-            f"{len(users)} users"
-        )
-
-    operand_index = next(
-        (
-            i
-            for i, value in enumerate(linalg_inputs(contraction))
-            if value == normalization.results[0]
-        ),
-        None,
-    )
-    if operand_index is None:
-        return None, "the normalization's result is not an input of the contraction"
-
-    # Compose the normalization's operand maps into the contraction's loop space.
-    # Its output map is the identity, so its loop dim i is the contraction's
-    # `consumer_map.results[i]`.
-    consumer_map = contraction_maps[operand_index]
-    dim_map = {}
-    for i, expr in enumerate(consumer_map.results):
-        if not isinstance(expr, ir.AffineDimExpr):
-            return None, (
-                f"expected the contraction to read the normalization under a plain "
-                f"dim projection, got {consumer_map}"
-            )
-        dim_map[i] = expr.position
-
-    # Map the normalization's operand maps into the contraction's loop space.
-    n_loops = num_loops(contraction)
-    body_args = list(normalization.regions[0].blocks[0].arguments)
-    num_index = body_args.index(num_arg)
-    scale_index = body_args.index(scale_arg)
-    numerator = normalization.operands[num_index]
-    scale = normalization.operands[scale_index]
-    num_map = remap_dims(norm_maps[num_index], dim_map, n_loops)
-    scale_map = remap_dims(norm_maps[scale_index], dim_map, n_loops)
-    if num_map is None or scale_map is None:
-        return None, "the normalization's operand maps are not plain dim projections"
-
-    # The factoring condition: the scale must not vary along the reduction.
-    red_dim = reduction_dims(contraction)[0]
-    if any(
-        isinstance(r, ir.AffineDimExpr) and r.position == red_dim
-        for r in scale_map.results
-    ):
-        return None, (
-            f"the scale varies along the contraction's reduction dim d{red_dim}, so "
-            f"it does not factor out of the sum"
-        )
-
-    # A named contraction's indexing maps are constrained by its own verifier, so
-    # the numerator has to be readable under the map already there.
-    if not isinstance(contraction, linalg.GenericOp) and num_map != consumer_map:
-        return None, (
-            f"'{contraction.operation.name}' cannot read the numerator under "
-            f"{num_map} instead of {consumer_map}; generalize it to a "
-            f"linalg.generic first"
-        )
-
-    # The contraction accumulates in its own (often wider) type, so the scale has to
-    # be convertible to it -- the original scale ran on the operand's element type,
-    # the sunk one runs on the accumulator's.
-    accumulator_type = ir.ShapedType(contraction.results[0].type).element_type
-    scale_type = ir.ShapedType(scale.type).element_type
-    if not can_cast_float(scale_type, accumulator_type):
-        return None, (
-            f"cannot convert the scale's element type {scale_type} to the "
-            f"contraction's accumulator type {accumulator_type}"
-        )
-
-    return (
-        _SinkPlan(
-            operand_index=operand_index,
-            numerator=numerator,
-            scale=scale,
-            numerator_map=num_map,
-            scale_map=project_dims(scale_map, {red_dim}),
-            scale_op=scale_op,
-        ),
-        None,
-    )
-
-
-def _is_identity_map(imap: ir.AffineMap) -> bool:
-    if imap.n_dims != len(imap.results) or imap.n_symbols != 0:
-        return False
-    return all(
-        isinstance(r, ir.AffineDimExpr) and r.position == i
-        for i, r in enumerate(imap.results)
-    )
-
-
-def _scale_body(op: ir.OpView):
-    """``(scale_op, numerator_arg, scale_arg)`` if `op`'s body is a single scale.
-
-    Matches a two-input all-parallel generic whose body is exactly
-    ``yield numerator <div|mul> scale``, both operands being block arguments.
-    """
-    if not isinstance(op, linalg.GenericOp) or len(op.results) != 1:
-        return None
-    if not is_linalg_all_loops_parallel(op):
-        return None
-    if len(linalg_inputs(op)) != 2 or len(linalg_outputs(op)) != 1:
-        return None
-    body = op.regions[0].blocks[0]
-    ops = list(body.operations)
-    if len(ops) != 2:
-        return None
-    scale_op = opview(ops[0])
-    if not isinstance(scale_op, _SCALE_OPS):
-        return None
-    if ops[1].operands[0] != scale_op.results[0]:
-        return None
-    lhs, rhs = scale_op.operands[0], scale_op.operands[1]
+    body = contraction.regions[0].blocks[0]
     args = list(body.arguments)
-    if lhs not in args[:2] or rhs not in args[:2] or lhs == rhs:
-        return None
-    return scale_op, lhs, rhs
+    n_inputs = len(linalg_inputs(contraction))
+    red_dim = reduction_dims(contraction)[0]
+    for op in list(body.operations):
+        scale_op = opview(op)
+        if not isinstance(scale_op, _SCALE_OPS):
+            continue
+        lhs, rhs = scale_op.operands[0], scale_op.operands[1]
+        # Both sides must be input block arguments, so that dropping the scale
+        # leaves the numerator readable directly.
+        if lhs not in args or rhs not in args:
+            return None, "the body's scale does not read two block arguments"
+        if args.index(lhs) >= n_inputs or args.index(rhs) >= n_inputs:
+            return None, "the body's scale reads an init block argument"
+        # A dead scale is not worth touching.
+        if len(list(scale_op.results[0].uses)) == 0:
+            continue
+        scale_index = args.index(rhs)
+        scale = contraction.operands[scale_index]
+        scale_map = indexing_maps(contraction)[scale_index]
+        error = _factors_out(contraction, scale, scale_map, red_dim)
+        if error is not None:
+            return None, error
+        return (
+            _Plan(
+                scale_index=scale_index,
+                scale=scale,
+                scale_map=project_dims(scale_map, {red_dim}),
+                scale_op=scale_op,
+            ),
+            None,
+        )
+    return None, f"'{name}' has no arith.divf/arith.mulf on two input arguments"
 
 
-def _contraction_shape_error(op: ir.OpView) -> str | None:
-    """Why a scale cannot be sunk past `op` on shape grounds, or None.
+def _shape_error(contraction: ir.OpView) -> str | None:
+    """Why no scale can be sunk past `contraction` on shape grounds, or None.
 
     Requires one reduction dim, placed last, and an identity output map. In that
-    shape loop dim `i` is output dim `i` for every parallel dim, which is what lets
-    the scale's indexing map be reused verbatim once the reduction dim is projected
-    away.
+    shape loop dim `i` is output dim `i` for every parallel dim, which lets the
+    scale's indexing map be reused once the reduction dim is projected away.
     """
-    red_dims = reduction_dims(op)
+    red_dims = reduction_dims(contraction)
     if len(red_dims) != 1:
         return f"expected exactly one reduction dim, got {len(red_dims)}"
-    n_loops = num_loops(op)
+    n_loops = num_loops(contraction)
     if red_dims[0] != n_loops - 1:
         return (
             f"expected the reduction dim to be the last of {n_loops} loops, got "
             f"d{red_dims[0]}"
         )
-    if len(op.results) != 1:
-        return f"expected a single result, got {len(op.results)}"
+    if len(contraction.results) != 1:
+        return f"expected a single result, got {len(contraction.results)}"
     expected = ir.AffineMap.get(
         n_loops, 0, [ir.AffineDimExpr.get(i) for i in range(n_loops - 1)]
     )
-    actual = indexing_maps(op)[len(linalg_inputs(op))]
+    actual = indexing_maps(contraction)[len(linalg_inputs(contraction))]
     if actual != expected:
         return f"expected the output map to be {expected}, got {actual}"
     return None
 
 
-def _apply_sink(
-    normalization: ir.OpView, contraction: ir.OpView, plan: _SinkPlan, rewriter
-) -> ir.OpView:
-    """Read the numerator directly, then scale the contraction's result."""
-    n_loops = num_loops(contraction)
-
-    # The contraction reads the numerator in place of the scaled operand,
-    # under the numerator's map composed into the contraction's loop space. Named
-    # contractions only get here when that map is the one already in place.
-    maps = indexing_maps(contraction)
-    contraction.operands[plan.operand_index] = plan.numerator
-    if maps[plan.operand_index] != plan.numerator_map:
-        maps[plan.operand_index] = plan.numerator_map
-        contraction.operation.attributes["indexing_maps"] = ir.ArrayAttr.get(
-            [ir.AffineMapAttr.get(m) for m in maps]
+def _factors_out(
+    contraction: ir.OpView, scale: ir.Value, scale_map: ir.AffineMap, red_dim: int
+) -> str | None:
+    """Why `scale` cannot move past the reduction, or None if it can."""
+    if any(
+        isinstance(r, ir.AffineDimExpr) and r.position == red_dim
+        for r in scale_map.results
+    ):
+        return (
+            f"the scale varies along the contraction's reduction dim d{red_dim}, so it "
+            f"does not factor out of the sum"
         )
+    # The sunk scale runs on the accumulator's element type rather than the operand's,
+    # so it has to be convertible to it.
+    accumulator_type = ir.ShapedType(contraction.results[0].type).element_type
+    scale_type = ir.ShapedType(scale.type).element_type
+    if not can_cast_float(scale_type, accumulator_type):
+        return (
+            f"cannot convert the scale's element type {scale_type} to the "
+            f"contraction's accumulator type {accumulator_type}"
+        )
+    return None
 
-    # The scale now applies once per output element, under the map the plan
-    # already projected the reduction dim out of. The contraction's downstream users
-    # are recorded first, so they can be rewired to the scaled result without also
-    # rewiring the new op's own use of it.
+
+def _apply(contraction: ir.OpView, plan: _Plan, rewriter) -> SinkResult:
+    """Drop the in-body scale and re-apply it to the contraction's result.
+
+    The scale operand becomes unused, so the contraction is rebuilt without it: its
+    region is cloned with the matching block argument left unbound, which the clone
+    of the scale's own consumer substitutes for.
+    """
+    body = contraction.regions[0].blocks[0]
+    maps = indexing_maps(contraction)
     result = contraction.results[0]
+    # The users to rewire hang off the contraction this replaces, so they are
+    # recorded before anything is built.
     downstream = [(use.owner, use.operand_number) for use in result.uses]
+
+    # The scale disappears from the body: whatever it scaled is used directly.
+    numerator = plan.scale_op.operands[0]
+    for use in list(plan.scale_op.results[0].uses):
+        use.owner.operands[use.operand_number] = numerator
+    plan.scale_op.operation.erase()
+
+    kept_inputs = [
+        v for i, v in enumerate(linalg_inputs(contraction)) if i != plan.scale_index
+    ]
+    kept_maps = [m for i, m in enumerate(maps) if i != plan.scale_index]
+    init = linalg_outputs(contraction)[0]
+    with ir.InsertionPoint(contraction), contraction.location:
+        rebuilt = linalg.GenericOp(
+            result_tensors=[result.type],
+            inputs=kept_inputs,
+            outputs=[init],
+            indexing_maps=ir.ArrayAttr.get(
+                [ir.AffineMapAttr.get(m) for m in kept_maps]
+            ),
+            iterator_types=contraction.iterator_types,
+        )
+        arg_types = [ir.ShapedType(v.type).element_type for v in kept_inputs]
+        arg_types.append(ir.ShapedType(init.type).element_type)
+        block = rebuilt.regions[0].blocks.append(*arg_types)
+        with ir.InsertionPoint(block):
+            new_args = iter(block.arguments)
+            binding = [
+                None if i == plan.scale_index else next(new_args)
+                for i in range(len(list(body.arguments)))
+            ]
+            vmap = clone_block_body(body, binding)
+            terminator = list(body.operations)[-1]
+            linalg.yield_([vmap[terminator.operands[0]]])
+
+    scaled = _emit_scale(rebuilt, plan, downstream)
+    rewriter.erase_op(contraction)
+    return SinkResult(contraction=rebuilt, normalization=scaled)
+
+
+def _emit_scale(contraction: ir.OpView, plan: _Plan, downstream: list[tuple]):
+    """Emit ``scale_op(contraction_result, scale)`` after `contraction`."""
+    result = contraction.results[0]
+    n_loops = num_loops(contraction)
     result_map = ir.AffineMap.get(
         n_loops - 1, 0, [ir.AffineDimExpr.get(i) for i in range(n_loops - 1)]
     )
@@ -292,7 +241,6 @@ def _apply_sink(
 
     for owner, index in downstream:
         owner.operands[index] = scaled.results[0]
-    rewriter.erase_op(normalization)
     return scaled
 
 

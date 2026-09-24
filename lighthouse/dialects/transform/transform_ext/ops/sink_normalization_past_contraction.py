@@ -20,12 +20,15 @@ class SinkNormalizationPastContractionOp(
 
         sum_k (A[k] / S) * B[k]  ==  (sum_k A[k] * B[k]) / S
 
-    Worth doing when the reduction dim very large compared to the other dims.
+    Worth doing when the reduction dim is very large compared to the other dims.
+
+    The scale is expected inside the contraction's body, i.e. scale is already
+    fused into the contraction's body.
 
     Before:
     ```
-    %p = linalg.generic ins(%e, %l) { arith.divf }            (all-parallel)
-    %o = linalg.generic ins(%p, %v) { mulf, addf }            (contraction over k)
+    %o = linalg.generic ins(%e, %l, %v) {                     (contraction over k)
+           divf, mulf, addf }
     ```
 
     After:
@@ -34,36 +37,29 @@ class SinkNormalizationPastContractionOp(
     %n = linalg.generic ins(%o, %l) { arith.divf }            (all-parallel)
     ```
 
-    Both payload ops are named explicitly. The op checks that the sink applies and
-    reports a silenceable error saying why if it does not. It requires:
+    Op checks that the
+    sink applies and reports a silenceable error saying why if it does not. It
+    requires:
 
-      * Exactly one payload op per handle;
-      * `contraction` to be a structured linalg op (i.e. a `linalg.generic` or a named
-        op such as ``linalg.matmul``/``linalg.batch_matmul``) with exactly one
-        reduction dim, reduction dim is the innermost and, has an identity output map;
-      * `normalization` to be an all-parallel two-input `linalg.generic` whose body
-        is a single ``arith.divf``/``arith.mulf`` of two block arguments, with an
-        identity output map with contraction as its only user;
-      * The scale, seen from the contraction's iteration space, not to reference the
-        reduction dim -- the condition that lets it factor out;
-      * The scale's element type to be convertible to the contraction's accumulator
+      * Exactly one payload op for `contraction`;
+      * `contraction` to be a `linalg.generic` with exactly one reduction dim, that
+        dim innermost, and an identity output map;
+      * its body to hold an ``arith.divf``/``arith.mulf`` on two input block
+        arguments;
+      * the scale operand not to reference the reduction dim -- the condition that
+        lets it factor out;
+      * the scale's element type to be convertible to the contraction's accumulator
         type (it is widened when the divide moves).
 
-    A named contraction additionally has to be able to read the numerator under the
-    indexing map already in place, since its own verifier constrains those maps;
-    generalize it to a `linalg.generic` first if not.
-
-    `contraction` is rewritten in place, so a handle to it stays valid.
-
     Args:
-        normalization: Handle to the scaling linalg.generic.
-        contraction: Handle to the contraction consuming its result.
+        contraction: Handle to the contraction carrying the scale.
     Returns:
-        Handle to the new linalg.generic applying the scale after the contraction.
+        rewritten_contraction: The contraction rebuilt without the scale operand.
+        sunk_normalization: The new linalg.generic applying the scale after it.
     """
 
-    normalization: ext.Operand[transform.AnyOpType]
     contraction: ext.Operand[transform.AnyOpType]
+    rewritten_contraction: ext.Result[transform.AnyOpType[()]] = ext.infer_result()
     sunk_normalization: ext.Result[transform.AnyOpType[()]] = ext.infer_result()
 
     @classmethod
@@ -85,23 +81,18 @@ class SinkNormalizationPastContractionOp(
                 )
                 return DiagnosedSilenceableFailure.SilenceableFailure
 
-            payloads = []
-            for name, handle in (
-                ("normalization", op.normalization),
-                ("contraction", op.contraction),
-            ):
-                handle_ops = state.get_payload_ops(handle)
-                if len(handle_ops) != 1:
-                    return reject(
-                        f"expected exactly one payload op for '{name}', got "
-                        f"{len(handle_ops)}"
-                    )
-                payloads.append(handle_ops[0])
+            targets = state.get_payload_ops(op.contraction)
+            if len(targets) != 1:
+                return reject(
+                    f"expected exactly one payload op for 'contraction', got "
+                    f"{len(targets)}"
+                )
 
-            sunk, error = _sink_norm(payloads[0], payloads[1], rewriter)
+            result, error = _sink_norm(targets[0], rewriter)
             if error is not None:
                 return reject(error)
-            results.set_ops(op.sunk_normalization, [sunk.operation])
+            results.set_ops(op.rewritten_contraction, [result.contraction.operation])
+            results.set_ops(op.sunk_normalization, [result.normalization.operation])
             return DiagnosedSilenceableFailure.Success
 
         @staticmethod
@@ -113,23 +104,18 @@ class SinkNormalizationPastContractionOp(
     class MemoryEffectsOpInterfaceModel(ir.MemoryEffectsOpInterface):
         @staticmethod
         def get_effects(op: ir.Operation):
-            # The normalization is erased, so its handle is consumed; the
-            # contraction is rewritten in place, so its handle survives.
-            operands = list(op.op_operands)
+            # The in-body form rebuilds the contraction and erases the original, so
+            # the handle is consumed; `rewritten_contraction` replaces it.
             return (
-                transform.consumes_handle(operands[:1])
-                + transform.only_reads_handle(operands[1:])
+                transform.consumes_handle(op.op_operands)
                 + transform.produces_handle(op.results)
                 + transform.modifies_payload()
             )
 
 
 def sink_normalization_past_contraction(
-    normalization: ir.Value[transform.AnyOpType],
     contraction: ir.Value[transform.AnyOpType],
-) -> ir.Value[transform.AnyOpType]:
+) -> tuple[ir.Value[transform.AnyOpType], ir.Value[transform.AnyOpType]]:
     """snake_case wrapper to create SinkNormalizationPastContractionOp."""
-    op = SinkNormalizationPastContractionOp(
-        normalization=normalization, contraction=contraction
-    )
-    return op.sunk_normalization
+    op = SinkNormalizationPastContractionOp(contraction=contraction)
+    return op.rewritten_contraction, op.sunk_normalization

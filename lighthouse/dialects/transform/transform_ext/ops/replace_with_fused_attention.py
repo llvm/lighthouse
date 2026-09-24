@@ -333,11 +333,9 @@ class ReplaceWithFusedAttentionOp(
             # f32 for numerical accuracy; only the matmul operands keep their
             # narrower element types.
             k_element_type = ir.RankedTensorType(k.type).element_type
-            # P is the lhs operand of the contraction being replaced, so its
-            # element type is the precision the rest of the graph expects.
-            p_element_type = ir.RankedTensorType(
-                output_op.operands[0].type
-            ).element_type
+            # P is the lhs of the `@V` contraction, so it carries V's precision --
+            # both operands have to be narrow for the DPAS.
+            p_element_type = ir.RankedTensorType(v.type).element_type
             out_element_type = ir.RankedTensorType(
                 output_op.results[0].type
             ).element_type

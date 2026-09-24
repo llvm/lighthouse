@@ -382,6 +382,56 @@ def defining_op(value: ir.Value) -> ir.Operation | None:
     return None
 
 
+def op_attributes(op: ir.Operation | ir.OpView) -> dict[str, ir.Attribute]:
+    """The op's discardable + inherent attributes as a name -> attr dict."""
+    attrs = opview(op).operation.attributes
+    return {attrs[i].name: attrs[i].attr for i in range(len(attrs))}
+
+
+def clone_op_with_map(op: ir.Operation | ir.OpView, value_map: dict):
+    """Clone `op` at the current insertion point, remapping operands via `value_map`.
+
+    Regions are *not copied, so this is limited to the region-free scalar ops. Results are recorded into `value_map`, so cloning a block in order threads
+    the substitution through. Returns None if `op` carries a region.
+    """
+    ov = opview(op)
+    if any(len(r.blocks) for r in ov.operation.regions):
+        return None
+    cloned = ir.Operation.create(
+        ov.operation.name,
+        results=[r.type for r in ov.results],
+        operands=[value_map.get(o, o) for o in ov.operands],
+        attributes=op_attributes(ov),
+    )
+    value_map.update(zip(ov.results, cloned.results))
+    return cloned
+
+
+def clone_block_body(
+    src_block: ir.Block,
+    arg_values: list[ir.Value],
+    *,
+    skip_terminator: bool = True,
+    value_map: dict | None = None,
+) -> dict:
+    """Clone `src_block`'s ops at the current insertion point.
+
+    `arg_values` binds the source block arguments positionally; entries may be None
+    to leave an argument unbound, which is how a clone drops an operand. Returns the
+    value map, so the caller can look up the clone of any source value.
+    """
+    vmap = {} if value_map is None else value_map
+    for arg, val in zip(src_block.arguments, arg_values):
+        if val is not None:
+            vmap[arg] = val
+    ops = list(src_block.operations)
+    if skip_terminator:
+        ops = ops[:-1]
+    for op in ops:
+        clone_op_with_map(op, vmap)
+    return vmap
+
+
 #: Supported float element types with their bit widths. `f16` and `bf16` share a
 #: width but not a format, so neither widens into the other.
 _FLOAT_WIDTHS = (
