@@ -5,6 +5,7 @@ from .reduction_schedule import reduction_schedule
 from .outline_gpu_func import outline_gpu_func
 from .vectorize import vectorize
 from .bufferize import bufferize
+from .vector_to_xegpu import vector_to_xegpu
 from .fused_attention_schedule import fused_attention_schedule
 from .xegpu_parameter_selector import XeGPUParameterSelector
 from .matmul_constraints import check_constraints
@@ -30,6 +31,7 @@ __all__ = [
     "outline_gpu_func",
     "outline_gpu_function",
     "reduction_schedule",
+    "vector_to_xegpu",
     "vectorize",
     "vectorize_bufferize_and_outline_gpu_func",
     "xegpu_to_binary",
