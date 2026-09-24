@@ -4,6 +4,7 @@ from .dialect import TransformExtensionDialect
 from .ops.wrap_in_benching_func import wrap_in_benching_func
 from .ops.assign_tile_sizes import assign_tile_sizes
 from .ops.get_named_attribute import get_named_attribute
+from .ops.get_param_dict_entry import get_param_dict_entry
 from .ops.get_tile_sizes import get_tile_sizes
 from .ops.param_cmp_eq import param_cmp_eq
 from .ops.replace import replace
@@ -48,6 +49,7 @@ __all__ = [
     "get_fusion_roots",
     "get_leading_unit_tile_sizes",
     "get_named_attribute",
+    "get_param_dict_entry",
     "get_tile_sizes",
     "get_tileable_consumers",
     "get_tiling_sizes",
