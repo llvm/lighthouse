@@ -11,6 +11,7 @@ from .ops.convert_func_results_to_args import convert_func_results_to_args
 from .ops.extract_handle import extract_handle
 from .ops.get_tileable_consumers import get_tileable_consumers
 from .ops.get_tiling_sizes import get_tiling_sizes
+from .ops.infer_xegpu_gemm_params import infer_xegpu_gemm_params
 from .ops.trace_producers import trace_producers
 from .ops.reverse_handles import reverse_handles
 from .ops.update_address_space import update_address_space
@@ -47,10 +48,10 @@ __all__ = [
     "get_fusion_roots",
     "get_leading_unit_tile_sizes",
     "get_named_attribute",
-    "get_named_attribute",
     "get_tile_sizes",
     "get_tileable_consumers",
     "get_tiling_sizes",
+    "infer_xegpu_gemm_params",
     "move_offsets_to_subview",
     "param_cmp_eq",
     "propagate_tile_sizes",
