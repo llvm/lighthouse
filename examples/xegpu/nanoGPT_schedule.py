@@ -244,6 +244,7 @@ def _fuse_attention_in_region(anytype, forall, fa_params):
         q=q,
         k=k,
         v=v,
+        p=prod(anytype, pv_bmm, operand_number=0),
         scale=scale,
         output=pv_bmm,
         tile_size=fa_params["inner_loop_tile_size"],

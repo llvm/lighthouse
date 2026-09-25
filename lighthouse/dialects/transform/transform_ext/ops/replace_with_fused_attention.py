@@ -265,6 +265,7 @@ class ReplaceWithFusedAttentionOp(
         q: Handle to the op producing the Q tile [*batch, wg_rows, d_head]
         k: Handle to the op producing the K tensor [*batch, n_ctx, d_head]
         v: Handle to the op producing the V tensor [*batch, n_ctx, d_head]
+        p: Handle to the op producing the softmax weights P.
         scale: Handle to the scale constant op (scalar arith.constant)
         output: Handle to the P@V linalg contraction to replace
         tile_size: Tile size for the reduction dimension (K/V sequence length)
@@ -273,6 +274,7 @@ class ReplaceWithFusedAttentionOp(
     q: ext.Operand[transform.AnyOpType]
     k: ext.Operand[transform.AnyOpType]
     v: ext.Operand[transform.AnyOpType]
+    p: ext.Operand[transform.AnyOpType]
     scale: ext.Operand[transform.AnyOpType]
     output: ext.Operand[transform.AnyOpType]
     tile_size: ir.IntegerAttr
@@ -293,14 +295,14 @@ class ReplaceWithFusedAttentionOp(
             state: transform.TransformState,
         ) -> DiagnosedSilenceableFailure:
             payloads = []
-            for handle in (op.q, op.k, op.v, op.scale, op.output):
+            for handle in (op.q, op.k, op.v, op.p, op.scale, op.output):
                 handle_ops = state.get_payload_ops(handle)
                 if len(handle_ops) != 1:
                     return DiagnosedSilenceableFailure.emit_silenceable_error(
                         "Expected exactly one operation for each operand"
                     )
                 payloads.append(handle_ops[0])
-            q_op, k_op, v_op, scale_op, output_op = payloads
+            q_op, k_op, v_op, p_op, scale_op, output_op = payloads
 
             if not isinstance(scale_op.opview, arith.ConstantOp):
                 return DiagnosedSilenceableFailure.emit_silenceable_error(
@@ -333,9 +335,7 @@ class ReplaceWithFusedAttentionOp(
             # f32 for numerical accuracy; only the matmul operands keep their
             # narrower element types.
             k_element_type = ir.RankedTensorType(k.type).element_type
-            # P is the lhs of the `@V` contraction, so it carries V's precision --
-            # both operands have to be narrow for the DPAS.
-            p_element_type = ir.RankedTensorType(v.type).element_type
+            p_element_type = ir.RankedTensorType(p_op.results[0].type).element_type
             out_element_type = ir.RankedTensorType(
                 output_op.results[0].type
             ).element_type
@@ -539,9 +539,9 @@ class ReplaceWithFusedAttentionOp(
         def get_effects(op: ir.Operation):
             return (
                 # Read Q, K, V and scale
-                transform.only_reads_handle(op.op_operands[:4])
+                transform.only_reads_handle(op.op_operands[:5])
                 # Consume and replace output
-                + transform.consumes_handle(op.op_operands[4:5])
+                + transform.consumes_handle(op.op_operands[5:6])
                 # Produce new output handle
                 + transform.produces_handle(op.results)
                 # Modify the payload
@@ -553,6 +553,7 @@ def replace_with_fused_attention(
     q: ir.Value,
     k: ir.Value,
     v: ir.Value,
+    p: ir.Value,
     scale: ir.Value,
     output: ir.Value,
     tile_size: int | ir.IntegerAttr,
@@ -564,6 +565,7 @@ def replace_with_fused_attention(
         q: Handle to the op producing the Q tile [*batch, wg_rows, d_head]
         k: Handle to the op producing the K tensor [*batch, n_ctx, d_head]
         v: Handle to the op producing the V tensor [*batch, n_ctx, d_head]
+        p: Handle to the op producing the softmax weights P.
         scale: Handle to the scale constant op (scalar arith.constant)
         output: Handle to the P@V linalg contraction to replace
         tile_size: Tile size for the reduction dimension (K/V sequence length)
@@ -579,5 +581,5 @@ def replace_with_fused_attention(
         causal = ir.IntegerAttr.get(ir.IntegerType.get_signless(64), int(causal))
 
     return ReplaceWithFusedAttentionOp(
-        q, k, v, scale, output, tile_size=tile_size, causal=causal
+        q, k, v, p, scale, output, tile_size=tile_size, causal=causal
     ).new_output

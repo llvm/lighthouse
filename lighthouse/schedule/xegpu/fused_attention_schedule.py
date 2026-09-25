@@ -271,6 +271,9 @@ def bundle_xegpu_fused_attention_schedule(
     # the reduction fusion replaces this op, the sunk chain is folded into a loop
     # directly instead of being rebuilt from q/k/v.)
     normalize_op = transform.get_consumers_of_result(anytype, pv_matmul, 0)
+    # P keeps the narrow element type the DPAS needs, which `normalize_op` does not
+    # carry: it reads the contraction's (f32) accumulator.
+    p = transform.get_producer_of_operand(anytype, pv_matmul, 0)
     reduction_tile = layer_params[
         "reduction_tile"
     ]  # Tile size for reduction dimension (K/V sequence length)
@@ -278,6 +281,7 @@ def bundle_xegpu_fused_attention_schedule(
         q=q,
         k=k,
         v=v,
+        p=p,
         scale=scale_const_op,
         output=normalize_op,
         tile_size=reduction_tile,
