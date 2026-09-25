@@ -100,9 +100,7 @@ def inspect_payload(payload_module: ir.Module) -> dict:
                 def match_linalg(op: ir.Operation) -> ir.WalkResult:
                     op = op.opview
                     match op:
-                        # linalg.ElementwiseOp is shadowed in mlir.dialects.linalg
-                        # and won't match via class pattern; match by op name.
-                        case _ if op.operation.name == "linalg.elementwise":
+                        case linalg.ElementwiseOp():
                             outputs = op.outputs
                             assert len(outputs) == 1, "Expected only one output"
                             layers.append(
@@ -316,9 +314,9 @@ def is_linalg_all_loops_parallel(op: ir.Operation | ir.OpView) -> bool:
 def is_linalg_eltwise_op(op: ir.Operation | ir.OpView) -> bool:
     """Return True if it is an elementwise linalg operation."""
     ov = opview(op)
-    return ov.operation.name == "linalg.elementwise" or (
-        isinstance(ov, linalg.GenericOp) and is_linalg_all_loops_parallel(ov)
-    )
+    if isinstance(ov, linalg.ElementwiseOp):
+        return True
+    return isinstance(ov, linalg.GenericOp) and is_linalg_all_loops_parallel(ov)
 
 
 def op_users(value: ir.Value) -> list[ir.Operation]:
