@@ -283,7 +283,7 @@ def bundle_xegpu_fused_attention_schedule(
         v=v,
         p=p,
         scale=scale_const_op,
-        output=normalize_op,
+        replaced=normalize_op,
         tile_size=reduction_tile,
     )
     transform.apply_cse(func)

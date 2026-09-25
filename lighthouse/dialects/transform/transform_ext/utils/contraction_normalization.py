@@ -70,37 +70,86 @@ def _plan(contraction: ir.OpView):
     body = contraction.regions[0].blocks[0]
     args = list(body.arguments)
     n_inputs = len(linalg_inputs(contraction))
-    red_dim = reduction_dims(contraction)[0]
-    for op in list(body.operations):
-        scale_op = opview(op)
-        if not isinstance(scale_op, _SCALE_OPS):
-            continue
-        lhs, rhs = scale_op.operands[0], scale_op.operands[1]
-        # Both sides must be input block arguments, so that dropping the scale
-        # leaves the numerator readable directly.
-        if lhs not in args or rhs not in args:
-            return None, "the body's scale does not read two block arguments"
-        if args.index(lhs) >= n_inputs or args.index(rhs) >= n_inputs:
-            return None, "the body's scale reads an init block argument"
-        # A dead scale is not worth touching.
-        if len(list(scale_op.results[0].uses)) == 0:
-            continue
-        scale_index = args.index(rhs)
-        scale = contraction.operands[scale_index]
-        scale_map = indexing_maps(contraction)[scale_index]
-        error = _factors_out(contraction, scale, scale_map, red_dim)
-        if error is not None:
-            return None, error
-        return (
-            _Plan(
-                scale_index=scale_index,
-                scale=scale,
-                scale_map=project_dims(scale_map, {red_dim}),
-                scale_op=scale_op,
-            ),
-            None,
+
+    # The scale reads two input block arguments, so that dropping it leaves the
+    # numerator readable directly. There must be exactly one such op: with several,
+    # which one is "the" normalization is ambiguous.
+    inputs = args[:n_inputs]
+    scales = [
+        opview(op)
+        for op in body.operations
+        if isinstance(opview(op), _SCALE_OPS)
+        and all(o in inputs for o in opview(op).operands)
+    ]
+    if not scales:
+        return None, f"'{name}' has no arith.divf/arith.mulf on two input arguments"
+    if len(scales) > 1:
+        return None, (
+            f"'{name}' has {len(scales)} arith.divf/arith.mulf ops on two input "
+            f"arguments, so which one normalizes is ambiguous"
         )
-    return None, f"'{name}' has no arith.divf/arith.mulf on two input arguments"
+    scale_op = scales[0]
+    if not _feeds_multiply_accumulate(scale_op, body, args[n_inputs]):
+        return None, (
+            "the body's scale is not consumed by the contraction's multiply-"
+            "accumulate, so moving it past the reduction would not preserve the value"
+        )
+
+    red_dim = reduction_dims(contraction)[0]
+    # The scale is the rhs: inherent for `divf`, and for `mulf` the order this expects.
+    # A `mulf` with the scale first is rejected below, its lhs varying along the
+    # reduction.
+    scale_index = args.index(scale_op.operands[1])
+    scale = contraction.operands[scale_index]
+    scale_map = indexing_maps(contraction)[scale_index]
+    error = _factors_out(contraction, scale, scale_map, red_dim)
+    if error is not None:
+        return None, error
+    # The scale runs over the output space once sunk, so its map has to survive
+    # dropping the reduction dim.
+    sunk_scale_map = project_dims(scale_map, {red_dim})
+    if sunk_scale_map is None:
+        return None, (
+            f"cannot re-express the scale's map {scale_map} without the reduction dim "
+            f"d{red_dim}: it is not a plain dim projection"
+        )
+    return (
+        _Plan(
+            scale_index=scale_index,
+            scale=scale,
+            scale_map=sunk_scale_map,
+            scale_op=scale_op,
+        ),
+        None,
+    )
+
+
+def _consumer_through_casts(value: ir.Value):
+    """`value`'s single consumer, skipping float casts. None if it is not unique."""
+    uses = list(value.uses)
+    if len(uses) != 1:
+        return None
+    user = opview(uses[0].owner)
+    if isinstance(user, (arith.ExtFOp, arith.TruncFOp)):
+        return _consumer_through_casts(user.results[0])
+    return user
+
+
+def _feeds_multiply_accumulate(scale_op, body: ir.Block, init_arg) -> bool:
+    """Whether `scale_op`'s result is what the contraction multiplies and sums.
+
+    The body of a contraction carrying a scale is ``yield add(acc, mul(...))`` with the
+    scale on either side of the multiply, plus float casts wherever the operand and
+    accumulator precisions differ.
+    """
+    mul = _consumer_through_casts(scale_op.results[0])
+    if not isinstance(mul, arith.MulFOp):
+        return False
+    add = _consumer_through_casts(mul.results[0])
+    if not isinstance(add, arith.AddFOp) or init_arg not in add.operands:
+        return False
+    terminator = list(body.operations)[-1]
+    return terminator.operands[0] == add.results[0]
 
 
 def _shape_error(contraction: ir.OpView) -> str | None:
@@ -178,7 +227,9 @@ def _apply(contraction: ir.OpView, plan: _Plan, rewriter) -> SinkResult:
         v for i, v in enumerate(linalg_inputs(contraction)) if i != plan.scale_index
     ]
     kept_maps = [m for i, m in enumerate(maps) if i != plan.scale_index]
-    init = linalg_outputs(contraction)[0]
+    outputs = linalg_outputs(contraction)
+    assert outputs, "expected a structured linalg op with one init"
+    init = outputs[0]
     with ir.InsertionPoint(contraction), contraction.location:
         rebuilt = linalg.GenericOp(
             result_tensors=[result.type],
@@ -216,7 +267,7 @@ def _emit_scale(contraction: ir.OpView, plan: _Plan, downstream: list[tuple]):
     )
     parallel = ir.Attribute.parse("#linalg.iterator_type<parallel>")
 
-    with _insert_after(contraction), contraction.location:
+    with ir.InsertionPoint.after(contraction.operation), contraction.location:
         scaled = linalg.GenericOp(
             result_tensors=[result.type],
             inputs=[result, plan.scale],
@@ -242,13 +293,6 @@ def _emit_scale(contraction: ir.OpView, plan: _Plan, downstream: list[tuple]):
     for owner, index in downstream:
         owner.operands[index] = scaled.results[0]
     return scaled
-
-
-def _insert_after(op):
-    """An insertion point directly after `op` in its block."""
-    ops = list(op.operation.parent.regions[0].blocks[0].operations)
-    idx = next(i for i, o in enumerate(ops) if o == op.operation)
-    return ir.InsertionPoint(ops[idx + 1])
 
 
 def _empty_like(value: ir.Value) -> ir.Value:

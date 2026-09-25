@@ -240,10 +240,10 @@ class ReplaceWithFusedAttentionOp(
 ):
     """Replace a tensor-level attention output with a fused (flash) attention loop.
 
-    Takes the Q, K, V tensors and the scale constant of a tiled but not yet
-    vectorized attention region and replaces the P@V linalg contraction with an
-    `scf.for` over the K/V sequence length that computes the same result with
-    online softmax:
+    Takes the Q, K, V and P tensors and the scale constant of a tiled but not yet
+    vectorized attention region and replaces the op producing that region's result
+    with an `scf.for` over the K/V sequence length that computes the same result
+    with online softmax:
 
         m, l, acc = -inf, 0, 0
         for j in range(0, n_ctx, tile_size):
@@ -256,6 +256,10 @@ class ReplaceWithFusedAttentionOp(
             m     = m_new
         out = acc / l
 
+    Since the loop ends in `acc / l`, `replaced` is whichever op produces the
+    normalized result: the normalizing divide where the schedule has sunk it past the
+    P@V contraction, the contraction itself where the divide is still inside its body.
+
     Doing this at tensor level keeps the tiling and fusion decisions at the
     level where the rest of the schedule makes them; the regular vectorization
     stage then lowers the emitted loop. The dead softmax and Q@K^T producers
@@ -267,7 +271,8 @@ class ReplaceWithFusedAttentionOp(
         v: Handle to the op producing the V tensor [*batch, n_ctx, d_head]
         p: Handle to the op producing the softmax weights P.
         scale: Handle to the scale constant op (scalar arith.constant)
-        output: Handle to the P@V linalg contraction to replace
+        replaced: Handle to the op producing the attention result, whose result the
+            emitted loop replaces
         tile_size: Tile size for the reduction dimension (K/V sequence length)
     """
 
@@ -276,7 +281,7 @@ class ReplaceWithFusedAttentionOp(
     v: ext.Operand[transform.AnyOpType]
     p: ext.Operand[transform.AnyOpType]
     scale: ext.Operand[transform.AnyOpType]
-    output: ext.Operand[transform.AnyOpType]
+    replaced: ext.Operand[transform.AnyOpType]
     tile_size: ir.IntegerAttr
     causal: ir.IntegerAttr  # 0/1 flag (ext op attrs don't support BoolAttr)
     new_output: ext.Result[transform.AnyOpType[()]] = ext.infer_result()
@@ -295,22 +300,22 @@ class ReplaceWithFusedAttentionOp(
             state: transform.TransformState,
         ) -> DiagnosedSilenceableFailure:
             payloads = []
-            for handle in (op.q, op.k, op.v, op.p, op.scale, op.output):
+            for handle in (op.q, op.k, op.v, op.p, op.scale, op.replaced):
                 handle_ops = state.get_payload_ops(handle)
                 if len(handle_ops) != 1:
                     return DiagnosedSilenceableFailure.emit_silenceable_error(
                         "Expected exactly one operation for each operand"
                     )
                 payloads.append(handle_ops[0])
-            q_op, k_op, v_op, p_op, scale_op, output_op = payloads
+            q_op, k_op, v_op, p_op, scale_op, replaced_op = payloads
 
             if not isinstance(scale_op.opview, arith.ConstantOp):
                 return DiagnosedSilenceableFailure.emit_silenceable_error(
                     f"Expected scale to be arith.constant, got {scale_op.name}"
                 )
-            if not output_op.name.startswith("linalg."):
+            if not replaced_op.name.startswith("linalg."):
                 return DiagnosedSilenceableFailure.emit_silenceable_error(
-                    f"Expected output to be a linalg op, got {output_op.name}"
+                    f"Expected replaced to be a linalg op, got {replaced_op.name}"
                 )
 
             q, k, v = (payload.results[0] for payload in (q_op, k_op, v_op))
@@ -337,7 +342,7 @@ class ReplaceWithFusedAttentionOp(
             k_element_type = ir.RankedTensorType(k.type).element_type
             p_element_type = ir.RankedTensorType(p_op.results[0].type).element_type
             out_element_type = ir.RankedTensorType(
-                output_op.results[0].type
+                replaced_op.results[0].type
             ).element_type
             compute_type = ir.F32Type.get()
 
@@ -357,7 +362,7 @@ class ReplaceWithFusedAttentionOp(
             qkt_shape = (*batch_shape, wg_rows, tile_size)
             nb = len(batch_shape)
 
-            with ir.InsertionPoint(output_op):
+            with ir.InsertionPoint(replaced_op):
                 if squeeze:
                     # Squeeze each operand to rank 2 independently: GQA shares K/V
                     # across query-repeat heads, so Q is [1, 1, wg_rows, d_head]
@@ -497,7 +502,7 @@ class ReplaceWithFusedAttentionOp(
             # op. Its destination is reused so that bufferization writes the
             # result in place; the destination's now dead zero fill is dropped
             # by DCE.
-            destination = output_op.operands[-1]
+            destination = replaced_op.operands[-1]
             if isinstance(destination, ir.OpResult) and isinstance(
                 destination.owner, linalg.FillOp
             ):
@@ -524,8 +529,8 @@ class ReplaceWithFusedAttentionOp(
                 if squeeze:
                     output_final = _restore_leading_dims(output_final, destination)
 
-            output_op.results[0].replace_all_uses_with(output_final)
-            rewriter.erase_op(output_op)
+            replaced_op.results[0].replace_all_uses_with(output_final)
+            rewriter.erase_op(replaced_op)
 
             results.set_ops(op.new_output, [output_final.owner])
             return DiagnosedSilenceableFailure.Success
@@ -540,7 +545,7 @@ class ReplaceWithFusedAttentionOp(
             return (
                 # Read Q, K, V and scale
                 transform.only_reads_handle(op.op_operands[:5])
-                # Consume and replace output
+                # Consume and replace the op standing in for the loop
                 + transform.consumes_handle(op.op_operands[5:6])
                 # Produce new output handle
                 + transform.produces_handle(op.results)
@@ -555,7 +560,7 @@ def replace_with_fused_attention(
     v: ir.Value,
     p: ir.Value,
     scale: ir.Value,
-    output: ir.Value,
+    replaced: ir.Value,
     tile_size: int | ir.IntegerAttr,
     causal: bool | ir.IntegerAttr = False,
 ) -> ir.Value:
@@ -567,7 +572,8 @@ def replace_with_fused_attention(
         v: Handle to the op producing the V tensor [*batch, n_ctx, d_head]
         p: Handle to the op producing the softmax weights P.
         scale: Handle to the scale constant op (scalar arith.constant)
-        output: Handle to the P@V linalg contraction to replace
+        replaced: Handle to the op producing the attention result, whose result the
+            emitted loop replaces
         tile_size: Tile size for the reduction dimension (K/V sequence length)
         causal: When True, mask future keys (key column past the query row) so
             attention is autoregressive. Default False leaves the IR unchanged.
@@ -581,5 +587,5 @@ def replace_with_fused_attention(
         causal = ir.IntegerAttr.get(ir.IntegerType.get_signless(64), int(causal))
 
     return ReplaceWithFusedAttentionOp(
-        q, k, v, p, scale, output, tile_size=tile_size, causal=causal
+        q, k, v, p, scale, replaced, tile_size=tile_size, causal=causal
     ).new_output

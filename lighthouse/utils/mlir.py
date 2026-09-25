@@ -389,7 +389,8 @@ def op_attributes(op: ir.Operation | ir.OpView) -> dict[str, ir.Attribute]:
 def clone_op_with_map(op: ir.Operation | ir.OpView, value_map: dict):
     """Clone `op` at the current insertion point, remapping operands via `value_map`.
 
-    Regions are *not copied, so this is limited to the region-free scalar ops. Results are recorded into `value_map`, so cloning a block in order threads
+    Regions are *not copied, so this is limited to the region-free scalar ops.
+    Results are recorded into `value_map`, so cloning a block in order threads
     the substitution through. Returns None if `op` carries a region.
     """
     ov = opview(op)
@@ -417,14 +418,24 @@ def clone_block_body(
     `arg_values` binds the source block arguments positionally; entries may be None
     to leave an argument unbound, which is how a clone drops an operand. Returns the
     value map, so the caller can look up the clone of any source value.
+
+    Every op in `src_block` must be region-free, since `clone_op_with_map` does not
+    copy regions.
     """
+    ops = list(src_block.operations)
+    if skip_terminator:
+        ops = ops[:-1]
+    nested = [
+        op.operation.name
+        for op in ops
+        if any(len(r.blocks) for r in opview(op).operation.regions)
+    ]
+    assert not nested, f"cannot clone ops carrying regions: {', '.join(nested)}"
+
     vmap = {} if value_map is None else value_map
     for arg, val in zip(src_block.arguments, arg_values):
         if val is not None:
             vmap[arg] = val
-    ops = list(src_block.operations)
-    if skip_terminator:
-        ops = ops[:-1]
     for op in ops:
         clone_op_with_map(op, vmap)
     return vmap
