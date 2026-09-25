@@ -171,6 +171,7 @@ def analyze_matmul_op(op: ir.OpView) -> tuple[tuple[int, int, int], bool, bool]:
     Supports linalg.matmul, vector.contract and xegpu.dpas anchor ops; other op
     kinds will be added later.
     """
+    # TODO use op name as xegpu dialect python bindings are missing
     op_name = op.operation.name
     if op_name == "linalg.matmul":
         return _linalg_matmul_shape_and_transpose(op)
@@ -179,3 +180,49 @@ def analyze_matmul_op(op: ir.OpView) -> tuple[tuple[int, int, int], bool, bool]:
     elif op_name == "xegpu.dpas":
         return _dpas_shape_and_transpose(op)
     raise NotImplementedError(f"unsupported anchor op '{op_name}'")
+
+
+def analyze_wg_k_tile_size(op: ir.OpView) -> tuple[int, ...] | None:
+    """Infer the workgroup and reduction tile size applied to a matmul anchor op.
+
+    Returns a tuple (wg_tile, k_tile) where k_tile can be None if not determined.
+    """
+    op_name = op.operation.name
+    wg_tile = None
+    k_tile = None
+    if op_name == "linalg.matmul":
+        if op.parent.name != "scf.forall":
+            # target is not within a scf.forall loop, so it's not workgroup tiled
+            return None, None
+        # Assume we are in WG loop or WG-k loop nest
+        m, k = list(ir.ShapedType(op.inputs[0].type).shape)
+        _, n = list(ir.ShapedType(op.inputs[1].type).shape)
+        wg_tile = (m, n)
+        if op.parent.name == "scf.for":
+            k_tile = k
+    elif op_name == "vector.contract":
+        # Assume we are in WG loop or WG-k loop nest. The accumulator carries
+        # the (M, N) tile; the reduction dim gives the K tile.
+        maps_attr = op.attributes["indexing_maps"]
+        a_map = ir.AffineMapAttr(maps_attr[0]).value
+        c_map = ir.AffineMapAttr(maps_attr[2]).value
+        a_dims = [dim_position(r) for r in a_map.results]
+        out_dims = [dim_position(r) for r in c_map.results]
+        k_dim = next(d for d in range(a_map.n_dims) if d not in out_dims)
+
+        acc_shape = list(ir.ShapedType(op.operands[2].type).shape)
+        wg_tile = (acc_shape[0], acc_shape[1])
+        if op.parent.name == "scf.for":
+            # index() handles a transposed operand where K precedes M.
+            a_shape = list(ir.ShapedType(op.operands[0].type).shape)
+            k_tile = a_shape[a_dims.index(k_dim)]
+    elif op_name == "xegpu.dpas":
+        # dpas consumes A as [M, K] and acc as [M, N] regardless of how the
+        # source tiles are stored, so shapes read off directly.
+        acc_shape = list(ir.ShapedType(op.operands[2].type).shape)
+        wg_tile = (acc_shape[0], acc_shape[1])
+        if op.parent.name == "scf.for":
+            k_tile = list(ir.ShapedType(op.operands[0].type).shape)[1]
+    else:
+        raise ValueError(f"unsupported anchor op '{op_name}'")
+    return wg_tile, k_tile
