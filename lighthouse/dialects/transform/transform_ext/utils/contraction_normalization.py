@@ -3,7 +3,7 @@
 from typing import NamedTuple
 
 from mlir import ir
-from mlir.dialects import arith, linalg
+from mlir.dialects import arith, linalg, tensor
 
 from lighthouse.utils.mlir import (
     can_cast_float,
@@ -18,7 +18,12 @@ from lighthouse.utils.mlir import (
     reduction_dims,
 )
 
-__all__ = ["SinkResult", "sink_normalization_past_contraction"]
+__all__ = [
+    "ScaleInfo",
+    "SinkResult",
+    "analyze_scale_info",
+    "sink_normalization_past_contraction",
+]
 
 #: Body ops that factor out of a sum when their rhs is loop-invariant.
 _SCALE_OPS = (arith.DivFOp, arith.MulFOp)
@@ -33,11 +38,12 @@ class SinkResult(NamedTuple):
     normalization: ir.OpView
 
 
-class _Plan(NamedTuple):
-    """The scale to move out, once found legal."""
+class ScaleInfo(NamedTuple):
+    """The scale found in a contraction's body, once found legal to move out."""
 
     #: Operand index of the scale.
     scale_index: int
+    #: The scale value, i.e. the operand at `scale_index`.
     scale: ir.Value
     #: `scale`'s indexing map, with the reduction dim projected away.
     scale_map: ir.AffineMap
@@ -52,14 +58,14 @@ def sink_normalization_past_contraction(contraction, rewriter):
     explaining why the rewrite does not apply.
     """
     contraction = opview(contraction)
-    plan, error = _plan(contraction)
+    scale_info, error = analyze_scale_info(contraction)
     if error is not None:
         return None, error
-    return _apply(contraction, plan, rewriter), None
+    return _apply(contraction, scale_info, rewriter), None
 
 
-def _plan(contraction: ir.OpView):
-    """Find the body scale to move out: ``(plan, None)`` or ``(None, message)``."""
+def analyze_scale_info(contraction: ir.OpView):
+    """Find the body scale to move out: ``(scale_info, None)`` or ``(None, message)``."""
     name = contraction.operation.name
     if not isinstance(contraction, linalg.GenericOp):
         return None, f"expected a linalg.generic, got '{name}'"
@@ -114,7 +120,7 @@ def _plan(contraction: ir.OpView):
             f"d{red_dim}: it is not a plain dim projection"
         )
     return (
-        _Plan(
+        ScaleInfo(
             scale_index=scale_index,
             scale=scale,
             scale_map=sunk_scale_map,
@@ -203,7 +209,7 @@ def _factors_out(
     return None
 
 
-def _apply(contraction: ir.OpView, plan: _Plan, rewriter) -> SinkResult:
+def _apply(contraction: ir.OpView, scale_info: ScaleInfo, rewriter) -> SinkResult:
     """Drop the in-body scale and re-apply it to the contraction's result.
 
     The scale operand becomes unused, so the contraction is rebuilt without it: its
@@ -218,15 +224,17 @@ def _apply(contraction: ir.OpView, plan: _Plan, rewriter) -> SinkResult:
     downstream = [(use.owner, use.operand_number) for use in result.uses]
 
     # The scale disappears from the body: whatever it scaled is used directly.
-    numerator = plan.scale_op.operands[0]
-    for use in list(plan.scale_op.results[0].uses):
+    numerator = scale_info.scale_op.operands[0]
+    for use in list(scale_info.scale_op.results[0].uses):
         use.owner.operands[use.operand_number] = numerator
-    plan.scale_op.operation.erase()
+    scale_info.scale_op.operation.erase()
 
     kept_inputs = [
-        v for i, v in enumerate(linalg_inputs(contraction)) if i != plan.scale_index
+        v
+        for i, v in enumerate(linalg_inputs(contraction))
+        if i != scale_info.scale_index
     ]
-    kept_maps = [m for i, m in enumerate(maps) if i != plan.scale_index]
+    kept_maps = [m for i, m in enumerate(maps) if i != scale_info.scale_index]
     outputs = linalg_outputs(contraction)
     assert outputs, "expected a structured linalg op with one init"
     init = outputs[0]
@@ -246,19 +254,19 @@ def _apply(contraction: ir.OpView, plan: _Plan, rewriter) -> SinkResult:
         with ir.InsertionPoint(block):
             new_args = iter(block.arguments)
             binding = [
-                None if i == plan.scale_index else next(new_args)
+                None if i == scale_info.scale_index else next(new_args)
                 for i in range(len(list(body.arguments)))
             ]
             vmap = clone_block_body(body, binding)
             terminator = list(body.operations)[-1]
             linalg.yield_([vmap[terminator.operands[0]]])
 
-    scaled = _emit_scale(rebuilt, plan, downstream)
+    scaled = _emit_scale(rebuilt, scale_info, downstream)
     rewriter.erase_op(contraction)
     return SinkResult(contraction=rebuilt, normalization=scaled)
 
 
-def _emit_scale(contraction: ir.OpView, plan: _Plan, downstream: list[tuple]):
+def _emit_scale(contraction: ir.OpView, scale_info: ScaleInfo, downstream: list[tuple]):
     """Emit ``scale_op(contraction_result, scale)`` after `contraction`."""
     result = contraction.results[0]
     n_loops = num_loops(contraction)
@@ -270,12 +278,12 @@ def _emit_scale(contraction: ir.OpView, plan: _Plan, downstream: list[tuple]):
     with ir.InsertionPoint.after(contraction.operation), contraction.location:
         scaled = linalg.GenericOp(
             result_tensors=[result.type],
-            inputs=[result, plan.scale],
+            inputs=[result, scale_info.scale],
             outputs=[_empty_like(result)],
             indexing_maps=ir.ArrayAttr.get(
                 [
                     ir.AffineMapAttr.get(result_map),
-                    ir.AffineMapAttr.get(plan.scale_map),
+                    ir.AffineMapAttr.get(scale_info.scale_map),
                     ir.AffineMapAttr.get(result_map),
                 ]
             ),
@@ -283,11 +291,11 @@ def _emit_scale(contraction: ir.OpView, plan: _Plan, downstream: list[tuple]):
         )
         elem = ir.ShapedType(result.type).element_type
         block = scaled.regions[0].blocks.append(
-            elem, ir.ShapedType(plan.scale.type).element_type, elem
+            elem, ir.ShapedType(scale_info.scale.type).element_type, elem
         )
         with ir.InsertionPoint(block):
             operand = cast_float(block.arguments[1], elem)
-            value = type(plan.scale_op)(block.arguments[0], operand).result
+            value = type(scale_info.scale_op)(block.arguments[0], operand).result
             linalg.yield_([value])
 
     for owner, index in downstream:
@@ -296,8 +304,6 @@ def _emit_scale(contraction: ir.OpView, plan: _Plan, downstream: list[tuple]):
 
 
 def _empty_like(value: ir.Value) -> ir.Value:
-    from mlir.dialects import tensor
-
     shaped = ir.ShapedType(value.type)
     return tensor.empty(
         [shaped.get_dim_size(i) for i in range(shaped.rank)], shaped.element_type

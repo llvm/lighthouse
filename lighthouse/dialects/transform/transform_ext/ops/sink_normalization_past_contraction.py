@@ -37,8 +37,7 @@ class SinkNormalizationPastContractionOp(
     %n = linalg.generic ins(%o, %l) { arith.divf }            (all-parallel)
     ```
 
-    Op checks that the
-    sink applies and reports a silenceable error saying why if it does not. It
+    Op checks that the sink applies and reports a silenceable error saying why if it does not. It
     requires:
 
       * Exactly one payload op for `contraction`;

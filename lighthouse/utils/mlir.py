@@ -389,7 +389,7 @@ def op_attributes(op: ir.Operation | ir.OpView) -> dict[str, ir.Attribute]:
 def clone_op_with_map(op: ir.Operation | ir.OpView, value_map: dict):
     """Clone `op` at the current insertion point, remapping operands via `value_map`.
 
-    Regions are *not copied, so this is limited to the region-free scalar ops.
+    Regions are *not* copied, so this is limited to the region-free scalar ops.
     Results are recorded into `value_map`, so cloning a block in order threads
     the substitution through. Returns None if `op` carries a region.
     """
