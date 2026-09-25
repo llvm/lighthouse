@@ -56,39 +56,52 @@ def _fusion_maps(producer, consumer, operand_index):
         or not isinstance(operand.type, ir.RankedTensorType)
     ):
         return None
-    producer_maps = indexing_maps(producer)
-    consumer_maps = indexing_maps(consumer)
-    producer_result_map = producer_maps[len(producer.inputs) + operand.result_number]
-    consumer_map = consumer_maps[operand_index]
+    original_producer_maps = indexing_maps(producer)
+    original_consumer_maps = indexing_maps(consumer)
+    original_producer_result_map = original_producer_maps[
+        len(producer.inputs) + operand.result_number
+    ]
+    original_consumer_input_map = original_consumer_maps[operand_index]
+    # All producer loop dims must be accessed by consumer and must be accessed only once.
     if (
-        len(consumer_map.results) != len(producer.iterator_types)
-        or not producer_result_map.is_permutation
+        len(original_consumer_input_map.results) != len(producer.iterator_types)
+        or not original_producer_result_map.is_permutation
     ):
         return None
     # Map consumer loops to producer loops through the inverse result map.
-    inverse_results = [None] * producer_result_map.n_dims
-    for index, expression in enumerate(producer_result_map.results):
+    inverse_results = [None] * original_producer_result_map.n_dims
+    for index, expression in enumerate(original_producer_result_map.results):
         inverse_results[expression.position] = ir.AffineExpr.get_dim(index)
-    inverse = ir.AffineMap.get(producer_result_map.n_dims, 0, inverse_results)
-    loop_map = _compose(inverse, consumer_map)
-    input_maps = [
-        _compose(indexing_map, loop_map)
-        for indexing_map in producer_maps[: len(producer.inputs)]
+    inverse_producer_result_map = ir.AffineMap.get(
+        original_producer_result_map.n_dims, 0, inverse_results
+    )
+    consumer_to_producer_map = _compose(
+        inverse_producer_result_map, original_consumer_input_map
+    )
+    fused_producer_input_maps = [
+        _compose(indexing_map, consumer_to_producer_map)
+        for indexing_map in original_producer_maps[: len(producer.inputs)]
     ]
-    # Removing the intermediate tensor must not lose any reduction loop bounds.
-    remaining_maps = [
+    # Removing the intermediate tensor (i.e. producer output) must not lose any reduction loop bounds.
+    fused_retained_consumer_maps = [
         indexing_map
-        for value, indexing_map in zip(consumer.operands, consumer_maps)
+        for value, indexing_map in zip(consumer.operands, original_consumer_maps)
         if value != operand
     ]
     reduction = ir.AttrBuilder.get("linalg.IteratorTypeEnum")(
         linalg.IteratorType.reduction, context=consumer.context
     )
     if reduction in consumer.iterator_types and not _covers_loops(
-        remaining_maps + input_maps, len(consumer.iterator_types)
+        fused_retained_consumer_maps + fused_producer_input_maps,
+        len(consumer.iterator_types),
     ):
         return None
-    return producer_maps, consumer_maps, loop_map, input_maps
+    return (
+        original_producer_maps,
+        original_consumer_maps,
+        consumer_to_producer_map,
+        fused_producer_input_maps,
+    )
 
 
 def _clone(operation, mapping):
@@ -135,7 +148,12 @@ def fuse_elementwise(producer, consumer, rewriter) -> ir.Operation | None:
     maps = _fusion_maps(producer, consumer, operand_index)
     if maps is None:
         return None
-    producer_maps, consumer_maps, loop_map, input_maps = maps
+    (
+        original_producer_maps,
+        original_consumer_maps,
+        consumer_to_producer_map,
+        fused_producer_input_maps,
+    ) = maps
     producer_body = producer.regions[0].blocks[0]
     consumer_body = consumer.regions[0].blocks[0]
     # Replace the intermediate input with producer inputs, maps, and block args.
@@ -145,9 +163,9 @@ def fuse_elementwise(producer, consumer, rewriter) -> ir.Operation | None:
         + list(consumer.inputs[operand_index + 1 :])
     )
     fused_maps = (
-        consumer_maps[:operand_index]
-        + input_maps
-        + consumer_maps[operand_index + 1 : len(consumer.inputs)]
+        original_consumer_maps[:operand_index]
+        + fused_producer_input_maps
+        + original_consumer_maps[operand_index + 1 : len(consumer.inputs)]
     )
     arguments = (
         list(consumer_body.arguments[:operand_index])
@@ -155,19 +173,23 @@ def fuse_elementwise(producer, consumer, rewriter) -> ir.Operation | None:
         + list(consumer_body.arguments[operand_index + 1 : len(consumer.inputs)])
     )
     # Keep producer inits needed for scalar computation or loop-bound recovery.
-    output_maps = consumer_maps[len(consumer.inputs) :]
+    original_consumer_output_maps = original_consumer_maps[len(consumer.inputs) :]
     for index, value in enumerate(producer.outputs):
         argument = producer_body.arguments[len(producer.inputs) + index]
         if list(argument.uses) or not _covers_loops(
-            fused_maps + output_maps, loop_map.n_dims
+            fused_maps + original_consumer_output_maps,
+            consumer_to_producer_map.n_dims,
         ):
             inputs.append(value)
             arguments.append(argument)
             fused_maps.append(
-                _compose(producer_maps[len(producer.inputs) + index], loop_map)
+                _compose(
+                    original_producer_maps[len(producer.inputs) + index],
+                    consumer_to_producer_map,
+                )
             )
-    fused_maps.extend(output_maps)
-    if not _covers_loops(fused_maps, loop_map.n_dims):
+    fused_maps.extend(original_consumer_output_maps)
+    if not _covers_loops(fused_maps, consumer_to_producer_map.n_dims):
         return None
     arguments.extend(consumer_body.arguments[len(consumer.inputs) :])
     # Build a detached candidate with the consumer's outputs and iteration space.
@@ -190,12 +212,17 @@ def fuse_elementwise(producer, consumer, rewriter) -> ir.Operation | None:
         # Producer linalg.index values must use producer, not consumer, coordinates.
         indices = []
         if any(isinstance(operation, linalg.IndexOp) for operation in producer_ops):
-            indices = [linalg.IndexOp(index).result for index in range(loop_map.n_dims)]
+            indices = [
+                linalg.IndexOp(index).result
+                for index in range(consumer_to_producer_map.n_dims)
+            ]
         for operation in producer_ops[:-1]:
             if isinstance(operation, linalg.IndexOp):
-                index_map = loop_map.get_submap([operation.dim.value])
+                fused_producer_index_map = consumer_to_producer_map.get_submap(
+                    [operation.dim.value]
+                )
                 mapping[operation.result] = affine.AffineApplyOp(
-                    index_map, indices
+                    fused_producer_index_map, indices
                 ).result
             else:
                 _clone(operation.operation, mapping)

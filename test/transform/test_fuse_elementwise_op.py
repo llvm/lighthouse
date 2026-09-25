@@ -1,7 +1,7 @@
 # RUN: %PYTHON %s | FileCheck %s
 
 from mlir import ir
-from mlir.dialects import affine, arith, func, linalg, transform
+from mlir.dialects import transform
 
 import lighthouse.dialects as lh_dialects
 from lighthouse import transform as lh_transform
@@ -9,28 +9,63 @@ from lighthouse.dialects.transform import transform_ext
 from lighthouse.schedule.builders import schedule_boilerplate
 
 
-def run(test):
-    print(f"Test: {test.__name__}", flush=True)
+def run(
+    name: str,
+    payload_str: str,
+    producer_index=0,
+    consumer_index=1,
+    expect_failure=False,
+):
+    """Parse a payload, fuse the selected pair, and print the verified result."""
+    print(f"Test: {name}", flush=True)
     with ir.Context(), ir.Location.unknown():
         lh_dialects.register_and_load()
-        test()
+        payload = ir.Module.parse(payload_str)
+        before = str(payload)
+        with schedule_boilerplate() as (schedule, named_seq):
+            matches = lh_transform.match_op(named_seq.bodyTarget, "linalg.generic")
+            producer = (
+                matches
+                if producer_index is None
+                else transform_ext.extract_handle(matches, producer_index)
+            )
+            consumer = (
+                lh_transform.match_op(named_seq.bodyTarget, "linalg.fill")
+                if consumer_index is None
+                else transform_ext.extract_handle(matches, consumer_index)
+            )
+            fused = transform_ext.fuse_elementwise_op(producer, consumer)
+            transform.annotate(fused, "test.fused")
+            transform.annotate(producer, "test.producer")
+            transform.yield_()
+        schedule.operation.verify()
+        ir.Module.parse(str(schedule)).operation.verify()
+        try:
+            schedule.body.operations[0].apply(payload.operation)
+        except ValueError as error:
+            assert expect_failure, error
+            assert "Failed to apply named transform sequence" in str(error), error
+            assert str(payload) == before
+            print("Fusion rejected; payload unchanged")
+        else:
+            assert not expect_failure, payload
+        payload.operation.verify()
+        print(payload)
 
 
-PAYLOAD = """
+# The consumer computes exp(-arg0) directly; the original producer is preserved.
+SIMPLE = """
+#id = affine_map<(d0) -> (d0)>
 module {
-  func.func @pair(%arg: tensor<4xf32>, %init: tensor<4xf32>) -> tensor<4xf32> {
-    %producer = linalg.generic {
-      indexing_maps = [affine_map<(d0) -> (d0)>, affine_map<(d0) -> (d0)>],
-      iterator_types = ["parallel"]
-    } ins(%arg : tensor<4xf32>) outs(%init : tensor<4xf32>) {
+  func.func @main(%arg0: tensor<4xf32>, %init: tensor<4xf32>) -> tensor<4xf32> {
+    %producer = linalg.generic {indexing_maps = [#id, #id], iterator_types = ["parallel"]}
+        ins(%arg0 : tensor<4xf32>) outs(%init : tensor<4xf32>) {
     ^bb0(%input: f32, %output: f32):
       %neg = arith.negf %input : f32
       linalg.yield %neg : f32
     } -> tensor<4xf32>
-    %consumer = linalg.generic {
-      indexing_maps = [affine_map<(d0) -> (d0)>, affine_map<(d0) -> (d0)>],
-      iterator_types = ["parallel"]
-    } ins(%producer : tensor<4xf32>) outs(%init : tensor<4xf32>) {
+    %consumer = linalg.generic {indexing_maps = [#id, #id], iterator_types = ["parallel"]}
+        ins(%producer : tensor<4xf32>) outs(%init : tensor<4xf32>) {
     ^bb0(%input: f32, %output: f32):
       %exp = math.exp %input : f32
       linalg.yield %exp : f32
@@ -40,93 +75,90 @@ module {
 }
 """
 
-
-def apply_fusion(payload, producer_index=0, consumer_index=1, expect_failure=False):
-    before = str(payload)
-    with schedule_boilerplate() as (schedule, sequence):
-        matches = lh_transform.match_op(sequence.bodyTarget, "linalg.generic")
-        producer = (
-            matches
-            if producer_index is None
-            else transform_ext.extract_handle(matches, producer_index)
-        )
-        consumer = (
-            lh_transform.match_op(sequence.bodyTarget, "linalg.fill")
-            if consumer_index is None
-            else transform_ext.extract_handle(matches, consumer_index)
-        )
-        fused = transform_ext.fuse_elementwise_op(producer, consumer)
-        transform.annotate(fused, "test.fused")
-        transform.annotate(producer, "test.producer")
-        transform.yield_()
-    assert schedule.operation.verify()
-    assert ir.Module.parse(str(schedule)).operation.verify()
-    try:
-        sequence.apply(payload)
-    except ValueError as error:
-        assert expect_failure, error
-        assert "Failed to apply named transform sequence" in str(error), error
-        assert str(payload) == before
-        print("Fusion rejected; payload unchanged")
-    else:
-        assert not expect_failure, payload
-    assert payload.operation.verify()
-    print(payload)
-
-
-def get_generics(payload):
-    return [
-        operation
-        for operation in payload.body.operations[0].regions[0].blocks[0].operations
-        if isinstance(operation, linalg.GenericOp)
-    ]
-
-
-# CHECK-LABEL: Test: test_simple
+# CHECK-LABEL: Test: simple
 # CHECK: linalg.generic
 # CHECK-SAME: test.producer
-# CHECK: linalg.generic
+# CHECK: %[[FUSED:.*]] = linalg.generic
+# CHECK-SAME: ins(%arg0 : tensor<4xf32>)
 # CHECK-SAME: test.fused
 # CHECK: %[[NEG:.*]] = arith.negf
 # CHECK-NEXT: %[[EXP:.*]] = math.exp %[[NEG]]
 # CHECK-NEXT: linalg.yield %[[EXP]]
-@run
-def test_simple():
-    payload = ir.Module.parse(PAYLOAD)
-    apply_fusion(payload)
-    generics = get_generics(payload)
-    assert len(generics) == 2, payload
-    assert all(operand not in generics[0].results for operand in generics[1].operands)
-    assert "test.fused" in generics[1].attributes
-    assert "test.producer" in generics[0].attributes
+# CHECK-NOT: linalg.generic
+# CHECK: return %[[FUSED]]
+run("simple", SIMPLE)
 
 
-# CHECK-LABEL: Test: test_shared_producer
+# Other consumers keep their original input and body.
+SHARED_PRODUCER = """
+#id = affine_map<(d0) -> (d0)>
+module {
+  func.func @main(%arg0: tensor<4xf32>, %init: tensor<4xf32>)
+      -> (tensor<4xf32>, tensor<4xf32>) {
+    %producer = linalg.generic {indexing_maps = [#id, #id], iterator_types = ["parallel"]}
+        ins(%arg0 : tensor<4xf32>) outs(%init : tensor<4xf32>) {
+    ^bb0(%input: f32, %output: f32):
+      %neg = arith.negf %input : f32
+      linalg.yield %neg : f32
+    } -> tensor<4xf32>
+    %other = linalg.generic {indexing_maps = [#id, #id], iterator_types = ["parallel"]}
+        ins(%producer : tensor<4xf32>) outs(%init : tensor<4xf32>) {
+    ^bb0(%input: f32, %output: f32):
+      %exp = math.exp %input : f32
+      linalg.yield %exp : f32
+    } -> tensor<4xf32>
+    %consumer = linalg.generic {indexing_maps = [#id, #id], iterator_types = ["parallel"]}
+        ins(%producer : tensor<4xf32>) outs(%init : tensor<4xf32>) {
+    ^bb0(%input: f32, %output: f32):
+      %exp = math.exp %input : f32
+      linalg.yield %exp : f32
+    } -> tensor<4xf32>
+    return %other, %consumer : tensor<4xf32>, tensor<4xf32>
+  }
+}
+"""
+
+# CHECK-LABEL: Test: shared_producer
 # CHECK: %[[PRODUCER:.*]] = linalg.generic
-# CHECK: linalg.generic
+# CHECK: %[[OTHER:.*]] = linalg.generic
 # CHECK-SAME: ins(%[[PRODUCER]]
-# CHECK: math.exp
-# CHECK: linalg.generic
+# CHECK-NEXT: ^bb0(%[[OTHER_INPUT:.*]]: f32, %{{.*}}: f32):
+# CHECK-NEXT: %[[OTHER_EXP:.*]] = math.exp %[[OTHER_INPUT]]
+# CHECK-NEXT: linalg.yield %[[OTHER_EXP]]
+# CHECK: %[[SHARED_FUSED:.*]] = linalg.generic
+# CHECK-SAME: ins(%arg0 : tensor<4xf32>)
 # CHECK-SAME: test.fused
 # CHECK: %[[SHARED_NEG:.*]] = arith.negf
 # CHECK-NEXT: math.exp %[[SHARED_NEG]]
-@run
-def test_shared_producer():
-    payload = ir.Module.parse(PAYLOAD)
-    producer, consumer = get_generics(payload)
-    with ir.InsertionPoint(consumer):
-        other_consumer = consumer.operation.clone()
-    other_operands = list(other_consumer.operands)
-    other_body = list(other_consumer.regions[0].blocks[0].operations)
-    apply_fusion(payload, consumer_index=2)
-    assert list(other_consumer.operands) == other_operands
-    assert list(other_consumer.regions[0].blocks[0].operations) == other_body
-    assert producer.result in other_consumer.operands
-    fused = get_generics(payload)[-1]
-    assert producer.result not in fused.operands
+# CHECK: return %[[OTHER]], %[[SHARED_FUSED]]
+run("shared_producer", SHARED_PRODUCER, consumer_index=2)
 
 
-# CHECK-LABEL: Test: test_captured_scalar
+# A scalar captured from outside the producer must remain available after fusion.
+CAPTURED_SCALAR = """
+#id = affine_map<(d0) -> (d0)>
+module {
+  func.func @main(%arg0: tensor<4xf32>, %init: tensor<4xf32>) -> tensor<4xf32> {
+    %scale = arith.constant 2.0 : f32
+    %producer = linalg.generic {indexing_maps = [#id, #id], iterator_types = ["parallel"]}
+        ins(%arg0 : tensor<4xf32>) outs(%init : tensor<4xf32>) {
+    ^bb0(%input: f32, %output: f32):
+      %neg = arith.negf %input : f32
+      %scaled = arith.mulf %neg, %scale : f32
+      linalg.yield %scaled : f32
+    } -> tensor<4xf32>
+    %consumer = linalg.generic {indexing_maps = [#id, #id], iterator_types = ["parallel"]}
+        ins(%producer : tensor<4xf32>) outs(%init : tensor<4xf32>) {
+    ^bb0(%input: f32, %output: f32):
+      %exp = math.exp %input : f32
+      linalg.yield %exp : f32
+    } -> tensor<4xf32>
+    return %consumer : tensor<4xf32>
+  }
+}
+"""
+
+# CHECK-LABEL: Test: captured_scalar
 # CHECK: %[[SCALE:.*]] = arith.constant 2.000000e+00 : f32
 # CHECK: linalg.generic
 # CHECK: linalg.generic
@@ -134,305 +166,415 @@ def test_shared_producer():
 # CHECK: %[[CAPTURED_NEG:.*]] = arith.negf
 # CHECK-NEXT: %[[SCALED:.*]] = arith.mulf %[[CAPTURED_NEG]], %[[SCALE]]
 # CHECK-NEXT: math.exp %[[SCALED]]
-@run
-def test_captured_scalar():
-    payload = ir.Module.parse(PAYLOAD)
-    producer, consumer = get_generics(payload)
-    with ir.InsertionPoint(producer):
-        scale = arith.ConstantOp(ir.F32Type.get(), 2.0).result
-    terminator = list(producer.regions[0].blocks[0].operations)[-1]
-    with ir.InsertionPoint(terminator):
-        scaled = arith.MulFOp(terminator.operands[0], scale).result
-        terminator.operands[0] = scaled
-    assert payload.operation.verify()
-    apply_fusion(payload)
-    fused = get_generics(payload)[-1]
-    multiplies = [
-        operation
-        for operation in fused.regions[0].blocks[0].operations
-        if isinstance(operation, arith.MulFOp)
-    ]
-    assert len(multiplies) == 1 and scale in multiplies[0].operands
+run("captured_scalar", CAPTURED_SCALAR)
 
 
-def parse_map(text):
-    return ir.AffineMapAttr.parse(text).value
+# Producer init values read by its body become inputs to the fused reduction.
+REDUCTION_CONSUMER = """
+#id = affine_map<(d0) -> (d0)>
+#scalar = affine_map<(d0) -> ()>
+module {
+  func.func @main(%arg0: tensor<4xf32>, %init: tensor<4xf32>, %sum: tensor<f32>)
+      -> tensor<f32> {
+    %producer = linalg.generic {indexing_maps = [#id, #id], iterator_types = ["parallel"]}
+        ins(%arg0 : tensor<4xf32>) outs(%init : tensor<4xf32>) {
+    ^bb0(%input: f32, %output: f32):
+      %neg = arith.negf %input : f32
+      %add = arith.addf %neg, %output : f32
+      linalg.yield %add : f32
+    } -> tensor<4xf32>
+    %consumer = linalg.generic {indexing_maps = [#id, #scalar], iterator_types = ["reduction"]}
+        ins(%producer : tensor<4xf32>) outs(%sum : tensor<f32>) {
+    ^bb0(%input: f32, %output: f32):
+      %add = arith.addf %input, %output : f32
+      linalg.yield %add : f32
+    } -> tensor<f32>
+    return %consumer : tensor<f32>
+  }
+}
+"""
 
-
-def make_pair(
-    input_type,
-    producer_type,
-    consumer_type,
-    producer_maps,
-    consumer_maps,
-    producer_iterators,
-    consumer_iterators,
-    index_dim=None,
-    use_init=False,
-):
-    types = [
-        ir.Type.parse(type_name)
-        for type_name in (input_type, producer_type, consumer_type)
-    ]
-    producer_result_types = (
-        [types[1]] if isinstance(types[1], ir.RankedTensorType) else []
-    )
-    result_types = [types[-1]] if isinstance(types[-1], ir.RankedTensorType) else []
-    payload = ir.Module.create()
-    with ir.InsertionPoint(payload.body):
-        function = func.FuncOp("pair", (types, result_types))
-    body = function.add_entry_block()
-    with ir.InsertionPoint(body):
-        producer = linalg.GenericOp(
-            producer_result_types,
-            [body.arguments[0]],
-            [body.arguments[1]],
-            [parse_map(indexing_map) for indexing_map in producer_maps],
-            producer_iterators,
-        )
-        producer_body = producer.regions[0].blocks.append(
-            ir.F32Type.get(), ir.F32Type.get()
-        )
-        with ir.InsertionPoint(producer_body):
-            value = arith.NegFOp(producer_body.arguments[0]).result
-            if index_dim is not None:
-                index = linalg.IndexOp(index_dim).result
-                integer = arith.IndexCastOp(
-                    ir.IntegerType.get_signless(64), index
-                ).result
-                value = arith.SIToFPOp(ir.F32Type.get(), integer).result
-            if use_init:
-                value = arith.AddFOp(value, producer_body.arguments[1]).result
-            linalg.YieldOp([value])
-        consumer_input = producer.result if producer.results else body.arguments[1]
-        consumer = linalg.GenericOp(
-            result_types,
-            [consumer_input],
-            [body.arguments[2]],
-            [parse_map(indexing_map) for indexing_map in consumer_maps],
-            consumer_iterators,
-        )
-        consumer_body = consumer.regions[0].blocks.append(
-            ir.F32Type.get(), ir.F32Type.get()
-        )
-        with ir.InsertionPoint(consumer_body):
-            value = arith.AddFOp(*consumer_body.arguments).result
-            linalg.YieldOp([value])
-        func.ReturnOp(list(consumer.results))
-    assert payload.operation.verify()
-    return payload
-
-
-# CHECK-LABEL: Test: test_reduction_consumer
+# CHECK-LABEL: Test: reduction_consumer
 # CHECK: linalg.generic
 # CHECK: linalg.generic
 # CHECK-SAME: iterator_types = ["reduction"]
+# CHECK-SAME: ins(%arg0, %arg1 : tensor<4xf32>, tensor<4xf32>) outs(%arg2 : tensor<f32>)
 # CHECK-SAME: test.fused
 # CHECK: arith.negf
 # CHECK-NEXT: arith.addf
 # CHECK-NEXT: arith.addf
 # CHECK-NEXT: linalg.yield
-@run
-def test_reduction_consumer():
-    identity = "affine_map<(d0) -> (d0)>"
-    scalar = "affine_map<(d0) -> ()>"
-    payload = make_pair(
-        "tensor<4xf32>",
-        "tensor<4xf32>",
-        "tensor<f32>",
-        [identity, identity],
-        [identity, scalar],
-        ["parallel"],
-        ["reduction"],
-        use_init=True,
-    )
-    apply_fusion(payload)
-    fused = get_generics(payload)[-1]
-    assert len(fused.inputs) == 2
-    assert len(fused.outputs) == 1
+run("reduction_consumer", REDUCTION_CONSUMER)
 
 
-# CHECK-LABEL: Test: test_permuted_maps_and_index
+# Transposing the producer result also changes its input map and index values.
+PERMUTED_MAPS_AND_INDEX = """
+#id = affine_map<(d0, d1) -> (d0, d1)>
+#transpose = affine_map<(d0, d1) -> (d1, d0)>
+module {
+  func.func @main(%arg0: tensor<2x3xf32>, %init: tensor<3x2xf32>, %out: tensor<3x2xf32>)
+      -> tensor<3x2xf32> {
+    %producer = linalg.generic {indexing_maps = [#id, #transpose], iterator_types = ["parallel", "parallel"]}
+        ins(%arg0 : tensor<2x3xf32>) outs(%init : tensor<3x2xf32>) {
+    ^bb0(%input: f32, %output: f32):
+      %index = linalg.index 0 : index
+      %integer = arith.index_cast %index : index to i64
+      %value = arith.sitofp %integer : i64 to f32
+      linalg.yield %value : f32
+    } -> tensor<3x2xf32>
+    %consumer = linalg.generic {indexing_maps = [#id, #id], iterator_types = ["parallel", "parallel"]}
+        ins(%producer : tensor<3x2xf32>) outs(%out : tensor<3x2xf32>) {
+    ^bb0(%input: f32, %output: f32):
+      %add = arith.addf %input, %output : f32
+      linalg.yield %add : f32
+    } -> tensor<3x2xf32>
+    return %consumer : tensor<3x2xf32>
+  }
+}
+"""
+
+# CHECK-LABEL: Test: permuted_maps_and_index
+# CHECK-DAG: #[[TRANSPOSE:.*]] = affine_map<(d0, d1) -> (d1, d0)>
+# CHECK-DAG: #[[INDEX_MAP:.*]] = affine_map<(d0, d1) -> (d1)>
 # CHECK: linalg.generic
 # CHECK: linalg.generic
+# CHECK-SAME: indexing_maps = [#[[TRANSPOSE]],
 # CHECK-SAME: test.fused
 # CHECK: %[[ROW:.*]] = linalg.index 0
 # CHECK-NEXT: %[[COL:.*]] = linalg.index 1
-# CHECK: affine.apply {{.*}}(%[[ROW]], %[[COL]])
-# CHECK: arith.index_cast
-# CHECK-NEXT: arith.sitofp
-@run
-def test_permuted_maps_and_index():
-    identity = "affine_map<(d0, d1) -> (d0, d1)>"
-    transpose = "affine_map<(d0, d1) -> (d1, d0)>"
-    payload = make_pair(
-        "tensor<2x3xf32>",
-        "tensor<3x2xf32>",
-        "tensor<3x2xf32>",
-        [identity, transpose],
-        [identity, identity],
-        ["parallel"] * 2,
-        ["parallel"] * 2,
-        index_dim=0,
-    )
-    apply_fusion(payload)
-    fused = get_generics(payload)[-1]
-    assert fused.indexing_maps[0].value == parse_map(transpose)
-    applications = [
-        operation
-        for operation in fused.regions[0].blocks[0].operations
-        if isinstance(operation, affine.AffineApplyOp)
-    ]
-    assert len(applications) == 1
-    assert applications[0].map.value == parse_map("affine_map<(d0, d1) -> (d1)>")
-    assert [operand.owner.dim.value for operand in applications[0].operands] == [0, 1]
+# CHECK-NEXT: %[[INDEX:.*]] = affine.apply #[[INDEX_MAP]](%[[ROW]], %[[COL]])
+# CHECK-NEXT: %[[INTEGER:.*]] = arith.index_cast %[[INDEX]]
+# CHECK-NEXT: arith.sitofp %[[INTEGER]]
+run("permuted_maps_and_index", PERMUTED_MAPS_AND_INDEX)
 
 
-# CHECK-LABEL: Test: test_affine_producer_input
+# Producer input maps may contain arithmetic; only its result map must permute dims.
+AFFINE_PRODUCER_INPUT = """
+#id = affine_map<(d0, d1) -> (d0, d1)>
+#diagonal = affine_map<(d0, d1) -> (d0 + d1)>
+module {
+  func.func @main(%arg0: tensor<7xf32>, %init: tensor<4x4xf32>, %out: tensor<4x4xf32>)
+      -> tensor<4x4xf32> {
+    %producer = linalg.generic {indexing_maps = [#diagonal, #id], iterator_types = ["parallel", "parallel"]}
+        ins(%arg0 : tensor<7xf32>) outs(%init : tensor<4x4xf32>) {
+    ^bb0(%input: f32, %output: f32):
+      %neg = arith.negf %input : f32
+      linalg.yield %neg : f32
+    } -> tensor<4x4xf32>
+    %consumer = linalg.generic {indexing_maps = [#id, #id], iterator_types = ["parallel", "parallel"]}
+        ins(%producer : tensor<4x4xf32>) outs(%out : tensor<4x4xf32>) {
+    ^bb0(%input: f32, %output: f32):
+      %add = arith.addf %input, %output : f32
+      linalg.yield %add : f32
+    } -> tensor<4x4xf32>
+    return %consumer : tensor<4x4xf32>
+  }
+}
+"""
+
+# CHECK-LABEL: Test: affine_producer_input
 # CHECK: #[[DIAGONAL:.*]] = affine_map<(d0, d1) -> (d0 + d1)>
 # CHECK: linalg.generic
 # CHECK: linalg.generic
 # CHECK-SAME: indexing_maps = [#[[DIAGONAL]],
 # CHECK-SAME: test.fused
-@run
-def test_affine_producer_input():
-    identity = "affine_map<(d0, d1) -> (d0, d1)>"
-    diagonal = "affine_map<(d0, d1) -> (d0 + d1)>"
-    payload = make_pair(
-        "tensor<7xf32>",
-        "tensor<4x4xf32>",
-        "tensor<4x4xf32>",
-        [diagonal, identity],
-        [identity, identity],
-        ["parallel"] * 2,
-        ["parallel"] * 2,
-    )
-    apply_fusion(payload)
-    assert get_generics(payload)[-1].indexing_maps[0].value == parse_map(diagonal)
+run("affine_producer_input", AFFINE_PRODUCER_INPUT)
 
 
-# CHECK-LABEL: Test: test_legality_checks
-# CHECK-COUNT-3: Fusion rejected; payload unchanged
+# Removing the broadcast result would lose the consumer's reduction bound.
+MISSING_REDUCTION_BOUND = """
+#id = affine_map<(d0) -> (d0)>
+#scalar = affine_map<(d0) -> ()>
+module {
+  func.func @main(%arg0: tensor<f32>, %init: tensor<4xf32>, %sum: tensor<f32>)
+      -> tensor<f32> {
+    %producer = linalg.generic {indexing_maps = [#scalar, #id], iterator_types = ["parallel"]}
+        ins(%arg0 : tensor<f32>) outs(%init : tensor<4xf32>) {
+    ^bb0(%input: f32, %output: f32):
+      %neg = arith.negf %input : f32
+      linalg.yield %neg : f32
+    } -> tensor<4xf32>
+    %consumer = linalg.generic {indexing_maps = [#id, #scalar], iterator_types = ["reduction"]}
+        ins(%producer : tensor<4xf32>) outs(%sum : tensor<f32>) {
+    ^bb0(%input: f32, %output: f32):
+      %add = arith.addf %input, %output : f32
+      linalg.yield %add : f32
+    } -> tensor<f32>
+    return %consumer : tensor<f32>
+  }
+}
+"""
+
+# CHECK-LABEL: Test: missing_reduction_bound
+# CHECK: Fusion rejected; payload unchanged
 # CHECK-NOT: test.fused
-@run
-def test_legality_checks():
-    identity = "affine_map<(d0) -> (d0)>"
-    scalar = "affine_map<(d0) -> ()>"
-    payload = make_pair(
-        "tensor<f32>",
-        "tensor<4xf32>",
-        "tensor<f32>",
-        [scalar, identity],
-        [identity, scalar],
-        ["parallel"],
-        ["reduction"],
-    )
-    apply_fusion(payload, expect_failure=True)
-    payload = make_pair(
-        "tensor<4xf32>",
-        "tensor<f32>",
-        "tensor<f32>",
-        [identity, scalar],
-        ["affine_map<() -> ()>"] * 2,
-        ["reduction"],
-        [],
-        use_init=True,
-    )
-    apply_fusion(payload, expect_failure=True)
-    payload = make_pair(
-        "tensor<4xf32>",
-        "tensor<4x1xf32>",
-        "tensor<4x1xf32>",
-        [identity, "affine_map<(d0) -> (d0, 0)>"],
-        ["affine_map<(d0, d1) -> (d0, d1)>"] * 2,
-        ["parallel"],
-        ["parallel"] * 2,
-    )
-    apply_fusion(payload, expect_failure=True)
+run("missing_reduction_bound", MISSING_REDUCTION_BOUND, expect_failure=True)
 
 
-# CHECK-LABEL: Test: test_rejections
-# CHECK-COUNT-6: Fusion rejected; payload unchanged
+# The producer must have only parallel loops.
+REDUCTION_PRODUCER = """
+#id = affine_map<(d0) -> (d0)>
+#scalar = affine_map<(d0) -> ()>
+#scalar_id = affine_map<() -> ()>
+module {
+  func.func @main(%arg0: tensor<4xf32>, %init: tensor<f32>, %out: tensor<f32>)
+      -> tensor<f32> {
+    %producer = linalg.generic {indexing_maps = [#id, #scalar], iterator_types = ["reduction"]}
+        ins(%arg0 : tensor<4xf32>) outs(%init : tensor<f32>) {
+    ^bb0(%input: f32, %output: f32):
+      %neg = arith.negf %input : f32
+      %add = arith.addf %neg, %output : f32
+      linalg.yield %add : f32
+    } -> tensor<f32>
+    %consumer = linalg.generic {indexing_maps = [#scalar_id, #scalar_id], iterator_types = []}
+        ins(%producer : tensor<f32>) outs(%out : tensor<f32>) {
+    ^bb0(%input: f32, %output: f32):
+      %add = arith.addf %input, %output : f32
+      linalg.yield %add : f32
+    } -> tensor<f32>
+    return %consumer : tensor<f32>
+  }
+}
+"""
+
+# CHECK-LABEL: Test: reduction_producer
+# CHECK: Fusion rejected; payload unchanged
 # CHECK-NOT: test.fused
-@run
-def test_rejections():
-    for producer_index, consumer_index in [(None, 1), (0, None), (1, 0), (0, 0)]:
-        apply_fusion(
-            ir.Module.parse(PAYLOAD),
-            producer_index,
-            consumer_index,
-            expect_failure=True,
-        )
-    payload = ir.Module.parse(PAYLOAD)
-    producer, consumer = get_generics(payload)
-    consumer.operands[0] = producer.inputs[0]
-    apply_fusion(payload, expect_failure=True)
-    payload = ir.Module.parse(PAYLOAD)
-    producer, consumer = get_generics(payload)
-    consumer.operands[0] = producer.inputs[0]
-    consumer.operands[1] = producer.result
-    apply_fusion(payload, expect_failure=True)
+run("reduction_producer", REDUCTION_PRODUCER, expect_failure=True)
 
 
-# CHECK-LABEL: Test: test_tensor_semantics
+# The accessed tensor rank must match the producer's number of loops.
+RANK_MISMATCH = """
+#id = affine_map<(d0) -> (d0)>
+#expand = affine_map<(d0) -> (d0, 0)>
+#id2 = affine_map<(d0, d1) -> (d0, d1)>
+module {
+  func.func @main(%arg0: tensor<4xf32>, %init: tensor<4x1xf32>, %out: tensor<4x1xf32>)
+      -> tensor<4x1xf32> {
+    %producer = linalg.generic {indexing_maps = [#id, #expand], iterator_types = ["parallel"]}
+        ins(%arg0 : tensor<4xf32>) outs(%init : tensor<4x1xf32>) {
+    ^bb0(%input: f32, %output: f32):
+      %neg = arith.negf %input : f32
+      linalg.yield %neg : f32
+    } -> tensor<4x1xf32>
+    %consumer = linalg.generic {indexing_maps = [#id2, #id2], iterator_types = ["parallel", "parallel"]}
+        ins(%producer : tensor<4x1xf32>) outs(%out : tensor<4x1xf32>) {
+    ^bb0(%input: f32, %output: f32):
+      %add = arith.addf %input, %output : f32
+      linalg.yield %add : f32
+    } -> tensor<4x1xf32>
+    return %consumer : tensor<4x1xf32>
+  }
+}
+"""
+
+# CHECK-LABEL: Test: rank_mismatch
+# CHECK: Fusion rejected; payload unchanged
+# CHECK-NOT: test.fused
+run("rank_mismatch", RANK_MISMATCH, expect_failure=True)
+
+
+# Invalid handle selections use the same simple payload.
+# CHECK-LABEL: Test: multiple_producers
+# CHECK: Fusion rejected; payload unchanged
+# CHECK-NOT: test.fused
+run("multiple_producers", SIMPLE, producer_index=None, expect_failure=True)
+
+# CHECK-LABEL: Test: empty_consumer
+# CHECK: Fusion rejected; payload unchanged
+# CHECK-NOT: test.fused
+run("empty_consumer", SIMPLE, consumer_index=None, expect_failure=True)
+
+# CHECK-LABEL: Test: reversed_pair
+# CHECK: Fusion rejected; payload unchanged
+# CHECK-NOT: test.fused
+run("reversed_pair", SIMPLE, producer_index=1, consumer_index=0, expect_failure=True)
+
+# CHECK-LABEL: Test: same_operation
+# CHECK: Fusion rejected; payload unchanged
+# CHECK-NOT: test.fused
+run("same_operation", SIMPLE, consumer_index=0, expect_failure=True)
+
+
+# Independent operations have no producer-to-consumer input edge.
+UNRELATED_PAIR = """
+#id = affine_map<(d0) -> (d0)>
+module {
+  func.func @main(%arg0: tensor<4xf32>, %init: tensor<4xf32>) -> tensor<4xf32> {
+    %producer = linalg.generic {indexing_maps = [#id, #id], iterator_types = ["parallel"]}
+        ins(%arg0 : tensor<4xf32>) outs(%init : tensor<4xf32>) {
+    ^bb0(%input: f32, %output: f32):
+      %neg = arith.negf %input : f32
+      linalg.yield %neg : f32
+    } -> tensor<4xf32>
+    %consumer = linalg.generic {indexing_maps = [#id, #id], iterator_types = ["parallel"]}
+        ins(%arg0 : tensor<4xf32>) outs(%init : tensor<4xf32>) {
+    ^bb0(%input: f32, %output: f32):
+      %exp = math.exp %input : f32
+      linalg.yield %exp : f32
+    } -> tensor<4xf32>
+    return %consumer : tensor<4xf32>
+  }
+}
+"""
+
+# CHECK-LABEL: Test: unrelated_pair
+# CHECK: Fusion rejected; payload unchanged
+# CHECK-NOT: test.fused
+run("unrelated_pair", UNRELATED_PAIR, expect_failure=True)
+
+
+# Fusion through the consumer's destination/init operand is unsupported.
+PRODUCER_AS_INIT = """
+#id = affine_map<(d0) -> (d0)>
+module {
+  func.func @main(%arg0: tensor<4xf32>, %init: tensor<4xf32>) -> tensor<4xf32> {
+    %producer = linalg.generic {indexing_maps = [#id, #id], iterator_types = ["parallel"]}
+        ins(%arg0 : tensor<4xf32>) outs(%init : tensor<4xf32>) {
+    ^bb0(%input: f32, %output: f32):
+      %neg = arith.negf %input : f32
+      linalg.yield %neg : f32
+    } -> tensor<4xf32>
+    %consumer = linalg.generic {indexing_maps = [#id, #id], iterator_types = ["parallel"]}
+        ins(%arg0 : tensor<4xf32>) outs(%producer : tensor<4xf32>) {
+    ^bb0(%input: f32, %output: f32):
+      %exp = math.exp %input : f32
+      linalg.yield %exp : f32
+    } -> tensor<4xf32>
+    return %consumer : tensor<4xf32>
+  }
+}
+"""
+
+# CHECK-LABEL: Test: producer_as_init
+# CHECK: Fusion rejected; payload unchanged
+# CHECK-NOT: test.fused
+run("producer_as_init", PRODUCER_AS_INIT, expect_failure=True)
+
+
+# Buffer operations have no tensor-result edge to fuse.
+BUFFER_SEMANTICS = """
+#id = affine_map<(d0) -> (d0)>
+module {
+  func.func @main(%arg0: memref<4xf32>, %init: memref<4xf32>, %out: memref<4xf32>) {
+    linalg.generic {indexing_maps = [#id, #id], iterator_types = ["parallel"]}
+        ins(%arg0 : memref<4xf32>) outs(%init : memref<4xf32>) {
+    ^bb0(%input: f32, %output: f32):
+      %neg = arith.negf %input : f32
+      linalg.yield %neg : f32
+    }
+    linalg.generic {indexing_maps = [#id, #id], iterator_types = ["parallel"]}
+        ins(%init : memref<4xf32>) outs(%out : memref<4xf32>) {
+    ^bb0(%input: f32, %output: f32):
+      %add = arith.addf %input, %output : f32
+      linalg.yield %add : f32
+    }
+    return
+  }
+}
+"""
+
+# CHECK-LABEL: Test: buffer_semantics
 # CHECK: Fusion rejected; payload unchanged
 # CHECK: memref<4xf32>
 # CHECK-NOT: test.fused
-@run
-def test_tensor_semantics():
-    identity = "affine_map<(d0) -> (d0)>"
-    payload = make_pair(
-        "memref<4xf32>",
-        "memref<4xf32>",
-        "memref<4xf32>",
-        [identity] * 2,
-        [identity] * 2,
-        ["parallel"],
-        ["parallel"],
-    )
-    apply_fusion(payload, expect_failure=True)
+run("buffer_semantics", BUFFER_SEMANTICS, expect_failure=True)
 
 
-# CHECK-LABEL: Test: test_non_permutation_result_map
+# A same-rank result map containing a constant is not a permutation.
+NON_PERMUTATION_RESULT_MAP = """
+#id = affine_map<(d0, d1) -> (d0, d1)>
+#project = affine_map<(d0, d1) -> (d0, 0)>
+module {
+  func.func @main(%arg0: tensor<4x1xf32>, %init: tensor<4x1xf32>, %out: tensor<4x1xf32>)
+      -> tensor<4x1xf32> {
+    %producer = linalg.generic {indexing_maps = [#id, #project], iterator_types = ["parallel", "parallel"]}
+        ins(%arg0 : tensor<4x1xf32>) outs(%init : tensor<4x1xf32>) {
+    ^bb0(%input: f32, %output: f32):
+      %neg = arith.negf %input : f32
+      linalg.yield %neg : f32
+    } -> tensor<4x1xf32>
+    %consumer = linalg.generic {indexing_maps = [#id, #id], iterator_types = ["parallel", "parallel"]}
+        ins(%producer : tensor<4x1xf32>) outs(%out : tensor<4x1xf32>) {
+    ^bb0(%input: f32, %output: f32):
+      %add = arith.addf %input, %output : f32
+      linalg.yield %add : f32
+    } -> tensor<4x1xf32>
+    return %consumer : tensor<4x1xf32>
+  }
+}
+"""
+
+# CHECK-LABEL: Test: non_permutation_result_map
 # CHECK: Fusion rejected; payload unchanged
 # CHECK-NOT: test.fused
-@run
-def test_non_permutation_result_map():
-    identity = "affine_map<(d0, d1) -> (d0, d1)>"
-    payload = make_pair(
-        "tensor<4x1xf32>",
-        "tensor<4x1xf32>",
-        "tensor<4x1xf32>",
-        [identity, "affine_map<(d0, d1) -> (d0, 0)>"],
-        [identity] * 2,
-        ["parallel"] * 2,
-        ["parallel"] * 2,
-    )
-    apply_fusion(payload, expect_failure=True)
+run("non_permutation_result_map", NON_PERMUTATION_RESULT_MAP, expect_failure=True)
 
 
-# CHECK-LABEL: Test: test_zero_rank_and_dynamic_shapes
+# Rank-zero tensors need no loop dimensions or index remapping.
+ZERO_RANK = """
+#scalar = affine_map<() -> ()>
+module {
+  func.func @main(%arg0: tensor<f32>, %init: tensor<f32>, %out: tensor<f32>)
+      -> tensor<f32> {
+    %producer = linalg.generic {indexing_maps = [#scalar, #scalar], iterator_types = []}
+        ins(%arg0 : tensor<f32>) outs(%init : tensor<f32>) {
+    ^bb0(%input: f32, %output: f32):
+      %neg = arith.negf %input : f32
+      linalg.yield %neg : f32
+    } -> tensor<f32>
+    %consumer = linalg.generic {indexing_maps = [#scalar, #scalar], iterator_types = []}
+        ins(%producer : tensor<f32>) outs(%out : tensor<f32>) {
+    ^bb0(%input: f32, %output: f32):
+      %add = arith.addf %input, %output : f32
+      linalg.yield %add : f32
+    } -> tensor<f32>
+    return %consumer : tensor<f32>
+  }
+}
+"""
+
+# CHECK-LABEL: Test: zero_rank
 # CHECK: linalg.generic
 # CHECK: linalg.generic
-# CHECK-SAME: tensor<f32>
+# CHECK-SAME: iterator_types = []
+# CHECK-SAME: ins(%arg0 : tensor<f32>)
 # CHECK-SAME: test.fused
+# CHECK: arith.negf
+# CHECK-NEXT: arith.addf
+# CHECK-NEXT: linalg.yield
+run("zero_rank", ZERO_RANK)
+
+
+# Dynamic extents remain recoverable from the fused operands.
+DYNAMIC_SHAPES = """
+#id = affine_map<(d0) -> (d0)>
+module {
+  func.func @main(%arg0: tensor<?xf32>, %init: tensor<?xf32>, %out: tensor<?xf32>)
+      -> tensor<?xf32> {
+    %producer = linalg.generic {indexing_maps = [#id, #id], iterator_types = ["parallel"]}
+        ins(%arg0 : tensor<?xf32>) outs(%init : tensor<?xf32>) {
+    ^bb0(%input: f32, %output: f32):
+      %neg = arith.negf %input : f32
+      linalg.yield %neg : f32
+    } -> tensor<?xf32>
+    %consumer = linalg.generic {indexing_maps = [#id, #id], iterator_types = ["parallel"]}
+        ins(%producer : tensor<?xf32>) outs(%out : tensor<?xf32>) {
+    ^bb0(%input: f32, %output: f32):
+      %add = arith.addf %input, %output : f32
+      linalg.yield %add : f32
+    } -> tensor<?xf32>
+    return %consumer : tensor<?xf32>
+  }
+}
+"""
+
+# CHECK-LABEL: Test: dynamic_shapes
 # CHECK: linalg.generic
 # CHECK: linalg.generic
-# CHECK-SAME: tensor<?xf32>
+# CHECK-SAME: ins(%arg0 : tensor<?xf32>)
 # CHECK-SAME: test.fused
-@run
-def test_zero_rank_and_dynamic_shapes():
-    for tensor_type, identity, iterators in (
-        ("tensor<f32>", "affine_map<() -> ()>", []),
-        ("tensor<?xf32>", "affine_map<(d0) -> (d0)>", ["parallel"]),
-    ):
-        payload = make_pair(
-            tensor_type,
-            tensor_type,
-            tensor_type,
-            [identity] * 2,
-            [identity] * 2,
-            iterators,
-            iterators,
-        )
-        apply_fusion(payload)
+# CHECK: arith.negf
+# CHECK-NEXT: arith.addf
+# CHECK-NEXT: linalg.yield
+run("dynamic_shapes", DYNAMIC_SHAPES)
