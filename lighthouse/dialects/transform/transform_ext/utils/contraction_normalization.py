@@ -305,6 +305,8 @@ def _emit_scale(contraction: ir.OpView, scale_info: ScaleInfo, downstream: list[
 
 def _empty_like(value: ir.Value) -> ir.Value:
     shaped = ir.ShapedType(value.type)
+    # A dynamic dim would need a `tensor.dim` to size the empty; not supported yet.
+    assert shaped.has_static_shape, f"expected a static shape, got {value.type}"
     return tensor.empty(
         [shaped.get_dim_size(i) for i in range(shaped.rank)], shaped.element_type
     )
