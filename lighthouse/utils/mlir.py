@@ -314,9 +314,9 @@ def is_linalg_all_loops_parallel(op: ir.Operation | ir.OpView) -> bool:
 def is_linalg_eltwise_op(op: ir.Operation | ir.OpView) -> bool:
     """Return True if it is an elementwise linalg operation."""
     ov = opview(op)
-    return ov.operation.name == "linalg.elementwise" or (
-        isinstance(ov, linalg.GenericOp) and is_linalg_all_loops_parallel(ov)
-    )
+    if isinstance(ov, linalg.ElementwiseOp):
+        return True
+    return isinstance(ov, linalg.GenericOp) and is_linalg_all_loops_parallel(ov)
 
 
 def op_users(value: ir.Value) -> list[ir.Operation]:
