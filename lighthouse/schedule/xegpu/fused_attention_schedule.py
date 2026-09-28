@@ -177,6 +177,17 @@ def bundle_xegpu_fused_attention_schedule(
     func = apply_registered_pass(func, "linalg-fuse-elementwise-ops")
     lh_transform.cleanup(func)
 
+    # Payloads write the softmax in the conventional order, with the normalizing
+    # divide before the `@V` contraction, and the pass above fuse that divide into
+    # the contraction's body. Move it past the contraction, so the op sequence is
+    # amenable to flash attention style fusion.
+    contraction_ops = transform_ext.filter_contraction_ops(
+        structured.structured_match(anytype, func, ops=["linalg.generic"])
+    )
+    pv_contraction = transform_ext.extract_handle(contraction_ops, -1)
+    transform_ext.sink_normalization_past_contraction(pv_contraction)
+    lh_transform.cleanup(func)
+
     # Apply WG tiling
     wg_tile = layer_params["wg_tile"]
     for wg in wg_tile[:-1]:
@@ -252,8 +263,17 @@ def bundle_xegpu_fused_attention_schedule(
     )
     v = transform_ext.extract_handle(pv_extract_slice_producers, 0)
 
-    # Replace the P@V batch matmul with a loop over the K/V sequence length that
-    # implements online softmax, fusing Q@K^T and the softmax into it.
+    # Replace the region's result with a loop over the K/V sequence length that
+    # implements online softmax, fusing Q@K^T and the softmax into it. The emitted
+    # loop ends in `acc / l`, so what it replaces is the normalizing divide the sink
+    # above moved past the contraction -- the contraction's only consumer. The
+    # contraction and the rest of the softmax chain are then dead and DCE'd. (Once
+    # the reduction fusion replaces this op, the sunk chain is folded into a loop
+    # directly instead of being rebuilt from q/k/v.)
+    normalize_op = transform.get_consumers_of_result(anytype, pv_matmul, 0)
+    # P keeps the narrow element type the DPAS needs, which `normalize_op` does not
+    # carry: it reads the contraction's (f32) accumulator.
+    p = transform.get_producer_of_operand(anytype, pv_matmul, 0)
     reduction_tile = layer_params[
         "reduction_tile"
     ]  # Tile size for reduction dimension (K/V sequence length)
@@ -261,8 +281,9 @@ def bundle_xegpu_fused_attention_schedule(
         q=q,
         k=k,
         v=v,
+        p=p,
         scale=scale_const_op,
-        output=pv_matmul,
+        replaced=normalize_op,
         tile_size=reduction_tile,
     )
     transform.apply_cse(func)
