@@ -193,6 +193,7 @@ def fuse_elementwise(producer, consumer, rewriter) -> ir.Operation | None:
         return None
     arguments.extend(consumer_body.arguments[len(consumer.inputs) :])
     # Build a detached candidate with the consumer's outputs and iteration space.
+    # TODO: Propagate relevant discardable attributes to the fused op.
     fused = linalg.GenericOp(
         [value.type for value in consumer.results],
         inputs,
