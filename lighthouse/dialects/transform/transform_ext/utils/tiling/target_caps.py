@@ -1,10 +1,21 @@
 from mlir import ir
 from mlir.dialects import linalg
 
-from lighthouse.execution.target import TargetInfo
+from lighthouse.execution.target import RegisterInfo, TargetInfo
 from lighthouse.utils.mlir import linalg_inputs, linalg_outputs, opview
 
 from .common import largest_divisor, parallel_and_reduction_dims
+
+# Rough upper bound on independent vector accumulators hiding the combiner latency.
+# TODO: Derive from the combiner kind, element type and target.
+_REDUCTION_ACC_CHAINS = 8
+
+
+def register_info(target: TargetInfo | None) -> RegisterInfo:
+    """Vector register bank of the target; AVX-512 (32 x 512-bit) by default."""
+    return (target and target.vector_register_info()) or RegisterInfo(
+        width_bits=512, count=32
+    )
 
 
 def _contraction_operand_types(
@@ -54,13 +65,9 @@ def is_f32_contraction(op: ir.Operation | ir.OpView) -> bool:
     return types is not None and all(isinstance(t, ir.F32Type) for t in types)
 
 
-def vector_lane_count(target: TargetInfo | None, elem_type: ir.Type) -> int:
-    """SIMD lane count for a single vector register; does not include the full register bank."""
-    vector_bits = (
-        target.vector_register_width_bits
-        if target is not None and target.vector_register_width_bits is not None
-        else 512
-    )
+def storage_lane_count(target: TargetInfo | None, elem_type: ir.Type) -> int:
+    """SIMD lanes of one register at the storage width of `elem_type`."""
+    vector_bits = register_info(target).width_bits
     if isinstance(elem_type, (ir.FloatType, ir.IntegerType)):
         return max(1, vector_bits // max(1, elem_type.width))
     return 16
@@ -108,10 +115,15 @@ def generic_parallel_tiles(
     if not parallel_dims:
         return []
     out_type = ir.ShapedType(linalg_outputs(op)[0].type)
-    vector_width = vector_lane_count(target, out_type.element_type)
+    vector_width = storage_lane_count(target, out_type.element_type)
     return _vector_tiles(out_type.shape, vector_width)
 
 
 def generic_reduction_tiles() -> list[int]:
     """Default reduction tile for ops without a microkernel profile."""
     return [1]
+
+
+def reduction_acc_chains(target: TargetInfo | None) -> int:
+    """Independent accumulators, capped to leave room for loads/temporaries."""
+    return max(1, min(_REDUCTION_ACC_CHAINS, register_info(target).count // 2))

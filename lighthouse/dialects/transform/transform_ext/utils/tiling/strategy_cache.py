@@ -2,11 +2,16 @@ from mlir import ir
 from mlir.dialects import linalg
 
 from lighthouse.execution.target import TargetInfo
-from lighthouse.utils.mlir import linalg_outputs, opview, is_linalg_eltwise_op
+from lighthouse.utils.mlir import (
+    is_linalg_eltwise_op,
+    is_linalg_reduction_op,
+    linalg_outputs,
+    opview,
+)
 
 from .strategy_base import StrategyContext, TilingStrategy
 from .common import disable_small_tiles, parallel_and_reduction_dims
-from .target_caps import vector_lane_count
+from .target_caps import storage_lane_count
 
 
 class EltwiseCacheTiling:
@@ -150,7 +155,7 @@ class EltwiseCacheTiling:
         fast_axis = rank - 1
 
         tiles = [1] * rank
-        vector_width = vector_lane_count(target, out_type.element_type)
+        vector_width = storage_lane_count(target, out_type.element_type)
         fast_extent = planning_shape[fast_axis]
         candidate_fast = max(
             vector_width,
@@ -196,6 +201,23 @@ class CacheTilingStrategy(TilingStrategy):
 
     _PARALLEL_TILE_DIMS = 2
 
+    @staticmethod
+    def _reduction_op_tiles(op: ir.OpView, ctx: StrategyContext) -> list[int] | None:
+        """Cache tiles of a non-contraction reduction; reduced dims stay whole.
+
+        Parallel dims get the tiles of an elementwise op over the result.
+        """
+        out_map = TilingStrategy.output_map(op)
+        if out_map is None:
+            return None
+        tiles = EltwiseCacheTiling.choose_parallel_tile_shape(op, ctx.target)
+        sizes = [0] * out_map.n_dims
+        for expr, tile in zip(out_map.results, tiles):
+            if isinstance(expr, ir.AffineDimExpr):
+                sizes[expr.position] = tile
+        disable_small_tiles(op, out_map, sizes, ctx.tile_size)
+        return sizes
+
     def compute(
         self, op: ir.Operation | ir.OpView, ctx: StrategyContext
     ) -> list[int] | None:
@@ -222,6 +244,8 @@ class CacheTilingStrategy(TilingStrategy):
                 sizes[dim] = value
             disable_small_tiles(ov, out_map, sizes, ctx.tile_size)
             return sizes
+        if is_linalg_reduction_op(ov):
+            return self._reduction_op_tiles(ov, ctx)
 
         out_map = self.output_map(ov)
         if out_map is None:

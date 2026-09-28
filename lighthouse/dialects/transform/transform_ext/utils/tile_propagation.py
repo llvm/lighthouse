@@ -6,6 +6,7 @@ from lighthouse.utils.mlir import (
     opview,
     indexing_maps,
     dim_position,
+    is_linalg_reduction_op,
     linalg_inputs,
     linalg_outputs,
 )
@@ -15,15 +16,22 @@ from lighthouse.dialects.transform.transform_ext.utils import fusion_analysis as
 def is_propagatable(op: ir.Operation | ir.OpView) -> bool:
     """Check whether tile sizes may be propagated onto this op.
 
-    True for any structured linalg op that is not a fusion barrier; non-linalg
-    ops have no indexing maps to translate tiles through and are excluded.
+    True for structured linalg ops that are neither fusion barriers nor
+    non-contraction reductions. Non-linalg ops have no indexing maps to
+    translate tiles through. Reductions are anchored by their own strategy, as
+    tiles derived from neighbours (e.g. a GEMM register tile) can be a poor fit
+    for them; their own tiles still propagate to their neighbours.
 
     Args:
         op: Candidate op to annotate.
     Returns:
         True if `op` can receive propagated tile sizes.
     """
-    return indexing_maps(op) is not None and not fa.is_fusion_barrier(op)
+    return (
+        indexing_maps(op) is not None
+        and not fa.is_fusion_barrier(op)
+        and not is_linalg_reduction_op(op)
+    )
 
 
 def _map_for_value(
@@ -91,6 +99,25 @@ def tiles_on_value(
         if pos is not None and pos < len(sizes):
             tiles[tensor_dim] = sizes[pos]
     return tiles
+
+
+def tiles_beyond_value(
+    op: ir.Operation | ir.OpView, sizes: Sequence[int], value: ir.Value
+) -> bool:
+    """Whether `op`, tiled by `sizes`, tiles a loop dim that `value` does not
+    index (e.g. the columns of a consumer of a row reduction's result).
+
+    Fused into such a tile loop, the producer of `value` is recomputed per tile.
+    """
+    ov = opview(op)
+    maps = indexing_maps(ov)
+    if maps is None:
+        return False
+    value_map = _map_for_value(ov, value, maps)
+    if value_map is None:
+        return False
+    indexed = {dim_position(expr) for expr in value_map.results}
+    return any(size and dim not in indexed for dim, size in enumerate(sizes))
 
 
 def compatible_on_value(
