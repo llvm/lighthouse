@@ -3,7 +3,7 @@ from mlir.dialects import ext, transform
 from mlir.dialects.transform import DiagnosedSilenceableFailure
 
 from lighthouse.dialects.transform.transform_ext import TransformExtensionDialect
-from lighthouse.dialects.transform.transform_ext.ops.fuse_elementwise_op_impl import (
+from lighthouse.dialects.transform.transform_ext.utils.elementwise_fusion import (
     fuse_elementwise,
 )
 
