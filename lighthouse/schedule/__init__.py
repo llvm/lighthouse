@@ -8,6 +8,7 @@ from .packing import block_pack_matmuls
 from .tiling import tile_ops
 from .vectorization import flatten_vector_ops
 from .vectorization import simplify_vector_ops
+from .vectorization import lower_vector_multi_reductions
 from .vectorization import vectorize_linalg
 from .vectorization import vectorize_all
 from .vectorization import x86_vectorization
@@ -24,6 +25,7 @@ __all__ = [
     "flatten_vector_ops",
     "hoist_loops",
     "linalg_contract_fold_unit_dims",
+    "lower_vector_multi_reductions",
     "parallelize",
     "print_ir",
     "schedule_boilerplate",

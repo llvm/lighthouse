@@ -9,6 +9,7 @@ Pipeline:
   - schedule: "x86/amx_move_offsets.py[gen=amx_move_offsets]"
   - schedule: "vectorization.py[gen=x86_vectorization]"
   - schedule: "vectorization.py[gen=vectorize_all]"
+  - schedule: "vectorization.py[gen=lower_vector_multi_reductions]"
   - schedule: "vectorization.py[gen=flatten_vector_ops]"
 
   ## Lower to LLVM

@@ -6,7 +6,11 @@ Pipeline:
   - pass: "lower-affine"
   - pass: "finalize-memref-to-llvm"
   - pass: "convert-scf-to-cf"
-  - pass: "convert-vector-to-llvm{vector-contract-lowering=outerproduct}"
+  - pass: "convert-vector-to-llvm{
+      vector-contract-lowering=outerproduct
+      reassociate-fp-reductions=1
+    }"
+  - pass: "math-expand-ops{ops=fpowi}"
   - pass: "convert-math-to-llvm"
   - pass: "convert-math-to-libm"
   - pass: "convert-to-llvm"
