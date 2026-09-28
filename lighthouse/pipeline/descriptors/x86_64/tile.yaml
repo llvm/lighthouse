@@ -4,6 +4,11 @@ Pipeline:
       strategy=$strategy
       propagate=$propagate
     }"
+  # Not propagated: whole reduced dims would spread to the neighbours.
+  - schedule: "tile_and_fuse.py[gen=assign_reduction_tile_sizes]{
+      strategy=$strategy
+      propagate=False
+    }"
   - schedule: "tile_and_fuse.py[gen=assign_elementwise_tile_sizes]{
       strategy=$strategy
       propagate=$propagate

@@ -36,6 +36,10 @@ Pipeline:
   - include: cleanup.yaml
 
   ## Reduction register tiles: annotate K-like dims and tile ops individually.
+  - include: fuse-reductions.yaml {
+                          strategy=register_reduction
+                          use_forall=False
+                        }
   - include: tile.yaml {
                           strategy=register_reduction
                           propagate=False

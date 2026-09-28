@@ -1,0 +1,10 @@
+# Specialized CPU tiling and fusion for non-contraction reductions.
+Pipeline:
+  - schedule: "tile_and_fuse.py[gen=assign_reduction_tile_sizes]{
+      strategy=$strategy
+      propagate=False
+    }"
+  - schedule: "tile_and_fuse.py[gen=tile_and_fuse_annotated]{
+      use_forall=$use_forall
+      candidate_filter=non_contraction_reductions
+    }"

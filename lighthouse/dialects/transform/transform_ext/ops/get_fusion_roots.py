@@ -6,7 +6,7 @@ from lighthouse.dialects.transform.transform_ext import TransformExtensionDialec
 from lighthouse.dialects.transform.transform_ext.utils import tile_size_analysis as tsa
 from lighthouse.dialects.transform.transform_ext.utils import fusion_analysis as fa
 from lighthouse.dialects.transform.transform_ext.utils import tile_propagation as tp
-from lighthouse.utils.mlir import op_users
+from lighthouse.utils.mlir import is_linalg_reduction_op, op_users
 
 
 class GetFusionRootsOp(TransformExtensionDialect.Operation, name="get_fusion_roots"):
@@ -48,11 +48,18 @@ class GetFusionRootsOp(TransformExtensionDialect.Operation, name="get_fusion_roo
         """Check whether `consumer` shares `producer`'s fusion group across `shared` tensor."""
         if fa.is_fusion_boundary(consumer):
             return False
+        consumer_sizes = tsa.get_tile_sizes_attr(consumer)
+        # A reduction fused into a consumer tiled along dims its result is
+        # broadcast over would be recomputed per tile (a full pass each).
+        if is_linalg_reduction_op(producer) and tp.tiles_beyond_value(
+            consumer, consumer_sizes, shared
+        ):
+            return False
         return tp.compatible_on_value(
             producer,
             tsa.get_tile_sizes_attr(producer),
             consumer,
-            tsa.get_tile_sizes_attr(consumer),
+            consumer_sizes,
             shared,
         )
 
