@@ -238,7 +238,16 @@ def tile_and_unroll_annotated(
     target_op: str | list[str] | None = None,
     clear_annotations: bool = True,
 ) -> ir.Module:
-    """Tile annotated ops and fully unroll the loops created by tiling."""
+    """
+    Tile annotated ops and fully unroll the loops created by tiling.
+    Loops of dynamic trip count are left rolled.
+
+    Args:
+        target_op: Candidate op(s) to consider. Defaults to all linalg ops.
+        clear_annotations: Clear the annotations from the tiled and unrolled ops.
+    Returns:
+        Schedule
+    """
     if target_op is None:
         target_op = structured.MatchInterfaceEnum.LinalgOp
 
@@ -256,7 +265,15 @@ def tile_and_unroll_annotated(
                 transform_ext.clear_tile_and_fuse_annotations(loops)
             inner_to_outer = transform_ext.reverse_handles(loops)
             with lh_transform.foreach(inner_to_outer) as handle:
-                loop.loop_unroll_full(handle)
+                # Unrolling fails only on a dynamic trip count.
+                # Supress failure to allow partial unrolling and avoid
+                # blocking further transformations.
+                sequence = transform.SequenceOp(
+                    transform.FailurePropagationMode.Suppress, [], handle
+                )
+                with ir.InsertionPoint(sequence.body):
+                    loop.loop_unroll_full(sequence.bodyTarget)
+                    transform.yield_()
                 transform.yield_()
             transform.yield_()
         transform.yield_()
