@@ -153,3 +153,72 @@ def test_negative_non_minor_identity(payload_handle):
     # CHECK-NOT: memref.subview
     # CHECK: vector.transfer_read
     transform.print_()
+
+
+def payload_read_dynamic_shape():
+    mod = ir.Module.parse(
+        r"""
+func.func @negative_dynamic_shape(%arg0: memref<?x4096x4096xbf16>) -> vector<32x32xbf16> {
+    %c8 = arith.constant 8 : index
+    %c16 = arith.constant 16 : index
+    %cst = arith.constant 0.000000e+00 : bf16
+    %0 = vector.transfer_read %arg0[%c16, %c8, %c16], %cst
+        {in_bounds = [true, true],
+        permutation_map = affine_map<(d0, d1, d2) -> (d1, d2)>}
+        : memref<?x4096x4096xbf16>, vector<32x32xbf16>
+    return %0 : vector<32x32xbf16>
+}
+    """
+    )
+
+    return mod
+
+
+# CHECK-LABEL: Test: test_negative_dynamic_shape
+@run(payload_read_dynamic_shape)
+def test_negative_dynamic_shape(payload_handle):
+    any_op = transform.AnyOpType.get()
+    transfers = transform_structured.structured_match(
+        any_op, payload_handle, ops={"vector.transfer_read"}
+    )
+    transform_ext.move_offsets_to_subview(transfers)
+
+    # CHECK-LABEL: @negative_dynamic_shape(
+    # CHECK-NOT: memref.subview
+    # CHECK: vector.transfer_read
+    transform.print_()
+
+
+def payload_write_dynamic_strides():
+    mod = ir.Module.parse(
+        r"""
+func.func @negative_dynamic_strides(
+    %arg0: memref<32x4096x4096xbf16, strided<[?, ?, 1]>>,
+    %arg1: vector<32x32xbf16>) {
+    %c8 = arith.constant 8 : index
+    %c16 = arith.constant 16 : index
+    vector.transfer_write %arg1, %arg0[%c16, %c8, %c16]
+        {in_bounds = [true, true],
+        permutation_map = affine_map<(d0, d1, d2) -> (d1, d2)>}
+        : vector<32x32xbf16>, memref<32x4096x4096xbf16, strided<[?, ?, 1]>>
+    return
+}
+    """
+    )
+
+    return mod
+
+
+# CHECK-LABEL: Test: test_negative_dynamic_strides
+@run(payload_write_dynamic_strides)
+def test_negative_dynamic_strides(payload_handle):
+    any_op = transform.AnyOpType.get()
+    transfers = transform_structured.structured_match(
+        any_op, payload_handle, ops={"vector.transfer_write"}
+    )
+    transform_ext.move_offsets_to_subview(transfers)
+
+    # CHECK-LABEL: @negative_dynamic_strides(
+    # CHECK-NOT: memref.subview
+    # CHECK: vector.transfer_write
+    transform.print_()
