@@ -489,6 +489,36 @@ run(
 )
 
 
+DYNAMIC_ELTWISE = """
+#map = affine_map<(d0, d1) -> (d0, d1)>
+module {
+  func.func @main(%x: tensor<2x?xf32>, %out: tensor<2x?xf32>) -> tensor<2x?xf32> {
+    %0 = linalg.generic {indexing_maps = [#map, #map], iterator_types = ["parallel", "parallel"]}
+        ins(%x : tensor<2x?xf32>) outs(%out : tensor<2x?xf32>)
+        attrs = {transform_ext.tile_sizes = array<i64: 1, 16>} {
+    ^bb0(%in: f32, %o: f32):
+      %1 = arith.addf %in, %in : f32
+      linalg.yield %1 : f32
+    } -> tensor<2x?xf32>
+    return %0 : tensor<2x?xf32>
+  }
+}
+"""
+
+
+# The loop over the static dim unrolls; the loop over the runtime dim stays.
+# CHECK-LABEL: Test: tile_and_unroll_leaves_runtime_trip_count_loops_rolled
+# CHECK: func.func @main
+# CHECK-COUNT-2: scf.for
+# CHECK-NOT: scf.for
+# CHECK: return
+run(
+    "tile_and_unroll_leaves_runtime_trip_count_loops_rolled",
+    DYNAMIC_ELTWISE,
+    tile_and_unroll_default_clear,
+)
+
+
 # CHECK-LABEL: Test: tile_and_unroll_can_keep_annotations
 # CHECK: func.func @main
 # CHECK: transform_ext.tile_sizes
