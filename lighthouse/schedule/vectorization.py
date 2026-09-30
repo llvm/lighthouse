@@ -50,6 +50,54 @@ def vectorize_all() -> ir.Module:
     return schedule
 
 
+def lower_vector_multi_reductions() -> ir.Module:
+    """
+    Lower vector.multi_reduction ops where possible.
+
+    Reductions over the innermost dim become horizontal `vector.reduction`s and
+    reductions over outer dims become lane-wise elementwise ops. Leftovers
+    (e.g. a reduced middle dim) are first reordered to reduce outer dims.
+
+    Returns:
+        Schedule
+    """
+    strategies = [
+        vector.VectorMultiReductionLowering.InnerReduction,
+        vector.VectorMultiReductionLowering.InnerParallel,
+    ]
+    with schedule_boilerplate() as (schedule, named_seq):
+        # First lower reductions already matching a strategy.
+        with ir.InsertionPoint(
+            transform.ApplyPatternsOp(named_seq.bodyTarget).patterns
+        ):
+            for strategy in strategies:
+                vector.apply_patterns_vector_multi_reduction_flattening(
+                    lowering_strategy=strategy
+                )
+                vector.apply_patterns_vector_multi_reduction_unrolling(
+                    lowering_strategy=strategy
+                )
+        # Reordering transposes every mismatched reduction, so run it on
+        # the leftovers only, with one strategy only as using both strategies
+        # creates conflicts.
+        fallback = vector.VectorMultiReductionLowering.InnerParallel
+        with ir.InsertionPoint(
+            transform.ApplyPatternsOp(named_seq.bodyTarget).patterns
+        ):
+            vector.apply_patterns_vector_reorder_multi_reduction_dims(
+                lowering_strategy=fallback
+            )
+            vector.apply_patterns_vector_multi_reduction_flattening(
+                lowering_strategy=fallback
+            )
+            vector.apply_patterns_vector_multi_reduction_unrolling(
+                lowering_strategy=fallback
+            )
+        lh_transform.cleanup(named_seq.bodyTarget)
+        transform.yield_()
+    return schedule
+
+
 def x86_vectorization() -> ir.Module:
     """
     Apply x86-specific vector rewrites.
