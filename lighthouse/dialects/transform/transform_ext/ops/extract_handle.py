@@ -12,12 +12,17 @@ class ExtractHandleOp(TransformExtensionDialect.Operation, name="extract_handle"
     Args:
         target: Handle(s) to target op(s)
         index: Index of the handle to extract. Supports Python-style indexing.
+        silenceable: If False (default), an out-of-range index raises a
+            definite failure; if True, a silenceable failure.
     Returns:
         The handle at the specified index in `target`.
     """
 
     target: ext.Operand[transform.AnyOpType]
     index: ext.Operand[transform.AnyParamType]
+    silenceable: ir.IntegerAttr = ext.attribute(
+        default_factory=lambda: ir.IntegerAttr.get(ir.IntegerType.get_signless(1), 0)
+    )
     ops: ext.Result[transform.AnyOpType[()]] = ext.infer_result()
 
     @classmethod
@@ -42,9 +47,12 @@ class ExtractHandleOp(TransformExtensionDialect.Operation, name="extract_handle"
 
             n = len(target_ops)
             if index >= n or index < -n:
-                raise IndexError(
-                    f"extract_handle: Invalid index {index} for target of length {len(target_ops)}"
+                if op.silenceable.value:
+                    return DiagnosedSilenceableFailure.SilenceableFailure
+                op.location.emit_error(
+                    f"extract_handle: invalid index {index} for target of length {n}. "
                 )
+                return DiagnosedSilenceableFailure.DefiniteFailure
             handle = target_ops[index]
             results.set_ops(op.ops, [handle])
             return DiagnosedSilenceableFailure.Success
@@ -66,6 +74,7 @@ class ExtractHandleOp(TransformExtensionDialect.Operation, name="extract_handle"
 def extract_handle(
     target: ir.Value[transform.AnyOpType],
     index: int | ir.Value[transform.AnyParamType],
+    silenceable: bool = False,
 ) -> ir.Value:
     """
     snake_case wrapper to create a ExtractHandleOp.
@@ -73,6 +82,8 @@ def extract_handle(
     Args:
         target: Handle(s) to target op(s)
         index: Index of the handle to extract. Supports Python-style indexing.
+        silenceable: If False (default), an out-of-range index raises a
+            definite failure; if True, a silenceable failure.
     Returns:
         The handle at the specified index in `target`.
     """
@@ -80,4 +91,10 @@ def extract_handle(
         param_attr = ir.IntegerAttr.get(ir.IntegerType.get_signless(64), index)
         index = transform.ParamConstantOp(transform.AnyParamType.get(), param_attr)
 
-    return ExtractHandleOp(target=target, index=index).result
+    return ExtractHandleOp(
+        target=target,
+        index=index,
+        silenceable=ir.IntegerAttr.get(
+            ir.IntegerType.get_signless(1), int(silenceable)
+        ),
+    ).result
