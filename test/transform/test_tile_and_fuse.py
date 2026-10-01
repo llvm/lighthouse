@@ -922,3 +922,47 @@ run(
 # CHECK-NOT: transform_ext
 # CHECK: scf.yield
 run("elementwise_scf_for_nested_clears", ELTWISE, assign_elementwise, tile_and_fuse_for)
+
+
+# An op with all-zero tile sizes (every dim below the cache tile) next to a tiled
+# one: upstream fusion asserts on an all-zero tiling, so the op is left untiled
+# while the other is still tiled.
+ZERO_TILES = """
+#id1 = affine_map<(d0) -> (d0)>
+#id2 = affine_map<(d0, d1) -> (d0, d1)>
+module {
+  func.func @main(%a: tensor<16xf32>, %b: tensor<64x64xf32>)
+      -> (tensor<16xf32>, tensor<64x64xf32>) {
+    %e0 = tensor.empty() : tensor<16xf32>
+    %small = linalg.generic {indexing_maps = [#id1, #id1],
+        iterator_types = ["parallel"],
+        transform_ext.tile_sizes = array<i64: 0>}
+        ins(%a : tensor<16xf32>)
+        outs(%e0 : tensor<16xf32>) {
+    ^bb0(%i: f32, %o: f32):
+      %e = math.exp %i : f32
+      linalg.yield %e : f32
+    } -> tensor<16xf32>
+    %e1 = tensor.empty() : tensor<64x64xf32>
+    %big = linalg.generic {indexing_maps = [#id2, #id2],
+        iterator_types = ["parallel", "parallel"],
+        transform_ext.tile_sizes = array<i64: 32, 32>}
+        ins(%b : tensor<64x64xf32>)
+        outs(%e1 : tensor<64x64xf32>) {
+    ^bb0(%i: f32, %o: f32):
+      %s = math.sqrt %i : f32
+      linalg.yield %s : f32
+    } -> tensor<64x64xf32>
+    return %small, %big : tensor<16xf32>, tensor<64x64xf32>
+  }
+}
+"""
+
+
+# CHECK-LABEL: Test: all_zero_tile_sizes_untiled
+# CHECK-NOT: scf.forall
+# CHECK: math.exp
+# CHECK: -> tensor<16xf32>
+# CHECK: scf.forall ({{.*}}) = (0, 0) to (64, 64) step (32, 32)
+# CHECK: math.sqrt
+run("all_zero_tile_sizes_untiled", ZERO_TILES, tile_and_fuse)
