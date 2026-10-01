@@ -75,6 +75,15 @@ class MoveOffsetsToSubviewOp(
         )
 
         memref_type: ir.MemRefType = base_val.type
+
+        # Bail on dynamic values.
+        if not memref_type.has_static_shape:
+            return None
+        strides, _ = memref_type.get_strides_and_offset()
+        dynamic_val = ir.ShapedType.get_dynamic_stride_or_offset()
+        if dynamic_val in strides:
+            return None
+
         vec_type: ir.VectorType = get_vector_type(target)
 
         map_attr = get_permutation_map(target)
