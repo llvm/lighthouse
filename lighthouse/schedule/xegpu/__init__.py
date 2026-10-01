@@ -6,6 +6,7 @@ from .outline_gpu_func import outline_gpu_func
 from .annotate_layouts import annotate_layouts
 from .vectorize import vectorize
 from .bufferize import bufferize
+from .cleanup import cleanup
 from .vector_to_xegpu import vector_to_xegpu
 from .fused_attention_schedule import fused_attention_schedule
 from .xegpu_parameter_selector import XeGPUParameterSelector
@@ -24,6 +25,7 @@ __all__ = [
     "annotate_layouts",
     "bufferize",
     "check_constraints",
+    "cleanup",
     "convert_to_gpu_launch",
     "convert_vector_to_xegpu",
     "elemwise_schedule",
