@@ -282,7 +282,7 @@ class ReplaceWithFusedAttentionOp(
     p: ext.Operand[transform.AnyOpType]
     scale: ext.Operand[transform.AnyOpType]
     replaced: ext.Operand[transform.AnyOpType]
-    tile_size: ir.IntegerAttr
+    tile_size: ext.Operand[transform.AnyParamType]
     causal: ir.IntegerAttr  # 0/1 flag (ext op attrs don't support BoolAttr)
     new_output: ext.Result[transform.AnyOpType[()]] = ext.infer_result()
 
@@ -332,7 +332,15 @@ class ReplaceWithFusedAttentionOp(
             batch_shape = list(q_type.shape[:-2])
             wg_rows, d_head = q_type.shape[-2], q_type.shape[-1]
             n_ctx = ir.RankedTensorType(k.type).shape[-2]
-            tile_size = ir.IntegerAttr(op.tile_size).value
+            tile_size_params = state.get_params(op.tile_size)
+            if len(tile_size_params) != 1 or not isinstance(
+                tile_size_params[0], ir.IntegerAttr
+            ):
+                op.location.emit_error(
+                    "Expected tile_size to be a single integer param"
+                )
+                return DiagnosedSilenceableFailure.SilenceableFailure
+            tile_size = ir.IntegerAttr(tile_size_params[0]).value
 
             # Element types are read from the matched ops since Q, K, V and the
             # softmax weights (P) may each use a different (possibly mixed)
@@ -547,6 +555,8 @@ class ReplaceWithFusedAttentionOp(
                 transform.only_reads_handle(op.op_operands[:5])
                 # Consume and replace the op standing in for the loop
                 + transform.consumes_handle(op.op_operands[5:6])
+                # Read the tile_size param
+                + transform.only_reads_handle(op.op_operands[6:7])
                 # Produce new output handle
                 + transform.produces_handle(op.results)
                 # Modify the payload
@@ -561,7 +571,7 @@ def replace_with_fused_attention(
     p: ir.Value,
     scale: ir.Value,
     replaced: ir.Value,
-    tile_size: int | ir.IntegerAttr,
+    tile_size: int | ir.IntegerAttr | ir.Value,
     causal: bool | ir.IntegerAttr = False,
 ) -> ir.Value:
     """Replace a tensor-level attention output with a fused attention loop.
@@ -574,18 +584,25 @@ def replace_with_fused_attention(
         scale: Handle to the scale constant op (scalar arith.constant)
         replaced: Handle to the op producing the attention result, whose result the
             emitted loop replaces
-        tile_size: Tile size for the reduction dimension (K/V sequence length)
+        tile_size: Tile size for the reduction dimension (K/V sequence length),
+            either a static int/IntegerAttr or a scalar i64 transform param.
         causal: When True, mask future keys (key column past the query row) so
             attention is autoregressive. Default False leaves the IR unchanged.
 
     Returns:
         Handle to the new output operation
     """
-    if not isinstance(tile_size, ir.IntegerAttr):
-        tile_size = ir.IntegerAttr.get(ir.IntegerType.get_signless(64), tile_size)
+    if isinstance(tile_size, ir.Value):
+        tile_size_param = tile_size
+    else:
+        if not isinstance(tile_size, ir.IntegerAttr):
+            tile_size = ir.IntegerAttr.get(ir.IntegerType.get_signless(64), tile_size)
+        tile_size_param = transform.ParamConstantOp(
+            transform.AnyParamType.get(), tile_size
+        )
     if not isinstance(causal, ir.IntegerAttr):
         causal = ir.IntegerAttr.get(ir.IntegerType.get_signless(64), int(causal))
 
     return ReplaceWithFusedAttentionOp(
-        q, k, v, p, scale, replaced, tile_size=tile_size, causal=causal
+        q, k, v, p, scale, replaced, tile_size=tile_size_param, causal=causal
     ).new_output
