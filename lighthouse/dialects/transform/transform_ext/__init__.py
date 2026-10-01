@@ -9,6 +9,7 @@ from .ops.get_tile_sizes import get_tile_sizes
 from .ops.param_cmp_eq import param_cmp_eq
 from .ops.replace import replace
 from .ops.convert_func_results_to_args import convert_func_results_to_args
+from .ops.emit_definite_failure import emit_definite_failure
 from .ops.extract_handle import extract_handle
 from .ops.get_tileable_consumers import get_tileable_consumers
 from .ops.get_tiling_sizes import get_tiling_sizes
@@ -39,6 +40,7 @@ __all__ = [
     "assign_tile_sizes",
     "clear_tile_and_fuse_annotations",
     "convert_func_results_to_args",
+    "emit_definite_failure",
     "extract_handle",
     "filter_by_name",
     "filter_contraction_ops",
