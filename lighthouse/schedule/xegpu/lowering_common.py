@@ -149,14 +149,15 @@ def vectorize(
         disable_multi_reduction_to_contract_patterns=disable_multi_reduction_to_contract_patterns,
     )
 
-    # Hoist loop-invariant vector read/store ops if present.
-    k_loop = match(payload_func, ops={"scf.for"})
-    lh_transform.loop_hoisting(k_loop)
-
     # Try to remove any unit dimensions that may have been introduced due to tiling (e.g. batch dim of 1)
     with ir.InsertionPoint(transform.apply_patterns(payload_func).patterns):
         vector.apply_patterns_vector_cast_away_vector_leading_one_dim()
         vector.apply_patterns_vector_drop_unit_dims_with_shape_cast()
+    lh_transform.cleanup(payload_func)
+
+    # Hoist loop-invariant vector read/store ops if present.
+    k_loop = match(payload_func, ops={"scf.for"})
+    lh_transform.loop_hoisting(k_loop)
     lh_transform.cleanup(payload_func)
 
     return payload_func
