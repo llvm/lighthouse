@@ -1,4 +1,5 @@
 # RUN: %PYTHON %s -l 2 -b 9 --dump-kernel=xegpu-wg | FileCheck %s
+# RUN: %PYTHON %s -l 1 -b 97 --input-shapes 32x32x512x64 32x32x512x64 32x32x512x64 --dump-kernel xegpu-wg | FileCheck %s
 # REQUIRES: torch
 # CHECK: module attributes {gpu.container_module} {
 """
@@ -44,11 +45,12 @@ from pathlib import Path
 import glob
 from functools import partial
 import argparse
-import warnings
+import re
 
 import torch
 import torch._dynamo as dynamo
 import os
+import gc
 import numpy as np
 from mlir import ir
 
@@ -79,6 +81,24 @@ def dtype_to_torch_dtype(datatype: str) -> torch.dtype:
         "f16": torch.float16,
         "bf16": torch.bfloat16,
     }[datatype]
+
+
+def parse_input_shapes(shape_args: list[str] | str) -> list[tuple[int, ...]] | None:
+    """
+    Parse `--input-shapes` values into a list of integer tuples.
+
+    Each argument is a single shape in `AxBxC` format, so `["1024x4096", "8192"]`
+    becomes `[(1024, 4096), (8192,)]`. Returns None when no shapes are given.
+    """
+    if not shape_args:
+        return None
+    if isinstance(shape_args, str):
+        shape_args = [shape_args]
+    shapes = []
+    for shape_str in shape_args:
+        dims = tuple(int(dim) for dim in shape_str.lower().split("x"))
+        shapes.append(dims)
+    return shapes
 
 
 def inspect_kb_payload(module: ir.Module) -> tuple[str, dict]:
@@ -557,6 +577,7 @@ def lower_and_execute_benchmark(
     level: int,
     id: int,
     datatype: str,
+    input_shapes: list[tuple[int, ...]] | None = None,
     ctx: ir.Context = None,
     nwarmup: int = 500,
     nruns: int = 500,
@@ -575,6 +596,8 @@ def lower_and_execute_benchmark(
         id: Benchmark ID.
         datatype: Data type for the model ('f16' or 'bf16').
         ctx: MLIR context to use. If None, a new context is created.
+        input_shapes: List of input shapes for the model. If None, default
+        model shapes will be used.
         nwarmup: Number of warmup runs for benchmarking.
         nruns: Number of runs for benchmarking.
         verify: Whether to verify the result against PyTorch reference.
@@ -589,8 +612,16 @@ def lower_and_execute_benchmark(
     execute = stop_at_stage is None
 
     # import torch model
+    forced_inputs = None
+    if input_shapes is not None:
+        # TODO verify the number of input shapes matches the model's expected inputs
+        forced_inputs = [
+            torch.randn(shape, dtype=model_dtype) for shape in input_shapes
+        ]
     torch_model, torch_inputs, _torch_kwargs = lh_ingress.torch.import_model(
-        filepath, model_datatype=model_dtype
+        filepath,
+        model_datatype=model_dtype,
+        sample_args=forced_inputs,
     )
     # convert inputs to correct datatype
     torch_inputs = [inp.to(model_dtype) for inp in torch_inputs]
@@ -647,25 +678,29 @@ def lower_and_execute_benchmark(
         shared_libs=["libmlir_levelzero_runtime.so"],
     )
     torch_model.compile(dynamic=False, backend=backend)
-    if not execute:
-        try:
-            # Get the graph and compile the manually to dump the IR. This works
-            # even if LLVM does not have XeGPU support or if the target device
-            # is not available.
-            gm, _ = dynamo.export(torch_model)(*torch_inputs)
-            backend(gm, list(torch_inputs))
-        except dynamo.exc.BackendCompilerFailed as e:
-            if not is_caused_by_pipeline_interrupt(e):
-                raise
+
+    # Calling torch_model triggers torch.compile. In dump mode the pipeline
+    # raises PipelineInterrupt at the requested stage (surfaced as a
+    # BackendCompilerFailed) and we stop here; in execute mode it runs the
+    # compiled kernel on the device.
+    try:
+        with torch.no_grad():
+            result = torch_model(*torch_inputs)
+    except TypeError as e:
+        msg = str(e)
+        is_arg_mismatch = (
+            re.fullmatch(r"missing a required argument: '.+'", msg) is not None
+            or msg == "too many positional arguments"
+        )
+        if not is_arg_mismatch:
+            raise
+        raise TypeError(f"Wrong number of torch model input arguments: {e}")
+    except dynamo.exc.BackendCompilerFailed as e:
+        if not is_caused_by_pipeline_interrupt(e):
+            raise
+        # Expected: dumping an intermediate stage interrupts the pipeline.
         return {}
 
-    with warnings.catch_warnings():
-        warnings.filterwarnings(
-            "ignore",
-            message=r"`isinstance\(treespec, LeafSpec\)` is deprecated.*",
-            category=FutureWarning,
-        )
-        result = torch_model(*torch_inputs)
     result = result.to("cpu")
     torch.xpu.synchronize()
 
@@ -755,6 +790,8 @@ def lower_and_execute_benchmark(
         total_flops *= factor
         gflops *= factor
     print(f"{total_flops=}")
+    print(f"{read_bytes=}")
+    print(f"{write_bytes=}")
 
     layers = kernel_metadata["layers"]
     matmuls = [layer for layer in layers if layer["kind"] == "matmul"]
@@ -841,6 +878,13 @@ def parser_cli_args():
         help="Data type for the model (default: bf16)",
     )
     parser.add_argument(
+        "--input-shapes",
+        type=str,
+        default="",
+        nargs="+",
+        help="Input shapes for the model, e.g., 1024x4096. The number of inputs must match the model's expected number of inputs.",
+    )
+    parser.add_argument(
         "--dump-kernel",
         type=str,
         help="Stop the pipeline at the specified stage",
@@ -850,6 +894,7 @@ def parser_cli_args():
             "tiled",
             "vectorized",
             "bufferized",
+            "gpu-outlining",
             "xegpu-initial",
             "xegpu-wg",
             "final",
@@ -897,6 +942,7 @@ if __name__ == "__main__":
     kb_level = args.level
     benchmarks = args.benchmark
     stop_at_stage = args.dump_kernel
+    input_shapes = parse_input_shapes(args.input_shapes)
 
     kb_pattern = f"level{kb_level}/*.py"
     bench_list = get_benchmarks(kb_pattern, include=benchmarks)
@@ -931,6 +977,7 @@ if __name__ == "__main__":
                 level=kb_level,
                 id=bench_id,
                 datatype=args.datatype,
+                input_shapes=input_shapes,
                 nruns=args.nruns,
                 nwarmup=args.nwarmup,
                 compute_reference_on_cpu=args.compute_reference_on_cpu,
@@ -955,6 +1002,15 @@ if __name__ == "__main__":
             print(f"Benchmark {short_path} failed with error: {e}", flush=True)
             entry["error"] = str(e)
             raise e
+        finally:
+            # torch.compile caches the JIT'd kernels (and the Level Zero GPU
+            # modules and scratch buffers they own) for the process lifetime.
+            # Drop those references so the ExecutionEngines are destroyed and
+            # the device memory they hold can be reclaimed before the next run.
+            dynamo.reset()
+            gc.collect()
+            if not stop_at_stage:
+                torch.xpu.memory.empty_cache()
 
         # Store intermediate results
         if csv_logger is not None:
