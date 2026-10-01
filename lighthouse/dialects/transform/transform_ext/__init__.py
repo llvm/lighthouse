@@ -14,6 +14,7 @@ from .ops.extract_handle import extract_handle
 from .ops.get_tileable_consumers import get_tileable_consumers
 from .ops.get_tiling_sizes import get_tiling_sizes
 from .ops.infer_xegpu_gemm_params import infer_xegpu_gemm_params
+from .ops.infer_xegpu_reduction_params import infer_xegpu_reduction_params
 from .ops.trace_producers import trace_producers
 from .ops.reverse_handles import reverse_handles
 from .ops.update_address_space import update_address_space
@@ -60,6 +61,7 @@ __all__ = [
     "get_tileable_consumers",
     "get_tiling_sizes",
     "infer_xegpu_gemm_params",
+    "infer_xegpu_reduction_params",
     "move_offsets_to_subview",
     "param_cmp_eq",
     "propagate_tile_sizes",
