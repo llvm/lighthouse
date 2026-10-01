@@ -8,12 +8,15 @@ import lighthouse.transform as lh_transform
 from lighthouse.pipeline.helper import apply_registered_pass
 
 
-def bufferize(deallocation_pipeline: bool = False) -> ir.Module:
+def bufferize(
+    deallocation_pipeline: bool = False, allow_return_allocs_from_loops: bool = False
+) -> ir.Module:
     """
     Bufferize all ops.
 
     Args:
         deallocation_pipeline: Applies deallocation pipeline
+        allow_return_allocs_from_loops: Allows return allocs from loops
     Returns:
         Schedule
     """
@@ -25,6 +28,7 @@ def bufferize(deallocation_pipeline: bool = False) -> ir.Module:
             target,
             function_boundary_type_conversion=LayoutMapOption.IdentityLayoutMap,
             bufferize_function_boundaries=True,
+            allow_return_allocs_from_loops=allow_return_allocs_from_loops,
         )
         target = apply_registered_pass(target, "drop-equivalent-buffer-results")
         if deallocation_pipeline:
