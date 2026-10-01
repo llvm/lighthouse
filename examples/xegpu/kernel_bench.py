@@ -899,6 +899,7 @@ def parser_cli_args():
             "tiled",
             "vectorized",
             "bufferized",
+            "gpu-outlining",
             "xegpu-initial",
             "xegpu-wg",
             "final",
