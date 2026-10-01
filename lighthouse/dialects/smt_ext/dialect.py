@@ -26,6 +26,15 @@ def int_to_smt(operand: "int | SMTIntValue") -> "SMTIntValue":
     return operand
 
 
+def select(
+    cond: ir.Value[smt.BoolType],
+    if_true: "int | SMTIntValue",
+    if_false: "int | SMTIntValue",
+) -> "SMTIntValue":
+    """Select `if_true` when the boolean `cond` holds, else `if_false`, via smt.ite."""
+    return SMTIntValue(smt.ite(cond, int_to_smt(if_true), int_to_smt(if_false)))
+
+
 def swapped(
     f: Callable[["int | SMTIntValue", "int | SMTIntValue"], "int | SMTIntValue"],
 ) -> Callable[["int | SMTIntValue", "int | SMTIntValue"], "int | SMTIntValue"]:
