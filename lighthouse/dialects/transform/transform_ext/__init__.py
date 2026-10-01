@@ -27,6 +27,7 @@ from .ops.filter_contraction_ops import filter_contraction_ops
 from .ops.get_leading_unit_tile_sizes import get_leading_unit_tile_sizes
 from .ops.move_offsets_to_subview import move_offsets_to_subview
 from .ops.clear_tile_and_fuse_annotations import clear_tile_and_fuse_annotations
+from .ops.compute_num_threads import compute_num_threads
 from .ops.get_fusion_roots import get_fusion_roots
 from .ops.propagate_tile_sizes import propagate_tile_sizes
 from .ops.sfc_remap_forall import sfc_remap_forall
@@ -39,6 +40,7 @@ __all__ = [
     "TransformExtensionDialect",
     "assign_tile_sizes",
     "clear_tile_and_fuse_annotations",
+    "compute_num_threads",
     "convert_func_results_to_args",
     "emit_definite_failure",
     "extract_handle",
