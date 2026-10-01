@@ -46,7 +46,6 @@ import glob
 from functools import partial
 import argparse
 import re
-import warnings
 
 import torch
 import torch._dynamo as dynamo
@@ -679,34 +678,29 @@ def lower_and_execute_benchmark(
         shared_libs=["libmlir_levelzero_runtime.so"],
     )
     torch_model.compile(dynamic=False, backend=backend)
-    if not execute:
-        try:
-            # Get the graph and compile the manually to dump the IR. This works
-            # even if LLVM does not have XeGPU support or if the target device
-            # is not available.
-            gm, _ = dynamo.export(torch_model)(*torch_inputs)
-            backend(gm, list(torch_inputs))
-        except TypeError as e:
-            msg = str(e)
-            is_arg_mismatch = (
-                re.fullmatch(r"missing a required argument: '.+'", msg) is not None
-                or msg == "too many positional arguments"
-            )
-            if not is_arg_mismatch:
-                raise
-            raise TypeError(f"Wrong number of torch model input arguments: {e}")
-        except dynamo.exc.BackendCompilerFailed as e:
-            if not is_caused_by_pipeline_interrupt(e):
-                raise
+
+    # Calling torch_model triggers torch.compile. In dump mode the pipeline
+    # raises PipelineInterrupt at the requested stage (surfaced as a
+    # BackendCompilerFailed) and we stop here; in execute mode it runs the
+    # compiled kernel on the device.
+    try:
+        with torch.no_grad():
+            result = torch_model(*torch_inputs)
+    except TypeError as e:
+        msg = str(e)
+        is_arg_mismatch = (
+            re.fullmatch(r"missing a required argument: '.+'", msg) is not None
+            or msg == "too many positional arguments"
+        )
+        if not is_arg_mismatch:
+            raise
+        raise TypeError(f"Wrong number of torch model input arguments: {e}")
+    except dynamo.exc.BackendCompilerFailed as e:
+        if not is_caused_by_pipeline_interrupt(e):
+            raise
+        # Expected: dumping an intermediate stage interrupts the pipeline.
         return {}
 
-    with warnings.catch_warnings():
-        warnings.filterwarnings(
-            "ignore",
-            message=r"`isinstance\(treespec, LeafSpec\)` is deprecated.*",
-            category=FutureWarning,
-        )
-        result = torch_model(*torch_inputs)
     result = result.to("cpu")
     torch.xpu.synchronize()
 
