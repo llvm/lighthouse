@@ -186,6 +186,12 @@ def trace_smt_op(op: ir.Operation, env: dict) -> dict:
         case smt.IntDivOp():
             env[op.result] = Apply(floordiv, [env[op.lhs], env[op.rhs]])
 
+        case smt.IteOp():
+            env[op.result] = Apply(
+                lambda cond, then_v, else_v: then_v if cond else else_v,
+                [env[op.cond], env[op.thenValue], env[op.elseValue]],
+            )
+
         case smt.IntCmpOp():
             operator = [lt, le, gt, ge][op.pred.value]
             env[op.result] = Predicate(operator, [env[op.lhs], env[op.rhs]])
