@@ -7,6 +7,7 @@ from .annotate_layouts import annotate_layouts
 from .vectorize import vectorize
 from .bufferize import bufferize
 from .cleanup import cleanup
+from .wg_tiling import wg_tiling
 from .vector_to_xegpu import vector_to_xegpu
 from .fused_attention_schedule import fused_attention_schedule
 from .xegpu_parameter_selector import XeGPUParameterSelector
@@ -38,5 +39,6 @@ __all__ = [
     "vector_to_xegpu",
     "vectorize",
     "vectorize_bufferize_and_outline_gpu_func",
+    "wg_tiling",
     "xegpu_to_binary",
 ]
