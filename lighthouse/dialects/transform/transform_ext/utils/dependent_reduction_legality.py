@@ -1,6 +1,6 @@
 """Check whether an ``R1 -> E -> R2`` chain can share R1's tiled reduction loop.
 
-R1 is a tiled reduction, E consumes its running result, and R2 reduces E along
+R1 is a tiled reduction, E is an elementwise operation that consumes its running result, and R2 reduces E along
 the same axis. Invalid chains raise ``FusionRejected`` with a reason.
 """
 
@@ -483,9 +483,38 @@ def check_legal_fusion_triple(
     e: ir.OpView,
     r2: ir.OpView,
 ) -> tuple[int, int]:
-    """Return ``(E reduction dim, tile size)`` or raise ``FusionRejected``.
+    """Check whether the ``R1 -> E -> R2`` chain supports online fusion.
 
-    ``result_to_inner`` maps R1 loop results to their inner tile reductions.
+    The checks require:
+
+    * E and R2 each have one result/init, and E has only parallel iterators.
+    * The R1 loop, E, and R2 occupy the same block.
+    * Exactly one R2 input reads E's result.
+    * R2 has one innermost reduction iterator. Every R2 input map contains
+      that iterator and consists only of pure dimension expressions.
+    * R2's map for E's result and E's output map have the same rank and only
+      dimension expressions; together they identify the E reduction axis.
+    * R1's loop bounds and step are constant, the step is positive, the R2
+      reduction extent is static and equals the loop extent, and the step
+      divides that extent. E has the same static extent on the aligned axis.
+    * E consumes at least one R1 loop result. Its body depends on a consumed
+      accumulator and is `multiplicatively separable` from its data inputs,
+      so a per-slice correction factor exists.
+    * Each R1 result read by E is broadcast over the aligned reduction axis
+      through a map made only of pure dimension expressions.
+    * Each consumed R1 result maps to an inner reduction (i.e. located inside tiled R1) in
+      ``result_to_inner``. That reduction has one innermost reduction iterator.
+      Each non-sibling input also feeds E after tracing tile slices. Their
+      equal-rank, dimension-only maps yield a consistent, complete R1-to-E
+      loop mapping that aligns the reduction axes.
+    * R2's body is a single ``arith.addf`` reduction with a zero init (matmul contractions are allowed).
+    * R2's result type is f16, bf16, f32, or f64, and E's result type can be
+      widened with it to evaluate the correction.
+    * Every other user of an R1 loop result post-dominates E.
+
+    ``result_to_inner`` maps R1 loop results to the reductions producing
+    their tiles. Return ``(E reduction dim, tile size)`` on success; otherwise
+    raise ``FusionRejected`` with the failed condition.
     """
     if len(r2.results) != 1:
         raise FusionRejected(
@@ -634,7 +663,7 @@ def check_legal_fusion_triple(
             f"term in"
         )
 
-    # Other R1 users must follow E so its replacement can dominate them.
+    # The replacement loop is inserted at E, so earlier R1 users would lose dominance.
     for r1_result in r1_loop.results:
         for user in op_users(r1_result):
             if user == e.operation:

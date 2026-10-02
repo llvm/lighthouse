@@ -234,6 +234,18 @@ def main() -> None:
     # CHECK-NEXT: Legal to fuse: E dim 1, tile 32
     check_case("softmax", SOFTMAX)
 
+    # CHECK-LABEL: Case: earlier R1 user
+    # CHECK-NEXT: Not legal to fuse: user of an R1 result does not post-dominate E
+    check_case(
+        "earlier R1 user",
+        replace_once(
+            SOFTMAX,
+            "  // E: p = exp(x - m)",
+            "  %early = tensor.cast %m : tensor<64xf32> to tensor<64xf32>\n\n"
+            "  // E: p = exp(x - m)",
+        ),
+    )
+
     # CHECK-LABEL: Case: attention row sum
     # CHECK-NEXT: Legal to fuse: E dim 1, tile 32
     check_case("attention row sum", ATTENTION)
