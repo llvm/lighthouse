@@ -1,7 +1,8 @@
 """Check whether an ``R1 -> E -> R2`` chain can share R1's tiled reduction loop.
 
-R1 is a tiled reduction, E is an elementwise operation that consumes its running result, and R2 reduces E along
-the same axis. Invalid chains raise ``FusionRejected`` with a reason.
+R1 is a tiled reduction, E is an elementwise operation that consumes its running
+ result, and R2 reduces E along the same axis. Invalid chains raise
+``FusionRejected`` with a reason.
 """
 
 from mlir import ir
