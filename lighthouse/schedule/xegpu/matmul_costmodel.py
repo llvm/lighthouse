@@ -62,6 +62,9 @@ def generate_configs(
     N: int,
     K: int,
     gpu_specs: XeGPUSpecs,
+    fixed_wg_tile: tuple[int, int] | None = None,
+    fixed_sg_tile: tuple[int, int] | None = None,
+    fixed_k_tile: int | None = None,
     transpose_a: bool = False,
     transpose_b: bool = False,
     perf_threshold: float | None = None,
@@ -139,10 +142,19 @@ def generate_configs(
     sg_options = [32, 64, 128]
     sg_options_m = [16] + sg_options if M < 256 else sg_options
     sg_options_n = [16] + sg_options if N < 256 else sg_options
-    k_tile_options = [16, 32, 64]
+    if fixed_k_tile is not None:
+        k_tile_options = [fixed_k_tile]
+    else:
+        k_tile_options = [16, 32, 64]
 
-    wg_tiles = product(wg_options, wg_options)
-    sg_tiles = product(sg_options_m, sg_options_n)
+    if fixed_wg_tile is not None:
+        wg_tiles = [fixed_wg_tile]
+    else:
+        wg_tiles = product(wg_options, wg_options)
+    if fixed_sg_tile is not None:
+        sg_tiles = [fixed_sg_tile]
+    else:
+        sg_tiles = product(sg_options_m, sg_options_n)
 
     # grid search
     valid_configs = []

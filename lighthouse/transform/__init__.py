@@ -1,3 +1,4 @@
+from .alternatives import alternatives
 from .cleanup import cleanup
 from .cleanup import simplify_vector_ops
 from .cleanup import flatten_vector_ops
@@ -10,6 +11,7 @@ from .vectorization import x86_vector_patterns
 from .vectorization import vector_contract_to_fma
 
 __all__ = [
+    "alternatives",
     "cleanup",
     "flatten_vector_ops",
     "foreach",
