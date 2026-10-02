@@ -241,3 +241,41 @@ apply_schedule(INCOMPATIBLE_CHAIN, all_linalg_roots, "INCOMPATIBLE_CHAIN")
 # CHECK-NOT: math.exp
 # CHECK: math.sqrt
 apply_schedule(COMPATIBLE_CHAIN, all_linalg_roots, "COMPATIBLE_CHAIN")
+
+
+# An op whose tile sizes are all zero (nothing to tile) is never a root, even
+# when it terminates its own group; upstream fusion asserts on such a tiling.
+ZERO_TILES = """
+#id = affine_map<(d0, d1) -> (d0, d1)>
+module {
+  func.func @main(%a: tensor<8x8xf32>, %b: tensor<64x64xf32>)
+      -> (tensor<8x8xf32>, tensor<64x64xf32>) {
+    %e0 = tensor.empty() : tensor<8x8xf32>
+    %small = linalg.generic {indexing_maps = [#id, #id],
+        iterator_types = ["parallel", "parallel"],
+        transform_ext.tile_sizes = array<i64: 0, 0>}
+        ins(%a : tensor<8x8xf32>)
+        outs(%e0 : tensor<8x8xf32>) {
+    ^bb0(%i: f32, %o: f32):
+      linalg.yield %i : f32
+    } -> tensor<8x8xf32>
+    %e1 = tensor.empty() : tensor<64x64xf32>
+    %big = linalg.generic {indexing_maps = [#id, #id],
+        iterator_types = ["parallel", "parallel"],
+        transform_ext.tile_sizes = array<i64: 32, 32>}
+        ins(%b : tensor<64x64xf32>)
+        outs(%e1 : tensor<64x64xf32>) {
+    ^bb0(%i: f32, %o: f32):
+      linalg.yield %i : f32
+    } -> tensor<64x64xf32>
+    return %small, %big : tensor<8x8xf32>, tensor<64x64xf32>
+  }
+}
+"""
+
+
+# Only the 64x64 op is a root; the all-zero 8x8 op (first in program order) is not.
+# CHECK: IR printer: ZERO_TILES
+# CHECK-NOT: tensor<8x8xf32>
+# CHECK: tensor<64x64xf32>
+apply_schedule(ZERO_TILES, all_linalg_roots, "ZERO_TILES")

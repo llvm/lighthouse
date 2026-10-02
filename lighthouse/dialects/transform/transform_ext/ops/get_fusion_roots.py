@@ -132,7 +132,9 @@ class GetFusionRootsOp(TransformExtensionDialect.Operation, name="get_fusion_roo
 
             roots = []
             for target_op in target_ops:
-                if tsa.get_tile_sizes_attr(target_op) is None:
+                # Skip ops with all-zero tile sizes which raises assertion
+                # in upstream tile-and-fuse rewrite.
+                if not any(tsa.get_tile_sizes_attr(target_op) or []):
                     continue
                 if GetFusionRootsOp._is_fusion_root(target_op):
                     roots.append(target_op)
