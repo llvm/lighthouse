@@ -444,13 +444,13 @@ def check_inner_reduction_against_elementwise(
         raise FusionRejected("reduction iterator is not the innermost loop in inner R1")
 
     # Map R1 loop dims to E loop dims through their shared inputs.
-    phi: dict[int, int] = {}
+    r1_to_e_loop_dims: dict[int, int] = {}
 
     def try_add_mapping(r1_dim: int, e_dim: int) -> bool:
-        if r1_dim not in phi:
-            phi[r1_dim] = e_dim
+        if r1_dim not in r1_to_e_loop_dims:
+            r1_to_e_loop_dims[r1_dim] = e_dim
             return True
-        return phi[r1_dim] == e_dim
+        return r1_to_e_loop_dims[r1_dim] == e_dim
 
     e_inputs = linalg_inputs(e)
     for r1_index, in1 in enumerate(linalg_inputs(r1)):
@@ -483,15 +483,15 @@ def check_inner_reduction_against_elementwise(
                 raise FusionRejected(
                     f"inconsistent dim mapping between R1 and E derived from "
                     f"shared inputs (R1.d{e1.position} -> "
-                    f"{{E.d{phi[e1.position]}, E.d{e2.position}}})"
+                    f"{{E.d{r1_to_e_loop_dims[e1.position]}, E.d{e2.position}}})"
                 )
 
-    if len(phi) != num_loops(r1):
+    if len(r1_to_e_loop_dims) != num_loops(r1):
         raise FusionRejected(
             f"derived dim mapping does not cover all of R1's loop dims "
-            f"(covered {len(phi)} of {num_loops(r1)})"
+            f"(covered {len(r1_to_e_loop_dims)} of {num_loops(r1)})"
         )
-    if phi.get(r1_red_dims[0]) != e_tiled_dim:
+    if r1_to_e_loop_dims.get(r1_red_dims[0]) != e_tiled_dim:
         raise FusionRejected(
             "R1's reduction dim is not aligned with the E dim carrying R2's "
             "reduction axis under the derived dim mapping"
