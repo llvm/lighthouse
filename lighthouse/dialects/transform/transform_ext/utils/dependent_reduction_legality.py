@@ -308,13 +308,14 @@ def check_elementwise_separability(
     body = e.regions[0].blocks[0]
     facts: dict = {}
 
-    # Seed all accumulators together to prove joint separability.
-    accumulators = set(r1_as_e_block_args)
+    # Set facts for block arguments based on their origin.
+    r1_use_set = set(r1_as_e_block_args)
     for barg in body.arguments:
-        facts[barg] = _close_facts((_ADD | _MUL) if barg in accumulators else _IND)
+        facts[barg] = _close_facts((_ADD | _MUL) if barg in r1_use_set else _IND)
 
     def facts_of(value: ir.Value) -> int:
-        # Values from an enclosing scope are invariant over E's iteration space.
+        # Values from an enclosing scope are invariant over E's iteration space,
+        # so they are considered constants.
         return facts.get(value, _close_facts(_CONST))
 
     def has(value: ir.Value, fact: int) -> bool:
@@ -323,7 +324,8 @@ def check_elementwise_separability(
     ops = list(body.operations)
     for op in ops[:-1]:
         ov = opview(op)
-        # Record unknown results with no facts; absent values mean invariants.
+        # Initialize data flow facts. Unknown results with no facts; absent
+        # values mean invariants.
         if len(ov.results) != 1:
             for opaque in ov.results:
                 facts[opaque] = 0
@@ -332,19 +334,22 @@ def check_elementwise_separability(
         f = 0
 
         def binary(preserved: int) -> int:
+            """Intersect operand facts, keeping CONST, IND, and ``preserved``.
+
+            The caller selects ADD for add/sub or MUL for mul/div.
+            """
             bits = 0
             lhs, rhs = ov.operands[0], ov.operands[1]
             if has(lhs, _CONST) and has(rhs, _CONST):
                 bits |= _CONST
             if has(lhs, _IND) and has(rhs, _IND):
                 bits |= _IND
-            # The operation preserves a form only when both operands have it.
             if has(lhs, preserved) and has(rhs, preserved):
                 bits |= preserved
             return bits
 
         def unary(from_fact: int, to_fact: int) -> int:
-            # Independence survives; a separable form may change.
+            """Keep CONST/IND and convert ``from_fact`` to ``to_fact``."""
             arg = ov.operands[0]
             bits = facts_of(arg) & (_CONST | _IND)
             if has(arg, from_fact):
@@ -364,6 +369,8 @@ def check_elementwise_separability(
             f = unary(_ADD, _MUL)
         elif isinstance(ov, (math.LogOp, math.Log2Op)):
             f = unary(_MUL, _ADD)
+        # For unary operations like abs, sqrt, and rsqrt, _MUL
+        # is preserved if present.
         elif isinstance(ov, (math.AbsFOp, math.SqrtOp, math.RsqrtOp)):
             f = unary(_MUL, _MUL)
         elif isinstance(ov, math.PowFOp):
