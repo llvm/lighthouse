@@ -7,9 +7,17 @@ the same axis. Invalid chains raise ``FusionRejected`` with a reason.
 from mlir import ir
 from mlir.dialects import arith, linalg, math, tensor
 
-from lighthouse.utils.mlir import defining_op, op_users, opview
-from lighthouse.dialects.transform.transform_ext.utils import ir_rewrite as irr
-from lighthouse.dialects.transform.transform_ext.utils import linalg_structured as ls
+from lighthouse.utils.mlir import (
+    defining_op,
+    float_width,
+    indexing_maps,
+    linalg_inputs,
+    linalg_outputs,
+    num_loops,
+    op_users,
+    opview,
+    reduction_dims,
+)
 
 __all__ = [
     "REDUCTION_LOOP_ATTR_NAME",
@@ -33,17 +41,180 @@ class FusionRejected(Exception):
     """The chain does not satisfy the fusion legality conditions."""
 
 
+def _static_loop_ranges(op: ir.OpView) -> list[int]:
+    """Recover static loop extents from operand shapes and indexing maps."""
+    ranges = [ir.ShapedType.get_dynamic_size()] * num_loops(op)
+    for value, imap in zip(op.operands, indexing_maps(op)):
+        try:
+            shape = ir.ShapedType(value.type).shape
+        except (ValueError, TypeError):
+            continue
+        for axis, expr in enumerate(imap.results):
+            if isinstance(expr, ir.AffineDimExpr):
+                ranges[expr.position] = shape[axis]
+    return ranges
+
+
+def _resolve_slice_source(value: ir.Value) -> ir.Value:
+    """Follow extract slices back to the untiled tensor."""
+    while True:
+        producer = defining_op(value)
+        if producer is None or not isinstance(producer.opview, tensor.ExtractSliceOp):
+            return value
+        value = producer.opview.source
+
+
+def _ancestor_in_block(op: ir.Operation | ir.OpView, block: ir.Block):
+    """Find the ancestor of an op directly inside a block."""
+    current = opview(op).operation
+    while current is not None:
+        parent = current.block
+        if parent is None:
+            return None
+        if parent == block:
+            return current
+        owner = parent.owner
+        current = owner.operation if owner is not None else None
+    return None
+
+
+def _post_dominates(a: ir.Operation | ir.OpView, b: ir.Operation | ir.OpView) -> bool:
+    """Check program order for operations related through one block."""
+    a_op, b_op = opview(a).operation, opview(b).operation
+    if a_op == b_op:
+        return True
+    block = a_op.block
+    if block is None:
+        return False
+    anchor = _ancestor_in_block(b_op, block)
+    if anchor is None:
+        return False
+    return anchor == a_op or anchor.is_before_in_block(a_op)
+
+
+def _backward_slice(value: ir.Value) -> set:
+    """Collect defining operations reachable through operands."""
+    found: set = set()
+    producer = defining_op(value)
+    if producer is None:
+        return found
+    stack = [producer]
+    while stack:
+        current = stack.pop()
+        key = current.__hash__()
+        if key in found:
+            continue
+        found.add(key)
+        for operand in current.operands:
+            parent = defining_op(operand)
+            if parent is not None:
+                stack.append(parent)
+    return found
+
+
+def _match_reduction(
+    carried_args: list[ir.BlockArgument], position: int
+) -> tuple[ir.Value | None, list]:
+    """Match a single-combiner reduction in a linalg body."""
+    carried = carried_args[position]
+    uses = list(carried.uses)
+    if len(uses) != 1:
+        return None, []
+    combiner = uses[0].owner.operation
+    if len(combiner.operands) != 2:
+        return None, []
+    reduced = (
+        combiner.operands[1]
+        if combiner.operands[0] == carried
+        else combiner.operands[0]
+    )
+    block = carried.owner
+    carried_set = set(carried_args)
+    if reduced in carried_set:
+        return None, []
+    slice_ops = _backward_slice(reduced)
+    if any(
+        operand in carried_set
+        for op in block.operations
+        if op.operation.__hash__() in slice_ops
+        for operand in op.operands
+    ):
+        return None, []
+
+    combiners = []
+    while not combiner.has_trait(ir.IsTerminatorTrait):
+        if len(combiner.results) != 1 or combiner.block != block:
+            return None, []
+        combiner_uses = list(combiner.results[0].uses)
+        if len(combiner_uses) != 1:
+            return None, []
+        combiners.append(combiner)
+        combiner = combiner_uses[0].owner.operation
+    if len(combiners) != 1:
+        return None, []
+    return reduced, combiners
+
+
+def _constant_value(value: ir.Value):
+    """Read a scalar or splat arith constant."""
+    producer = defining_op(value)
+    if producer is None or not isinstance(producer.opview, arith.ConstantOp):
+        return None
+    attr = producer.opview.value
+    if isinstance(attr, (ir.FloatAttr, ir.IntegerAttr)):
+        return attr.value
+    if isinstance(attr, ir.DenseElementsAttr) and attr.is_splat:
+        splat = attr.get_splat_value()
+        return splat.value if hasattr(splat, "value") else None
+    return None
+
+
+def _constant_int_value(value: ir.Value) -> int | None:
+    """Read an integer constant, if present."""
+    constant = _constant_value(value)
+    return constant if isinstance(constant, int) else None
+
+
+def _is_defined_as_zero(value: ir.Value) -> bool:
+    """Recognize zero constants and fills or copies of zero."""
+    if value is None:
+        return False
+    constant = _constant_value(value)
+    if constant is not None and constant == 0:
+        return True
+    producer = defining_op(value)
+    if producer is None:
+        return False
+    ov = producer.opview
+    if isinstance(ov, (linalg.FillOp, linalg.CopyOp)):
+        inputs = list(ov.inputs)
+        return len(inputs) == 1 and _is_defined_as_zero(inputs[0])
+    return False
+
+
+def _wider_float_type(a: ir.Type, b: ir.Type) -> ir.Type | None:
+    """Find a common widening among the supported float types."""
+    width_a, width_b = float_width(a), float_width(b)
+    if width_a is None or width_b is None:
+        return None
+    if a == b:
+        return a
+    if width_a == width_b:
+        return None
+    return a if width_a > width_b else b
+
+
 def collect_r1_as_elementwise_inputs(
     r1_loop: ir.OpView, e: ir.OpView
-) -> tuple[list[ls.Operand], list[int]]:
+) -> tuple[list[int], list[int]]:
     """Return E inputs from the R1 loop and their loop-result indices."""
-    operands: list[ls.Operand] = []
+    operands: list[int] = []
     result_indices: list[int] = []
     loop_results = list(r1_loop.results)
-    for operand in ls.dps_input_operands(e):
+    for operand_index, value in enumerate(linalg_inputs(e)):
         for i, result in enumerate(loop_results):
-            if operand.value == result:
-                operands.append(operand)
+            if value == result:
+                operands.append(operand_index)
                 result_indices.append(i)
                 break
     return operands, result_indices
@@ -54,7 +225,7 @@ def collect_inner_reduction_generics(loop: ir.OpView) -> list[ir.OpView]:
     result = []
     for op in loop.body.operations:
         ov = opview(op)
-        if isinstance(ov, linalg.GenericOp) and ls.num_reduction_loops(ov) != 0:
+        if isinstance(ov, linalg.GenericOp) and reduction_dims(ov):
             result.append(ov)
     return result
 
@@ -71,21 +242,21 @@ def map_loop_results_to_inner_reductions(loop: ir.OpView) -> list[ir.OpView | No
         if source_op is None:
             continue
         ov = source_op.opview
-        if isinstance(ov, linalg.GenericOp) and ls.num_reduction_loops(ov) != 0:
+        if isinstance(ov, linalg.GenericOp) and reduction_dims(ov):
             result[idx] = ov
     return result
 
 
-def find_r2_elementwise_operand(r2: ir.OpView, e: ir.OpView) -> ls.Operand:
-    """Find the one R2 input reading E's result."""
+def find_r2_elementwise_operand(r2: ir.OpView, e: ir.OpView) -> int:
+    """Find the index of the one R2 input reading E's result."""
     found = None
     e_result = e.results[0]
-    for operand in ls.dps_input_operands(r2):
-        if operand.value != e_result:
+    for index, value in enumerate(linalg_inputs(r2)):
+        if value != e_result:
             continue
         if found is not None:
             raise FusionRejected("R2 consumes E's result more than once")
-        found = operand
+        found = index
     if found is None:
         raise FusionRejected("no R2 input is E's result")
     return found
@@ -208,11 +379,11 @@ def check_elementwise_separability(
 
 
 def find_elementwise_dim_for_r2_reduction_dim(
-    e: ir.OpView, r2: ir.OpView, r2_e_operand: ls.Operand, r2_red_dim: int
+    e: ir.OpView, r2: ir.OpView, r2_e_operand: int, r2_red_dim: int
 ) -> int:
     """Align R2's reduction dim with E's output map for the same tensor."""
-    r2_map = ls.indexing_map_for(r2, r2_e_operand)
-    e_out_map = ls.indexing_map_for(e, ls.dps_init_operands(e)[0])
+    r2_map = indexing_maps(r2)[r2_e_operand]
+    e_out_map = indexing_maps(e)[len(linalg_inputs(e))]
     if len(r2_map.results) != len(e_out_map.results):
         raise FusionRejected(
             f"R2's map for E's result and E's output map have different rank "
@@ -242,13 +413,13 @@ def check_inner_reduction_against_elementwise(
     Each R1 input is traced through its tile slice. The derived R1-to-E dim map
     must be complete, consistent, and map R1's reduction to ``e_tiled_dim``.
     """
-    r1_red_dims = ls.reduction_dims(r1)
+    r1_red_dims = reduction_dims(r1)
     if len(r1_red_dims) != 1:
         raise FusionRejected(
             f"inner R1 does not have exactly one reduction iterator "
             f"({len(r1_red_dims)})"
         )
-    if r1_red_dims[0] != ls.num_loops(r1) - 1:
+    if r1_red_dims[0] != num_loops(r1) - 1:
         raise FusionRejected("reduction iterator is not the innermost loop in inner R1")
 
     # Map R1 loop dims to E loop dims through their shared inputs.
@@ -260,21 +431,21 @@ def check_inner_reduction_against_elementwise(
             return True
         return phi[r1_dim] == e_dim
 
-    e_inputs = ls.dps_input_operands(e)
-    for in1 in ls.dps_input_operands(r1):
-        in1_source = irr.resolve_slice_source(in1.value)
+    e_inputs = linalg_inputs(e)
+    for r1_index, in1 in enumerate(linalg_inputs(r1)):
+        in1_source = _resolve_slice_source(in1)
         # Sibling reduction results are running accumulators, not shared data.
         if in1_source in inner_results:
             continue
-        in_e = None
-        for candidate in e_inputs:
-            if irr.resolve_slice_source(candidate.value) == in1_source:
-                in_e = candidate
+        e_index = None
+        for index, candidate in enumerate(e_inputs):
+            if _resolve_slice_source(candidate) == in1_source:
+                e_index = index
                 break
-        if in_e is None:
+        if e_index is None:
             raise FusionRejected(f"R1 input is not also an input of E: {in1_source}")
-        m1 = ls.indexing_map_for(r1, in1)
-        m_e = ls.indexing_map_for(e, in_e)
+        m1 = indexing_maps(r1)[r1_index]
+        m_e = indexing_maps(e)[e_index]
         if len(m1.results) != len(m_e.results):
             raise FusionRejected(
                 f"shared input has maps of different rank in R1 vs E "
@@ -294,10 +465,10 @@ def check_inner_reduction_against_elementwise(
                     f"{{E.d{phi[e1.position]}, E.d{e2.position}}})"
                 )
 
-    if len(phi) != ls.num_loops(r1):
+    if len(phi) != num_loops(r1):
         raise FusionRejected(
             f"derived dim mapping does not cover all of R1's loop dims "
-            f"(covered {len(phi)} of {ls.num_loops(r1)})"
+            f"(covered {len(phi)} of {num_loops(r1)})"
         )
     if phi.get(r1_red_dims[0]) != e_tiled_dim:
         raise FusionRejected(
@@ -316,19 +487,18 @@ def check_legal_fusion_triple(
 
     ``result_to_inner`` maps R1 loop results to their inner tile reductions.
     """
-    if ls.num_dps_inits(r2) != 1:
+    if len(r2.results) != 1:
         raise FusionRejected(
-            f"R2 does not have exactly one result/init ({ls.num_dps_inits(r2)})"
+            f"R2 does not have exactly one result/init ({len(r2.results)})"
         )
 
-    if ls.num_dps_inits(e) != 1:
+    if len(e.results) != 1:
         raise FusionRejected(
-            f"E does not have exactly one result/init ({ls.num_dps_inits(e)})"
+            f"E does not have exactly one result/init ({len(e.results)})"
         )
-    if ls.num_reduction_loops(e) != 0:
+    if reduction_dims(e):
         raise FusionRejected(
-            f"E is not all-parallel (it has {ls.num_reduction_loops(e)} "
-            f"reduction loops)"
+            f"E is not all-parallel (it has {len(reduction_dims(e))} reduction loops)"
         )
 
     # Rewriting and the ordering checks require a shared block.
@@ -339,17 +509,17 @@ def check_legal_fusion_triple(
 
     r2_e_operand = find_r2_elementwise_operand(r2, e)
 
-    r2_red_dims = ls.reduction_dims(r2)
+    r2_red_dims = reduction_dims(r2)
     if len(r2_red_dims) != 1:
         raise FusionRejected(
             f"R2 does not have exactly one reduction iterator ({len(r2_red_dims)})"
         )
-    if r2_red_dims[0] != ls.num_loops(r2) - 1:
+    if r2_red_dims[0] != num_loops(r2) - 1:
         raise FusionRejected("reduction iterator is not the innermost loop in R2")
 
     # Each R2 input must admit slicing along the shared reduction axis.
-    for operand in ls.dps_input_operands(r2):
-        imap = ls.indexing_map_for(r2, operand)
+    for index, _ in enumerate(linalg_inputs(r2)):
+        imap = indexing_maps(r2)[index]
         carries_red_dim = False
         for expr in imap.results:
             if not isinstance(expr, ir.AffineDimExpr):
@@ -369,16 +539,16 @@ def check_legal_fusion_triple(
     )
 
     # All three extents must agree and the tile must divide the full extent.
-    lb = irr.constant_int_value(r1_loop.lowerBound)
-    ub = irr.constant_int_value(r1_loop.upperBound)
-    step = irr.constant_int_value(r1_loop.step)
+    lb = _constant_int_value(r1_loop.lowerBound)
+    ub = _constant_int_value(r1_loop.upperBound)
+    step = _constant_int_value(r1_loop.step)
     if lb is None or ub is None or step is None or step <= 0:
         raise FusionRejected(
             "R1 reduction loop does not have constant, positive bounds/step"
         )
     full_extent = ub - lb
     tile_size = step
-    r2_red_range = ls.static_loop_ranges(r2)[r2_red_dims[0]]
+    r2_red_range = _static_loop_ranges(r2)[r2_red_dims[0]]
     if ir.ShapedType.is_dynamic_size(r2_red_range):
         raise FusionRejected(
             "R2 reduction range is dynamic; fusion requires a static reduction extent"
@@ -394,7 +564,7 @@ def check_legal_fusion_triple(
             f"{full_extent}"
         )
 
-    e_red_range = ls.static_loop_ranges(e)[e_tiled_dim]
+    e_red_range = _static_loop_ranges(e)[e_tiled_dim]
     if ir.ShapedType.is_dynamic_size(e_red_range) or e_red_range != full_extent:
         raise FusionRejected(
             f"E's extent along the axis carrying R2's reduction ({e_red_range}) "
@@ -406,15 +576,15 @@ def check_legal_fusion_triple(
         raise FusionRejected("E does not consume any result of the R1 loop")
 
     accumulator_args = [
-        ls.matching_block_argument(e, operand) for operand in r1_as_e_operands
+        e.regions[0].blocks[0].arguments[index] for index in r1_as_e_operands
     ]
     check_elementwise_separability(e, accumulator_args)
 
     inner_results = {inner.results[0] for inner in result_to_inner if inner is not None}
 
     # Running R1 results must be broadcast along the reduction axis.
-    for operand in r1_as_e_operands:
-        imap = ls.indexing_map_for(e, operand)
+    for index in r1_as_e_operands:
+        imap = indexing_maps(e)[index]
         for expr in imap.results:
             if not isinstance(expr, ir.AffineDimExpr):
                 raise FusionRejected(
@@ -426,7 +596,7 @@ def check_legal_fusion_triple(
                     f"R2's reduction (map references dim {expr.position}): {imap}"
                 )
 
-    for operand, result_idx in zip(r1_as_e_operands, r1_result_indices):
+    for result_idx in r1_result_indices:
         inner = result_to_inner[result_idx]
         if inner is None:
             raise FusionRejected(
@@ -435,7 +605,7 @@ def check_legal_fusion_triple(
             )
         check_inner_reduction_against_elementwise(inner, e, e_tiled_dim, inner_results)
 
-    _, combiners = irr.match_reduction(ls.region_output_args(r2), 0)
+    _, combiners = _match_reduction([r2.regions[0].blocks[0].arguments[-1]], 0)
     if not combiners:
         raise FusionRejected("R2's region does not match a reduction pattern")
     if len(combiners) != 1:
@@ -445,8 +615,8 @@ def check_legal_fusion_triple(
     if not isinstance(combiners[0].opview, arith.AddFOp):
         raise FusionRejected(f"R2's combiner is not arith.addf: {combiners[0].name}")
 
-    r2_init = ls.dps_init_operands(r2)[0].value
-    if not irr.is_defined_as_zero(r2_init):
+    r2_init = linalg_outputs(r2)[0]
+    if not _is_defined_as_zero(r2_init):
         raise FusionRejected("R2's init is not the additive identity (zero)")
 
     element_type = ir.ShapedType(r2.results[0].type).element_type
@@ -457,7 +627,7 @@ def check_legal_fusion_triple(
         )
 
     e_element_type = ir.ShapedType(e.results[0].type).element_type
-    if irr.wider_float_type(e_element_type, element_type) is None:
+    if _wider_float_type(e_element_type, element_type) is None:
         raise FusionRejected(
             f"E's element type {e_element_type} and R2's accumulator type "
             f"{element_type} have no common widening to evaluate the correction "
@@ -469,7 +639,7 @@ def check_legal_fusion_triple(
         for user in op_users(r1_result):
             if user == e.operation:
                 continue
-            if not irr.post_dominates(user, e):
+            if not _post_dominates(user, e):
                 raise FusionRejected(
                     f"user of an R1 result does not post-dominate E: {user.name}"
                 )
