@@ -279,7 +279,7 @@ _MUL = 1 << 3
 
 
 def _close_facts(facts: int) -> int:
-    """Propagate independence to both separable forms."""
+    """Constants are independent; independent values fit both separable forms."""
     if facts & _CONST:
         facts |= _IND
     if facts & _IND:
@@ -288,19 +288,28 @@ def _close_facts(facts: int) -> int:
 
 
 def check_elementwise_separability(
-    e: ir.OpView, accumulator_args: list[ir.BlockArgument]
+    e: ir.OpView, r1_as_e_block_args: list[ir.BlockArgument]
 ) -> None:
     """Prove E(x, m) = f(x) * g(m), so its online correction ignores x.
 
-    A forward fact analysis tracks independence and additive or multiplicative
-    separability. ``exp`` turns an additive form into a multiplicative one, as
-    needed for softmax. The yielded value must depend on an accumulator.
+    ``facts`` maps each SSA value in E's scalar body to a bitset of proven forms:
+    constant, independent of m, additive ``g(m) + h(x)``, or multiplicative
+    ``g(m) * h(x)``. A value may have several facts. Seed the R1-as-E block
+    arguments with both separable forms, other block arguments as independent,
+    and captured values as constant. Walk the body once in definition order,
+    deriving each result's facts from its operands.
+
+    Add/sub preserve the additive form; mul/div preserve the multiplicative
+    form. ``exp`` bridges additive to multiplicative, which proves softmax's
+    ``exp(x - m)`` separable. ``log`` bridges the other way; negation, roots,
+    and constrained powers propagate proven forms. Unmodelled results get no
+    facts. Accept only when the yield is multiplicative and depends on m.
     """
     body = e.regions[0].blocks[0]
     facts: dict = {}
 
     # Seed all accumulators together to prove joint separability.
-    accumulators = set(accumulator_args)
+    accumulators = set(r1_as_e_block_args)
     for barg in body.arguments:
         facts[barg] = _close_facts((_ADD | _MUL) if barg in accumulators else _IND)
 
@@ -329,11 +338,13 @@ def check_elementwise_separability(
                 bits |= _CONST
             if has(lhs, _IND) and has(rhs, _IND):
                 bits |= _IND
+            # The operation preserves a form only when both operands have it.
             if has(lhs, preserved) and has(rhs, preserved):
                 bits |= preserved
             return bits
 
         def unary(from_fact: int, to_fact: int) -> int:
+            # Independence survives; a separable form may change.
             arg = ov.operands[0]
             bits = facts_of(arg) & (_CONST | _IND)
             if has(arg, from_fact):
@@ -349,6 +360,7 @@ def check_elementwise_separability(
         elif isinstance(ov, arith.NegFOp):
             f = facts_of(ov.operands[0])
         elif isinstance(ov, (math.ExpOp, math.Exp2Op)):
+            # exp(g(m) + h(x)) = exp(g(m)) * exp(h(x)).
             f = unary(_ADD, _MUL)
         elif isinstance(ov, (math.LogOp, math.Log2Op)):
             f = unary(_MUL, _ADD)
@@ -369,6 +381,7 @@ def check_elementwise_separability(
     if len(terminator.operands) != 1:
         raise FusionRejected("E does not yield exactly one value")
     term = terminator.operands[0]
+    # MUL supplies the correction ratio; IND would make it independent of R1.
     if not has(term, _MUL):
         raise FusionRejected(
             "E is not multiplicatively separable in the accumulators it consumes, "
@@ -604,10 +617,10 @@ def check_legal_fusion_triple(
     if not r1_as_e_operands:
         raise FusionRejected("E does not consume any result of the R1 loop")
 
-    accumulator_args = [
+    r1_as_e_block_args = [
         e.regions[0].blocks[0].arguments[index] for index in r1_as_e_operands
     ]
-    check_elementwise_separability(e, accumulator_args)
+    check_elementwise_separability(e, r1_as_e_block_args)
 
     inner_results = {inner.results[0] for inner in result_to_inner if inner is not None}
 
