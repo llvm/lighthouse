@@ -28,14 +28,14 @@ class ConstrainParamsOp(
 
     @classmethod
     def attach_interface_impls(cls, ctx=None):
-        if not hasattr(cls, "_interfaces_attached"):
-            cls.ConstrainParamsTransformOpInterfaceModel.attach(
-                cls.OPERATION_NAME, context=ctx
-            )
-            cls.ConstrainParamsMemoryEffectsOpInterfaceModel.attach(
-                cls.OPERATION_NAME, context=ctx
-            )
-            setattr(cls, "_interfaces_attached", True)
+        # Interfaces are context-bound, so (re)attach for every context; a
+        # process-global guard would leave later contexts without the interface.
+        cls.ConstrainParamsTransformOpInterfaceModel.attach(
+            cls.OPERATION_NAME, context=ctx
+        )
+        cls.ConstrainParamsMemoryEffectsOpInterfaceModel.attach(
+            cls.OPERATION_NAME, context=ctx
+        )
 
     class ConstrainParamsTransformOpInterfaceModel(transform.TransformOpInterface):
         """TransformOpInterface impl for evaluating the SMT constraints and producing new params."""
