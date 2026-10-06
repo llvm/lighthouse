@@ -198,7 +198,7 @@ def bundle_xegpu_fused_attention_schedule(
         anytype, func, ops=["linalg.generic", "linalg.batch_matmul"]
     )
     leaf_linalg_op = transform_ext.extract_handle(linalg_ops, -1)
-    leaf_generic_wg, _, _ = lh_transform.tile(
+    leaf_generic_wg, [wg_loop], _ = lh_transform.tile(
         leaf_linalg_op,
         tile_sizes=wg_tile,
         fuse_producers=True,
@@ -219,7 +219,7 @@ def bundle_xegpu_fused_attention_schedule(
     #   P@V:    linalg.batch_matmul(softmax_out, v_slice)
 
     linalg_ops = structured.structured_match(
-        anytype, func, ops=["linalg.generic", "linalg.batch_matmul"]
+        anytype, wg_loop, ops=["linalg.generic", "linalg.batch_matmul"]
     )
     contraction_ops = transform_ext.filter_contraction_ops(linalg_ops)
 
@@ -291,6 +291,38 @@ def bundle_xegpu_fused_attention_schedule(
         tile_size=reduction_tile,
     )
     transform.apply_cse(func)
+    lh_transform.cleanup(func)
+
+    # Clean up insert/extract slice patterns.
+    forall_loop = match_and_split(func, ops={"scf.forall"}, nhandles=1)[0]
+    with ir.InsertionPoint(transform.apply_patterns(forall_loop).patterns):
+        tensor.apply_patterns_tensor_merge_consecutive_insert_extract_slice()
+    lh_transform.cleanup(forall_loop)
+
+    # Fuse elementwise producers into the scf.for loop, if any.
+    # Assume the producers are associated with the first linalg.contract op.
+    first_contract_op = transform_ext.extract_handle(
+        lh_transform.match_op(forall_loop, "linalg.contract"), 0
+    )
+    elemwise_producers = transform_ext.filter_elementwise(
+        transform_ext.trace_producers(first_contract_op)
+    )
+    # Keep only linalg.generic/elementwise ops
+    elemwise_producers = transform_ext.filter_by_name(
+        elemwise_producers, op_names=["linalg.generic", "linalg.elementwise"]
+    )
+    for_loop = match_and_split(func, ops={"scf.for"}, nhandles=1)[0]
+    with lh_transform.foreach(
+        transform_ext.reverse_handles(elemwise_producers)
+    ) as elemwise:
+        structured.structured_fuse_into_containing_op(
+            anytype,
+            anytype,
+            producer_op=elemwise,
+            containing_op=for_loop,
+        )
+        transform.apply_dce(forall_loop)
+        transform.yield_()
     lh_transform.cleanup(func)
 
     if stop_at_stage == "reduction-tiled":
