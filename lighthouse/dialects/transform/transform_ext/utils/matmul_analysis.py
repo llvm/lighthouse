@@ -167,6 +167,35 @@ def _linalg_matmul_shape_and_transpose(
     return (m, n, k), transpose_a, transpose_b
 
 
+# Canonical linalg.matmul operand maps over loops (m=d0, n=d1, k=d2): A reads
+# [m, k], B reads [k, n]. Any other dims mean a transposed or broadcast operand.
+_MATMUL_A_DIMS = [0, 2]
+_MATMUL_B_DIMS = [2, 1]
+
+
+def _reject_broadcast_or_transposed_matmul(matmul: ir.OpView) -> None:
+    """Raise if `matmul` reads a broadcast operand or non-identity (transposed) maps.
+
+    `analyze_wg_k_tile_size` reads M/K off operand 0 and N off operand 1 assuming the
+    canonical ``[m, k] x [k, n]`` layout, so a linalg.broadcast producer or transposing
+    input indexing maps would make those reads wrong.
+    """
+    for operand in matmul.inputs:
+        if _first_producer_named(operand, "linalg.broadcast") is not None:
+            raise ValueError(
+                "linalg.matmul has a linalg.broadcast producer, which the tile-size "
+                "analysis does not support"
+            )
+    maps = [ir.AffineMapAttr(m).value for m in matmul.attributes["indexing_maps"]]
+    a_dims = [dim_position(r) for r in maps[0].results]
+    b_dims = [dim_position(r) for r in maps[1].results]
+    if a_dims != _MATMUL_A_DIMS or b_dims != _MATMUL_B_DIMS:
+        raise ValueError(
+            "linalg.matmul has non-identity (transposed) input indexing maps, which "
+            "the tile-size analysis does not support"
+        )
+
+
 def analyze_matmul_op(op: ir.OpView) -> tuple[tuple[int, int, int], bool, bool]:
     """Infer (M, N, K) and transpose_a/transpose_b from a matmul-like anchor op.
 
@@ -196,6 +225,7 @@ def analyze_wg_k_tile_size(op: ir.OpView) -> tuple[int, ...] | None:
         if op.parent.name != "scf.forall":
             # target is not within a scf.forall loop, so it's not workgroup tiled
             return None, None
+        _reject_broadcast_or_transposed_matmul(op)
         # Assume we are in WG loop or WG-k loop nest
         m, k = list(ir.ShapedType(op.inputs[0].type).shape)
         _, n = list(ir.ShapedType(op.inputs[1].type).shape)
