@@ -302,9 +302,9 @@ def check_elementwise_separability(
 
     Add/sub preserve the additive form; mul/div preserve the multiplicative
     form. ``exp`` bridges additive to multiplicative, which proves softmax's
-    ``exp(x - m)`` separable. ``log`` bridges the other way; negation, roots,
-    and constrained powers propagate proven forms. Unmodelled results get no
-    facts. Accept only when the yield is multiplicative and depends on m.
+    ``exp(x - m)`` separable. Negation preserves proven forms, and ``absf``
+    preserves multiplicative separability. Unmodelled results get no facts.
+    Accept only when the yield is multiplicative and depends on m.
     """
     body = e.regions[0].blocks[0]
     facts: dict = {}
@@ -368,20 +368,8 @@ def check_elementwise_separability(
         elif isinstance(ov, (math.ExpOp, math.Exp2Op)):
             # exp(g(m) + h(x)) = exp(g(m)) * exp(h(x)).
             f = unary(_ADD, _MUL)
-        elif isinstance(ov, (math.LogOp, math.Log2Op)):
-            f = unary(_MUL, _ADD)
-        # For unary operations like abs, sqrt, and rsqrt, _MUL
-        # is preserved if present.
-        elif isinstance(ov, (math.AbsFOp, math.SqrtOp, math.RsqrtOp)):
+        elif isinstance(ov, math.AbsFOp):
             f = unary(_MUL, _MUL)
-        elif isinstance(ov, math.PowFOp):
-            base, exponent = ov.operands[0], ov.operands[1]
-            f = facts_of(base) & facts_of(exponent) & (_CONST | _IND)
-            # A varying exponent could reintroduce data dependence.
-            if has(base, _MUL) and has(exponent, _CONST):
-                f |= _MUL
-            if has(base, _CONST) and has(exponent, _ADD):
-                f |= _MUL
 
         facts[result] = _close_facts(f)
 

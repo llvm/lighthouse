@@ -229,6 +229,15 @@ def replace_once(source: str, before: str, after: str) -> str:
     return source.replace(before, after, 1)
 
 
+def softmax_with_term(body: str) -> str:
+    """Replace the scalar body of softmax's elementwise term."""
+    return replace_once(
+        SOFTMAX,
+        "    %e = math.exp %d : f32\n    linalg.yield %e : f32",
+        body,
+    )
+
+
 def main() -> None:
     # CHECK-LABEL: Case: softmax
     # CHECK-NEXT: Legal to fuse: E dim 1, tile 32
@@ -263,6 +272,17 @@ def main() -> None:
     check_case(
         "nonseparable term",
         replace_once(SOFTMAX, "%e = math.exp %d : f32", "%e = arith.mulf %d, %d : f32"),
+    )
+
+    # CHECK-LABEL: Case: absf remains supported
+    # CHECK-NEXT: Legal to fuse: E dim 1, tile 32
+    check_case(
+        "absf remains supported",
+        softmax_with_term(
+            "    %e = math.exp %d : f32\n"
+            "    %absolute = math.absf %e : f32\n"
+            "    linalg.yield %absolute : f32"
+        ),
     )
 
     # CHECK-LABEL: Case: wrong reduction input
