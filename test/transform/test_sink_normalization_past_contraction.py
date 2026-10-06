@@ -69,6 +69,36 @@ func.func @pv_batched(%p: tensor<4x4x64x512xbf16>, %l: tensor<4x4x64xbf16>,
 }
 """
 
+#: A mask-to-zero ``arith.select`` sits between the divide and the multiply: the
+#: softmax fully-masked-row guard the newer torch-mlir emits. Its masked value is
+#: zero, so it commutes with the scale (``0 / l == 0``) and the divide still sinks;
+#: the select stays in the rebuilt body, now reading the numerator directly.
+MASK_TO_ZERO = """
+#ik = affine_map<(d0, d1, d2) -> (d0, d2)>
+#i  = affine_map<(d0, d1, d2) -> (d0)>
+#kj = affine_map<(d0, d1, d2) -> (d2, d1)>
+#ij = affine_map<(d0, d1, d2) -> (d0, d1)>
+func.func @pv_masked(%p: tensor<64x512xf32>, %l: tensor<64xf32>, %mask: tensor<64xi1>,
+                     %v: tensor<512x128xf32>) -> tensor<64x128xf32> {
+  %zero = arith.constant 0.000000e+00 : f32
+  %init = tensor.empty() : tensor<64x128xf32>
+  %fill = linalg.fill ins(%zero : f32) outs(%init : tensor<64x128xf32>) -> tensor<64x128xf32>
+  %o = linalg.generic {indexing_maps = [#ik, #i, #i, #kj, #ij],
+                       iterator_types = ["parallel", "parallel", "reduction"]}
+      ins(%p, %l, %mask, %v : tensor<64x512xf32>, tensor<64xf32>, tensor<64xi1>, tensor<512x128xf32>)
+      outs(%fill : tensor<64x128xf32>) {
+  ^bb0(%a: f32, %n: f32, %mv: i1, %b: f32, %acc: f32):
+    %c0 = arith.constant 0.000000e+00 : f32
+    %d = arith.divf %a, %n : f32
+    %sel = arith.select %mv, %c0, %d : f32
+    %m = arith.mulf %sel, %b : f32
+    %s = arith.addf %acc, %m : f32
+    linalg.yield %s : f32
+  } -> tensor<64x128xf32>
+  return %o : tensor<64x128xf32>
+}
+"""
+
 #: The scale is indexed by the reduction dim, so it does not factor out of the sum.
 REDUCTION_VARYING = """
 #ik = affine_map<(d0, d1, d2) -> (d0, d2)>
@@ -141,6 +171,35 @@ func.func @pv_not_multiplied(%p: tensor<64x512xf32>, %l: tensor<64xf32>,
     %d = arith.divf %a, %n : f32
     %e = math.exp %d : f32
     %m = arith.mulf %e, %b : f32
+    %s = arith.addf %acc, %m : f32
+    linalg.yield %s : f32
+  } -> tensor<64x128xf32>
+  return %o : tensor<64x128xf32>
+}
+"""
+
+#: The select between the divide and the multiply fills a nonzero value, so it does
+#: not commute with the scale (``select(m, c, a/l) != select(m, c, a) / l`` for
+#: ``c != 0``); the body is not an accepted multiply-accumulate.
+SELECT_NONZERO = """
+#ik = affine_map<(d0, d1, d2) -> (d0, d2)>
+#i  = affine_map<(d0, d1, d2) -> (d0)>
+#kj = affine_map<(d0, d1, d2) -> (d2, d1)>
+#ij = affine_map<(d0, d1, d2) -> (d0, d1)>
+func.func @pv_select_nonzero(%p: tensor<64x512xf32>, %l: tensor<64xf32>, %mask: tensor<64xi1>,
+                             %v: tensor<512x128xf32>) -> tensor<64x128xf32> {
+  %zero = arith.constant 0.000000e+00 : f32
+  %init = tensor.empty() : tensor<64x128xf32>
+  %fill = linalg.fill ins(%zero : f32) outs(%init : tensor<64x128xf32>) -> tensor<64x128xf32>
+  %o = linalg.generic {indexing_maps = [#ik, #i, #i, #kj, #ij],
+                       iterator_types = ["parallel", "parallel", "reduction"]}
+      ins(%p, %l, %mask, %v : tensor<64x512xf32>, tensor<64xf32>, tensor<64xi1>, tensor<512x128xf32>)
+      outs(%fill : tensor<64x128xf32>) {
+  ^bb0(%a: f32, %n: f32, %mv: i1, %b: f32, %acc: f32):
+    %c1 = arith.constant 1.000000e+00 : f32
+    %d = arith.divf %a, %n : f32
+    %sel = arith.select %mv, %c1, %d : f32
+    %m = arith.mulf %sel, %b : f32
     %s = arith.addf %acc, %m : f32
     linalg.yield %s : f32
   } -> tensor<64x128xf32>
@@ -287,6 +346,31 @@ def test_batched_mixed() -> None:
 # CHECK:         return %[[N]]
 
 
+def test_mask_to_zero() -> None:
+    """A mask-to-zero select between the divide and the multiply does not block it."""
+    with ir.Context(), ir.Location.unknown():
+        lh_dialects.register_and_load()
+        print(apply(MASK_TO_ZERO))
+
+
+# The rebuilt contraction keeps the select but drops the scale operand and the divide.
+# CHECK-LABEL: func.func @pv_masked
+# CHECK:         linalg.generic
+# CHECK-SAME:      iterator_types = ["parallel", "parallel", "reduction"]
+# CHECK-SAME:      ins(%arg0, %arg2, %arg3
+# CHECK:           arith.select
+# CHECK:           arith.mulf
+# CHECK:           arith.addf
+# CHECK-NOT:       arith.divf
+# CHECK:           linalg.yield
+#
+# The divide follows it, once per output element, reading the row scale.
+# CHECK:         %[[N:.+]] = linalg.generic
+# CHECK-SAME:      iterator_types = ["parallel", "parallel"]
+# CHECK:           arith.divf
+# CHECK:         return %[[N]]
+
+
 def test_reduction_varying_is_rejected() -> None:
     """A scale indexed by the reduction dim does not factor out."""
     with ir.Context(), ir.Location.unknown():
@@ -320,6 +404,17 @@ def test_scale_not_multiplied_is_rejected() -> None:
 # CHECK: not consumed by the contraction's multiply-accumulate
 
 
+def test_select_nonzero_is_rejected() -> None:
+    """A select with a nonzero fill does not commute with the scale."""
+    with ir.Context(), ir.Location.unknown():
+        lh_dialects.register_and_load()
+        expect_rejected(SELECT_NONZERO)
+
+
+# CHECK-LABEL: rejected: select nonzero fill
+# CHECK: not consumed by the contraction's multiply-accumulate
+
+
 def test_composite_scale_map_is_rejected() -> None:
     """A scale map that is not a plain dim projection cannot be re-expressed."""
     with ir.Context(), ir.Location.unknown():
@@ -345,12 +440,15 @@ def test_named_contraction_is_rejected() -> None:
 if __name__ == "__main__":
     test_simple()
     test_batched_mixed()
+    test_mask_to_zero()
     print("rejected: reduction-varying scale")
     test_reduction_varying_is_rejected()
     print("rejected: two scales")
     test_two_scales_is_rejected()
     print("rejected: scale not multiplied")
     test_scale_not_multiplied_is_rejected()
+    print("rejected: select nonzero fill")
+    test_select_nonzero_is_rejected()
     print("rejected: composite scale map")
     test_composite_scale_map_is_rejected()
     print("rejected: named contraction")

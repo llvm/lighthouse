@@ -44,7 +44,8 @@ class SinkNormalizationPastContractionOp(
       * `contraction` to be a `linalg.generic` with exactly one reduction dim, that
         dim innermost, and an identity output map;
       * its body to hold an ``arith.divf``/``arith.mulf`` on two input block
-        arguments;
+        arguments, feeding the multiply-accumulate (optionally through a mask-to-zero
+        ``arith.select``, the softmax fully-masked-row guard);
       * the scale operand not to reference the reduction dim -- the condition that
         lets it factor out;
       * the scale's element type to be convertible to the contraction's accumulator
