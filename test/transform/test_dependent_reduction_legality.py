@@ -274,14 +274,14 @@ def main() -> None:
         replace_once(SOFTMAX, "%e = math.exp %d : f32", "%e = arith.mulf %d, %d : f32"),
     )
 
-    # CHECK-LABEL: Case: absf remains supported
-    # CHECK-NEXT: Legal to fuse: E dim 1, tile 32
+    # CHECK-LABEL: Case: sqrt unsupported
+    # CHECK-NEXT: Not legal to fuse: E is not multiplicatively separable
     check_case(
-        "absf remains supported",
+        "sqrt unsupported",
         softmax_with_term(
             "    %e = math.exp %d : f32\n"
-            "    %absolute = math.absf %e : f32\n"
-            "    linalg.yield %absolute : f32"
+            "    %root = math.sqrt %e : f32\n"
+            "    linalg.yield %root : f32"
         ),
     )
 
