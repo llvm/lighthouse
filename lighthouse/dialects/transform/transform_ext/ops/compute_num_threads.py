@@ -69,7 +69,9 @@ class ComputeNumThreadsOp(
             count = op.base.value
             for w, s in zip(wg, sg):
                 # Treat an untiled (0) dim as 1 to avoid division by zero.
-                count *= (w or 1) // (s or 1)
+                factor = (w or 1) // (s or 1)
+                assert factor > 0
+                count *= factor
 
             i64 = ir.IntegerType.get_signless(64)
             results.set_params(op.num_threads, [ir.IntegerAttr.get(i64, count)])

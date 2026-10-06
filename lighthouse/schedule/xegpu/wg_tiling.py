@@ -70,7 +70,6 @@ def apply_gemm_tiling(
 def apply_reduction_tiling(func: ir.Operation) -> ir.Operation:
     """Apply reduction tiling to the given function."""
 
-    # apply_wg_subtile = wg_subtile is not None and sum(wg_subtile) > 0
     anytype = transform.AnyOpType.get()
 
     # TODO implement actual pattern matching and anchor op inference
@@ -89,21 +88,6 @@ def apply_reduction_tiling(func: ir.Operation) -> ir.Operation:
         apply_cleanup=False,
     )
     lh_transform.cleanup(func)
-
-    # if apply_wg_subtile:
-    #     # Add a persistent loop to reduce wg tile size.
-    #     generic_ops = structured.structured_match(
-    #         anytype, func, ops=["linalg.generic"]
-    #     )
-    #     leaf_generic = transform_ext.extract_handle(generic_ops, -1, silenceable=True)
-    #     lh_transform.tile(
-    #         leaf_generic,
-    #         tile_sizes=wg_subtile,
-    #         fuse_producers=True,
-    #         use_forall=False,
-    #         apply_cleanup=False,
-    #     )
-    #     lh_transform.cleanup(func)
 
     def fuse_elemwise_producers_to_loop(target, parent_loop):
         """Fuses all elementwise producer ops of `target` into `parent_loop`."""

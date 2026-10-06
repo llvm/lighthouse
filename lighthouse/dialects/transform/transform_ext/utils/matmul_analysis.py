@@ -1,6 +1,7 @@
 """Analysis helpers for inferring matmul shape and XeGPU parameters."""
 
 from mlir import ir
+from mlir.dialects import memref, vector
 
 from lighthouse.utils.mlir import defining_op, dim_position
 
@@ -11,7 +12,7 @@ def _source_shape(value: ir.Value) -> list[int] | None:
     seen: set[ir.Operation] = set()
     while op is not None and op not in seen:
         seen.add(op)
-        if op.name.endswith("transfer_read"):
+        if isinstance(op.opview, vector.TransferReadOp):
             return list(ir.ShapedType(op.operands[0].type).shape)
         if len(op.operands) == 0:
             break
@@ -68,7 +69,7 @@ def _root_memref_shape(value: ir.Value) -> list[int]:
     seen: set[ir.Operation] = set()
     while op is not None and op not in seen:
         seen.add(op)
-        if not (op.name.endswith("subview") or op.name.endswith("cast")):
+        if not isinstance(op.opview, (memref.SubViewOp, memref.CastOp)):
             break
         if len(op.operands) == 0:
             break
@@ -90,9 +91,10 @@ def _xegpu_operand_source(value: ir.Value) -> tuple[list[int] | None, bool]:
     seen: set[ir.Operation] = set()
     while op is not None and op not in seen:
         seen.add(op)
-        if op.name.endswith("transpose"):
+        if isinstance(op.opview, vector.TransposeOp):
             transposed = True
-        if op.name.endswith("create_nd_tdesc"):
+        # xegpu dialect has no Python bindings, so match by name.
+        if op.name == "xegpu.create_nd_tdesc":
             return _root_memref_shape(op.operands[0]), transposed
         if len(op.operands) == 0:
             break
