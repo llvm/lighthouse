@@ -9,7 +9,7 @@ from lighthouse.schedule import schedule_boilerplate
 from .lowering_common import get_payload_func
 
 
-def cleanup(
+def cleanup_schedule(
     payload_func_name: str | None = None,
 ) -> ir.Module:
     """Normalize singleton dimensions and fuse elementwise ops in the payload."""

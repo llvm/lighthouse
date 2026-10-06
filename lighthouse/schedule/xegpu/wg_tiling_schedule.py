@@ -285,7 +285,7 @@ def apply_attention_tiling(func: ir.Operation) -> ir.Operation:
     return func
 
 
-def wg_tiling(
+def wg_tiling_schedule(
     wg_tile: list[int] | None = None,
     k_tile: int | None = None,
     payload_func_name: str | None = None,

@@ -5,10 +5,10 @@ from lighthouse.schedule import schedule_boilerplate
 from . import lowering_common
 
 
-def vectorize(
+def bufferize_schedule(
     payload_func_name: str | None = None,
 ) -> ir.Module:
-    """Vectorizes the payload function."""
+    """Bufferizes the payload module and converts allocs to GPU variants."""
 
     with schedule_boilerplate() as (schedule, named_seq):
         anytype = transform.AnyOpType.get()
@@ -28,7 +28,11 @@ def vectorize(
             op_name="builtin.module",
             deduplicate=True,
         )
-        lowering_common.vectorize(payload_mod, payload_func=func)
+        payload_mod = lowering_common.bufferize(payload_mod)
+        func = lowering_common.get_payload_func(
+            payload_mod, func_name=payload_func_name, op_name=op_names
+        )
+        lowering_common.convert_allocs_to_gpu(payload_mod, payload_func=func)
         transform.yield_()
 
     return schedule

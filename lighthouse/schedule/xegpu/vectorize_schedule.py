@@ -3,11 +3,12 @@ from mlir.dialects import transform
 
 from lighthouse.schedule import schedule_boilerplate
 from . import lowering_common
-import lighthouse.transform as lh_transform
 
 
-def vector_to_xegpu() -> ir.Module:
-    """Converts vector ops in the outlined gpu.func to XeGPU ops."""
+def vectorize_schedule(
+    payload_func_name: str | None = None,
+) -> ir.Module:
+    """Vectorizes the payload function."""
 
     with schedule_boilerplate() as (schedule, named_seq):
         anytype = transform.AnyOpType.get()
@@ -18,15 +19,16 @@ def vector_to_xegpu() -> ir.Module:
             "vector.transfer_read",
             "vector.transfer_write",
         ]
-        matching_children = lh_transform.match_op(named_seq.bodyTarget, op_names)
+        func = lowering_common.get_payload_func(
+            named_seq.bodyTarget, func_name=payload_func_name, op_name=op_names
+        )
         payload_mod = transform.get_parent_op(
             anytype,
-            matching_children,
+            func,
             op_name="builtin.module",
             deduplicate=True,
         )
-        payload_mod = lowering_common.convert_vector_to_xegpu(payload_mod)
-        lh_transform.cleanup(payload_mod)
+        lowering_common.vectorize(payload_mod, payload_func=func)
         transform.yield_()
 
     return schedule

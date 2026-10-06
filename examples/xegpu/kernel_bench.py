@@ -528,25 +528,25 @@ def get_xegpu_pipeline(stop_at_stage):
     schedules = []
     if stop_at_stage == "initial":
         return schedules
-    schedules.append(xegpu.cleanup())
+    schedules.append(xegpu.cleanup_schedule())
     if stop_at_stage == "cleanup":
         return schedules
-    schedules.append(xegpu.wg_tiling())
+    schedules.append(xegpu.wg_tiling_schedule())
     if stop_at_stage == "tiled":
         return schedules
-    schedules.append(xegpu.vectorize())
+    schedules.append(xegpu.vectorize_schedule())
     if stop_at_stage == "vectorized":
         return schedules
-    schedules.append(xegpu.bufferize())
+    schedules.append(xegpu.bufferize_schedule())
     if stop_at_stage == "bufferized":
         return schedules
-    schedules.append(xegpu.outline_gpu_func())
+    schedules.append(xegpu.outline_gpu_func_schedule())
     if stop_at_stage == "gpu-outlining":
         return schedules
-    schedules.append(xegpu.vector_to_xegpu())
+    schedules.append(xegpu.vector_to_xegpu_schedule())
     if stop_at_stage == "xegpu-initial":
         return schedules
-    schedules.append(xegpu.annotate_layouts())
+    schedules.append(xegpu.annotate_layouts_schedule())
     if stop_at_stage == "xegpu-wg":
         return schedules
     return schedules

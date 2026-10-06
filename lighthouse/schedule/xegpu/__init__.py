@@ -2,13 +2,13 @@ from .xegpu_to_binary import xegpu_to_binary
 from .mlp_schedule import mlp_schedule, matmul_schedule
 from .elemwise_schedule import elemwise_schedule
 from .reduction_schedule import reduction_schedule
-from .outline_gpu_func import outline_gpu_func
-from .annotate_layouts import annotate_layouts
-from .vectorize import vectorize
-from .bufferize import bufferize
-from .cleanup import cleanup
-from .wg_tiling import wg_tiling
-from .vector_to_xegpu import vector_to_xegpu
+from .outline_gpu_func_schedule import outline_gpu_func_schedule
+from .annotate_layouts_schedule import annotate_layouts_schedule
+from .vectorize_schedule import vectorize_schedule
+from .bufferize_schedule import bufferize_schedule
+from .cleanup_schedule import cleanup_schedule
+from .wg_tiling_schedule import wg_tiling_schedule
+from .vector_to_xegpu_schedule import vector_to_xegpu_schedule
 from .fused_attention_schedule import fused_attention_schedule
 from .xegpu_parameter_selector import XeGPUParameterSelector
 from .matmul_constraints import check_constraints
@@ -23,22 +23,22 @@ from .lowering_common import (
 __all__ = [
     "XeGPUParameterSelector",
     "XeGPUSpecs",
-    "annotate_layouts",
-    "bufferize",
+    "annotate_layouts_schedule",
+    "bufferize_schedule",
     "check_constraints",
-    "cleanup",
+    "cleanup_schedule",
     "convert_to_gpu_launch",
     "convert_vector_to_xegpu",
     "elemwise_schedule",
     "fused_attention_schedule",
     "matmul_schedule",
     "mlp_schedule",
-    "outline_gpu_func",
+    "outline_gpu_func_schedule",
     "outline_gpu_function",
     "reduction_schedule",
-    "vector_to_xegpu",
-    "vectorize",
+    "vector_to_xegpu_schedule",
     "vectorize_bufferize_and_outline_gpu_func",
-    "wg_tiling",
+    "vectorize_schedule",
+    "wg_tiling_schedule",
     "xegpu_to_binary",
 ]

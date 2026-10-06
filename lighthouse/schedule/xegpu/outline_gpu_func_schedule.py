@@ -16,7 +16,7 @@ from .lowering_common import (
 )
 
 
-def outline_gpu_func(
+def outline_gpu_func_schedule(
     payload_func_name: str | None = None,
     sg_tile: list[int] | None = None,
     device: str | None = None,

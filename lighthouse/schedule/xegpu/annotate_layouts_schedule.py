@@ -377,7 +377,7 @@ def analyze_and_annotate_gpu_func(
         transform.yield_([gpu_func])
 
 
-def annotate_layouts(
+def annotate_layouts_schedule(
     sg_tile: tuple[int, int] | None = None,
 ) -> ir.Module:
     """Adds xegpu layout annotations and prefetch ops to relevant ops."""
