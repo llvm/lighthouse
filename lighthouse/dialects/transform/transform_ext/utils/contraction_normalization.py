@@ -141,17 +141,40 @@ def _consumer_through_casts(value: ir.Value):
     return user
 
 
+def _is_float_zero(value: ir.Value) -> bool:
+    """Whether `value` is a scalar float-zero constant (a mask fill value)."""
+    owner = value.owner
+    if isinstance(owner, ir.Block):
+        return False
+    const = opview(owner)
+    if not isinstance(const, arith.ConstantOp):
+        return False
+    attr = const.value
+    return isinstance(attr, ir.FloatAttr) and ir.FloatAttr(attr).value == 0.0
+
+
 def _feeds_multiply_accumulate(scale_op, body: ir.Block, init_arg) -> bool:
     """Whether `scale_op`'s result is what the contraction multiplies and sums.
 
     The body of a contraction carrying a scale is ``yield add(acc, mul(...))`` with the
     scale on either side of the multiply, plus float casts wherever the operand and
     accumulator precisions differ.
+
+    A mask-to-zero ``arith.select`` -- the softmax fully-masked-row guard -- may also
+    sit between the scale and the multiply. Since its masked value is zero, it commutes
+    with the scale (``0 / s == 0``, ``0 * s == 0``), so sinking still preserves the
+    value and the select stays in the rebuilt body reading the numerator directly.
     """
-    mul = _consumer_through_casts(scale_op.results[0])
-    if not isinstance(mul, arith.MulFOp):
+    consumer = _consumer_through_casts(scale_op.results[0])
+    if isinstance(consumer, arith.SelectOp):
+        # operands are (condition, true_value, false_value); one branch is the scale,
+        # the other has to be the zero fill for the commute to hold.
+        if not any(_is_float_zero(v) for v in consumer.operands[1:]):
+            return False
+        consumer = _consumer_through_casts(consumer.results[0])
+    if not isinstance(consumer, arith.MulFOp):
         return False
-    add = _consumer_through_casts(mul.results[0])
+    add = _consumer_through_casts(consumer.results[0])
     if not isinstance(add, arith.AddFOp) or init_arg not in add.operands:
         return False
     terminator = list(body.operations)[-1]
