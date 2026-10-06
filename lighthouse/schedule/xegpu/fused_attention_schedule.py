@@ -239,23 +239,24 @@ def bundle_xegpu_fused_attention_schedule(
     max_producer_generics = get_producers_by_name(
         max_reduction, op_names="linalg.generic"
     )
-    # Assume the scaling happens in the first ancestor.
+    # Need to match mulf op who has a arith.constant producer
+    # Assume the scaling happens in the first ancestor and is the only const op.
     max_producer = transform_ext.extract_handle(max_producer_generics, 0)
-    max_scale_mul_op = match_and_split(max_producer, ops={"arith.mulf"}, nhandles=1)[0]
-    scale_producers = transform_ext.trace_producers(max_scale_mul_op)
+    yield_op = lh_transform.match_op(max_producer, "linalg.yield")
+    yield_producers = transform_ext.trace_producers(yield_op)
     scale_const_op = transform_ext.extract_handle(
-        transform_ext.filter_by_name(scale_producers, op_names="arith.constant"), 0
+        transform_ext.filter_by_name(yield_producers, op_names="arith.constant"), 0
     )
 
     matmul_ops = transform.split_handle(2 * [anytype], contraction_ops)
     qk_matmul, pv_matmul = matmul_ops[0], matmul_ops[1]
 
-    # Find the tensor.extract_slice producers for the Q@K^T matmul.
-    qk_extract_slice_producers = get_producers_by_name(
-        qk_matmul, op_names="tensor.extract_slice"
-    )
-    q = transform_ext.extract_handle(qk_extract_slice_producers, 0)
-    k = transform_ext.extract_handle(qk_extract_slice_producers, 1)
+    # Find Q and K from the Q@K^T contraction's operands. Q is
+    # operand 0; K^T is operand 1 (a linalg.transpose), whose input is K in
+    # [*batch, n_ctx, d_head] layout.
+    q = transform.get_producer_of_operand(anytype, qk_matmul, operand_number=0)
+    kt = transform.get_producer_of_operand(anytype, qk_matmul, operand_number=1)
+    k = transform.get_producer_of_operand(anytype, kt, operand_number=0)
 
     # Find handle to v as the first tensor.extract_slice producer of PV matmul
     pv_extract_slice_producers = get_producers_by_name(
@@ -271,9 +272,12 @@ def bundle_xegpu_fused_attention_schedule(
     # the reduction fusion replaces this op, the sunk chain is folded into a loop
     # directly instead of being rebuilt from q/k/v.)
     normalize_op = transform.get_consumers_of_result(anytype, pv_matmul, 0)
-    # P keeps the narrow element type the DPAS needs, which `normalize_op` does not
-    # carry: it reads the contraction's (f32) accumulator.
-    p = transform.get_producer_of_operand(anytype, pv_matmul, 0)
+    # P keeps the narrow element type the DPAS needs, which `normalize_op` does
+    # not carry: it reads the contraction's (f32) accumulator. P is the
+    # contraction's `exp` (softmax-weights) operand; its operand position is
+    # not fixed, match it through the softmax `math.exp` instead.
+    exp_op = match_and_split(func, ops=["math.exp"], nhandles=1)[0]
+    p = transform.get_parent_op(anytype, exp_op, op_name="linalg.generic")
     reduction_tile = layer_params[
         "reduction_tile"
     ]  # Tile size for reduction dimension (K/V sequence length)
