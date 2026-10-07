@@ -10,32 +10,6 @@ from lighthouse.dialects.transform.transform_ext.utils.matmul_analysis import (
     analyze_wg_k_tile_size,
 )
 
-# linalg.matmul after workgroup tiling: operands are tensor.extract_slice tiles
-# (so the global shape must be recovered from the slice source) and B is fed
-# through a linalg.transpose.
-LINALG_MATMUL = """
-module {
-  func.func @main(%a: tensor<1024x8192xbf16>, %b: tensor<8192x8192xbf16>,
-                  %bt: tensor<8192x8192xbf16>) -> tensor<256x256xf32> {
-    %cst = arith.constant 0.0 : f32
-    %sa = tensor.extract_slice %a[0, 0] [256, 8192] [1, 1]
-        : tensor<1024x8192xbf16> to tensor<256x8192xbf16>
-    %sb = tensor.extract_slice %b[0, 0] [256, 8192] [1, 1]
-        : tensor<8192x8192xbf16> to tensor<256x8192xbf16>
-    %sbt = tensor.extract_slice %bt[0, 0] [8192, 256] [1, 1]
-        : tensor<8192x8192xbf16> to tensor<8192x256xbf16>
-    %t = linalg.transpose ins(%sb : tensor<256x8192xbf16>)
-        outs(%sbt : tensor<8192x256xbf16>) permutation = [1, 0]
-    %e = tensor.empty() : tensor<256x256xf32>
-    %f = linalg.fill ins(%cst : f32) outs(%e : tensor<256x256xf32>)
-        -> tensor<256x256xf32>
-    %mm = linalg.matmul ins(%sa, %t : tensor<256x8192xbf16>, tensor<8192x256xbf16>)
-        outs(%f : tensor<256x256xf32>) -> tensor<256x256xf32>
-    return %mm : tensor<256x256xf32>
-  }
-}
-"""
-
 # vector.contract after bufferization: operands trace back to transfer_read of
 # the global memrefs; the B indexing map (d1, d2) marks it as transposed.
 VECTOR_CONTRACT = """
@@ -43,7 +17,7 @@ VECTOR_CONTRACT = """
 #map1 = affine_map<(d0, d1, d2) -> (d1, d2)>
 #map2 = affine_map<(d0, d1, d2) -> (d0, d1)>
 module {
-  func.func @main(%arg0: memref<8192x8192xbf16>,
+  func.func @main(%arg0: memref<4096x8192xbf16>,
                   %arg2: memref<1024x8192xbf16>) -> vector<256x256xf32> {
     %pad = arith.constant 0.0 : bf16
     %cst = arith.constant dense<0.0> : vector<256x256xf32>
@@ -51,7 +25,7 @@ module {
     %a = vector.transfer_read %arg2[%c0, %c0], %pad {in_bounds = [true, true]}
         : memref<1024x8192xbf16>, vector<256x16xbf16>
     %b = vector.transfer_read %arg0[%c0, %c0], %pad {in_bounds = [true, true]}
-        : memref<8192x8192xbf16>, vector<256x16xbf16>
+        : memref<4096x8192xbf16>, vector<256x16xbf16>
     %c = vector.contract {indexing_maps = [#map, #map1, #map2],
         iterator_types = ["parallel", "parallel", "reduction"],
         kind = #vector.kind<add>} %a, %b, %cst
@@ -65,13 +39,13 @@ module {
 # global memrefs; the B operand goes through a vector.transpose.
 XEGPU_DPAS = """
 module {
-  func.func @main(%arg0: memref<8192x8192xbf16>,
+  func.func @main(%arg0: memref<4096x8192xbf16>,
                   %arg1: memref<1024x8192xbf16>) -> vector<256x256xf32> {
     %cst = arith.constant dense<0.0> : vector<256x256xf32>
     %c0 = arith.constant 0 : index
     %ta = xegpu.create_nd_tdesc %arg1 : memref<1024x8192xbf16>
         -> !xegpu.tensor_desc<256x16xbf16, #xegpu.block_tdesc_attr<boundary_check = false>>
-    %tb = xegpu.create_nd_tdesc %arg0 : memref<8192x8192xbf16>
+    %tb = xegpu.create_nd_tdesc %arg0 : memref<4096x8192xbf16>
         -> !xegpu.tensor_desc<256x16xbf16, #xegpu.block_tdesc_attr<boundary_check = false>>
     %a = xegpu.load_nd %ta[%c0, %c0]
         : !xegpu.tensor_desc<256x16xbf16, #xegpu.block_tdesc_attr<boundary_check = false>>
@@ -135,21 +109,69 @@ module {
 }
 """
 
-# Plain workgroup-tiled linalg.matmul (parent is scf.forall): wg_tile is read
-# off the operand tiles, k_tile stays None (matmul carries no reduction loop).
+# Plain workgroup-tiled linalg.matmul.
 MATMUL_WG_TILED = """
 module {
-  func.func @main(%a: tensor<4x8xf32>, %b: tensor<8x16xf32>,
-                  %c: tensor<4x16xf32>) -> tensor<4x16xf32> {
-    %r = scf.forall (%i) in (1) shared_outs(%o = %c) -> tensor<4x16xf32> {
-      %mm = linalg.matmul ins(%a, %b : tensor<4x8xf32>, tensor<8x16xf32>)
-          outs(%o : tensor<4x16xf32>) -> tensor<4x16xf32>
+  func.func @payload(%arg0: tensor<2048x4096xf32>, %arg1: tensor<2048x8192xf16>,
+                     %arg2: tensor<4096x8192xf16>) -> tensor<2048x4096xf32> {
+    %4 = scf.forall (%arg3, %arg4) = (0, 0) to (2048, 4096) step (128, 256)
+        shared_outs(%arg5 = %arg0) -> (tensor<2048x4096xf32>) {
+      %sa = tensor.extract_slice %arg1[%arg3, 0] [128, 8192] [1, 1]
+          : tensor<2048x8192xf16> to tensor<128x8192xf16>
+      %sb = tensor.extract_slice %arg2[%arg4, 0] [256, 8192] [1, 1]
+          : tensor<4096x8192xf16> to tensor<256x8192xf16>
+      %sbt = tensor.empty() : tensor<8192x256xf16>
+      %sc = tensor.extract_slice %arg5[%arg3, %arg4] [128, 256] [1, 1]
+          : tensor<2048x4096xf32> to tensor<128x256xf32>
+      %t = linalg.transpose ins(%sb : tensor<256x8192xf16>)
+          outs(%sbt : tensor<8192x256xf16>) permutation = [1, 0]
+      %mm = linalg.matmul ins(%sa, %t : tensor<128x8192xf16>, tensor<8192x256xf16>)
+          outs(%sc : tensor<128x256xf32>) -> tensor<128x256xf32>
       scf.forall.in_parallel {
-        tensor.parallel_insert_slice %mm into %o[0, 0] [4, 16] [1, 1]
-            : tensor<4x16xf32> into tensor<4x16xf32>
+        tensor.parallel_insert_slice %mm into %arg5[%arg3, %arg4] [128, 256] [1, 1]
+            : tensor<128x256xf32> into tensor<2048x4096xf32>
       }
     }
-    return %r : tensor<4x16xf32>
+    return %4 : tensor<2048x4096xf32>
+  }
+}
+"""
+
+# A workgroup-tiled and k-tiled linalg.matmul.
+MATMUL_WG_K_TILED = """
+module {
+  func.func @payload(%arg0: tensor<2048x4096xf32>, %arg1: tensor<2048x8192xf16>,
+                     %arg2: tensor<4096x8192xf16>) -> tensor<2048x4096xf32> {
+    %c16 = arith.constant 16 : index
+    %c8192 = arith.constant 8192 : index
+    %c0 = arith.constant 0 : index
+    %4 = scf.forall (%arg3, %arg4) = (0, 0) to (2048, 4096) step (128, 256)
+        shared_outs(%arg5 = %arg0) -> (tensor<2048x4096xf32>) {
+      %sa = tensor.extract_slice %arg1[%arg3, 0] [128, 8192] [1, 1]
+          : tensor<2048x8192xf16> to tensor<128x8192xf16>
+      %sb = tensor.extract_slice %arg2[%arg4, 0] [256, 8192] [1, 1]
+          : tensor<4096x8192xf16> to tensor<256x8192xf16>
+      %sc = tensor.extract_slice %arg5[%arg3, %arg4] [128, 256] [1, 1]
+          : tensor<2048x4096xf32> to tensor<128x256xf32>
+      %5 = scf.for %arg6 = %c0 to %c8192 step %c16
+          iter_args(%arg7 = %sc) -> (tensor<128x256xf32>) {
+        %ka = tensor.extract_slice %sa[0, %arg6] [128, 16] [1, 1]
+            : tensor<128x8192xf16> to tensor<128x16xf16>
+        %kb = tensor.extract_slice %sb[0, %arg6] [256, 16] [1, 1]
+            : tensor<256x8192xf16> to tensor<256x16xf16>
+        %kbt = tensor.empty() : tensor<16x256xf16>
+        %t = linalg.transpose ins(%kb : tensor<256x16xf16>)
+            outs(%kbt : tensor<16x256xf16>) permutation = [1, 0]
+        %mm = linalg.matmul ins(%ka, %t : tensor<128x16xf16>, tensor<16x256xf16>)
+            outs(%arg7 : tensor<128x256xf32>) -> tensor<128x256xf32>
+        scf.yield %mm : tensor<128x256xf32>
+      }
+      scf.forall.in_parallel {
+        tensor.parallel_insert_slice %5 into %arg5[%arg3, %arg4] [128, 256] [1, 1]
+            : tensor<128x256xf32> into tensor<2048x4096xf32>
+      }
+    }
+    return %4 : tensor<2048x4096xf32>
   }
 }
 """
@@ -271,20 +293,24 @@ def run_tile_sizes(name: str, payload_text: str, anchor_name: str):
 
 
 # CHECK-LABEL: Test: linalg_matmul
-# CHECK: shape=(1024, 8192, 8192) transpose_a=False transpose_b=True
-run("linalg_matmul", LINALG_MATMUL, "linalg.matmul")
+# CHECK: shape=(2048, 4096, 8192) transpose_a=False transpose_b=True
+run("linalg_matmul", MATMUL_WG_TILED, "linalg.matmul")
 
 # CHECK-LABEL: Test: vector_contract
-# CHECK: shape=(1024, 8192, 8192) transpose_a=False transpose_b=True
+# CHECK: shape=(1024, 4096, 8192) transpose_a=False transpose_b=True
 run("vector_contract", VECTOR_CONTRACT, "vector.contract")
 
 # CHECK-LABEL: Test: xegpu_dpas
-# CHECK: shape=(1024, 8192, 8192) transpose_a=False transpose_b=True
+# CHECK: shape=(1024, 4096, 8192) transpose_a=False transpose_b=True
 run("xegpu_dpas", XEGPU_DPAS, "xegpu.dpas")
 
 # CHECK-LABEL: Test: matmul_wg_tiled
-# CHECK: wg_tile=(4, 16) k_tile=None
+# CHECK: wg_tile=(128, 256) k_tile=None
 run_tile_sizes("matmul_wg_tiled", MATMUL_WG_TILED, "linalg.matmul")
+
+# CHECK-LABEL: Test: matmul_wg_k_tiled
+# CHECK: wg_tile=(128, 256) k_tile=16
+run_tile_sizes("matmul_wg_k_tiled", MATMUL_WG_K_TILED, "linalg.matmul")
 
 # CHECK-LABEL: Test: matmul_not_tiled
 # CHECK: wg_tile=None k_tile=None

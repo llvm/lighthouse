@@ -139,16 +139,20 @@ def _first_producer_named(value: ir.Value, op_name: str) -> ir.Operation | None:
     return None
 
 
-def _linalg_matmul_operand_shape(value: ir.Value) -> list[int]:
-    """Global shape of a linalg.matmul operand.
+def _linalg_matmul_operand_shape(value: ir.Value) -> tuple[list[int], bool]:
+    """Global operand shape in matmul orientation plus its transpose flag.
 
-    When the operand is a tile carved out by a tensor.extract_slice (i.e. the
-    matmul has already been workgroup-tiled) the slice's source shape is the
-    original global shape; otherwise the operand's own shape is global.
+    Returns A as [M, K] and B as [K, N]: an extract_slice recovers the
+    pre-tiling shape and a linalg.transpose producer means the source is
+    swapped back.
     """
+    transposed = _first_producer_named(value, "linalg.transpose") is not None
     slice_op = _first_producer_named(value, "tensor.extract_slice")
     source = slice_op.operands[0] if slice_op is not None else value
-    return list(ir.ShapedType(source.type).shape)
+    shape = list(ir.ShapedType(source.type).shape)
+    if transposed:
+        shape.reverse()
+    return shape, transposed
 
 
 def _linalg_matmul_shape_and_transpose(
@@ -159,11 +163,10 @@ def _linalg_matmul_shape_and_transpose(
     A transpose shows up as a linalg.transpose in the producer chain of the
     corresponding input operand.
     """
-    inputs = matmul.inputs
-    m, k = _linalg_matmul_operand_shape(inputs[0])
-    _, n = _linalg_matmul_operand_shape(inputs[1])
-    transpose_a = _first_producer_named(inputs[0], "linalg.transpose") is not None
-    transpose_b = _first_producer_named(inputs[1], "linalg.transpose") is not None
+    a_shape, transpose_a = _linalg_matmul_operand_shape(matmul.inputs[0])
+    b_shape, transpose_b = _linalg_matmul_operand_shape(matmul.inputs[1])
+    m, k = a_shape
+    _, n = b_shape
     return (m, n, k), transpose_a, transpose_b
 
 
@@ -173,19 +176,18 @@ _MATMUL_A_DIMS = [0, 2]
 _MATMUL_B_DIMS = [2, 1]
 
 
-def _reject_broadcast_or_transposed_matmul(matmul: ir.OpView) -> None:
-    """Raise if `matmul` reads a broadcast operand or non-identity (transposed) maps.
-
-    `analyze_wg_k_tile_size` reads M/K off operand 0 and N off operand 1 assuming the
-    canonical ``[m, k] x [k, n]`` layout, so a linalg.broadcast producer or transposing
-    input indexing maps would make those reads wrong.
-    """
+def _reject_broadcast_matmul(matmul: ir.OpView) -> None:
+    """Raise if `matmul` operand is produced by a linalg.broadcast op."""
     for operand in matmul.inputs:
         if _first_producer_named(operand, "linalg.broadcast") is not None:
             raise ValueError(
                 "linalg.matmul has a linalg.broadcast producer, which the tile-size "
                 "analysis does not support"
             )
+
+
+def _reject_transposed_matmul(matmul: ir.OpView) -> None:
+    """Raise if `matmul` has non-identity (transposed) input indexing maps."""
     maps = [ir.AffineMapAttr(m).value for m in matmul.attributes["indexing_maps"]]
     a_dims = [dim_position(r) for r in maps[0].results]
     b_dims = [dim_position(r) for r in maps[1].results]
@@ -205,6 +207,7 @@ def analyze_matmul_op(op: ir.OpView) -> tuple[tuple[int, int, int], bool, bool]:
     # TODO use op name as xegpu dialect python bindings are missing
     op_name = op.operation.name
     if op_name == "linalg.matmul":
+        _reject_broadcast_matmul(op)
         return _linalg_matmul_shape_and_transpose(op)
     elif op_name == "vector.contract":
         return _matmul_shape_and_transpose(op)
@@ -222,10 +225,13 @@ def analyze_wg_k_tile_size(op: ir.OpView) -> tuple[int, ...] | None:
     wg_tile = None
     k_tile = None
     if op_name == "linalg.matmul":
-        if op.parent.name != "scf.forall":
+        if op.parent.name != "scf.forall" and not (
+            op.parent.name == "scf.for" and op.parent.parent.name == "scf.forall"
+        ):
             # target is not within a scf.forall loop, so it's not workgroup tiled
             return None, None
-        _reject_broadcast_or_transposed_matmul(op)
+        _reject_broadcast_matmul(op)
+        _reject_transposed_matmul(op)
         # Assume we are in WG loop or WG-k loop nest
         m, k = list(ir.ShapedType(op.inputs[0].type).shape)
         _, n = list(ir.ShapedType(op.inputs[1].type).shape)
