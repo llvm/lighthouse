@@ -47,11 +47,14 @@ class ExtractHandleOp(TransformExtensionDialect.Operation, name="extract_handle"
 
             n = len(target_ops)
             if index >= n or index < -n:
-                if op.silenceable.value:
-                    return DiagnosedSilenceableFailure.SilenceableFailure
-                op.location.emit_error(
+                msg = (
                     f"extract_handle: invalid index {index} for target of length {n}. "
                 )
+                if op.silenceable.value:
+                    # TODO attach `msg` once the silenceable-failure bindings
+                    # support a message (emit_silenceable_error is unavailable).
+                    return DiagnosedSilenceableFailure.SilenceableFailure
+                op.location.emit_error(msg)
                 return DiagnosedSilenceableFailure.DefiniteFailure
             handle = target_ops[index]
             results.set_ops(op.ops, [handle])

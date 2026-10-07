@@ -17,6 +17,12 @@ class InferXeGPUGemmParamsOp(
     op (vector.contract or xegpu.dpas), queries the XeGPU parameter selector,
     and returns all selected parameters as a single dictionary param.
 
+    Example:
+
+        params = transform_ext.infer_xegpu_gemm_params(dpas_op)
+        wg_m = transform_ext.get_param_dict_entry(params, "wg_m")
+        k_tile = transform_ext.get_param_dict_entry(params, "k_tile")
+
     Args:
         target: Handle to the anchor op(s); only the first is processed.
         device: Optional target device name (unset selects the default).
@@ -82,9 +88,8 @@ class InferXeGPUGemmParamsOp(
                     device=device,
                 )
             except (KeyError, ValueError, StopIteration, NotImplementedError) as e:
-                return DiagnosedSilenceableFailure.emit_silenceable_error(
-                    f"Failed to infer XeGPU GEMM params: {e}"
-                )
+                op.location.emit_error(f"Failed to infer XeGPU GEMM params: {e}")
+                return DiagnosedSilenceableFailure.DefiniteFailure
 
             i64 = ir.IntegerType.get_signless(64)
             entries = {}

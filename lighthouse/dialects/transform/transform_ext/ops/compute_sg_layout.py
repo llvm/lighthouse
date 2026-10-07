@@ -23,6 +23,14 @@ class ComputeSgLayoutOp(TransformExtensionDialect.Operation, name="compute_sg_la
     A non-zero `transpose` reverses the wg dims before dividing; only valid for
     `ndims == 2`.
 
+    Example:
+
+        wg_tile, sg_tile, red_tile = tr_ext.infer_xegpu_reduction_params(anchor_op)
+        sg_layout, sg_data = transform_ext.compute_sg_layout(
+            wg_tile, sg_tile, red_tile
+        )
+        xegpu.set_anchor_layout(store_op, sg_layout=sg_layout, sg_data=sg_data)
+
     Args:
         transpose: i64 param; when non-zero, reverse the wg dims.
         tiles: wg, then sg, then optional reduction tile operand(s).
