@@ -72,6 +72,7 @@ from lighthouse.schedule.xegpu import (
 from lighthouse.pipeline.helper import PipelineInterrupt
 from lighthouse.ingress.torch import gpu_backend, TargetDialect
 from lighthouse.ingress.torch.compile import TorchMemoryManager
+from lighthouse.schedule import xegpu
 from tune_matmul_costmodel import optimize_payload
 from csv_logger import CSVLogger
 
@@ -418,6 +419,7 @@ def infer_params_and_lower(
     params_cache_json: str | None = "kb_params.json",
     dump_parameters: bool = True,
     enable_tuning: bool = True,
+    use_gpu_pipeline: bool = False,
     verbose: int = 0,
 ) -> ir.Module:
     """
@@ -509,6 +511,7 @@ def infer_params_and_lower(
         stop_at_stage=stop_at_stage,
         benchmark=benchmark,
         payload_func_name=payload_func_name,
+        use_gpu_pipeline=use_gpu_pipeline,
     )
 
     if stop_at_stage:
@@ -521,6 +524,34 @@ def infer_params_and_lower(
     return lowered_mod
 
 
+def get_xegpu_pipeline(stop_at_stage):
+    schedules = []
+    if stop_at_stage == "initial":
+        return schedules
+    schedules.append(xegpu.cleanup_schedule())
+    if stop_at_stage == "cleanup":
+        return schedules
+    schedules.append(xegpu.wg_tiling_schedule())
+    if stop_at_stage == "tiled":
+        return schedules
+    schedules.append(xegpu.vectorize_schedule())
+    if stop_at_stage == "vectorized":
+        return schedules
+    schedules.append(xegpu.bufferize_schedule())
+    if stop_at_stage == "bufferized":
+        return schedules
+    schedules.append(xegpu.outline_gpu_func_schedule())
+    if stop_at_stage == "gpu-outlining":
+        return schedules
+    schedules.append(xegpu.vector_to_xegpu_schedule())
+    if stop_at_stage == "xegpu-initial":
+        return schedules
+    schedules.append(xegpu.annotate_layouts_schedule())
+    if stop_at_stage == "xegpu-wg":
+        return schedules
+    return schedules
+
+
 def lower_to_llvm(
     mod: ir.Module,
     schedule_kind: str,
@@ -529,43 +560,51 @@ def lower_to_llvm(
     stop_at_stage: str | None,
     benchmark: bool,
     payload_func_name: str,
+    use_gpu_pipeline: bool = False,
 ) -> ir.Module:
     """Lower payload module to LLVM using the specified schedule and parameters."""
     Runner.make_function_callable(mod, payload_func_name)
-    if schedule_kind == "mlp":
-        schedule = mlp_schedule(
-            params=schedule_params,
-            payload_func_name=payload_func_name,
-            device=device,
-            stop_at_stage=stop_at_stage,
-        )
-    elif schedule_kind == "elemwise":
-        schedule = elemwise_schedule(
-            params=schedule_params,
-            payload_func_name=payload_func_name,
-            stop_at_stage=stop_at_stage,
-        )
-    elif schedule_kind == "reduction":
-        schedule = reduction_schedule(
-            params=schedule_params,
-            payload_func_name=payload_func_name,
-            stop_at_stage=stop_at_stage,
-        )
-    elif schedule_kind == "attention":
-        schedule = fused_attention_schedule(
-            params=schedule_params,
-            stop_at_stage=stop_at_stage,
-        )
+    if use_gpu_pipeline:
+        pipeline = get_xegpu_pipeline(stop_at_stage)
     else:
-        raise ValueError(f"Unsupported schedule kind: {schedule_kind}")
+        if schedule_kind == "mlp":
+            schedule = mlp_schedule(
+                params=schedule_params,
+                payload_func_name=payload_func_name,
+                device=device,
+                stop_at_stage=stop_at_stage,
+            )
+        elif schedule_kind == "elemwise":
+            schedule = elemwise_schedule(
+                params=schedule_params,
+                payload_func_name=payload_func_name,
+                stop_at_stage=stop_at_stage,
+            )
+        elif schedule_kind == "reduction":
+            schedule = reduction_schedule(
+                params=schedule_params,
+                payload_func_name=payload_func_name,
+                stop_at_stage=stop_at_stage,
+            )
+        elif schedule_kind == "attention":
+            schedule = fused_attention_schedule(
+                params=schedule_params,
+                stop_at_stage=stop_at_stage,
+            )
+        else:
+            raise ValueError(f"Unsupported schedule kind: {schedule_kind}")
+        pipeline = [schedule]
 
     # define lowering pipeline
     schedules = []
     if benchmark:
         schedules.append(Runner.get_bench_wrapper_schedule(payload_func_name))
-    schedules.append(schedule)
+    schedules.extend(pipeline)
     if not stop_at_stage or stop_at_stage == "final":
         schedules.append(xegpu_to_binary())
+    if not schedules:
+        return mod
+
     driver = TransformDriver(schedules=schedules)
 
     # apply the pipeline to the payload module
@@ -586,6 +625,7 @@ def lower_and_execute_benchmark(
     stop_at_stage: str | None = None,
     verbose: int = 0,
     dump_parameters: bool = True,
+    use_gpu_pipeline: bool = False,
 ) -> dict:
     """
     High-level function to lower and execute a KernelBench benchmark.
@@ -668,6 +708,7 @@ def lower_and_execute_benchmark(
         params_cache_json=f"kb_params_level{level}-{id}.json",
         dump_parameters=dump_parameters,
         enable_tuning=execute,
+        use_gpu_pipeline=use_gpu_pipeline,
         verbose=verbose,
     )
     backend = gpu_backend(
@@ -891,6 +932,7 @@ def parser_cli_args():
         choices=[
             "imported",
             "initial",
+            "cleanup",
             "tiled",
             "vectorized",
             "bufferized",
@@ -899,6 +941,11 @@ def parser_cli_args():
             "xegpu-wg",
             "final",
         ],
+    )
+    parser.add_argument(
+        "--use-gpu-pipeline",
+        action="store_true",
+        help="Use the parameter-free GPU pipeline for execution.",
     )
     parser.add_argument(
         "--nruns",
@@ -984,6 +1031,7 @@ if __name__ == "__main__":
                 verbose=args.verbose,
                 stop_at_stage=stop_at_stage,
                 dump_parameters=args.dump_parameters,
+                use_gpu_pipeline=args.use_gpu_pipeline,
             )
             if stop_at_stage:
                 continue

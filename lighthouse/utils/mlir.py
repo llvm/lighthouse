@@ -83,10 +83,12 @@ def inspect_payload(payload_module: ir.Module) -> dict:
             parent_op = value.owner
             if isinstance(parent_op, kind):
                 return True
-            # recursively check producers
-            for operand in parent_op.operands:
-                if has_producer(operand, kind):
-                    return True
+            if not isinstance(parent_op, linalg.MatmulOp):
+                # if op is not a barrier
+                # recursively check producers
+                for operand in parent_op.operands:
+                    if has_producer(operand, kind):
+                        return True
         return False
 
     functions = {}

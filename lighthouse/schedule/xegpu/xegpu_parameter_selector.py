@@ -23,6 +23,42 @@ def load_param_database(json_file: str = DEFAULT_JSON_FILE) -> dict:
     return matmul_param_db
 
 
+def get_heuristic_params(
+    shape,
+    transpose_a,
+    transpose_b,
+    gpu_specs,
+    fixed_wg_tile,
+    fixed_sg_tile,
+    fixed_k_tile,
+) -> dict:
+    try:
+        # Use cost model to generate tile sizes and take first config
+        m, n, k = shape
+        configs = generate_configs(
+            m,
+            n,
+            k,
+            gpu_specs,
+            fixed_wg_tile=fixed_wg_tile,
+            fixed_sg_tile=fixed_sg_tile,
+            fixed_k_tile=fixed_k_tile,
+            transpose_a=transpose_a,
+            transpose_b=transpose_b,
+            max_nb_configs=1,
+            verbose=False,
+        )
+        if not configs:
+            raise ValueError(
+                f"Cost model did not return any valid configurations for matmul {shape}."
+            )
+        params = configs[0][1]
+        return params
+    except Exception as e:
+        msg = f"Error generating parameters for shape {shape} using cost model: {e}"
+        raise ValueError(msg) from e
+
+
 class XeGPUParameterSelector:
     def __init__(self, device: str | None = None, json_file: str | None = None):
         if json_file is None:
@@ -38,30 +74,39 @@ class XeGPUParameterSelector:
         transpose_b: bool = False,
         **kwargs,
     ) -> dict:
-        m, n, k = shape
+        fixed_wg_tile = kwargs.get("wg_tile")
+        fixed_sg_tile = kwargs.get("sg_tile")
+        fixed_k_tile = kwargs.get("k_tile")
+        # TODO add transposed gemms in the database
         if shape not in self.matmul_param_db or transpose_a or transpose_b:
-            try:
-                # Use cost model to generate tile sizes and take first config
-                configs = generate_configs(
-                    m,
-                    n,
-                    k,
-                    self.gpu_specs,
-                    transpose_a=transpose_a,
-                    transpose_b=transpose_b,
-                    max_nb_configs=1,
-                    verbose=False,
-                )
-                if not configs:
-                    raise ValueError(
-                        f"Cost model did not return any valid configurations for matmul {shape}."
-                    )
-                params = configs[0][1]
-                return params
-            except Exception as e:
-                msg = f"Error generating parameters for shape {shape} using cost model: {e}"
-                raise ValueError(msg) from e
+            # not found in database or transposed, use heuristic
+            return get_heuristic_params(
+                shape,
+                transpose_a,
+                transpose_b,
+                self.gpu_specs,
+                fixed_wg_tile,
+                fixed_sg_tile,
+                fixed_k_tile,
+            )
         params = self.matmul_param_db[shape]
+        wg_tile = (params["wg_m"], params["wg_n"])
+        sg_tile = (params["sg_m"], params["sg_n"])
+        if (
+            (fixed_wg_tile is not None and wg_tile != tuple(fixed_wg_tile))
+            or (fixed_sg_tile is not None and sg_tile != tuple(fixed_sg_tile))
+            or (fixed_k_tile is not None and params["k_tile"] != fixed_k_tile)
+        ):
+            # database entry does not match fixed tile sizes, use heuristic
+            return get_heuristic_params(
+                shape,
+                transpose_a,
+                transpose_b,
+                self.gpu_specs,
+                fixed_wg_tile,
+                fixed_sg_tile,
+                fixed_k_tile,
+            )
         # ensure transpose flags are set
         params.setdefault("transpose_a", False)
         params.setdefault("transpose_b", False)
