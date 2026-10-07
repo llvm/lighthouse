@@ -13,8 +13,19 @@ class ComputeNumThreadsOp(
     """
     Compute the workgroup thread count from wg and sg tile params.
 
-    Returns `base * prod_i(wg_i // sg_i)` over the tile dimensions, treating an
-    untiled (0) dim as 1 to avoid division by zero.
+    Returns `subgroup_size * prod_i(wg_i // sg_i)` over the WG/SG tile
+    dimensions, treating an untiled (0) dim as 1 to avoid division by zero.
+
+    This op is intended to be used to compute the number of threads for a
+    workgroup based on the provided WG and SG tile sizes.
+
+    Example:
+
+        wg_tile, sg_tile, _ = tr_ext.infer_xegpu_attention_params(anchor_op)
+        nb_threads = transform_ext.compute_num_threads(
+            wg_tile, sg_tile, base=NB_WORKITEMS
+        )
+        xegpu.set_gpu_launch_threads(launch_op, threads=[nb_threads, 1, 1])
 
     The wg and sg tiles are each passed as one or more param operands via the
     single `tiles` operand list; `num_wg_handles` marks how many leading
@@ -26,7 +37,8 @@ class ComputeNumThreadsOp(
     Args:
         tiles: wg tile param operand(s) followed by sg tile param operand(s).
         num_wg_handles: Number of leading `tiles` operands forming the wg tile.
-        base: Multiplier applied to the subgroup count (e.g. the subgroup size).
+        base: Multiplier applied to the subgroup count (e.g., the subgroup
+        size).
     Return:
         Param holding the thread count as a single i64.
     """
