@@ -91,8 +91,11 @@ class XeGPUParameterSelector:
             )
         params = self.matmul_param_db[shape]
         wg_tile = (params["wg_m"], params["wg_n"])
-        if (fixed_wg_tile is not None and wg_tile != fixed_wg_tile) or (
-            fixed_k_tile is not None and params["k_tile"] != fixed_k_tile
+        sg_tile = (params["sg_m"], params["sg_n"])
+        if (
+            (fixed_wg_tile is not None and wg_tile != tuple(fixed_wg_tile))
+            or (fixed_sg_tile is not None and sg_tile != tuple(fixed_sg_tile))
+            or (fixed_k_tile is not None and params["k_tile"] != fixed_k_tile)
         ):
             # database entry does not match fixed tile sizes, use heuristic
             return get_heuristic_params(

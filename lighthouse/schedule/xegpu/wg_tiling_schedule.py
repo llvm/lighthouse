@@ -7,7 +7,6 @@ import lighthouse.transform as lh_transform
 from lighthouse.pipeline.helper import (
     apply_registered_pass,
     match,
-    match_and_split,
 )
 from lighthouse.schedule import schedule_boilerplate
 from lighthouse.dialects.transform import transform_ext
@@ -126,7 +125,9 @@ def apply_reduction_tiling(func: ir.Operation) -> ir.Operation:
         # 2. Tile each reduction linalg.generic op (from last to first) and fuse its
         #    elemwise producers into the resulting loop.
 
-        wg_loop = match_and_split(func, ops={"scf.forall"}, nhandles=1)[0]
+        wg_loop = transform_ext.extract_handle(
+            lh_transform.match_op(func, "scf.forall"), 0
+        )
         generic_ops = match(wg_loop, ops={"linalg.generic"})
         elemwise_ops = transform_ext.filter_elementwise(generic_ops)
         leaf_elemwise = transform_ext.extract_handle(elemwise_ops, -1, silenceable=True)
@@ -232,7 +233,6 @@ def apply_attention_tiling(func: ir.Operation) -> ir.Operation:
     max_producer = transform_ext.extract_handle(
         max_producer_generics, 0, silenceable=True
     )
-    # max_scale_mul_op = match_and_split(max_producer, ops={"arith.mulf"}, nhandles=1)[0]
     max_scale_mul_op = transform_ext.extract_handle(
         lh_transform.match_op(max_producer, "arith.mulf"), 0, silenceable=True
     )

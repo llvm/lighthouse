@@ -602,6 +602,9 @@ def lower_to_llvm(
     schedules.extend(pipeline)
     if not stop_at_stage or stop_at_stage == "final":
         schedules.append(xegpu_to_binary())
+    if not schedules:
+        return mod
+
     driver = TransformDriver(schedules=schedules)
 
     # apply the pipeline to the payload module

@@ -15,7 +15,13 @@ def cleanup_schedule(
     """Normalize singleton dimensions and fuse elementwise ops in the payload."""
 
     with schedule_boilerplate() as (schedule, named_seq):
-        op_names = ["linalg.generic", "linalg.matmul"]
+        op_names = [
+            "linalg.generic",
+            "linalg.matmul",
+            "linalg.batch_matmul",
+            "linalg.elementwise",
+            "linalg.softmax",
+        ]
         func = get_payload_func(
             named_seq.bodyTarget,
             op_name=op_names,

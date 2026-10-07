@@ -3,7 +3,7 @@ from mlir.dialects import ext, transform
 from mlir.dialects.transform import DiagnosedSilenceableFailure
 
 from lighthouse.dialects.transform.transform_ext import TransformExtensionDialect
-from ..utils.xegpu_param_selection import select_xegpu_gemm_params
+from ..utils.select_xegpu_gemm_params import select_xegpu_gemm_params
 from ..utils.matmul_analysis import analyze_wg_k_tile_size
 
 
