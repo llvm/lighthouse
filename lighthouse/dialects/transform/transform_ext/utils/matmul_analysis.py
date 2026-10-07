@@ -142,16 +142,20 @@ def _first_producer_named(value: ir.Value, op_name: str) -> ir.Operation | None:
 def _linalg_matmul_operand_shape(value: ir.Value) -> tuple[list[int], bool]:
     """Global operand shape in matmul orientation plus its transpose flag.
 
-    Returns A as [M, K] and B as [K, N]: an extract_slice recovers the
-    pre-tiling shape and a linalg.transpose producer means the source is
-    swapped back.
+    Returns:
+    shape: The global shape of the operand in matmul orientation.
+    transposed: A boolean indicating if the operand is transposed.
     """
     transposed = _first_producer_named(value, "linalg.transpose") is not None
     slice_op = _first_producer_named(value, "tensor.extract_slice")
-    source = slice_op.operands[0] if slice_op is not None else value
-    shape = list(ir.ShapedType(source.type).shape)
-    if transposed:
-        shape.reverse()
+    if slice_op is not None:
+        source = slice_op.operands[0]
+        shape = list(ir.ShapedType(source.type).shape)
+        # If the transpose sits between the slice and the matmul, reverse the shape.
+        if transposed and _first_producer_named(source, "linalg.transpose") is None:
+            shape.reverse()
+    else:
+        shape = list(ir.ShapedType(value.type).shape)
     return shape, transposed
 
 

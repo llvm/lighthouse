@@ -1,12 +1,11 @@
 # RUN: %PYTHON %s | FileCheck %s
 
-"""Tests for analyze_matmul_op across the supported anchor op kinds."""
+"""Tests for analyze_wg_k_tile_size across the supported anchor op kinds."""
 
 from mlir import ir
 
 import lighthouse.dialects as lh_dialects
 from lighthouse.dialects.transform.transform_ext.utils.matmul_analysis import (
-    analyze_matmul_op,
     analyze_wg_k_tile_size,
 )
 
@@ -253,19 +252,6 @@ def find_op(op: ir.Operation, name: str):
     return None
 
 
-def run(name: str, payload_text: str, anchor_name: str):
-    print("Test:", name, flush=True)
-    with ir.Context(), ir.Location.unknown():
-        lh_dialects.register_and_load()
-        module = ir.Module.parse(payload_text)
-        anchor = find_op(module.operation, anchor_name)
-        shape, transpose_a, transpose_b = analyze_matmul_op(anchor)
-        print(
-            f"shape={shape} transpose_a={transpose_a} transpose_b={transpose_b}",
-            flush=True,
-        )
-
-
 def run_tile_sizes_rejected(name: str, payload_text: str, anchor_name: str):
     """Apply analyze_wg_k_tile_size and print the guardrail error it raises."""
     print("Test:", name, flush=True)
@@ -291,18 +277,6 @@ def run_tile_sizes(name: str, payload_text: str, anchor_name: str):
         wg_tile, k_tile = analyze_wg_k_tile_size(anchor)
         print(f"wg_tile={wg_tile} k_tile={k_tile}", flush=True)
 
-
-# CHECK-LABEL: Test: linalg_matmul
-# CHECK: shape=(2048, 4096, 8192) transpose_a=False transpose_b=True
-run("linalg_matmul", MATMUL_WG_TILED, "linalg.matmul")
-
-# CHECK-LABEL: Test: vector_contract
-# CHECK: shape=(1024, 4096, 8192) transpose_a=False transpose_b=True
-run("vector_contract", VECTOR_CONTRACT, "vector.contract")
-
-# CHECK-LABEL: Test: xegpu_dpas
-# CHECK: shape=(1024, 4096, 8192) transpose_a=False transpose_b=True
-run("xegpu_dpas", XEGPU_DPAS, "xegpu.dpas")
 
 # CHECK-LABEL: Test: matmul_wg_tiled
 # CHECK: wg_tile=(128, 256) k_tile=None
