@@ -17,10 +17,7 @@ class InferXeGPUAttentionParamsOp(
     directly to the tiling routines without splitting; `reduction_tile` is a
     scalar i64 param.
 
-    NOTE: placeholder implementation; the tiles are hard-coded for now and the
-    analysis deriving them from `target` will be added in a follow-up. Later
-    schedules will additionally need sg_rows, q/v load tiles and prefetch
-    parameters; those results will be added here when required.
+    NOTE: This is just a placeholder implementation with hard-coded tile sizes.
 
     Args:
         target: Handle to the attention anchor op(s).
@@ -51,13 +48,31 @@ class InferXeGPUAttentionParamsOp(
             results: transform.TransformResults,
             state: transform.TransformState,
         ) -> DiagnosedSilenceableFailure:
-            # TODO: derive the tiles from `target`; placeholders for now.
-            i64 = ir.IntegerType.get_signless(64)
+            target_ops = state.get_payload_ops(op.target)
+            if len(target_ops) == 0:
+                return DiagnosedSilenceableFailure.SilenceableFailure
+            rank = ir.ShapedType(target_ops[0].results[0].type).rank
+
             size_attrs = InferXeGPUAttentionParamsOp._size_attrs
-            results.set_params(op.wg_tile, size_attrs([1, 1, 128]))
-            results.set_params(op.sg_tile, size_attrs([0, 0, 16]))
-            # reduction_tile is a scalar; generalize to an array later if needed.
-            results.set_params(op.reduction_tile, [ir.IntegerAttr.get(i64, 64)])
+            # WG/SG row sizes and the reduction (K/V seq) tile are hard-coded.
+            wg_rows, sg_rows, reduction_tile = 128, 16, 64
+            # Tile every leading parallel dim (incl. the GQA group) by 1, the
+            # query-row dim by the WG row size, and leave d_head untiled.
+            if rank == 4:  # plain MHA: (batch, head, query_row, d_head)
+                wg, sg = [1, 1, wg_rows], [0, 0, sg_rows]
+                red = [0, 0, 0, reduction_tile]
+            elif rank == 5:  # GQA: (batch, kv_head, group, query_row, d_head)
+                wg, sg = [1, 1, 1, wg_rows], [0, 0, 0, sg_rows]
+                red = [0, 0, 0, 0, reduction_tile]
+            else:
+                op.location.emit_error(
+                    "infer_xegpu_attention_params: unsupported attention leaf "
+                    f"rank {rank}; expected 4 (MHA) or 5 (GQA)"
+                )
+                return DiagnosedSilenceableFailure.SilenceableFailure
+            results.set_params(op.wg_tile, size_attrs(wg))
+            results.set_params(op.sg_tile, size_attrs(sg))
+            results.set_params(op.reduction_tile, size_attrs(red))
             return DiagnosedSilenceableFailure.Success
 
         @staticmethod
