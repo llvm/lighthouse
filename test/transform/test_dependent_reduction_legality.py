@@ -416,6 +416,28 @@ def main() -> None:
     # CHECK-NEXT: Legal to fuse: E dim 1, tile 32
     check_case("mixed precision", MIXED_SOFTMAX)
 
+    # CHECK-LABEL: Case: unused integer constant
+    # CHECK-NEXT: Not legal to fuse: E body has a non-floating arith.constant
+    check_case(
+        "unused integer constant",
+        softmax_with_term(
+            "    %unused = arith.constant 7 : i32\n"
+            "    %e = math.exp %d : f32\n"
+            "    linalg.yield %e : f32"
+        ),
+    )
+
+    # CHECK-LABEL: Case: unused index constant
+    # CHECK-NEXT: Not legal to fuse: E body has a non-floating arith.constant
+    check_case(
+        "unused index constant",
+        softmax_with_term(
+            "    %unused = arith.constant 7 : index\n"
+            "    %e = math.exp %d : f32\n"
+            "    linalg.yield %e : f32"
+        ),
+    )
+
     # CHECK-LABEL: Case: nonseparable term
     # CHECK-NEXT: Not legal to fuse: E is not multiplicatively separable
     check_case(

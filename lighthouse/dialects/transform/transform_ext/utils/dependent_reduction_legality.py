@@ -553,11 +553,15 @@ def check_inner_reduction_against_elementwise(
 def _check_correction_body(
     e: ir.OpView, r1_input_indices: list[int], compute_type: ir.Type
 ) -> None:
-    """Check if body of E's ops has valid data-operand stand-ins (safe values)."""
+    """Check E's constants and data-operand stand-ins before cloning its body."""
     body = e.regions[0].blocks[0]
     accumulator_args = {body.arguments[index] for index in r1_input_indices}
     for operation in list(body.operations)[:-1]:
         op = opview(operation)
+        if isinstance(op, arith.ConstantOp) and not isinstance(
+            op.operation.attributes["value"], ir.FloatAttr
+        ):
+            raise FusionRejected("E body has a non-floating arith.constant")
 
         for operand in op.operands:
             if isinstance(operand, ir.BlockArgument) and operand.owner == body:
