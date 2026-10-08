@@ -243,6 +243,60 @@ def main() -> None:
     # CHECK-NEXT: Legal to fuse: E dim 1, tile 32
     check_case("softmax", SOFTMAX)
 
+    dynamic_input = replace_once(
+        SOFTMAX,
+        "  // R1: m = max_j x",
+        "  %x_dynamic = tensor.cast %x : tensor<64x512xf32> to tensor<?x512xf32>\n"
+        "  // R1: m = max_j x",
+    )
+
+    # CHECK-LABEL: Case: dynamic R1 input
+    # CHECK-NEXT: Not legal to fuse: R1 has a dynamic shape
+    check_case(
+        "dynamic R1 input",
+        replace_once(
+            dynamic_input,
+            "ins(%x : tensor<64x512xf32>) outs(%m_init",
+            "ins(%x_dynamic : tensor<?x512xf32>) outs(%m_init",
+        ),
+    )
+
+    # CHECK-LABEL: Case: dynamic E input
+    # CHECK-NEXT: Not legal to fuse: E has a dynamic shape
+    check_case(
+        "dynamic E input",
+        replace_once(
+            dynamic_input,
+            "ins(%x, %m : tensor<64x512xf32>, tensor<64xf32>)",
+            "ins(%x_dynamic, %m : tensor<?x512xf32>, tensor<64xf32>)",
+        ),
+    )
+
+    r2_dynamic = replace_once(
+        SOFTMAX,
+        "  %s = linalg.generic",
+        "  %s_init_dynamic = tensor.cast %s_init : tensor<64xf32> to tensor<?xf32>\n"
+        "  %s = linalg.generic",
+    )
+    r2_dynamic = replace_once(
+        r2_dynamic,
+        "outs(%s_init : tensor<64xf32>) {",
+        "outs(%s_init_dynamic : tensor<?xf32>) {",
+    )
+    r2_dynamic = replace_once(
+        r2_dynamic,
+        "  } -> tensor<64xf32>\n\n  // The normalizing divide",
+        "  } -> tensor<?xf32>\n\n  // The normalizing divide",
+    )
+    r2_dynamic = replace_once(
+        r2_dynamic,
+        "ins(%p, %s : tensor<64x512xf32>, tensor<64xf32>)",
+        "ins(%p, %s : tensor<64x512xf32>, tensor<?xf32>)",
+    )
+    # CHECK-LABEL: Case: dynamic R2 result
+    # CHECK-NEXT: Not legal to fuse: R2 has a dynamic shape
+    check_case("dynamic R2 result", r2_dynamic)
+
     # CHECK-LABEL: Case: earlier R1 user
     # CHECK-NEXT: Not legal to fuse: user of an R1 result does not post-dominate E
     check_case(

@@ -524,6 +524,9 @@ def check_legal_fusion_triple(
     The checks require:
 
     * E and R2 each have one result/init, and E has only parallel iterators.
+    * All shaped operands and results of R1's loop and inner reductions, E,
+      and R2 have static shapes, including the sources of R1 tile slices.
+      TODO: Add support for dynamic shapes.
     * The R1 loop, E, and R2 occupy the same block.
     * Exactly one R2 input reads E's result.
     * R2 has one innermost reduction iterator. Every R2 input map contains
@@ -631,6 +634,23 @@ def check_legal_fusion_triple(
             f"tile size {tile_size} does not evenly divide the reduction extent "
             f"{full_extent}"
         )
+
+    for name, op in [
+        ("R1", r1_loop),
+        *(("R1", inner) for inner in result_to_inner if inner is not None),
+        ("E", e),
+        ("R2", r2),
+    ]:
+        for value in (*op.operands, *op.results):
+            # Tiling gives an R1 input slice a static type even if its source
+            # tensor is dynamic.
+            values = (value, _resolve_slice_source(value)) if name == "R1" else (value,)
+            for shaped in values:
+                if (
+                    isinstance(shaped.type, ir.ShapedType)
+                    and not shaped.type.has_static_shape
+                ):
+                    raise FusionRejected(f"{name} has a dynamic shape: {shaped.type}")
 
     e_red_range = _static_loop_ranges(e)[e_tiled_dim]
     if ir.ShapedType.is_dynamic_size(e_red_range) or e_red_range != full_extent:
