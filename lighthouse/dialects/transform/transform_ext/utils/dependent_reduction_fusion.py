@@ -475,14 +475,14 @@ def fuse_dependent_reduction_ops(
         factor = _correction_factor(
             e_or_clone, r2, accumulators, r2_acc_tile, correction_plan
         )
-        scaled = _emit_elementwise(
+        corrected_r2_acc = _emit_elementwise(
             linalg.ElementwiseKind.mul,
             lambda a, b: arith.mulf(a, b),
             [r2_acc_tile, factor],
             r2_acc_tile,
         )
 
-        # --- the fused R2, accumulating this tile into the rescaled sum ---
+        # --- Build fused R2 that accumulates this tile into the rescaled sum ---
         e_result = e_or_clone.results[0]
         r2_inputs = []
         for index, operand in enumerate(linalg_inputs(r2)):
@@ -499,7 +499,7 @@ def fuse_dependent_reduction_ops(
                     )
                 )
         fused_r2 = _clone_generic_with_operands(
-            r2, r2_inputs, [scaled], [r2.results[0].type]
+            r2, r2_inputs, [corrected_r2_acc], [r2.results[0].type]
         )
 
         # --- the new yield ---
