@@ -19,6 +19,9 @@ from lighthouse.utils.mlir import (
     opview,
     reduction_dims,
 )
+from lighthouse.dialects.transform.transform_ext.utils.ir_rewrite import (
+    operand_eliminating_constant,
+)
 
 __all__ = [
     "REDUCTION_LOOP_ATTR_NAME",
@@ -486,6 +489,30 @@ def check_inner_reduction_against_elementwise(
         )
 
 
+def _check_correction_body(
+    e: ir.OpView, r1_input_indices: list[int], compute_type: ir.Type
+) -> None:
+    """Check if body of E's ops has valid data-operand stand-ins (safe values)."""
+    body = e.regions[0].blocks[0]
+    accumulator_args = {body.arguments[index] for index in r1_input_indices}
+    for operation in list(body.operations)[:-1]:
+        op = opview(operation)
+
+        for operand in op.operands:
+            if isinstance(operand, ir.BlockArgument) and operand.owner == body:
+                # TODO: Improve safe values for unary operations like absf
+                # abs(x) * exp(x - m) = [abs(x) * exp(x)] * exp(-m) is
+                # separable, but a direct x -> absf edge has no stand-in here.
+                if (
+                    operand not in accumulator_args
+                    and operand_eliminating_constant(op, compute_type) is None
+                ):
+                    raise FusionRejected(
+                        f"E body op {op.operation.name} has no data-operand stand-in"
+                    )
+                continue
+
+
 def check_legal_fusion_triple(
     r1_loop: ir.OpView,
     result_to_inner: list[ir.OpView | None],
@@ -519,6 +546,9 @@ def check_legal_fusion_triple(
     * R2's body is a single ``arith.addf`` reduction with a zero init (matmul contractions are allowed).
     * R2's result type is f16, bf16, f32, or f64, and E's result type can be
       widened with it to evaluate the correction.
+    * E's scalar body can be cloned at that type: captured values can convert
+      to it, constants are floating, and direct data inputs have stand-ins
+      for their consuming ops.
     * Every other user of an R1 loop result post-dominates E.
 
     ``result_to_inner`` maps R1 loop results to the reductions producing
@@ -665,12 +695,14 @@ def check_legal_fusion_triple(
         )
 
     e_element_type = ir.ShapedType(e.results[0].type).element_type
-    if _wider_float_type(e_element_type, element_type) is None:
+    correction_type = _wider_float_type(e_element_type, element_type)
+    if correction_type is None:
         raise FusionRejected(
             f"E's element type {e_element_type} and R2's accumulator type "
             f"{element_type} have no common widening to evaluate the correction "
             f"term in"
         )
+    _check_correction_body(e, r1_as_e_operands, correction_type)
 
     # The replacement loop is inserted at E, so earlier R1 users would lose dominance.
     for r1_result in r1_loop.results:

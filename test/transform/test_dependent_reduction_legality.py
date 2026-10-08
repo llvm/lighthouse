@@ -285,6 +285,18 @@ def main() -> None:
         ),
     )
 
+    # CHECK-LABEL: Case: missing data stand-in
+    # CHECK-NEXT: Not legal to fuse: E body op math.absf has no data-operand stand-in
+    check_case(
+        "missing data stand-in",
+        softmax_with_term(
+            "    %data = math.absf %in : f32\n"
+            "    %e = math.exp %d : f32\n"
+            "    %term = arith.mulf %data, %e : f32\n"
+            "    linalg.yield %term : f32"
+        ),
+    )
+
     # CHECK-LABEL: Case: wrong reduction input
     # CHECK-NEXT: Not legal to fuse: no R2 input is E's result
     check_case(
