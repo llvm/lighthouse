@@ -234,6 +234,10 @@ def plan_correction_factor(
             and operand.owner == body
             and operand not in accumulator_args
         ]
+        # TODO: This assumes all the ops in E's body is data-dependent on the R1 results.
+        # This is not true all the time, e.g., (x + x) * exp(x - m). Op (x + x)
+        # does not depend on the R1 results, and therefore will be neutralized to
+        # zero. Needs more analysis on E's body to correctly handle such cases.
         neutral = (
             irr.operand_eliminating_constant(op, compute_type) if data_args else None
         )
@@ -348,6 +352,9 @@ def _correction_factor(
     term_new = build_term(lambda acc: acc[1])
     term_old = build_term(lambda acc: acc[2])
 
+    # TODO: Evaluating two exp() values and dividing them may lead to numerical instability.
+    # Rewriting the division into substraction require `reassoc` flags on exp. Explicitily check
+    # these flags before doing the transformation.
     factor = _emit_elementwise(
         linalg.ElementwiseKind.div,
         lambda a, b: arith.divf(a, b),

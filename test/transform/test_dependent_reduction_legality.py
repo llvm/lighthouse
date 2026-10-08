@@ -317,6 +317,83 @@ def main() -> None:
     # CHECK-NEXT: Legal to fuse: E dim 1, tile 32
     check_case("attention contraction", ATTENTION, r2_index=2)
 
+    # CHECK-LABEL: Case: casted attention contraction
+    # CHECK-NEXT: Legal to fuse: E dim 1, tile 32
+    check_case(
+        "casted attention contraction",
+        replace_once(
+            ATTENTION,
+            "    %mul = arith.mulf %pv, %vv : f32",
+            "    %narrow = arith.truncf %pv : f32 to f16\n"
+            "    %wide = arith.extf %narrow : f16 to f32\n"
+            "    %mul = arith.mulf %wide, %vv : f32",
+        ),
+        r2_index=2,
+    )
+
+    # CHECK-LABEL: Case: squared E contribution
+    # CHECK-NEXT: Not legal to fuse: R2 body must add E or multiply two distinct inputs before adding
+    check_case(
+        "squared E contribution",
+        replace_once(
+            SOFTMAX,
+            "    %a = arith.addf %in, %out : f32\n    linalg.yield %a : f32",
+            "    %square = arith.mulf %in, %in : f32\n"
+            "    %a = arith.addf %square, %out : f32\n"
+            "    linalg.yield %a : f32",
+        ),
+    )
+
+    # CHECK-LABEL: Case: narrowed E contribution
+    # CHECK-NEXT: Legal to fuse: E dim 1, tile 32
+    check_case(
+        "narrowed E contribution",
+        replace_once(
+            SOFTMAX,
+            "    %a = arith.addf %in, %out : f32\n    linalg.yield %a : f32",
+            "    %narrow = arith.truncf %in : f32 to f16\n"
+            "    %wide = arith.extf %narrow : f16 to f32\n"
+            "    %a = arith.addf %wide, %out : f32\n"
+            "    linalg.yield %a : f32",
+        ),
+    )
+
+    e_dependent_factor = replace_once(
+        SOFTMAX,
+        "  %s = linalg.generic {indexing_maps = [#rowcol, #row],",
+        "  %p_alias = tensor.cast %p : tensor<64x512xf32> to tensor<64x512xf32>\n"
+        "  %s = linalg.generic {indexing_maps = [#rowcol, #rowcol, #row],",
+    )
+    e_dependent_factor = replace_once(
+        e_dependent_factor,
+        "ins(%p : tensor<64x512xf32>) outs(%s_init",
+        "ins(%p, %p_alias : tensor<64x512xf32>, tensor<64x512xf32>) outs(%s_init",
+    )
+    e_dependent_factor = replace_once(
+        e_dependent_factor,
+        "  ^bb0(%in: f32, %out: f32):\n    %a = arith.addf %in, %out : f32",
+        "  ^bb0(%in: f32, %alias: f32, %out: f32):\n"
+        "    %product = arith.mulf %in, %alias : f32\n"
+        "    %a = arith.addf %product, %out : f32",
+    )
+    # CHECK-LABEL: Case: E-dependent contraction factor
+    # CHECK-NEXT: Not legal to fuse: R2 contribution has another input dependent on E or R1
+    check_case("E-dependent contraction factor", e_dependent_factor)
+
+    duplicate_e_input = replace_once(
+        e_dependent_factor,
+        "  %p_alias = tensor.cast %p : tensor<64x512xf32> to tensor<64x512xf32>\n",
+        "",
+    )
+    duplicate_e_input = replace_once(
+        duplicate_e_input,
+        "ins(%p, %p_alias : tensor<64x512xf32>, tensor<64x512xf32>)",
+        "ins(%p, %p : tensor<64x512xf32>, tensor<64x512xf32>)",
+    )
+    # CHECK-LABEL: Case: duplicate E contraction input
+    # CHECK-NEXT: Not legal to fuse: R2 consumes E's result more than once
+    check_case("duplicate E contraction input", duplicate_e_input)
+
     transposed_r2 = ATTENTION.replace(
         "#ij     = affine_map<(d0, d1, d2) -> (d0, d1)>",
         "#ij     = affine_map<(d0, d1, d2) -> (d0, d1)>\n"
