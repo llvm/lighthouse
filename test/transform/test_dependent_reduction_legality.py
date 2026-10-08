@@ -317,6 +317,24 @@ def main() -> None:
     # CHECK-NEXT: Legal to fuse: E dim 1, tile 32
     check_case("attention contraction", ATTENTION, r2_index=2)
 
+    transposed_r2 = ATTENTION.replace(
+        "#ij     = affine_map<(d0, d1, d2) -> (d0, d1)>",
+        "#ij     = affine_map<(d0, d1, d2) -> (d0, d1)>\n"
+        "#ji     = affine_map<(d0, d1, d2) -> (d1, d0)>",
+    ).replace("tensor<64x128xf32>", "tensor<128x64xf32>")
+    transposed_r2 = replace_once(
+        transposed_r2,
+        "indexing_maps = [#ik, #kj, #ij]",
+        "indexing_maps = [#ik, #kj, #ji]",
+    )
+    transposed_r2 = (
+        transposed_r2.split("  // The deferred normalization")[0]
+        + "  return %o : tensor<128x64xf32>\n}\n"
+    )
+    # CHECK-LABEL: Case: transposed R2 output map
+    # CHECK-NEXT: Not legal to fuse: R2 output map is not the identity projection
+    check_case("transposed R2 output map", transposed_r2, r2_index=2)
+
     # CHECK-LABEL: Case: mixed precision
     # CHECK-NEXT: Legal to fuse: E dim 1, tile 32
     check_case("mixed precision", MIXED_SOFTMAX)

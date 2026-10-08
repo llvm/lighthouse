@@ -529,8 +529,9 @@ def check_legal_fusion_triple(
       TODO: Add support for dynamic shapes.
     * The R1 loop, E, and R2 occupy the same block.
     * Exactly one R2 input reads E's result.
-    * R2 has one innermost reduction iterator. Every R2 input map contains
-      that iterator and consists only of pure dimension expressions.
+    * R2 has one innermost reduction iterator. Its output map preserves the
+      parallel dimensions in order. Every R2 input map contains the reduction
+      iterator and consists only of pure dimension expressions.
     * R2's map for E's result and E's output map have the same rank and only
       dimension expressions; together they identify the E reduction axis.
     * R1's loop bounds and step are constant, the step is positive, the R2
@@ -587,6 +588,17 @@ def check_legal_fusion_triple(
         )
     if r2_red_dims[0] != num_loops(r2) - 1:
         raise FusionRejected("reduction iterator is not the innermost loop in R2")
+
+    r2_output_map = indexing_maps(r2)[len(linalg_inputs(r2))]
+    expected_output_map = ir.AffineMap.get(
+        num_loops(r2),
+        0,
+        [ir.AffineDimExpr.get(i) for i in range(num_loops(r2) - 1)],
+    )
+    if r2_output_map != expected_output_map:
+        raise FusionRejected(
+            f"R2 output map is not the identity projection: {r2_output_map}"
+        )
 
     # Each R2 input must admit slicing along the shared reduction axis.
     for index, _ in enumerate(linalg_inputs(r2)):

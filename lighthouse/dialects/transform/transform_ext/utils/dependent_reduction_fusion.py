@@ -209,8 +209,8 @@ def plan_correction_factor(
     rank = r2_type.rank
     factor_maps = []
     for index in accumulator_indices:
-        # Legality requires pure E input maps broadcast along R2's reduction;
-        # a verified R2 result spans the remaining parallel dimensions.
+        # Legality requires pure E input maps broadcast along R2's reduction
+        # and an identity R2 output map over the parallel dimensions.
         mapped = irr.remap_dims(get_indexing_maps(e)[index], e_dim_to_r2, num_loops(r2))
         assert mapped is not None
         projected = irr.project_dims(mapped, {r2_red_dim})
