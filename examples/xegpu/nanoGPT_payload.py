@@ -21,12 +21,13 @@ flash-attention kernel per block (non-causal for now).
 """
 
 from mlir import ir
-from mlir.dialects import linalg, bufferization, tensor, arith, gpu, memref
+from mlir.dialects import linalg, bufferization, tensor, arith, gpu, math, memref
 
 from lighthouse.ingress.mlir_gen.utils import (
     emit_buf_to_tensor,
     affine_map,
     parallel,
+    reduction,
 )
 from lighthouse.ingress.mlir_gen.gpu_utils import emit_gpu_util_funcs
 from lighthouse.ingress.mlir_gen.gpu_layer_norm_payload import emit_layer_norm_generics
@@ -229,11 +230,9 @@ class Builder:
     def attention_4d(
         self, Qh, Kh, Vh, n_head, n_ctx, d_head, out_view, out_view_memref
     ):
-        # Emits the SAME linalg op sequence as generate_gpu_attention_payload
-        # (batch_matmul QK^T -> scale-mul -> softmax -> batch_matmul @V), so the
-        # fused-attention schedule's matchers/rewrite apply verbatim. After the
-        # per-region fused tiling, all these ops fuse into one scf.forall -> one
-        # GPU kernel (the flash/online-softmax kernel). Counts as one 'fa'.
+        # Keep max -> exp -> sum explicit. Normalization starts before P@V;
+        # the schedule moves it past P@V and fuses the chain into an online loop.
+        # This payload stays f16, unlike the mixed-precision GPU attention one.
         # Inputs Qh/Kh/Vh are (n_head,n_ctx,d_head) f16 strided views (heads_view); the @V result
         # is materialized into `out_view`, a (n_head,n_ctx,d_head) strided view of a (n_ctx,n_embd) buffer,
         # so the merge back to 2D is also a free view (no from_heads kernel).
@@ -255,15 +254,65 @@ class Builder:
             outs=[tensor.empty((n_head, n_ctx, n_ctx), f16)],
             kind=linalg.ElementwiseKind.mul,
         )
-        aw = linalg.softmax(
-            result=[ir.RankedTensorType.get((n_head, n_ctx, n_ctx), f16)],
-            input=scaled,
-            output=tensor.empty((n_head, n_ctx, n_ctx), f16),
-            dimension=2,
+
+        # (head, row, col) -> (head, row, col) and -> (head, row): the per-row
+        # statistics are broadcast over the reduced axis.
+        dims = [ir.AffineDimExpr.get(i) for i in range(3)]
+        ew_map = affine_map(3, dims)
+        row_map = affine_map(3, dims[:2])
+        row_shape = (n_head, n_ctx)
+
+        # m = max_j s
+        neg_inf = arith.constant(f16, float("-inf"))
+        max_acc = linalg.fill(neg_inf, outs=[tensor.empty(row_shape, f16)])
+
+        @linalg.generic(
+            [scaled], [max_acc], [ew_map, row_map], [parallel, parallel, reduction]
         )
-        # @V: (n_head,n_ctx,n_ctx) @ (n_head,n_ctx,d_head) -> (n_head,n_ctx,d_head) f16, materialized into the (n_ctx,n_embd) view.
-        out_filled = linalg.fill(zero, outs=[out_view])
-        out = linalg.batch_matmul(aw, Vh, outs=[out_filled])
+        def row_max(s, acc):
+            return arith.MaximumFOp(s, acc)
+
+        # p = exp(s - m), read by both the row sum and the @V contraction.
+        @linalg.generic(
+            [scaled, row_max],
+            [tensor.empty((n_head, n_ctx, n_ctx), f16)],
+            [ew_map, row_map, ew_map],
+            [parallel, parallel, parallel],
+        )
+        def probs(s, m, out):
+            return math.ExpOp(arith.SubFOp(s, m).result)
+
+        # l = sum_j p
+        sum_acc = linalg.fill(zero, outs=[tensor.empty(row_shape, f16)])
+
+        @linalg.generic(
+            [probs], [sum_acc], [ew_map, row_map], [parallel, parallel, reduction]
+        )
+        def row_sum(p, acc):
+            return arith.AddFOp(p, acc)
+
+        # @V with the softmax divide in its body. The schedule moves that divide
+        # past the contraction to form the flash chain.
+        b, m, n, k = (ir.AffineDimExpr.get(i) for i in range(4))
+        pv_maps = [
+            affine_map(4, [b, m, k]),
+            affine_map(4, [b, m]),
+            affine_map(4, [b, k, n]),
+            affine_map(4, [b, m, n]),
+        ]
+        pv_init = linalg.fill(zero, outs=[out_view])
+
+        @linalg.generic(
+            [probs, row_sum, Vh],
+            [pv_init],
+            pv_maps,
+            [parallel, parallel, parallel, reduction],
+        )
+        def out(p, denom, v, acc):
+            return arith.AddFOp(
+                acc, arith.MulFOp(arith.DivFOp(p, denom).result, v).result
+            )
+
         bufferization.materialize_in_destination(
             None, out, out_view_memref, restrict=True, writable=True
         )

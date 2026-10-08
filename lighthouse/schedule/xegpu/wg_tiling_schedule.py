@@ -10,6 +10,7 @@ from lighthouse.pipeline.helper import (
 )
 from lighthouse.schedule import schedule_boilerplate
 from lighthouse.dialects.transform import transform_ext
+from .attention_fusion import derive_flash_attention, annotate_fastmath_flags
 from .lowering_common import get_payload_func
 
 
@@ -200,85 +201,8 @@ def apply_attention_tiling(func: ir.Operation) -> ir.Operation:
     )
     lh_transform.cleanup(func)
 
-    # Apply reduction tiling and fusion, still at tensor level. The Q, K, V
-    # tensors and the scale constant are found by walking the SSA chain of the
-    # two batch matmuls inside the WG forall:
-    #
-    #   Q@K^T:  linalg.batch_matmul(q_slice, linalg.transpose(k_slice))
-    #   scale:  linalg.elementwise <mul>(qkt, linalg.fill(scale_constant))
-    #   P@V:    linalg.batch_matmul(softmax_out, v_slice)
-
-    linalg_ops = lh_transform.match_op(func, ["linalg.generic", "linalg.batch_matmul"])
-    contraction_ops = transform_ext.filter_contraction_ops(linalg_ops)
-
-    # Match max reduction op. Assumes there's only one arith.max* op.
-    arith_max_op = transform_ext.extract_handle(
-        lh_transform.match_op(func, ["arith.maximumf", "arith.maxnumf"]),
-        0,
-        silenceable=True,
-    )
-    max_reduction = transform.get_parent_op(
-        anytype, arith_max_op, op_name="linalg.generic"
-    )
-
-    def get_producers_by_name(target, op_names):
-        producers = transform_ext.trace_producers(target)
-        return transform_ext.filter_by_name(producers, op_names=op_names)
-
-    # Trace the scalar from max reduction producer chain.
-    max_producer_generics = get_producers_by_name(
-        max_reduction, op_names="linalg.generic"
-    )
-    # Assume the scaling happens in the first ancestor.
-    max_producer = transform_ext.extract_handle(
-        max_producer_generics, 0, silenceable=True
-    )
-    max_scale_mul_op = transform_ext.extract_handle(
-        lh_transform.match_op(max_producer, "arith.mulf"), 0, silenceable=True
-    )
-    scale_producers = transform_ext.trace_producers(max_scale_mul_op)
-    scale_const_op = transform_ext.extract_handle(
-        transform_ext.filter_by_name(scale_producers, op_names="arith.constant"),
-        0,
-        silenceable=True,
-    )
-
-    matmul_ops = transform.split_handle(2 * [anytype], contraction_ops)
-    qk_matmul, pv_matmul = matmul_ops[0], matmul_ops[1]
-
-    # Find the tensor.extract_slice producers for the Q@K^T matmul.
-    qk_extract_slice_producers = get_producers_by_name(
-        qk_matmul, op_names="tensor.extract_slice"
-    )
-    q = transform_ext.extract_handle(qk_extract_slice_producers, 0)
-    k = transform_ext.extract_handle(qk_extract_slice_producers, 1)
-
-    # Find handle to v as the first tensor.extract_slice producer of PV matmul
-    pv_extract_slice_producers = get_producers_by_name(
-        pv_matmul, op_names="tensor.extract_slice"
-    )
-    v = transform_ext.extract_handle(pv_extract_slice_producers, 0)
-
-    # Replace the region's result with a loop over the K/V sequence length that
-    # implements online softmax, fusing Q@K^T and the softmax into it. The emitted
-    # loop ends in `acc / l`, so what it replaces is the normalizing divide the sink
-    # above moved past the contraction -- the contraction's only consumer. The
-    # contraction and the rest of the softmax chain are then dead and DCE'd. (Once
-    # the reduction fusion replaces this op, the sunk chain is folded into a loop
-    # directly instead of being rebuilt from q/k/v.)
-    normalize_op = transform.get_consumers_of_result(anytype, pv_matmul, 0)
-    # P keeps the narrow element type the DPAS needs, which `normalize_op` does not
-    # carry: it reads the contraction's (f32) accumulator.
-    p = transform.get_producer_of_operand(anytype, pv_matmul, 0)
-    transform_ext.replace_with_fused_attention(
-        q=q,
-        k=k,
-        v=v,
-        p=p,
-        scale=scale_const_op,
-        replaced=normalize_op,
-        tile_size=reduction_tile,
-    )
+    derive_flash_attention(anytype, func, reduction_tile, n_parallel=3)
+    annotate_fastmath_flags(func)
     transform.apply_cse(func)
     lh_transform.cleanup(func)
 
