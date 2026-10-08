@@ -235,7 +235,7 @@ def main():
     with ir.Context(), ir.Location.unknown():
         lh_dialects.register_and_load()
         mod, kinds, mm_shapes = build_llama_payload(
-            "payload", T, C, hidden, vocab, n_layers, H, n_kv
+            "payload", T, C, hidden, vocab, n_layers, H, n_kv, causal=causal
         )
         if dump == "initial":
             print(mod)

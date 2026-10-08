@@ -66,16 +66,17 @@ class Builder:
     each kernel correctly. Classes:
       'matmul'          = matmul (linalg.matmul)         -> DPAS systolic-array kernel
       'rmsnorm'         = RMSNorm (2 generics + 1 fill)   -> reduction kernel (shared mem)
-      'fused_attention' = flash multi-head attention      -> one kernel (QK^T->softmax->@V,
-                          online-softmax over K/V tiles; causal mask added by the schedule).
+      'fused_attention' = grouped-query attention with an explicit causal mask
+                          and softmax chain, fused into one kernel by the schedule.
       'rope'            = rotary position embedding       -> head-grid row-parallel kernel
       'elementwise'     = cast / silu / mul / residual    -> row-parallel kernel
     The op build order in the payload == the order of `kinds` == the order the
     kernels appear in the final module, which is how the schedule matches them up.
     """
 
-    def __init__(self, T):
+    def __init__(self, T, causal=True):
         self.T = T
+        self.causal = causal
         self.f32, self.f16 = F32(), F16()
         self.kinds = []  # ordered kernel classes (see docstring)
         self.mm_shapes = []  # (M,N,K) per matmul, in build order (for per-mm params)
@@ -375,16 +376,17 @@ class Builder:
     # K/V by the OUTER kv dim ONLY -- a projected permutation (the n_rep and
     # query-row dims are simply dropped from the K/V map). That vectorizes to a
     # plain vector.contract, and after tiling (kv,rep) by 1 the per-head inner op
-    # is byte-identical to plain MHA, so the fused-attention rewrite/annotations
-    # are unchanged. (A floordiv map kv = h // n_rep over a flat H axis would NOT
-    # vectorize -- it is not a projected permutation.)
+    # has the same inner contraction shape as MHA. A floordiv map over a flat
+    # query-head axis would not vectorize.
     def attention_4d(self, Qh, Kh, Vh, n_kv, n_rep, T, hs, out_view, out_view_memref):
-        # linalg op sequence: QK^T generic -> scale-mul -> softmax -> @V generic.
-        # After the per-region fused tiling, these fuse into one scf.forall -> one
-        # GPU kernel (the flash/online-softmax kernel). Counts as one 'fused_attention'.
+        # Keep the causal mask and softmax in the payload. The schedule fuses
+        # their existing dataflow into one online attention loop.
         f16 = self.f16
+        f32 = self.f32
         scale = 1.0 / (hs**0.5)
-        zero = arith.constant(f16, 0.0)
+        zero = arith.constant(f32, 0.0)
+        scores_shape = (n_kv, n_rep, T, T)
+        row_shape = (n_kv, n_rep, T)
 
         # QK^T: qkt[kv,rep,i,j] = sum_k Q[kv,rep,i,k] * K[kv,j,k]  (no explicit K^T;
         # the generic contracts the head-dim k directly, K read as (kv, seq, head)).
@@ -393,7 +395,7 @@ class Builder:
         q_map = affine_map(5, [d0, d1, d2, d4])
         k_map = affine_map(5, [d0, d3, d4])  # drops rep/i -> projected permutation
         qkt_map = affine_map(5, [d0, d1, d2, d3])
-        qkt_init = linalg.fill(zero, outs=[tensor.empty((n_kv, n_rep, T, T), f16)])
+        qkt_init = linalg.fill(zero, outs=[tensor.empty(scores_shape, f32)])
 
         @linalg.generic(
             [Qh, Kh],
@@ -402,38 +404,92 @@ class Builder:
             [parallel, parallel, parallel, parallel, reduction],
         )
         def qkt(qv, kv, _o):
-            return arith.AddFOp(arith.MulFOp(qv, kv).result, _o)
+            q32 = arith.ExtFOp(f32, qv).result
+            k32 = arith.ExtFOp(f32, kv).result
+            return arith.AddFOp(arith.MulFOp(q32, k32).result, _o)
 
-        sc = arith.constant(f16, scale)
-        scale_t = linalg.fill(sc, outs=[tensor.empty((n_kv, n_rep, T, T), f16)])
+        sc = arith.constant(f32, scale)
+        scale_t = linalg.fill(sc, outs=[tensor.empty(scores_shape, f32)])
         scaled = linalg.elementwise(
             qkt,
             scale_t,
-            outs=[tensor.empty((n_kv, n_rep, T, T), f16)],
+            outs=[tensor.empty(scores_shape, f32)],
             kind=linalg.ElementwiseKind.mul,
         )
-        aw = linalg.softmax(
-            result=[ir.RankedTensorType.get((n_kv, n_rep, T, T), f16)],
-            input=scaled,
-            output=tensor.empty((n_kv, n_rep, T, T), f16),
-            dimension=3,  # softmax over the key-seq (last) dim
+
+        dims = [ir.AffineDimExpr.get(i) for i in range(4)]
+        score_map = affine_map(4, dims)
+        row_map = affine_map(4, dims[:3])
+        scores = scaled
+        neg_inf = arith.constant(f32, float("-inf"))
+        if self.causal:
+
+            @linalg.generic(
+                [scaled],
+                [tensor.empty(scores_shape, f32)],
+                [score_map, score_map],
+                [parallel] * 4,
+            )
+            def masked(score, _out):
+                row = linalg.IndexOp(2).result
+                key = linalg.IndexOp(3).result
+                future = arith.CmpIOp(arith.CmpIPredicate.sgt, key, row).result
+                return arith.SelectOp(future, neg_inf, score).result
+
+            scores = masked
+
+        max_acc = linalg.fill(neg_inf, outs=[tensor.empty(row_shape, f32)])
+
+        @linalg.generic(
+            [scores], [max_acc], [score_map, row_map], [parallel] * 3 + [reduction]
         )
-        # @V: out[kv,rep,i,l] = sum_j aw[kv,rep,i,j] * V[kv,j,l]  (l = head_dim out,
-        # j = key-seq reduction). Materialized f16 into the (n_kv,n_rep,T,hs) view.
+        def row_max(score, acc):
+            return arith.MaximumFOp(score, acc)
+
+        @linalg.generic(
+            [scores, row_max],
+            [tensor.empty(scores_shape, f32)],
+            [score_map, row_map, score_map],
+            [parallel] * 4,
+        )
+        def probs(score, max_value, _out):
+            return math.ExpOp(arith.SubFOp(score, max_value).result)
+
+        sum_acc = linalg.fill(zero, outs=[tensor.empty(row_shape, f32)])
+
+        @linalg.generic(
+            [probs], [sum_acc], [score_map, row_map], [parallel] * 3 + [reduction]
+        )
+        def row_sum(prob, acc):
+            return arith.AddFOp(prob, acc)
+
+        # Accumulate the unnormalized numerator; divide after P@V.
         e0, e1, e2, e3, e4 = (ir.AffineDimExpr.get(d) for d in range(5))
         aw_map = affine_map(5, [e0, e1, e2, e4])
         v_map = affine_map(5, [e0, e4, e3])  # drops rep/i -> projected permutation
         out_map = affine_map(5, [e0, e1, e2, e3])
-        out_filled = linalg.fill(zero, outs=[out_view])
+        out_filled = linalg.fill(zero, outs=[tensor.empty((n_kv, n_rep, T, hs), f32)])
 
         @linalg.generic(
-            [aw, Vh],
+            [probs, Vh],
             [out_filled],
             [aw_map, v_map, out_map],
             [parallel, parallel, parallel, parallel, reduction],
         )
-        def out(av, vv, _o):
-            return arith.AddFOp(arith.MulFOp(av, vv).result, _o)
+        def unnormalized_out(prob, value, acc):
+            weight16 = arith.TruncFOp(f16, prob).result
+            weight32 = arith.ExtFOp(f32, weight16).result
+            value32 = arith.ExtFOp(f32, value).result
+            return arith.AddFOp(arith.MulFOp(weight32, value32).result, acc)
+
+        @linalg.generic(
+            [unnormalized_out, row_sum],
+            [out_view],
+            [score_map, row_map, score_map],
+            [parallel] * 4,
+        )
+        def out(value, denom, _old):
+            return arith.TruncFOp(f16, arith.DivFOp(value, denom).result)
 
         bufferization.materialize_in_destination(
             None, out, out_view_memref, restrict=True, writable=True
@@ -441,8 +497,6 @@ class Builder:
         self.kinds.append("fused_attention")
 
     # ---- fused grouped-query attention(rms_f32 (T,C) f32) -> (T,C) f16 ----
-    # Emits non-causal linalg; the causal mask (if enabled) is injected later by
-    # the fused-attention transform op in the schedule, not here.
     def fused_attention(self, x, wq, wk, wv, cos, sin, T, C, H, n_kv):
         # True grouped-query attention via the flash kernel, no on-device
         # head-transpose or repeat_kv kernel. Flow:
@@ -491,8 +545,7 @@ class Builder:
 
 
 def _emit_block_llama(bld, x, w, cos, sin, T, C, hidden, H, n_kv, eps, out_buf=None):
-    """Emit one Llama transformer block (fused GQA + RoPE, no bias; causal
-    masking, if any, is applied by the schedule's fused-attention transform).
+    """Emit one Llama transformer block with GQA, RoPE, and no bias.
     `w` weight keys: attn_norm (attention RMSNorm weight), wq,wk,wv, wo,
     ffn_norm (ffn RMSNorm weight), w1,w2,w3.  wk/wv are narrow (C, n_kv*hs) for GQA.
     cos/sin are the shared (T, hs/2) RoPE tables.
@@ -519,9 +572,11 @@ def _emit_block_llama(bld, x, w, cos, sin, T, C, hidden, H, n_kv, eps, out_buf=N
     return bld.add(h, o, T, C, out_buf=out_buf)
 
 
-def build_llama_payload(func_name, T, C, hidden, vocab, n_layers, H, n_kv, eps=1e-5):
+def build_llama_payload(
+    func_name, T, C, hidden, vocab, n_layers, H, n_kv, eps=1e-5, causal=True
+):
     """Full Llama-3 forward as one module, fused grouped-query attention per block
-    (n_kv KV heads, RoPE on q/k, causal masking applied later by the schedule),
+    (n_kv KV heads, RoPE on q/k, optional causal masking in the payload),
     RMSNorm, SwiGLU FFN, no biases. Embeddings done host-side. Returns
     (module, kinds, mm_shapes) -- mm_shapes is the (M,N,K) of each matmul in build
     order, so the schedule can pick per-matmul DPAS params (K/V projections are
@@ -546,7 +601,7 @@ def build_llama_payload(func_name, T, C, hidden, vocab, n_layers, H, n_kv, eps=1
     for _ in range(n_layers):
         fargs += per_layer
     fargs += [n_t, lmw_t]  # final RMSNorm weight, output weight
-    bld = Builder(T)
+    bld = Builder(T, causal=causal)
     with ir.InsertionPoint(mod.body):
 
         @func_cif(*fargs, name=func_name)
