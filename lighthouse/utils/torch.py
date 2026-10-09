@@ -1,4 +1,6 @@
 import ctypes
+import struct
+from functools import cache
 
 import torch
 from mlir import ir
@@ -11,6 +13,19 @@ from mlir.runtime.np_to_memref import (
 
 from . import memref as memref_utils
 
+_DTYPE_TO_CTYPE = {
+    torch.float16: F16,
+    torch.bfloat16: BF16,
+    torch.float32: ctypes.c_float,
+    torch.float64: ctypes.c_double,
+    torch.int8: ctypes.c_int8,
+    torch.int16: ctypes.c_int16,
+    torch.int32: ctypes.c_int32,
+    torch.int64: ctypes.c_int64,
+    torch.uint8: ctypes.c_uint8,
+    torch.bool: ctypes.c_bool,
+}
+
 
 def torch_dtype_to_ctype(dtype: torch.dtype):
     """
@@ -21,49 +36,55 @@ def torch_dtype_to_ctype(dtype: torch.dtype):
     Returns:
         Corresponding ctype
     """
-    _dtype_map = {
-        torch.float16: F16,
-        torch.bfloat16: BF16,
-        torch.float32: ctypes.c_float,
-        torch.float64: ctypes.c_double,
-        torch.int8: ctypes.c_int8,
-        torch.int16: ctypes.c_int16,
-        torch.int32: ctypes.c_int32,
-        torch.int64: ctypes.c_int64,
-        torch.uint8: ctypes.c_uint8,
-        torch.bool: ctypes.c_bool,
-    }
-    if dtype not in _dtype_map:
+    if dtype not in _DTYPE_TO_CTYPE:
         raise ValueError(f"Unsupported dtype: {dtype}")
-    return _dtype_map[dtype]
+    return _DTYPE_TO_CTYPE[dtype]
+
+
+def _struct_format(field_type: type) -> str:
+    """The `struct` format of a ctypes field type."""
+    if issubclass(field_type, ctypes.Array):
+        return f"{field_type._length_}{_struct_format(field_type._type_)}"
+    if issubclass(field_type, ctypes._Pointer):
+        return "P"
+    return field_type._type_
+
+
+@cache
+def _memref_descriptor(ndim: int, ctype: type) -> tuple[type, struct.Struct]:
+    """The memref descriptor class of a rank and element type, and its layout.
+
+    A new class per call would also make ctypes create new pointer types.
+    """
+    if ndim == 0:
+        descriptor = make_zero_d_memref_descriptor(ctype)
+    else:
+        descriptor = make_nd_memref_descriptor(ndim, ctype)
+    layout = struct.Struct(
+        "".join(_struct_format(field_type) for _, field_type in descriptor._fields_)
+    )
+    if layout.size != ctypes.sizeof(descriptor):
+        raise RuntimeError(f"Unexpected memref descriptor layout: {layout.format}")
+    return descriptor, layout
 
 
 def to_memref(input: torch.Tensor) -> ctypes.Structure:
     """
     Convert a PyTorch tensor into a memref descriptor.
 
+    The descriptor does not keep the tensor alive.
+
     Args:
         input: PyTorch tensor.
     """
-    ctp = torch_dtype_to_ctype(input.dtype)
-    ndim = input.dim()
+    descriptor, layout = _memref_descriptor(
+        input.dim(), torch_dtype_to_ctype(input.dtype)
+    )
     data_ptr = input.data_ptr()
-
-    if ndim == 0:
-        x = make_zero_d_memref_descriptor(ctp)()
-        x.allocated = data_ptr
-        x.aligned = ctypes.cast(data_ptr, ctypes.POINTER(ctp))
-        x.offset = ctypes.c_longlong(0)
-        return x
-
-    x = make_nd_memref_descriptor(ndim, ctp)()
-    x.allocated = data_ptr
-    x.aligned = ctypes.cast(data_ptr, ctypes.POINTER(ctp))
-    x.offset = ctypes.c_longlong(0)
-    x.shape = (ctypes.c_longlong * ndim)(*input.shape)
     # PyTorch strides are in element units (unlike NumPy which uses bytes)
-    x.strides = (ctypes.c_longlong * ndim)(*input.stride())
-    return x
+    return descriptor.from_buffer_copy(
+        layout.pack(data_ptr, data_ptr, 0, *input.shape, *input.stride())
+    )
 
 
 def to_packed_args(inputs: list[torch.Tensor]) -> ctypes.Array[ctypes.c_void_p]:
