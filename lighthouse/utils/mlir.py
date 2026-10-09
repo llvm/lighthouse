@@ -6,6 +6,7 @@ from mlir import ir
 from mlir.dialects import arith, func, linalg
 import os
 import platform
+from dataclasses import dataclass
 from pathlib import Path
 
 _SHARED_EXT = ".dylib" if platform.system() == "Darwin" else ".so"
@@ -342,6 +343,78 @@ def reduction_dims(op: ir.Operation | ir.OpView) -> list[int]:
     Stands in for ``LinalgOp::getReductionDims``, which has no binding.
     """
     return [i for i, it in enumerate(iterator_types(op)) if it == "reduction"]
+
+
+def is_vnni_layout(
+    op: ir.Operation | ir.OpView, blocking_factor: int | None = None
+) -> bool:
+    """Return True if a contraction is in VNNI layout.
+
+    Mirrors upstream ``x86::isInVnniLayout``: A is ``[..., K/v, v]`` and B is
+    ``[..., K/v, N, v]``, where ``K/v`` and ``v`` are reduction dims and the
+    VNNI factor ``v`` is static and even. Optionally, ``v`` must equal
+    ``blocking_factor``.
+    """
+    ov = opview(op)
+    maps = indexing_maps(ov)
+    inputs = linalg_inputs(ov)
+    if maps is None or len(maps) != 3 or inputs is None or len(inputs) != 2:
+        return False
+    contraction_dims = linalg.infer_contraction_dimensions(ov)
+    if contraction_dims is None or len(contraction_dims.k) < 2:
+        return False
+    type_a, type_b = (ir.ShapedType(value.type) for value in inputs)
+    if type_a.rank < 3 or type_b.rank < 3:
+        return False
+
+    out_map = maps[2]
+    if not out_map.is_projected_permutation:
+        return False
+    parallel = {dim_position(expr) for expr in out_map.results}
+    map_a, map_b = maps[0].results, maps[1].results
+    vnni_a, vnni_b = dim_position(map_a[-1]), dim_position(map_b[-1])
+    if vnni_a is None or vnni_a != vnni_b or vnni_a in parallel:
+        return False
+    k_a, k_b = dim_position(map_a[-2]), dim_position(map_b[-3])
+    if k_a is None or k_a != k_b or k_a in parallel:
+        return False
+    n_b = dim_position(map_b[-2])
+    if n_b is None or n_b not in parallel:
+        return False
+
+    factor = type_b.shape[-1]
+    if ir.ShapedType.is_dynamic_size(factor) or factor == 0 or factor % 2:
+        return False
+    if type_a.shape[-1] != factor:
+        return False
+    if blocking_factor is not None and factor != blocking_factor:
+        return False
+    return type_a.shape[-2] == type_b.shape[-3]
+
+
+@dataclass(frozen=True)
+class VnniReductionDims:
+    """The reduction dims of a contraction in VNNI layout."""
+
+    # Iteration dim of the K/v operand dims.
+    k_dim: int
+    # Iteration dim of the VNNI operand dims.
+    vnni_dim: int
+    # The VNNI factor v.
+    factor: int
+
+
+def vnni_reduction_dims(op: ir.Operation | ir.OpView) -> VnniReductionDims | None:
+    """Return the VNNI reduction dims of a contraction, or None if it is not in
+    VNNI layout."""
+    if not is_vnni_layout(op):
+        return None
+    map_a = indexing_maps(op)[0].results
+    return VnniReductionDims(
+        k_dim=dim_position(map_a[-2]),
+        vnni_dim=dim_position(map_a[-1]),
+        factor=ir.ShapedType(linalg_inputs(op)[1].type).shape[-1],
+    )
 
 
 def is_linalg_all_loops_parallel(op: ir.Operation | ir.OpView) -> bool:

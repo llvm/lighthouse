@@ -4,6 +4,7 @@ from lighthouse.utils.mlir import opview
 
 from .strategy_base import StrategyContext, TilingStrategy
 from .common import (
+    assign_amx_reduction_tiles,
     assign_parallel_tiles,
     assign_reduction_tiles,
     parallel_and_reduction_dims,
@@ -33,8 +34,9 @@ class RegisterUnrollTilingStrategy(TilingStrategy):
 
         ov = opview(op)
         if is_amx_bf16_contraction(ov, ctx.target):
-            par_tiles = [16, 16]
-            red_tiles = [32]
+            assign_parallel_tiles(parallel_dims, [16, 16], sizes)
+            assign_amx_reduction_tiles(ov, reduction_dims, sizes)
+            return sizes
         elif is_f32_contraction(ov):
             par_tiles = [1, 16]
             red_tiles = [1]
