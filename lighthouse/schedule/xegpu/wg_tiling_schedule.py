@@ -21,8 +21,6 @@ def apply_gemm_tiling(
 ) -> ir.Operation:
     """Apply GEMM tiling to the given function."""
 
-    anytype = transform.AnyOpType.get()
-
     matmul_ops = lh_transform.match_op(func, "linalg.matmul")
     # Ensure lowering fails if no matmul ops exist.
     transform_ext.extract_handle(matmul_ops, 0, silenceable=True)
@@ -54,13 +52,12 @@ def apply_gemm_tiling(
 
         # k loop tiling
         wg_matmul = match(wg_loop, ops={"linalg.matmul"})
-        _, [k_loop], _ = lh_transform.tile(wg_matmul, tile_sizes=[0, 0, _k_tile])
-        lh_transform.cleanup(wg_loop)
-        # if there's a transpose op fuse it into the k loop
-        transpose_op = match(wg_loop, ops={"linalg.transpose"})
-        structured.structured_fuse_into_containing_op(
-            anytype, anytype, transpose_op, k_loop
+        lh_transform.tile(
+            wg_matmul,
+            tile_sizes=[0, 0, _k_tile],
+            fuse_producers=True,
         )
+        lh_transform.cleanup(wg_loop)
         transform.yield_()
     lh_transform.cleanup(func)
     return func
