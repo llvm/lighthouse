@@ -1,4 +1,5 @@
-"""IR rewrites used by dependent-reduction fusion."""
+"""Utility functions for IR rewriting."""
+## TODO: Move these to a more appropriate location if they become more generally useful.
 
 from mlir import ir
 from mlir.dialects import arith, tensor

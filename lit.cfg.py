@@ -55,6 +55,18 @@ if pythonpath := os.environ.get("PYTHONPATH"):
         f"env PYTHONPATH={shlex.quote(pythonpath)} {python}",
     )
 
+# Keep network access in case of proxy usage.
+for var in [
+    "http_proxy",
+    "https_proxy",
+    "no_proxy",
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "NO_PROXY",
+]:
+    if var in os.environ:
+        config.environment[var] = os.environ[var]
+
 for tool_dir, _, files in os.walk(project_root + "/tools"):
     for file in files:
         tool_path = os.path.join(tool_dir, file)
