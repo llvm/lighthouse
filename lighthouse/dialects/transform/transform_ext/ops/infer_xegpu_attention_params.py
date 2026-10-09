@@ -1,5 +1,5 @@
 from mlir import ir
-from mlir.dialects import ext, transform
+from mlir.dialects import ext, transform, linalg, vector
 from mlir.dialects.transform import DiagnosedSilenceableFailure
 
 from lighthouse.dialects.transform.transform_ext import TransformExtensionDialect
@@ -49,25 +49,44 @@ class InferXeGPUAttentionParamsOp(
             state: transform.TransformState,
         ) -> DiagnosedSilenceableFailure:
             target_ops = state.get_payload_ops(op.target)
-            if len(target_ops) == 0:
+            if len(target_ops) != 1:
+                # expecting a single anchor op
                 return DiagnosedSilenceableFailure.SilenceableFailure
-            rank = ir.ShapedType(target_ops[0].results[0].type).rank
+            target_op = target_ops[0]
+            rank = ir.ShapedType(target_op.results[0].type).rank
 
             size_attrs = InferXeGPUAttentionParamsOp._size_attrs
-            # WG/SG row sizes and the reduction (K/V seq) tile are hard-coded.
+
             wg_rows, sg_rows, reduction_tile = 128, 16, 64
-            # Tile every leading parallel dim (incl. the GQA group) by 1, the
-            # query-row dim by the WG row size, and leave d_head untiled.
-            if rank == 4:  # plain MHA: (batch, head, query_row, d_head)
-                wg, sg = [1, 1, wg_rows], [0, 0, sg_rows]
-                red = [0, 0, 0, reduction_tile]
-            elif rank == 5:  # GQA: (batch, kv_head, group, query_row, d_head)
-                wg, sg = [1, 1, 1, wg_rows], [0, 0, 0, sg_rows]
-                red = [0, 0, 0, 0, reduction_tile]
+
+            if isinstance(target_op, linalg.GenericOp):
+                # Assume non-tiled linalg.matmul
+                # WG/SG row sizes and the reduction (K/V seq) tile are hard-coded.
+                # Tile every leading parallel dim (incl. the GQA group) by 1, the
+                # query-row dim by the WG row size, and leave d_head untiled.
+                if rank == 4:  # plain MHA: (batch, head, query_row, d_head)
+                    wg, sg = [1, 1, wg_rows], [0, 0, sg_rows]
+                    red = [0, 0, 0, reduction_tile]
+                elif rank == 5:  # GQA: (batch, kv_head, group, query_row, d_head)
+                    wg, sg = [1, 1, 1, wg_rows], [0, 0, 0, sg_rows]
+                    red = [0, 0, 0, 0, reduction_tile]
+                else:
+                    op.location.emit_error(
+                        "infer_xegpu_attention_params: unsupported attention leaf "
+                        f"rank {rank}; expected 4 (MHA) or 5 (GQA)"
+                    )
+                    return DiagnosedSilenceableFailure.SilenceableFailure
+            elif isinstance(target_op, vector.ContractionOp) and rank == 2:
+                # Assume tiled vector.contract, op's result shape is
+                # (wg_rows, reduction_tile)
+                wg_rows, _ = ir.ShapedType(target_op.results[0].type).shape
+                wg = [wg_rows, 0]
+                sg = [sg_rows, 0]
+                red = [0, reduction_tile]
             else:
                 op.location.emit_error(
                     "infer_xegpu_attention_params: unsupported attention leaf "
-                    f"rank {rank}; expected 4 (MHA) or 5 (GQA)"
+                    f"op {target_op.operation.name} with rank {rank}"
                 )
                 return DiagnosedSilenceableFailure.SilenceableFailure
             results.set_params(op.wg_tile, size_attrs(wg))
