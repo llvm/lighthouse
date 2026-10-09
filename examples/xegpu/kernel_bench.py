@@ -919,6 +919,12 @@ def parser_cli_args():
         help="IDs of specific benchmarks to execute (default: all)",
     )
     parser.add_argument(
+        "-i",
+        "--input",
+        nargs="+",
+        help="Input Python kernel files. Can be used instead of --level and --benchmark to specify custom kernels.",
+    )
+    parser.add_argument(
         "--datatype",
         type=str,
         default="bf16",
@@ -995,11 +1001,21 @@ if __name__ == "__main__":
     args = parser_cli_args()
     kb_level = args.level
     benchmarks = args.benchmark
+    input_files = args.input
+    if input_files is not None and kb_level is not None and benchmarks is not None:
+        raise ValueError("Cannot set both --input, and --level and --benchmark. ")
+    if input_files is None and kb_level is None and benchmarks is None:
+        raise ValueError("Either --input or --level and --benchmark must be specified.")
+
     stop_at_stage = args.dump_kernel
     input_shapes = parse_input_shapes(args.input_shapes)
 
-    kb_pattern = f"level{kb_level}/*.py"
-    bench_list = get_benchmarks(kb_pattern, include=benchmarks)
+    if input_files is None:
+        kb_pattern = f"level{kb_level}/*.py"
+        bench_list = get_benchmarks(kb_pattern, include=benchmarks)
+    else:
+        bench_list = [(i + 1, Path(f)) for i, f in enumerate(input_files)]
+        kb_level = 0
 
     if args.dump_csv and not stop_at_stage:
         csv_file = "out_kernelbench.csv"
@@ -1008,7 +1024,7 @@ if __name__ == "__main__":
         csv_logger = None
 
     for bench_id, bench_path in bench_list:
-        short_path = bench_path.parent.name + "/" + bench_path.name
+        short_path = Path(*bench_path.parts[-2:])
         print("-" * 80)
         print(f"Executing benchmark: {short_path}", flush=True)
         entry = {
