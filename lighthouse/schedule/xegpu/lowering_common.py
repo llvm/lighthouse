@@ -158,6 +158,12 @@ def vectorize(
     # Hoist loop-invariant vector read/store ops if present.
     k_loop = match(payload_func, ops={"scf.for"})
     lh_transform.loop_hoisting(k_loop)
+
+    # Narrow vector.contract operands if possible to match DPAS op spec.
+    contract_ops = lh_transform.match_op(payload_func, "vector.contract")
+    with lh_transform.foreach(contract_ops) as contract_op:
+        transform_ext.narrow_vector_contract_operands(contract_op)
+        transform.yield_()
     lh_transform.cleanup(payload_func)
 
     return payload_func

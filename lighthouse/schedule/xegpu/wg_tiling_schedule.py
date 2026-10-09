@@ -2,7 +2,7 @@
 
 from mlir import ir
 from mlir.dialects import transform
-from mlir.dialects.transform import structured
+from mlir.dialects.transform import structured, tensor
 import lighthouse.transform as lh_transform
 from lighthouse.pipeline.helper import (
     apply_registered_pass,
@@ -20,8 +20,6 @@ def apply_gemm_tiling(
     device: str | None = None,
 ) -> ir.Operation:
     """Apply GEMM tiling to the given function."""
-
-    anytype = transform.AnyOpType.get()
 
     matmul_ops = lh_transform.match_op(func, "linalg.matmul")
     # Ensure lowering fails if no matmul ops exist.
@@ -54,13 +52,12 @@ def apply_gemm_tiling(
 
         # k loop tiling
         wg_matmul = match(wg_loop, ops={"linalg.matmul"})
-        _, [k_loop], _ = lh_transform.tile(wg_matmul, tile_sizes=[0, 0, _k_tile])
-        lh_transform.cleanup(wg_loop)
-        # if there's a transpose op fuse it into the k loop
-        transpose_op = match(wg_loop, ops={"linalg.transpose"})
-        structured.structured_fuse_into_containing_op(
-            anytype, anytype, transpose_op, k_loop
+        lh_transform.tile(
+            wg_matmul,
+            tile_sizes=[0, 0, _k_tile],
+            fuse_producers=True,
         )
+        lh_transform.cleanup(wg_loop)
         transform.yield_()
     lh_transform.cleanup(func)
     return func
@@ -191,7 +188,7 @@ def apply_attention_tiling(func: ir.Operation) -> ir.Operation:
     wg_tile, _sg_tile, reduction_tile = transform_ext.infer_xegpu_attention_params(
         leaf_linalg_op
     )
-    lh_transform.tile(
+    _, [forall_loop], _ = lh_transform.tile(
         leaf_linalg_op,
         tile_sizes=wg_tile,
         fuse_producers=True,
@@ -208,12 +205,14 @@ def apply_attention_tiling(func: ir.Operation) -> ir.Operation:
     #   scale:  linalg.elementwise <mul>(qkt, linalg.fill(scale_constant))
     #   P@V:    linalg.batch_matmul(softmax_out, v_slice)
 
-    linalg_ops = lh_transform.match_op(func, ["linalg.generic", "linalg.batch_matmul"])
+    linalg_ops = lh_transform.match_op(
+        forall_loop, ["linalg.generic", "linalg.batch_matmul"]
+    )
     contraction_ops = transform_ext.filter_contraction_ops(linalg_ops)
 
     # Match max reduction op. Assumes there's only one arith.max* op.
     arith_max_op = transform_ext.extract_handle(
-        lh_transform.match_op(func, ["arith.maximumf", "arith.maxnumf"]),
+        lh_transform.match_op(forall_loop, ["arith.maximumf", "arith.maxnumf"]),
         0,
         silenceable=True,
     )
@@ -246,12 +245,17 @@ def apply_attention_tiling(func: ir.Operation) -> ir.Operation:
     matmul_ops = transform.split_handle(2 * [anytype], contraction_ops)
     qk_matmul, pv_matmul = matmul_ops[0], matmul_ops[1]
 
-    # Find the tensor.extract_slice producers for the Q@K^T matmul.
-    qk_extract_slice_producers = get_producers_by_name(
-        qk_matmul, op_names="tensor.extract_slice"
+    # Q is the Q@K^T contraction's first operand. K is the second operand
+    # before the transpose.
+    q = transform.get_producer_of_operand(anytype, qk_matmul, 0)
+    k_producer = transform.get_producer_of_operand(anytype, qk_matmul, 1)
+    all_k_producers = transform_ext.trace_producers(k_producer)
+    all_k_producers = transform.merge_handles([k_producer, all_k_producers])
+    k_transpose = transform_ext.filter_by_name(
+        all_k_producers, op_names="linalg.transpose"
     )
-    q = transform_ext.extract_handle(qk_extract_slice_producers, 0)
-    k = transform_ext.extract_handle(qk_extract_slice_producers, 1)
+    k_transpose = transform_ext.extract_handle(k_transpose, 0, silenceable=True)
+    k = transform.get_producer_of_operand(anytype, k_transpose, 0)
 
     # Find handle to v as the first tensor.extract_slice producer of PV matmul
     pv_extract_slice_producers = get_producers_by_name(
@@ -267,9 +271,11 @@ def apply_attention_tiling(func: ir.Operation) -> ir.Operation:
     # the reduction fusion replaces this op, the sunk chain is folded into a loop
     # directly instead of being rebuilt from q/k/v.)
     normalize_op = transform.get_consumers_of_result(anytype, pv_matmul, 0)
-    # P keeps the narrow element type the DPAS needs, which `normalize_op` does not
-    # carry: it reads the contraction's (f32) accumulator.
-    p = transform.get_producer_of_operand(anytype, pv_matmul, 0)
+    # Match P by its math.exp op. PV matmul can have a mask as the 1st operand.
+    exp_op = transform_ext.extract_handle(
+        lh_transform.match_op(forall_loop, "math.exp"), 0, silenceable=True
+    )
+    p = transform.get_parent_op(anytype, exp_op, op_name="linalg.generic")
     transform_ext.replace_with_fused_attention(
         q=q,
         k=k,
@@ -280,6 +286,42 @@ def apply_attention_tiling(func: ir.Operation) -> ir.Operation:
         tile_size=reduction_tile,
     )
     transform.apply_cse(func)
+    lh_transform.cleanup(func)
+
+    # Clean up insert/extract slice patterns.
+    forall_loop = transform_ext.extract_handle(
+        lh_transform.match_op(func, "scf.forall"), 0, silenceable=True
+    )
+    with ir.InsertionPoint(transform.apply_patterns(forall_loop).patterns):
+        tensor.apply_patterns_tensor_merge_consecutive_insert_extract_slice()
+    lh_transform.cleanup(forall_loop)
+
+    # Fuse elementwise producers into the scf.for loop, if any.
+    # Assume the producers are associated with the first linalg.contract op.
+    first_contract_op = transform_ext.extract_handle(
+        lh_transform.match_op(forall_loop, "linalg.contract"), 0
+    )
+    elemwise_producers = transform_ext.filter_elementwise(
+        transform_ext.trace_producers(first_contract_op)
+    )
+    # Keep only linalg.generic/elementwise ops
+    elemwise_producers = transform_ext.filter_by_name(
+        elemwise_producers, op_names=["linalg.generic", "linalg.elementwise"]
+    )
+    for_loop = transform_ext.extract_handle(
+        lh_transform.match_op(func, "scf.for"), 0, silenceable=True
+    )
+    with lh_transform.foreach(
+        transform_ext.reverse_handles(elemwise_producers)
+    ) as elemwise:
+        structured.structured_fuse_into_containing_op(
+            anytype,
+            anytype,
+            producer_op=elemwise,
+            containing_op=for_loop,
+        )
+        transform.apply_dce(forall_loop)
+        transform.yield_()
     lh_transform.cleanup(func)
 
     return func

@@ -1,7 +1,6 @@
 from mlir import ir
 from mlir.dialects.transform import xegpu
 from mlir.dialects import transform
-from mlir.dialects.transform import structured
 import lighthouse.transform as lh_transform
 from lighthouse.dialects.transform import transform_ext
 from lighthouse.pipeline.helper import (
@@ -129,8 +128,6 @@ def bundle_xegpu_mlp_schedule(
     if stop_at_stage == "initial":
         raise PipelineInterrupt()
 
-    anytype = transform.AnyOpType.get()
-
     # fuse all elementwise ops first
     func = get_payload_func(mod, func_name=payload_func_name)
     func = apply_registered_pass(func, "linalg-fuse-elementwise-ops")
@@ -157,13 +154,12 @@ def bundle_xegpu_mlp_schedule(
 
         # k loop tiling
         wg_matmul = match(wg_loop, ops={"linalg.matmul"})
-        _, [k_loop], _ = lh_transform.tile(wg_matmul, tile_sizes=[0, 0, k_tile])
-        lh_transform.cleanup(wg_loop)
-        # if there's a transpose op fuse it into the k loop
-        transpose_op = match(wg_loop, ops={"linalg.transpose"})
-        structured.structured_fuse_into_containing_op(
-            anytype, anytype, transpose_op, k_loop
+        lh_transform.tile(
+            wg_matmul,
+            tile_sizes=[0, 0, k_tile],
+            fuse_producers=True,
         )
+        lh_transform.cleanup(wg_loop)
 
     lh_transform.cleanup(func)
     if stop_at_stage == "tiled":

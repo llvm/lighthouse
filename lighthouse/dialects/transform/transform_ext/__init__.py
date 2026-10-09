@@ -9,6 +9,7 @@ from .ops.get_tile_sizes import get_tile_sizes
 from .ops.param_cmp_eq import param_cmp_eq
 from .ops.replace import replace
 from .ops.convert_func_results_to_args import convert_func_results_to_args
+from .ops.narrow_vector_contract_operands import narrow_vector_contract_operands
 from .ops.emit_definite_failure import emit_definite_failure
 from .ops.extract_handle import extract_handle
 from .ops.get_tileable_consumers import get_tileable_consumers
@@ -69,6 +70,7 @@ __all__ = [
     "infer_xegpu_gemm_params",
     "infer_xegpu_reduction_params",
     "move_offsets_to_subview",
+    "narrow_vector_contract_operands",
     "param_cmp_eq",
     "propagate_tile_sizes",
     "register_and_load",

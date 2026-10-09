@@ -198,7 +198,7 @@ def bundle_xegpu_fused_attention_schedule(
         anytype, func, ops=["linalg.generic", "linalg.batch_matmul"]
     )
     leaf_linalg_op = transform_ext.extract_handle(linalg_ops, -1)
-    leaf_generic_wg, _, _ = lh_transform.tile(
+    leaf_generic_wg, [wg_loop], _ = lh_transform.tile(
         leaf_linalg_op,
         tile_sizes=wg_tile,
         fuse_producers=True,
@@ -219,7 +219,7 @@ def bundle_xegpu_fused_attention_schedule(
     #   P@V:    linalg.batch_matmul(softmax_out, v_slice)
 
     linalg_ops = structured.structured_match(
-        anytype, func, ops=["linalg.generic", "linalg.batch_matmul"]
+        anytype, wg_loop, ops=["linalg.generic", "linalg.batch_matmul"]
     )
     contraction_ops = transform_ext.filter_contraction_ops(linalg_ops)
 
@@ -239,23 +239,24 @@ def bundle_xegpu_fused_attention_schedule(
     max_producer_generics = get_producers_by_name(
         max_reduction, op_names="linalg.generic"
     )
-    # Assume the scaling happens in the first ancestor.
+    # Need to match mulf op who has a arith.constant producer
+    # Assume the scaling happens in the first ancestor and is the only const op.
     max_producer = transform_ext.extract_handle(max_producer_generics, 0)
-    max_scale_mul_op = match_and_split(max_producer, ops={"arith.mulf"}, nhandles=1)[0]
-    scale_producers = transform_ext.trace_producers(max_scale_mul_op)
+    yield_op = lh_transform.match_op(max_producer, "linalg.yield")
+    yield_producers = transform_ext.trace_producers(yield_op)
     scale_const_op = transform_ext.extract_handle(
-        transform_ext.filter_by_name(scale_producers, op_names="arith.constant"), 0
+        transform_ext.filter_by_name(yield_producers, op_names="arith.constant"), 0
     )
 
     matmul_ops = transform.split_handle(2 * [anytype], contraction_ops)
     qk_matmul, pv_matmul = matmul_ops[0], matmul_ops[1]
 
-    # Find the tensor.extract_slice producers for the Q@K^T matmul.
-    qk_extract_slice_producers = get_producers_by_name(
-        qk_matmul, op_names="tensor.extract_slice"
-    )
-    q = transform_ext.extract_handle(qk_extract_slice_producers, 0)
-    k = transform_ext.extract_handle(qk_extract_slice_producers, 1)
+    # Find Q and K from the Q@K^T contraction's operands. Q is
+    # operand 0; K^T is operand 1 (a linalg.transpose), whose input is K in
+    # [*batch, n_ctx, d_head] layout.
+    q = transform.get_producer_of_operand(anytype, qk_matmul, operand_number=0)
+    kt = transform.get_producer_of_operand(anytype, qk_matmul, operand_number=1)
+    k = transform.get_producer_of_operand(anytype, kt, operand_number=0)
 
     # Find handle to v as the first tensor.extract_slice producer of PV matmul
     pv_extract_slice_producers = get_producers_by_name(
@@ -271,9 +272,12 @@ def bundle_xegpu_fused_attention_schedule(
     # the reduction fusion replaces this op, the sunk chain is folded into a loop
     # directly instead of being rebuilt from q/k/v.)
     normalize_op = transform.get_consumers_of_result(anytype, pv_matmul, 0)
-    # P keeps the narrow element type the DPAS needs, which `normalize_op` does not
-    # carry: it reads the contraction's (f32) accumulator.
-    p = transform.get_producer_of_operand(anytype, pv_matmul, 0)
+    # P keeps the narrow element type the DPAS needs, which `normalize_op` does
+    # not carry: it reads the contraction's (f32) accumulator. P is the
+    # contraction's `exp` (softmax-weights) operand; its operand position is
+    # not fixed, match it through the softmax `math.exp` instead.
+    exp_op = match_and_split(func, ops=["math.exp"], nhandles=1)[0]
+    p = transform.get_parent_op(anytype, exp_op, op_name="linalg.generic")
     reduction_tile = layer_params[
         "reduction_tile"
     ]  # Tile size for reduction dimension (K/V sequence length)
@@ -287,6 +291,38 @@ def bundle_xegpu_fused_attention_schedule(
         tile_size=reduction_tile,
     )
     transform.apply_cse(func)
+    lh_transform.cleanup(func)
+
+    # Clean up insert/extract slice patterns.
+    forall_loop = match_and_split(func, ops={"scf.forall"}, nhandles=1)[0]
+    with ir.InsertionPoint(transform.apply_patterns(forall_loop).patterns):
+        tensor.apply_patterns_tensor_merge_consecutive_insert_extract_slice()
+    lh_transform.cleanup(forall_loop)
+
+    # Fuse elementwise producers into the scf.for loop, if any.
+    # Assume the producers are associated with the first linalg.contract op.
+    first_contract_op = transform_ext.extract_handle(
+        lh_transform.match_op(forall_loop, "linalg.contract"), 0
+    )
+    elemwise_producers = transform_ext.filter_elementwise(
+        transform_ext.trace_producers(first_contract_op)
+    )
+    # Keep only linalg.generic/elementwise ops
+    elemwise_producers = transform_ext.filter_by_name(
+        elemwise_producers, op_names=["linalg.generic", "linalg.elementwise"]
+    )
+    for_loop = match_and_split(func, ops={"scf.for"}, nhandles=1)[0]
+    with lh_transform.foreach(
+        transform_ext.reverse_handles(elemwise_producers)
+    ) as elemwise:
+        structured.structured_fuse_into_containing_op(
+            anytype,
+            anytype,
+            producer_op=elemwise,
+            containing_op=for_loop,
+        )
+        transform.apply_dce(forall_loop)
+        transform.yield_()
     lh_transform.cleanup(func)
 
     if stop_at_stage == "reduction-tiled":
