@@ -2,7 +2,7 @@
 
 from mlir import ir
 from mlir.dialects import transform
-from mlir.dialects.transform import structured
+from mlir.dialects.transform import structured, tensor
 import lighthouse.transform as lh_transform
 from lighthouse.pipeline.helper import (
     apply_registered_pass,
@@ -286,6 +286,42 @@ def apply_attention_tiling(func: ir.Operation) -> ir.Operation:
         tile_size=reduction_tile,
     )
     transform.apply_cse(func)
+    lh_transform.cleanup(func)
+
+    # Clean up insert/extract slice patterns.
+    forall_loop = transform_ext.extract_handle(
+        lh_transform.match_op(func, "scf.forall"), 0, silenceable=True
+    )
+    with ir.InsertionPoint(transform.apply_patterns(forall_loop).patterns):
+        tensor.apply_patterns_tensor_merge_consecutive_insert_extract_slice()
+    lh_transform.cleanup(forall_loop)
+
+    # Fuse elementwise producers into the scf.for loop, if any.
+    # Assume the producers are associated with the first linalg.contract op.
+    first_contract_op = transform_ext.extract_handle(
+        lh_transform.match_op(forall_loop, "linalg.contract"), 0
+    )
+    elemwise_producers = transform_ext.filter_elementwise(
+        transform_ext.trace_producers(first_contract_op)
+    )
+    # Keep only linalg.generic/elementwise ops
+    elemwise_producers = transform_ext.filter_by_name(
+        elemwise_producers, op_names=["linalg.generic", "linalg.elementwise"]
+    )
+    for_loop = transform_ext.extract_handle(
+        lh_transform.match_op(func, "scf.for"), 0, silenceable=True
+    )
+    with lh_transform.foreach(
+        transform_ext.reverse_handles(elemwise_producers)
+    ) as elemwise:
+        structured.structured_fuse_into_containing_op(
+            anytype,
+            anytype,
+            producer_op=elemwise,
+            containing_op=for_loop,
+        )
+        transform.apply_dce(forall_loop)
+        transform.yield_()
     lh_transform.cleanup(func)
 
     return func
