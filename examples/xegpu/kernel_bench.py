@@ -51,6 +51,7 @@ import re
 
 import torch
 import torch._dynamo as dynamo
+from torch.nn.attention import sdpa_kernel, SDPBackend
 import os
 import gc
 import numpy as np
@@ -727,7 +728,11 @@ def lower_and_execute_benchmark(
     # BackendCompilerFailed) and we stop here; in execute mode it runs the
     # compiled kernel on the device.
     try:
-        with torch.no_grad():
+        # Force the math SDPA backend so attention is decomposed into
+        # supportable ops; on XPU the dispatcher otherwise selects the fused
+        # '_scaled_dot_product_fused_attention_overrideable' op that fails to
+        # legalize.
+        with torch.no_grad(), sdpa_kernel(SDPBackend.MATH):
             result = torch_model(*torch_inputs)
     except TypeError as e:
         msg = str(e)
