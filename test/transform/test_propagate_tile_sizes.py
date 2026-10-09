@@ -364,14 +364,57 @@ func.func @main(%a: tensor<128x64x32xf32>) -> tensor<128x64xf32> {
 """
 
 # CHECK-LABEL: Test: reduction_untiled
-# Propagation from the elementwise source reaches the reduction.
-# The reduction dim (d2) must stay untiled (0) when annotating the source.
+# Propagation does not target the reduction: it is anchored by its own strategy.
 # CHECK: linalg.generic {{{.*}}transform_ext.tile_sizes = array<i64: 32, 32, 8>
-# CHECK: linalg.fill {{{.*}}transform_ext.tile_sizes = array<i64: 32, 32>
-# CHECK: linalg.generic {{{.*}}transform_ext.tile_sizes = array<i64: 32, 32, 0>
+# CHECK: linalg.fill ins
+# CHECK: linalg.generic {
+# CHECK-NOT: transform_ext.tile_sizes
+# CHECK: return
 run(
     "reduction_untiled",
     REDUCTION_UNTILED,
+    lambda: build_propagate_schedule("linalg.generic", propagate_through_loops=False),
+)
+
+
+# An annotated reduction still propagates to its neighbours; the reduction dim
+# (d2) stays untiled (0) on the producer.
+# CHECK-LABEL: Test: reduction_source
+# CHECK: linalg.generic {{{.*}}transform_ext.tile_sizes = array<i64: 32, 32, 0>
+# CHECK: linalg.fill {{{.*}}transform_ext.tile_sizes = array<i64: 32, 32>
+# CHECK: linalg.generic {{{.*}}transform_ext.tile_sizes = array<i64: 32, 32, 0>
+REDUCTION_SOURCE = """
+#map3 = affine_map<(d0, d1, d2) -> (d0, d1, d2)>
+#reduce = affine_map<(d0, d1, d2) -> (d0, d1)>
+func.func @main(%a: tensor<128x64x32xf32>) -> tensor<128x64xf32> {
+  %cst = arith.constant 0.0 : f32
+  %src_empty = tensor.empty() : tensor<128x64x32xf32>
+  %src = linalg.generic {indexing_maps = [#map3, #map3],
+      iterator_types = ["parallel", "parallel", "parallel"]}
+      ins(%a : tensor<128x64x32xf32>)
+      outs(%src_empty : tensor<128x64x32xf32>) {
+  ^bb0(%i: f32, %o: f32):
+    linalg.yield %i : f32
+  } -> tensor<128x64x32xf32>
+  %red_empty = tensor.empty() : tensor<128x64xf32>
+  %red_init = linalg.fill ins(%cst : f32) outs(%red_empty : tensor<128x64xf32>) -> tensor<128x64xf32>
+  %reduce = linalg.generic {
+      indexing_maps = [#map3, #reduce],
+      iterator_types = ["parallel", "parallel", "reduction"],
+      transform_ext.tile_sizes = array<i64: 32, 32, 0>}
+      ins(%src : tensor<128x64x32xf32>)
+      outs(%red_init : tensor<128x64xf32>) {
+  ^bb0(%i: f32, %o: f32):
+    %sum = arith.addf %i, %o : f32
+    linalg.yield %sum : f32
+  } -> tensor<128x64xf32>
+  return %reduce : tensor<128x64xf32>
+}
+"""
+
+run(
+    "reduction_source",
+    REDUCTION_SOURCE,
     lambda: build_propagate_schedule("linalg.generic", propagate_through_loops=False),
 )
 

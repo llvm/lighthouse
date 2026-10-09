@@ -51,9 +51,8 @@ def build_schedule(op_name: str = "linalg.matmul"):
 run("register_unroll_strategy", PAYLOAD, build_schedule)
 
 
-# A non-contraction reduction takes both tiles from the generic fallback, which
-# the purely elementwise cases never exercise. The target is pinned because the
-# generic parallel tile follows the SIMD width.
+# A row (inner) reduction keeps its reduced vector dim whole so it lowers to a
+# single wide horizontal reduction; other dims are unrolled to 1.
 GENERIC_REDUCE = """
 #id = affine_map<(d0, d1) -> (d0, d1)>
 #out = affine_map<(d0, d1) -> (d0)>
@@ -73,7 +72,7 @@ module {
 
 # CHECK-LABEL: Test: register_unroll_generic_reduce
 # CHECK: linalg.generic
-# CHECK-SAME: transform_ext.tile_sizes = array<i64: 16, 1>
+# CHECK-SAME: transform_ext.tile_sizes = array<i64: 1, 0>
 with TargetInfo.override(features=["avx512f"]):
     run(
         "register_unroll_generic_reduce",
@@ -82,31 +81,66 @@ with TargetInfo.override(features=["avx512f"]):
     )
 
 
-# Same reduction on bf16: the generic parallel tile doubles with the narrower
-# element type, while the reduction tile is width-independent.
-GENERIC_REDUCE_BF16 = """
+# A reduced dim shorter than a vector (e.g. a pooling window) is not kept whole
+# as one horizontal reduction: the generic unroll tiling vectorizes the rows.
+# CHECK-LABEL: Test: register_unroll_short_reduce
+# CHECK: linalg.generic
+# CHECK-SAME: transform_ext.tile_sizes = array<i64: 16, 1>
+with TargetInfo.override(features=["avx512f"]):
+    run(
+        "register_unroll_short_reduce",
+        GENERIC_REDUCE.replace("64x256", "64x4"),
+        lambda: build_schedule("linalg.generic"),
+    )
+
+
+# A column (outer) reduction unrolls to one vector register along its
+# contiguous parallel dim.
+COLUMN_REDUCE = """
 #id = affine_map<(d0, d1) -> (d0, d1)>
-#out = affine_map<(d0, d1) -> (d0)>
+#out = affine_map<(d0, d1) -> (d1)>
 module {
-  func.func @main(%a: tensor<64x256xbf16>, %o: tensor<64xbf16>) -> tensor<64xbf16> {
+  func.func @main(%a: tensor<256x64xELEM>, %o: tensor<64xELEM>) -> tensor<64xELEM> {
     %r = linalg.generic {indexing_maps = [#id, #out],
-        iterator_types = ["parallel", "reduction"]}
-        ins(%a : tensor<64x256xbf16>) outs(%o : tensor<64xbf16>) {
-    ^bb0(%in: bf16, %out: bf16):
-      %s = arith.addf %in, %out : bf16
-      linalg.yield %s : bf16
-    } -> tensor<64xbf16>
-    return %r : tensor<64xbf16>
+        iterator_types = ["reduction", "parallel"]}
+        ins(%a : tensor<256x64xELEM>) outs(%o : tensor<64xELEM>) {
+    ^bb0(%in: ELEM, %out: ELEM):
+      %s = arith.addf %in, %out : ELEM
+      linalg.yield %s : ELEM
+    } -> tensor<64xELEM>
+    return %r : tensor<64xELEM>
   }
 }
 """
 
-# CHECK-LABEL: Test: register_unroll_generic_reduce_bf16
+# CHECK-LABEL: Test: register_unroll_column_reduce_avx512
 # CHECK: linalg.generic
-# CHECK-SAME: transform_ext.tile_sizes = array<i64: 32, 1>
+# CHECK-SAME: transform_ext.tile_sizes = array<i64: 1, 16>
 with TargetInfo.override(features=["avx512f"]):
     run(
-        "register_unroll_generic_reduce_bf16",
-        GENERIC_REDUCE_BF16,
+        "register_unroll_column_reduce_avx512",
+        COLUMN_REDUCE.replace("ELEM", "f32"),
+        lambda: build_schedule("linalg.generic"),
+    )
+
+# CHECK-LABEL: Test: register_unroll_column_reduce_avx2
+# CHECK: linalg.generic
+# CHECK-SAME: transform_ext.tile_sizes = array<i64: 1, 8>
+with TargetInfo.override(features=["avx2"]):
+    run(
+        "register_unroll_column_reduce_avx2",
+        COLUMN_REDUCE.replace("ELEM", "f32"),
+        lambda: build_schedule("linalg.generic"),
+    )
+
+
+# bf16 is computed as f32, so it unrolls to the same number of lanes as f32.
+# CHECK-LABEL: Test: register_unroll_column_reduce_bf16
+# CHECK: linalg.generic
+# CHECK-SAME: transform_ext.tile_sizes = array<i64: 1, 16>
+with TargetInfo.override(features=["avx512f"]):
+    run(
+        "register_unroll_column_reduce_bf16",
+        COLUMN_REDUCE.replace("ELEM", "bf16"),
         lambda: build_schedule("linalg.generic"),
     )

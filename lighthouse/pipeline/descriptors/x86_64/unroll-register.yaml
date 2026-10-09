@@ -8,6 +8,9 @@ Pipeline:
       propagate=False
       propagate_through_loops=False
     }"
+  - schedule: "tile_and_fuse.py[gen=assign_reduction_tile_sizes]{
+      strategy=register_unroll
+    }"
   - schedule: "tile_and_fuse.py[gen=assign_elementwise_tile_sizes]{
       strategy=register_unroll
       propagate=False

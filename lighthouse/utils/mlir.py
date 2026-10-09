@@ -357,6 +357,80 @@ def is_linalg_eltwise_op(op: ir.Operation | ir.OpView) -> bool:
     return isinstance(ov, linalg.GenericOp) and is_linalg_all_loops_parallel(ov)
 
 
+def map_dims(m: ir.AffineMap) -> set[int]:
+    """Set of iteration-dim positions referenced by an affine map's results."""
+    return {pos for pos in (dim_position(r) for r in m.results) if pos is not None}
+
+
+def linalg_reduction_dims(op: ir.Operation | ir.OpView) -> list[int] | None:
+    """Iteration dims not indexed by any output map, or None for non-linalg ops."""
+    maps = indexing_maps(op)
+    inputs = linalg_inputs(op)
+    if maps is None or inputs is None:
+        return None
+    out_dims: set[int] = set()
+    for m in maps[len(inputs) :]:
+        out_dims |= map_dims(m)
+    return [d for d in range(maps[0].n_dims) if d not in out_dims]
+
+
+def is_structural_contraction(op: ir.Operation | ir.OpView) -> bool:
+    """Detect a matmul-like op from its indexing maps alone (body-agnostic).
+
+    A contraction has a reduction dimension (one that is absent from the
+    output) that is shared by at least two inputs. This ignores the body, so it
+    also matches contractions with extra elementwise operands (e.g. a scaled or
+    dequantized input) that the strict multiply-accumulate matcher rejects.
+    """
+    maps = indexing_maps(op)
+    inputs = linalg_inputs(op)
+    if not maps or not inputs:
+        return False
+    input_maps = maps[: len(inputs)]
+    for k in linalg_reduction_dims(op):
+        if sum(1 for m in input_maps if k in map_dims(m)) >= 2:
+            return True
+    return False
+
+
+def is_linalg_reduction_op(op: ir.Operation | ir.OpView) -> bool:
+    """Return True for a single-output linalg reduction that is not a contraction.
+
+    Contractions and convolutions, including pooling ops, are excluded.
+    """
+    ov = opview(op)
+    if "linalg" not in ov.operation.name:
+        return False
+    outputs = linalg_outputs(ov)
+    if outputs is None or len(outputs) != 1:
+        return False
+    if not linalg_reduction_dims(ov):
+        return False
+    if linalg.isa_contraction_op(ov) or linalg.isa_convolution_op(ov):
+        return False
+    return not is_structural_contraction(ov)
+
+
+def linalg_loop_dim_sizes(op: ir.Operation | ir.OpView) -> list[int | None] | None:
+    """Static size of each loop dim of a linalg op (None if dynamic/unknown)."""
+    ov = opview(op)
+    maps = indexing_maps(ov)
+    if maps is None:
+        return None
+    dim_sizes: list[int | None] = [None] * maps[0].n_dims
+    for value, amap in zip(ov.operands, maps):
+        if not isinstance(value.type, ir.ShapedType):
+            continue
+        shape = ir.ShapedType(value.type).shape
+        for tensor_dim, expr in enumerate(amap.results):
+            pos = dim_position(expr)
+            if pos is None or dim_sizes[pos] is not None:
+                continue
+            if ir.ShapedType.is_static_size(shape[tensor_dim]):
+                dim_sizes[pos] = shape[tensor_dim]
+    return dim_sizes
+
+
 def op_users(value: ir.Value) -> list[ir.Operation]:
     """Return the ops that use `value`."""
     users = []

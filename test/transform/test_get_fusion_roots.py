@@ -279,3 +279,59 @@ module {
 # CHECK-NOT: tensor<8x8xf32>
 # CHECK: tensor<64x64xf32>
 apply_schedule(ZERO_TILES, all_linalg_roots, "ZERO_TILES")
+
+
+# Row sum -> division by the row sum (softmax-like). The consumer's tiles on
+# the row sum match the reduction's (16 rows), so the reduction may fuse unless
+# the consumer also tiles the columns the sum is broadcast over.
+ROW_SUM_BROADCAST = """
+#id = affine_map<(d0, d1) -> (d0, d1)>
+#row = affine_map<(d0, d1) -> (d0)>
+module {
+  func.func @main(%a: tensor<64x256xf32>, %s: tensor<64xf32>) -> tensor<64x256xf32> {
+    %sum = linalg.generic {indexing_maps = [#id, #row],
+        iterator_types = ["parallel", "reduction"],
+        transform_ext.tile_sizes = array<i64: 16, 0>}
+        ins(%a : tensor<64x256xf32>) outs(%s : tensor<64xf32>) {
+    ^bb0(%x: f32, %acc: f32):
+      %r = arith.addf %x, %acc : f32
+      linalg.yield %r : f32
+    } -> tensor<64xf32>
+    %e = tensor.empty() : tensor<64x256xf32>
+    %div = linalg.generic {indexing_maps = [#id, #row, #id],
+        iterator_types = ["parallel", "parallel"],
+        transform_ext.tile_sizes = array<i64: 16, CONSUMER_COLS>}
+        ins(%a, %sum : tensor<64x256xf32>, tensor<64xf32>)
+        outs(%e : tensor<64x256xf32>) {
+    ^bb0(%x: f32, %y: f32, %o: f32):
+      %d = arith.divf %x, %y : f32
+      linalg.yield %d : f32
+    } -> tensor<64x256xf32>
+    return %div : tensor<64x256xf32>
+  }
+}
+"""
+
+
+# Fused into a consumer tiled along the columns, the row sum would be recomputed
+# (a full pass over its rows) per column tile: both are roots.
+# CHECK: IR printer: REDUCTION_BROADCAST_SPLIT
+# CHECK: arith.addf
+# CHECK: arith.divf
+apply_schedule(
+    ROW_SUM_BROADCAST.replace("CONSUMER_COLS", "64"),
+    all_linalg_roots,
+    "REDUCTION_BROADCAST_SPLIT",
+)
+
+
+# A consumer tiled along the rows only covers whole rows: the row sum fuses into
+# it and only the division is a root.
+# CHECK: IR printer: REDUCTION_BROADCAST_FUSED
+# CHECK-NOT: arith.addf
+# CHECK: arith.divf
+apply_schedule(
+    ROW_SUM_BROADCAST.replace("CONSUMER_COLS", "0"),
+    all_linalg_roots,
+    "REDUCTION_BROADCAST_FUSED",
+)
