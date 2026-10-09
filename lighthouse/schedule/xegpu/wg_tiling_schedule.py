@@ -22,7 +22,8 @@ def apply_gemm_tiling(
 ) -> ir.Operation:
     """Apply GEMM tiling to the given function."""
 
-    anytype = transform.AnyOpType.get()
+    # Fuse elementwise ops first to simplify the graph.
+    func = apply_registered_pass(func, "linalg-fuse-elementwise-ops")
 
     matmul_ops = lh_transform.match_op(func, "linalg.matmul")
     # Ensure lowering fails if no matmul ops exist.
@@ -55,13 +56,12 @@ def apply_gemm_tiling(
 
         # k loop tiling
         wg_matmul = match(wg_loop, ops={"linalg.matmul"})
-        _, [k_loop], _ = lh_transform.tile(wg_matmul, tile_sizes=[0, 0, _k_tile])
-        lh_transform.cleanup(wg_loop)
-        # if there's a transpose op fuse it into the k loop
-        transpose_op = match(wg_loop, ops={"linalg.transpose"})
-        structured.structured_fuse_into_containing_op(
-            anytype, anytype, transpose_op, k_loop
+        lh_transform.tile(
+            wg_matmul,
+            tile_sizes=[0, 0, _k_tile],
+            fuse_producers=True,
         )
+        lh_transform.cleanup(wg_loop)
         transform.yield_()
     lh_transform.cleanup(func)
     return func
@@ -71,6 +71,9 @@ def apply_reduction_tiling(func: ir.Operation) -> ir.Operation:
     """Apply reduction tiling to the given function."""
 
     anytype = transform.AnyOpType.get()
+
+    # Fuse elementwise ops first to simplify the graph.
+    func = apply_registered_pass(func, "linalg-fuse-elementwise-ops")
 
     # TODO implement actual pattern matching and anchor op inference
     anchor_op = lh_transform.match_op(func, "linalg.generic")
@@ -174,6 +177,9 @@ def apply_reduction_tiling(func: ir.Operation) -> ir.Operation:
 def apply_attention_tiling(func: ir.Operation) -> ir.Operation:
     """Apply attention-layer workgroup tiling to the given function."""
     anytype = transform.AnyOpType.get()
+
+    # Temporary Python equivalent of the native reshape-expansion patterns.
+    func = transform_ext.fold_reshape_ops_by_expansion(func)
 
     # Find the subtract and exp reduction loops and fuse them.
     subf_op = transform_ext.extract_handle(
