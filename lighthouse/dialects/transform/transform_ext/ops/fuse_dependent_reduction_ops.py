@@ -37,7 +37,7 @@ class FuseDependentReductionOpsOp(
     result, and R2 reduces E's result. The loop step supplies the tile size.
 
     Other users of E keep the original while a clone is fused. One call handles
-    one R2.The returned loop retains any reduction marker for another call.
+    one R2. The returned loop retains any reduction marker for another call.
 
     Each handle must identify one op. Invalid handles or an illegal chain cause
     a silenceable failure.
