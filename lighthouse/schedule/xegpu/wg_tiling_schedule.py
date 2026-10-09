@@ -242,6 +242,12 @@ def apply_attention_tiling(func: ir.Operation) -> ir.Operation:
     enable_fastmath_optimizations(func)
     lh_transform.cleanup(func)
 
+    # Write the result through an expanded view of the output memref so the GQA
+    # collapse_shape leaves the write path and bufferization elides the output
+    # buffer + copy.
+    func = transform_ext.expand_output_destination(func)
+    lh_transform.cleanup(func)
+
     return func
 
 
