@@ -23,7 +23,7 @@ dev = [
 
 [project.optional-dependencies]
 ingress_torch_mlir = [
-    "torch-mlir==20260805.836",
+    "torch-mlir==20261001",
     "ml_dtypes",
     "transformers",
 ]
@@ -69,7 +69,6 @@ conflicts = [
 # Bind packages to particular package repositories
 mlir_python_bindings = { index = "eudsl" }
 torch = { index = "pytorch" }
-torch_mlir = { index = "torch_mlir" }
 
 # The following are the different non-Pypi package repositories we depend on
 [[tool.uv.index]]
@@ -81,11 +80,6 @@ format = "flat"
 [[tool.uv.index]]
 name = "pytorch"
 url = "https://download.pytorch.org/whl"
-
-[[tool.uv.index]]
-name = "torch_mlir"
-url = "https://github.com/llvm/torch-mlir-release/releases/expanded_assets/dev-wheels"
-explicit = true
 
 # Derive package version from version in code
 [build-system]
