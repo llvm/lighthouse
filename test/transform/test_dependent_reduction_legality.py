@@ -243,6 +243,60 @@ def main() -> None:
     # CHECK-NEXT: Legal to fuse: E dim 1, tile 32
     check_case("softmax", SOFTMAX)
 
+    dynamic_input = replace_once(
+        SOFTMAX,
+        "  // R1: m = max_j x",
+        "  %x_dynamic = tensor.cast %x : tensor<64x512xf32> to tensor<?x512xf32>\n"
+        "  // R1: m = max_j x",
+    )
+
+    # CHECK-LABEL: Case: dynamic R1 input
+    # CHECK-NEXT: Not legal to fuse: R1 has a dynamic shape
+    check_case(
+        "dynamic R1 input",
+        replace_once(
+            dynamic_input,
+            "ins(%x : tensor<64x512xf32>) outs(%m_init",
+            "ins(%x_dynamic : tensor<?x512xf32>) outs(%m_init",
+        ),
+    )
+
+    # CHECK-LABEL: Case: dynamic E input
+    # CHECK-NEXT: Not legal to fuse: E has a dynamic shape
+    check_case(
+        "dynamic E input",
+        replace_once(
+            dynamic_input,
+            "ins(%x, %m : tensor<64x512xf32>, tensor<64xf32>)",
+            "ins(%x_dynamic, %m : tensor<?x512xf32>, tensor<64xf32>)",
+        ),
+    )
+
+    r2_dynamic = replace_once(
+        SOFTMAX,
+        "  %s = linalg.generic",
+        "  %s_init_dynamic = tensor.cast %s_init : tensor<64xf32> to tensor<?xf32>\n"
+        "  %s = linalg.generic",
+    )
+    r2_dynamic = replace_once(
+        r2_dynamic,
+        "outs(%s_init : tensor<64xf32>) {",
+        "outs(%s_init_dynamic : tensor<?xf32>) {",
+    )
+    r2_dynamic = replace_once(
+        r2_dynamic,
+        "  } -> tensor<64xf32>\n\n  // The normalizing divide",
+        "  } -> tensor<?xf32>\n\n  // The normalizing divide",
+    )
+    r2_dynamic = replace_once(
+        r2_dynamic,
+        "ins(%p, %s : tensor<64x512xf32>, tensor<64xf32>)",
+        "ins(%p, %s : tensor<64x512xf32>, tensor<?xf32>)",
+    )
+    # CHECK-LABEL: Case: dynamic R2 result
+    # CHECK-NEXT: Not legal to fuse: R2 has a dynamic shape
+    check_case("dynamic R2 result", r2_dynamic)
+
     # CHECK-LABEL: Case: earlier R1 user
     # CHECK-NEXT: Not legal to fuse: user of an R1 result does not post-dominate E
     check_case(
@@ -263,9 +317,126 @@ def main() -> None:
     # CHECK-NEXT: Legal to fuse: E dim 1, tile 32
     check_case("attention contraction", ATTENTION, r2_index=2)
 
+    # CHECK-LABEL: Case: casted attention contraction
+    # CHECK-NEXT: Legal to fuse: E dim 1, tile 32
+    check_case(
+        "casted attention contraction",
+        replace_once(
+            ATTENTION,
+            "    %mul = arith.mulf %pv, %vv : f32",
+            "    %narrow = arith.truncf %pv : f32 to f16\n"
+            "    %wide = arith.extf %narrow : f16 to f32\n"
+            "    %mul = arith.mulf %wide, %vv : f32",
+        ),
+        r2_index=2,
+    )
+
+    # CHECK-LABEL: Case: squared E contribution
+    # CHECK-NEXT: Not legal to fuse: R2 body must add E or multiply two distinct inputs before adding
+    check_case(
+        "squared E contribution",
+        replace_once(
+            SOFTMAX,
+            "    %a = arith.addf %in, %out : f32\n    linalg.yield %a : f32",
+            "    %square = arith.mulf %in, %in : f32\n"
+            "    %a = arith.addf %square, %out : f32\n"
+            "    linalg.yield %a : f32",
+        ),
+    )
+
+    # CHECK-LABEL: Case: narrowed E contribution
+    # CHECK-NEXT: Legal to fuse: E dim 1, tile 32
+    check_case(
+        "narrowed E contribution",
+        replace_once(
+            SOFTMAX,
+            "    %a = arith.addf %in, %out : f32\n    linalg.yield %a : f32",
+            "    %narrow = arith.truncf %in : f32 to f16\n"
+            "    %wide = arith.extf %narrow : f16 to f32\n"
+            "    %a = arith.addf %wide, %out : f32\n"
+            "    linalg.yield %a : f32",
+        ),
+    )
+
+    e_dependent_factor = replace_once(
+        SOFTMAX,
+        "  %s = linalg.generic {indexing_maps = [#rowcol, #row],",
+        "  %p_alias = tensor.cast %p : tensor<64x512xf32> to tensor<64x512xf32>\n"
+        "  %s = linalg.generic {indexing_maps = [#rowcol, #rowcol, #row],",
+    )
+    e_dependent_factor = replace_once(
+        e_dependent_factor,
+        "ins(%p : tensor<64x512xf32>) outs(%s_init",
+        "ins(%p, %p_alias : tensor<64x512xf32>, tensor<64x512xf32>) outs(%s_init",
+    )
+    e_dependent_factor = replace_once(
+        e_dependent_factor,
+        "  ^bb0(%in: f32, %out: f32):\n    %a = arith.addf %in, %out : f32",
+        "  ^bb0(%in: f32, %alias: f32, %out: f32):\n"
+        "    %product = arith.mulf %in, %alias : f32\n"
+        "    %a = arith.addf %product, %out : f32",
+    )
+    # CHECK-LABEL: Case: E-dependent contraction factor
+    # CHECK-NEXT: Not legal to fuse: R2 contribution has another input dependent on E or R1
+    check_case("E-dependent contraction factor", e_dependent_factor)
+
+    duplicate_e_input = replace_once(
+        e_dependent_factor,
+        "  %p_alias = tensor.cast %p : tensor<64x512xf32> to tensor<64x512xf32>\n",
+        "",
+    )
+    duplicate_e_input = replace_once(
+        duplicate_e_input,
+        "ins(%p, %p_alias : tensor<64x512xf32>, tensor<64x512xf32>)",
+        "ins(%p, %p : tensor<64x512xf32>, tensor<64x512xf32>)",
+    )
+    # CHECK-LABEL: Case: duplicate E contraction input
+    # CHECK-NEXT: Not legal to fuse: R2 consumes E's result more than once
+    check_case("duplicate E contraction input", duplicate_e_input)
+
+    transposed_r2 = ATTENTION.replace(
+        "#ij     = affine_map<(d0, d1, d2) -> (d0, d1)>",
+        "#ij     = affine_map<(d0, d1, d2) -> (d0, d1)>\n"
+        "#ji     = affine_map<(d0, d1, d2) -> (d1, d0)>",
+    ).replace("tensor<64x128xf32>", "tensor<128x64xf32>")
+    transposed_r2 = replace_once(
+        transposed_r2,
+        "indexing_maps = [#ik, #kj, #ij]",
+        "indexing_maps = [#ik, #kj, #ji]",
+    )
+    transposed_r2 = (
+        transposed_r2.split("  // The deferred normalization")[0]
+        + "  return %o : tensor<128x64xf32>\n}\n"
+    )
+    # CHECK-LABEL: Case: transposed R2 output map
+    # CHECK-NEXT: Not legal to fuse: R2 output map is not the identity projection
+    check_case("transposed R2 output map", transposed_r2, r2_index=2)
+
     # CHECK-LABEL: Case: mixed precision
     # CHECK-NEXT: Legal to fuse: E dim 1, tile 32
     check_case("mixed precision", MIXED_SOFTMAX)
+
+    # CHECK-LABEL: Case: unused integer constant
+    # CHECK-NEXT: Not legal to fuse: E body has a non-floating arith.constant
+    check_case(
+        "unused integer constant",
+        softmax_with_term(
+            "    %unused = arith.constant 7 : i32\n"
+            "    %e = math.exp %d : f32\n"
+            "    linalg.yield %e : f32"
+        ),
+    )
+
+    # CHECK-LABEL: Case: unused index constant
+    # CHECK-NEXT: Not legal to fuse: E body has a non-floating arith.constant
+    check_case(
+        "unused index constant",
+        softmax_with_term(
+            "    %unused = arith.constant 7 : index\n"
+            "    %e = math.exp %d : f32\n"
+            "    linalg.yield %e : f32"
+        ),
+    )
 
     # CHECK-LABEL: Case: nonseparable term
     # CHECK-NEXT: Not legal to fuse: E is not multiplicatively separable
@@ -282,6 +453,18 @@ def main() -> None:
             "    %e = math.exp %d : f32\n"
             "    %root = math.sqrt %e : f32\n"
             "    linalg.yield %root : f32"
+        ),
+    )
+
+    # CHECK-LABEL: Case: missing data stand-in
+    # CHECK-NEXT: Not legal to fuse: E body op math.absf has no data-operand stand-in
+    check_case(
+        "missing data stand-in",
+        softmax_with_term(
+            "    %data = math.absf %in : f32\n"
+            "    %e = math.exp %d : f32\n"
+            "    %term = arith.mulf %data, %e : f32\n"
+            "    linalg.yield %term : f32"
         ),
     )
 

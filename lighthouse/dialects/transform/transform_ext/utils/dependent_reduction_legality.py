@@ -19,6 +19,10 @@ from lighthouse.utils.mlir import (
     opview,
     reduction_dims,
 )
+from lighthouse.dialects.transform.transform_ext.utils.ir_rewrite import (
+    depends_on_op,
+    operand_eliminating_constant,
+)
 
 __all__ = [
     "REDUCTION_LOOP_ATTR_NAME",
@@ -263,6 +267,66 @@ def find_r2_elementwise_operand(r2: ir.OpView, e: ir.OpView) -> int:
     return found
 
 
+def _check_r2_inputs(
+    r1_loop: ir.OpView,
+    e: ir.OpView,
+    r2: ir.OpView,
+    e_input_index: int,
+) -> None:
+    """Require one E input, optionally with an independent second input."""
+    inputs = linalg_inputs(r2)
+    if len(inputs) not in (1, 2):
+        raise FusionRejected("R2 must have one or two inputs")
+    if len(inputs) == 2:
+        other = inputs[1 - e_input_index]
+        if depends_on_op(other, e) or depends_on_op(other, r1_loop):
+            raise FusionRejected(
+                "R2 contribution has another input dependent on E or R1"
+            )
+
+
+def _check_r2_body_pattern(
+    r2: ir.OpView, e_input_index: int, contribution: ir.Value, combiner: ir.Operation
+) -> None:
+    """Accept casts of inputs, then E + acc or E * V + acc."""
+    body = r2.regions[0].blocks[0]
+    ops = [opview(op) for op in list(body.operations)[:-1]]
+    first_core = 0
+    # Skip casting operations at the beginning of the R2 body
+    while first_core < len(ops) and isinstance(
+        ops[first_core], (arith.ExtFOp, arith.TruncFOp)
+    ):
+        first_core += 1
+    core = ops[first_core:]
+
+    def input_arg(value: ir.Value) -> ir.Value:
+        """Follow input casts back to a scalar R2 block argument."""
+        producer = defining_op(value)
+        while (
+            producer is not None
+            and producer.block == body
+            and isinstance(producer.opview, (arith.ExtFOp, arith.TruncFOp))
+        ):
+            value = producer.operands[0]
+            producer = defining_op(value)
+        return value
+
+    if not core or core[-1].operation != combiner:
+        raise FusionRejected("R2 body must end in its accumulator addf")
+    if len(linalg_inputs(r2)) == 1:
+        if len(core) == 1 and input_arg(contribution) == body.arguments[e_input_index]:
+            return
+    elif len(core) == 2 and isinstance(core[0], arith.MulFOp):
+        mul = core[0]
+        factors = [input_arg(value) for value in mul.operands]
+        input_args = set(list(body.arguments)[:2])
+        if contribution == mul.results[0] and set(factors) == input_args:
+            return
+    raise FusionRejected(
+        "R2 body must add E or multiply two distinct inputs before adding"
+    )
+
+
 def needs_elementwise_clone(e: ir.OpView, r2: ir.OpView) -> bool:
     """Preserve E outside the loop when another user needs its final result."""
     r2_op = r2.operation
@@ -486,6 +550,34 @@ def check_inner_reduction_against_elementwise(
         )
 
 
+def _check_correction_body(
+    e: ir.OpView, r1_input_indices: list[int], compute_type: ir.Type
+) -> None:
+    """Check E's constants and data-operand stand-ins before cloning its body."""
+    body = e.regions[0].blocks[0]
+    accumulator_args = {body.arguments[index] for index in r1_input_indices}
+    for operation in list(body.operations)[:-1]:
+        op = opview(operation)
+        if isinstance(op, arith.ConstantOp) and not isinstance(
+            op.operation.attributes["value"], ir.FloatAttr
+        ):
+            raise FusionRejected("E body has a non-floating arith.constant")
+
+        for operand in op.operands:
+            if isinstance(operand, ir.BlockArgument) and operand.owner == body:
+                # TODO: Improve safe values for unary operations like absf
+                # abs(x) * exp(x - m) = [abs(x) * exp(x)] * exp(-m) is
+                # separable, but a direct x -> absf edge has no stand-in here.
+                if (
+                    operand not in accumulator_args
+                    and operand_eliminating_constant(op, compute_type) is None
+                ):
+                    raise FusionRejected(
+                        f"E body op {op.operation.name} has no data-operand stand-in"
+                    )
+                continue
+
+
 def check_legal_fusion_triple(
     r1_loop: ir.OpView,
     result_to_inner: list[ir.OpView | None],
@@ -497,10 +589,14 @@ def check_legal_fusion_triple(
     The checks require:
 
     * E and R2 each have one result/init, and E has only parallel iterators.
+    * All shaped operands and results of R1's loop and inner reductions, E,
+      and R2 have static shapes, including the sources of R1 tile slices.
+      TODO: Add support for dynamic shapes.
     * The R1 loop, E, and R2 occupy the same block.
     * Exactly one R2 input reads E's result.
-    * R2 has one innermost reduction iterator. Every R2 input map contains
-      that iterator and consists only of pure dimension expressions.
+    * R2 has one innermost reduction iterator. Its output map preserves the
+      parallel dimensions in order. Every R2 input map contains the reduction
+      iterator and consists only of pure dimension expressions.
     * R2's map for E's result and E's output map have the same rank and only
       dimension expressions; together they identify the E reduction axis.
     * R1's loop bounds and step are constant, the step is positive, the R2
@@ -516,9 +612,13 @@ def check_legal_fusion_triple(
       Each non-sibling input also feeds E after tracing tile slices. Their
       equal-rank, dimension-only maps yield a consistent, complete R1-to-E
       loop mapping that aligns the reduction axes.
-    * R2's body is a single ``arith.addf`` reduction with a zero init (matmul contractions are allowed).
+    * R2 sums E or a product of E and one independent input. Input casts may
+      precede the final ``mulf``/``addf``; its init is zero.
     * R2's result type is f16, bf16, f32, or f64, and E's result type can be
       widened with it to evaluate the correction.
+    * E's scalar body can be cloned at that type: captured values can convert
+      to it, constants are floating, and direct data inputs have stand-ins
+      for their consuming ops.
     * Every other user of an R1 loop result post-dominates E.
 
     ``result_to_inner`` maps R1 loop results to the reductions producing
@@ -546,6 +646,7 @@ def check_legal_fusion_triple(
         raise FusionRejected("R1 loop, E and R2 are not all in the same block")
 
     r2_e_operand = find_r2_elementwise_operand(r2, e)
+    _check_r2_inputs(r1_loop, e, r2, r2_e_operand)
 
     r2_red_dims = reduction_dims(r2)
     if len(r2_red_dims) != 1:
@@ -554,6 +655,17 @@ def check_legal_fusion_triple(
         )
     if r2_red_dims[0] != num_loops(r2) - 1:
         raise FusionRejected("reduction iterator is not the innermost loop in R2")
+
+    r2_output_map = indexing_maps(r2)[len(linalg_inputs(r2))]
+    expected_output_map = ir.AffineMap.get(
+        num_loops(r2),
+        0,
+        [ir.AffineDimExpr.get(i) for i in range(num_loops(r2) - 1)],
+    )
+    if r2_output_map != expected_output_map:
+        raise FusionRejected(
+            f"R2 output map is not the identity projection: {r2_output_map}"
+        )
 
     # Each R2 input must admit slicing along the shared reduction axis.
     for index, _ in enumerate(linalg_inputs(r2)):
@@ -602,6 +714,23 @@ def check_legal_fusion_triple(
             f"{full_extent}"
         )
 
+    for name, op in [
+        ("R1", r1_loop),
+        *(("R1", inner) for inner in result_to_inner if inner is not None),
+        ("E", e),
+        ("R2", r2),
+    ]:
+        for value in (*op.operands, *op.results):
+            # Tiling gives an R1 input slice a static type even if its source
+            # tensor is dynamic.
+            values = (value, _resolve_slice_source(value)) if name == "R1" else (value,)
+            for shaped in values:
+                if (
+                    isinstance(shaped.type, ir.ShapedType)
+                    and not shaped.type.has_static_shape
+                ):
+                    raise FusionRejected(f"{name} has a dynamic shape: {shaped.type}")
+
     e_red_range = _static_loop_ranges(e)[e_tiled_dim]
     if ir.ShapedType.is_dynamic_size(e_red_range) or e_red_range != full_extent:
         raise FusionRejected(
@@ -643,7 +772,10 @@ def check_legal_fusion_triple(
             )
         check_inner_reduction_against_elementwise(inner, e, e_tiled_dim, inner_results)
 
-    _, combiners = _match_reduction([r2.regions[0].blocks[0].arguments[-1]], 0)
+    # `contribution` refers to the part of R2 that gets added to its accumulator.
+    contribution, combiners = _match_reduction(
+        [r2.regions[0].blocks[0].arguments[-1]], 0
+    )
     if not combiners:
         raise FusionRejected("R2's region does not match a reduction pattern")
     if len(combiners) != 1:
@@ -652,6 +784,7 @@ def check_legal_fusion_triple(
         )
     if not isinstance(combiners[0].opview, arith.AddFOp):
         raise FusionRejected(f"R2's combiner is not arith.addf: {combiners[0].name}")
+    _check_r2_body_pattern(r2, r2_e_operand, contribution, combiners[0])
 
     r2_init = linalg_outputs(r2)[0]
     if not _is_defined_as_zero(r2_init):
@@ -665,12 +798,14 @@ def check_legal_fusion_triple(
         )
 
     e_element_type = ir.ShapedType(e.results[0].type).element_type
-    if _wider_float_type(e_element_type, element_type) is None:
+    correction_type = _wider_float_type(e_element_type, element_type)
+    if correction_type is None:
         raise FusionRejected(
             f"E's element type {e_element_type} and R2's accumulator type "
             f"{element_type} have no common widening to evaluate the correction "
             f"term in"
         )
+    _check_correction_body(e, r1_as_e_operands, correction_type)
 
     # The replacement loop is inserted at E, so earlier R1 users would lose dominance.
     for r1_result in r1_loop.results:
