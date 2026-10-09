@@ -4,9 +4,36 @@ import math
 
 from mlir import ir
 from mlir.dialects import arith, bufferization, linalg, memref, tensor
+from mlir.dialects import math as math_dialect
 
 from lighthouse.utils.mlir import func_cif
 from lighthouse.ingress.mlir_gen.utils import emit_buf_to_tensor
+
+
+def _generic(ins, out, indexing_maps, iterator_types, body):
+    """Emit a single-result ``linalg.generic`` over statically shaped tensors.
+
+    `body` receives one scalar block argument per input followed by the output's,
+    and returns the value to yield. Block argument types are taken per operand, so
+    the operands and the result may differ in element type (a mixed-precision
+    body).
+    """
+    maps = ir.ArrayAttr.get([ir.AffineMapAttr.get(m) for m in indexing_maps])
+    iterators = ir.ArrayAttr.get(
+        [ir.Attribute.parse(f"#linalg.iterator_type<{it}>") for it in iterator_types]
+    )
+    op = linalg.GenericOp(
+        result_tensors=[out.type],
+        inputs=ins,
+        outputs=[out],
+        indexing_maps=maps,
+        iterator_types=iterators,
+    )
+    arg_types = [ir.ShapedType(v.type).element_type for v in (*ins, out)]
+    block = op.regions[0].blocks.append(*arg_types)
+    with ir.InsertionPoint(block):
+        linalg.yield_([body(*block.arguments)])
+    return op.results[0]
 
 
 def generate_gpu_attention_payload(
@@ -22,6 +49,10 @@ def generate_gpu_attention_payload(
 
     Computes attention:
     output = softmax(Q @ K^T / sqrt(d_head)) @ V
+
+    The softmax is spelled out as separate ``max``, ``exp``, row ``sum`` and divide
+    ops rather than as a `linalg.softmax`, in the conventional order with the divide
+    before the ``P@V`` contraction. See step 4.
 
     Args:
         func_name: Name of the payload function
@@ -84,25 +115,29 @@ def generate_gpu_attention_payload(
             # Step 2: Compute Q @ K^T using batch_matmul
             # Q: (batch_dim, n_ctx, d_head) @ K^T: (batch_dim, d_head, n_ctx)
             # Result: (batch_dim, n_ctx, n_ctx)
+            # Keep narrow contraction operands for DPAS, but accumulate in f32.
+            compute_type = ir.F32Type.get()
+            narrow = dtype != compute_type
+
             qkt_shape_3d = (batch_dim, n_ctx, n_ctx)
-            qkt_init = tensor.empty(qkt_shape_3d, dtype)
+            qkt_init = tensor.empty(qkt_shape_3d, compute_type)
             # Initialize with zeros for matmul accumulation
-            zero = arith.constant(dtype, 0.0)
+            zero = arith.constant(compute_type, 0.0)
             qkt_init_filled = linalg.fill(zero, outs=[qkt_init])
 
-            # Batch matmul: Q @ K^T
+            # Batch matmul: Q @ K^T, f16 operands accumulating in f32.
             qkt = linalg.batch_matmul(Q_3d, K_transposed, outs=[qkt_init_filled])
 
             # Step 3: Scale by 1/sqrt(d_head)
             scale_factor = 1.0 / math.sqrt(d_head)
-            scale_const = arith.constant(dtype, scale_factor)
+            scale_const = arith.constant(compute_type, scale_factor)
 
             # Create a tensor filled with the scale factor
-            scale_tensor_init = tensor.empty(qkt_shape_3d, dtype)
+            scale_tensor_init = tensor.empty(qkt_shape_3d, compute_type)
             scale_tensor = linalg.fill(scale_const, outs=[scale_tensor_init])
 
             # Elementwise multiply qkt with scale tensor
-            scaled_qkt_init = tensor.empty(qkt_shape_3d, dtype)
+            scaled_qkt_init = tensor.empty(qkt_shape_3d, compute_type)
             scaled_qkt = linalg.elementwise(
                 qkt,
                 scale_tensor,
@@ -110,23 +145,98 @@ def generate_gpu_attention_payload(
                 kind=linalg.ElementwiseKind.mul,
             )
 
-            # Step 4: Apply softmax along the last dimension (dim=2 in 3D)
-            softmax_init = tensor.empty(qkt_shape_3d, dtype)
-            attention_weights = linalg.softmax(
-                result=[ir.RankedTensorType.get(qkt_shape_3d, dtype)],
-                input=scaled_qkt,
-                output=softmax_init,
-                dimension=2,
+            # Keep max -> exp -> sum explicit. The schedule moves normalization
+            # past P@V before folding the chain into an online loop.
+            d0, d1, d2 = (ir.AffineDimExpr.get(i) for i in range(3))
+            # (batch, row, col) -> (batch, row, col) and -> (batch, row): the
+            # per-row statistics are broadcast over the reduced axis.
+            elementwise_map = ir.AffineMap.get(3, 0, [d0, d1, d2])
+            row_map = ir.AffineMap.get(3, 0, [d0, d1])
+            row_shape_3d = (batch_dim, n_ctx)
+
+            # m = max_k s
+            neg_inf = arith.constant(compute_type, float("-inf"))
+            m_init = linalg.fill(
+                neg_inf, outs=[tensor.empty(row_shape_3d, compute_type)]
+            )
+            row_max = _generic(
+                [scaled_qkt],
+                m_init,
+                [elementwise_map, row_map],
+                ["parallel", "parallel", "reduction"],
+                lambda s, acc: arith.maximumf(s, acc),
             )
 
-            # Step 5: Multiply attention weights by V using batch_matmul
-            # attention_weights: (batch_dim, n_ctx, n_ctx) @ V: (batch_dim, n_ctx, d_head)
-            # Result: (batch_dim, n_ctx, d_head)
-            output_3d_init = tensor.empty(collapsed_shape_3d, dtype)
-            output_3d_init_filled = linalg.fill(zero, outs=[output_3d_init])
+            # Keep the subtract and exponential separate here. The schedule
+            # explicitly fuses them into one term before reduction fusion.
+            score_delta = _generic(
+                [scaled_qkt, row_max],
+                tensor.empty(qkt_shape_3d, compute_type),
+                [elementwise_map, row_map, elementwise_map],
+                ["parallel", "parallel", "parallel"],
+                lambda s, m, out: arith.subf(s, m),
+            )
+            # P = exp(s - m), kept in f32 and read directly by both consumers: a
+            # cast in between would hide the chain from the fusion.
+            probs = _generic(
+                [score_delta],
+                tensor.empty(qkt_shape_3d, compute_type),
+                [elementwise_map, elementwise_map],
+                ["parallel", "parallel", "parallel"],
+                lambda delta, out: math_dialect.exp(delta),
+            )
 
-            result_3d = linalg.batch_matmul(
-                attention_weights, V_3d, outs=[output_3d_init_filled]
+            # l = sum_k P, all in f32.
+            l_init = linalg.fill(zero, outs=[tensor.empty(row_shape_3d, compute_type)])
+            row_sum = _generic(
+                [probs],
+                l_init,
+                [elementwise_map, row_map],
+                ["parallel", "parallel", "reduction"],
+                lambda p, acc: arith.addf(p, acc),
+            )
+
+            # Keep the divide bare so the normalization sink can match it.
+            normalized_probs = _generic(
+                [probs, row_sum],
+                tensor.empty(qkt_shape_3d, compute_type),
+                [elementwise_map, row_map, elementwise_map],
+                ["parallel", "parallel", "parallel"],
+                lambda p, denom, out: arith.divf(p, denom),
+            )
+
+            # Put lhs narrowing inside the generic contraction body.
+            # Vectorization folds the f16->f32 extensions into its contract,
+            # retaining a narrow x narrow -> f32 DPAS shape.
+            b, m, n, k = (ir.AffineDimExpr.get(i) for i in range(4))
+            pv_lhs_map = ir.AffineMap.get(4, 0, [b, m, k])
+            pv_rhs_map = ir.AffineMap.get(4, 0, [b, k, n])
+            pv_out_map = ir.AffineMap.get(4, 0, [b, m, n])
+
+            def contract(p, v, acc):
+                lhs, rhs = p, v
+                if narrow:
+                    lhs = arith.extf(compute_type, arith.truncf(dtype, p))
+                    rhs = arith.extf(compute_type, v)
+                return arith.addf(acc, arith.mulf(lhs, rhs))
+
+            output_3d_init = tensor.empty(collapsed_shape_3d, compute_type)
+            output_3d_init_filled = linalg.fill(zero, outs=[output_3d_init])
+            attention = _generic(
+                [normalized_probs, V_3d],
+                output_3d_init_filled,
+                [pv_lhs_map, pv_rhs_map, pv_out_map],
+                ["parallel", "parallel", "parallel", "reduction"],
+                contract,
+            )
+
+            # Step 6: narrow the result back to the payload's element type.
+            result_3d = _generic(
+                [attention],
+                tensor.empty(collapsed_shape_3d, dtype),
+                [elementwise_map, elementwise_map],
+                ["parallel", "parallel", "parallel"],
+                lambda o, out: arith.truncf(dtype, o) if narrow else o,
             )
 
             # Materialize 3D result back to 3D output memref

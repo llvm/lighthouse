@@ -19,8 +19,8 @@ so this is one combined schedule that handles all op classes:
                        DPAS tile sizes come from `mm_params`)
         - rmsnorm  -> `_tile_one_rmsnorm` (tile rows, fuse the reduction +
                        zero-fill into the loop)
-        - fused attn-> `_tile_one_fused_attention_region` (tile @V batch_matmul into
-                       a forall, fuse QK^T/scale/softmax/@V in; flash rewrite later)
+        - fused attn-> `_tile_one_fused_attention_region` (tile the attention
+                       output, fuse its producers, then fuse the reductions)
         - elementwise -> a single `structured_tile_using_forall` over rows
   (b) Shared tail (same for every kernel): vectorize -> bufferize (tensors ->
       memrefs) -> convert the forall grids to `gpu.launch` -> outline each into
@@ -34,7 +34,7 @@ so steps (a) and (c) can treat each one correctly.
 
 from mlir import ir
 from mlir.dialects import transform
-from mlir.dialects.transform import structured, xegpu
+from mlir.dialects.transform import structured, tensor, xegpu
 from mlir.dialects.transform import bufferization as transform_bufferization
 from mlir.dialects.transform.vector import (
     apply_patterns_vector_cast_away_vector_leading_one_dim,
@@ -52,6 +52,7 @@ from lighthouse.pipeline.helper import (
     PipelineInterrupt,
 )
 from lighthouse.schedule import schedule_boilerplate
+from lighthouse.schedule.xegpu.attention_fusion import annotate_fastmath_flags
 from lighthouse.schedule.xegpu.mlp_schedule import xegpu_wg_annotation_for_mlp_layer
 from lighthouse.schedule.xegpu.lowering_common import convert_to_gpu_launch
 from llama3_payload import F32
@@ -75,161 +76,134 @@ def _tile_one_matmul(matmul_op, mm_params):
     lh_transform.tile(wg_matmul, tile_sizes=[0, 0, mm_params["k_tile"]])
 
 
-def _tile_one_fused_attention_region(
-    qkt_bmm: ir.Value,
-    pv_bmm: ir.Value,
-    softmax_op: ir.Value,
-    fa_params: dict,
-) -> tuple[ir.Value, ir.Value]:
-    """Tile + fuse one attention region (QK^T -> scale -> softmax -> @V) into a
-    single scf.forall, so it vectorizes/bufferizes into one kernel body that
-    `replace_with_fused_attention` later rewrites into the flash loop.
+def _tile_one_fused_attention_region(anytype, output_op, fa_params):
+    """Tile one attention output and fuse its explicit producer chain."""
+    prod = transform.get_producer_of_operand
 
-    Operates on PRE-SPLIT, per-region handles so it is region-local and works at
-    any multiplicity. All further producers are pulled in via
-    get_producer_of_operand (SSA-walk = inherently scoped to this region).
+    def producer(op, operand):
+        return prod(anytype, op, operand_number=operand)
 
-    Args:
-        qkt_bmm: handle of the QK^T `linalg.generic` op for this region.
-        pv_bmm: handle of the attention-weights @ V `linalg.generic` op.
-        softmax_op: handle of the region's (still un-decomposed) `linalg.softmax`.
-        fa_params: fused-attention params (e.g. `wg_rows`).
-
-    Returns:
-        (func, forall): the enclosing `func.func` handle and the region's tiled
-        `scf.forall` handle.
-    """
-    anytype = transform.AnyOpType.get()
-
-    def get_producer(op, operand_number):
-        """Handle of the op producing `op`'s operand (hides the anytype arg)."""
-        return transform.get_producer_of_operand(
-            anytype, op, operand_number=operand_number
-        )
-
-    def fuse(p, c):
+    def fuse(op, loop):
         return structured.structured_fuse_into_containing_op(
-            anytype, anytype, producer_op=p, containing_op=c
+            anytype, anytype, producer_op=op, containing_op=loop
         )[1]
 
-    wg_rows = fa_params["wg_rows"]
-    # 1. Tile the @V op (a linalg.generic for GQA) into a forall grid. The generic
-    #    iterates (kv d0, rep d1, query-row i d2, head_dim l d3, key j d4); tiling
-    #    kv/rep by 1 and i by wg_rows peels one query head's row block, so the inner
-    #    op matches plain MHA (the fused-attention rewrite is unchanged).
-    tiled_pv, forall = structured.structured_tile_using_forall(
+    _, forall = structured.structured_tile_using_forall(
         anytype,
         anytype,
-        pv_bmm,
+        output_op,
         num_threads=[],
         tile_sizes=[],
-        static_tile_sizes=(1, 1, wg_rows, 0, 0),
+        static_tile_sizes=(1, 1, fa_params["wg_rows"], 0),
     )
     func = transform.get_parent_op(
         anytype, forall, op_name="func.func", deduplicate=True
     )
-    # 2. Fuse the @V output init fill (producer of forall operand 0).
-    forall = fuse(get_producer(forall, 0), forall)
     transform.apply_cse(func)
     canonicalize(func)
-    # 3. Decompose this region's softmax. linalg.softmax -> 4 generics + 2 fills:
-    #    max = reduce_max(scaled)         [+ -inf fill]
-    #    num = exp(scaled - max)
-    #    den = reduce_sum(num)            [+ 0 fill]
-    #    div = num / den                  (feeds @V)
-    structured.structured_decompose_interface(anytype, softmax_op)
-    transform.apply_cse(func)
-    canonicalize(func)
-    # Grab the whole producer chain up front via SSA walk (region-local; no count
-    # matching). Fusing op X invalidates only X's handle, so collect all, then fuse
-    # each once in consumer->producer topological order.
-    # tiled_pv operand 0 is the aw extract_slice inside the forall; hop through it
-    # to the func-scope softmax `div` that it slices.
-    aw_slice = get_producer(tiled_pv, 0)
-    div = get_producer(aw_slice, 0)  # num / den (softmax out)
-    num = get_producer(div, 0)  # exp generic
-    den = get_producer(div, 1)  # sum-reduce generic
-    den_fill = get_producer(den, 1)  # 0 fill (sum acc)
-    mx = get_producer(num, 1)  # max-reduce generic
-    mx_fill = get_producer(mx, 1)  # -inf fill (max acc)
-    scaled = get_producer(num, 0)  # linalg.mul (qkt*scale)
-    scale_fill = get_producer(scaled, 1)  # scale-constant fill
-    qkt = get_producer(scaled, 0)  # QK^T generic
-    # Q/K are block-arg views (operands 0/1), fused as loads later; operand 2 is
-    # the qkt accumulator fill. No K^T transpose op: the QK^T generic contracts the
-    # head-dim directly, reading K as (seq, head_dim).
-    qkt_fill = get_producer(qkt, 2)  # 0 fill (qkt acc)
-    for p in (
-        div,
-        den,
-        num,
-        mx,
-        scaled,
+
+    # The output's numerator and denominator enter the forall through slices.
+    tiled_output = match_and_split(forall, ops={"linalg.generic"}, nhandles=1)[0]
+    numerator = producer(producer(tiled_output, 0), 0)
+    row_sum = producer(producer(tiled_output, 1), 0)
+    probs = producer(numerator, 0)
+    numerator_fill = producer(numerator, 2)
+    sum_fill = producer(row_sum, 1)
+    row_max = producer(probs, 1)
+    max_fill = producer(row_max, 1)
+    scores = producer(probs, 0)
+    mask = scores if fa_params["causal"] else None
+    scale = producer(mask, 0) if mask is not None else scores
+    scale_fill = producer(scale, 1)
+    qkt = producer(scale, 0)
+    qkt_fill = producer(qkt, 2)
+
+    # Fuse both consumers of probs before probs itself.
+    for op in (
+        numerator,
+        row_sum,
+        probs,
+        row_max,
+        mask,
+        scale,
         qkt,
-        den_fill,
-        mx_fill,
+        numerator_fill,
+        sum_fill,
+        max_fill,
         scale_fill,
         qkt_fill,
     ):
-        forall = fuse(p, forall)
+        if op is not None:
+            forall = fuse(op, forall)
     transform.apply_cse(func)
     canonicalize(func)
     return func, forall
 
 
 def _fuse_attention_in_region(anytype, forall, fa_params):
-    """Rewrite one attention region's tensor-level contraction pair (QK^T, @V)
-    into the flash loop via the transform op. Scoped to `forall` so counts are
-    exact at any multiplicity. Runs right after the region was tiled, still on
-    tensors, so the shared vectorize tail lowers the emitted loop.
+    """Fuse row sum and P@V into the tiled max loop of one GQA region."""
+    prod = transform.get_producer_of_operand
+    reductions = transform_ext.filter_reduction_ops(
+        match(forall, ops={"linalg.generic"})
+    )
+    qkt, row_max, row_sum, pv = transform.split_handle([anytype] * 4, reductions)
 
-    `causal` (default False) makes the flash op mask future keys per query row.
-    """
+    probs = prod(anytype, pv, operand_number=0)
+    score = prod(anytype, row_max, operand_number=0)
+    mask = score if fa_params["causal"] else None
+    scale = prod(anytype, mask, operand_number=0) if mask is not None else score
 
-    def producers_by_name(target, op_names):
-        return transform_ext.filter_by_name(
-            transform_ext.trace_producers(target), op_names=op_names
+    _, loop = structured.structured_tile_using_for(
+        anytype,
+        [anytype],
+        row_max,
+        dynamic_sizes=[],
+        interchange=[],
+        static_sizes=[0, 0, 0, fa_params["inner_loop_tile_size"]],
+        scalable_sizes=[False] * 4,
+    )
+    transform.annotate(loop, transform_ext.REDUCTION_LOOP_ATTR_NAME)
+
+    # P@V first leaves the final loop state in max, sum, numerator order;
+    # that order also lets XeGPU legalize the causal index vectors.
+    loop = transform_ext.fuse_dependent_reduction_ops(probs, pv, loop)
+    probs = prod(anytype, row_sum, operand_number=0)
+    loop = transform_ext.fuse_dependent_reduction_ops(probs, row_sum, loop)
+    transform.apply_cse(forall)
+
+    # Bring the masked score and its producers into the key-tile loop.
+    if mask is not None:
+        _, loop = structured.structured_fuse_into_containing_op(
+            anytype, anytype, mask, loop
+        )
+    tiled_scale, loop = structured.structured_fuse_into_containing_op(
+        anytype, anytype, scale, loop
+    )
+    tiled_qkt, loop = structured.structured_fuse_into_containing_op(
+        anytype, anytype, qkt, loop
+    )
+    for consumer, operand in ((tiled_scale, 1), (tiled_qkt, 2)):
+        fill_slice = prod(anytype, consumer, operand_number=operand)
+        fill = prod(anytype, fill_slice, operand_number=0)
+        _, loop = structured.structured_fuse_into_containing_op(
+            anytype, anytype, fill, loop
         )
 
-    # The two contractions (QK^T then @V) are the only contraction-like ops among
-    # the region's generics (the softmax reductions are not contractions).
-    linalg_ops = structured.structured_match(
-        anytype, forall, ops=["linalg.generic", "linalg.batch_matmul"]
-    )
-    contraction_ops = transform_ext.filter_contraction_ops(linalg_ops)
-    qk_matmul, pv_matmul = transform.split_handle(2 * [anytype], contraction_ops)
-
-    # Q and K are the two tensor.extract_slice producers of QK^T (Q first); V is
-    # the first extract_slice producer of @V. Passing the slices as q/k/v lets the
-    # flash op recover the query-row offset for causal masking.
-    qk_slices = producers_by_name(qk_matmul, "tensor.extract_slice")
-    q = transform_ext.extract_handle(qk_slices, 0)
-    k = transform_ext.extract_handle(qk_slices, 1)
-    v = transform_ext.extract_handle(
-        producers_by_name(pv_matmul, "tensor.extract_slice"), 0
-    )
-
-    # The scale is the fill value feeding the QK^T*scale mul's rhs, i.e. its
-    # arith.constant. rhs (operand 1) -> linalg.fill -> constant.
-    mul_op = match_and_split(
-        forall, ops=["linalg.mul", "linalg.elementwise"], nhandles=1
-    )[0]
-    scale = transform.get_producer_of_operand(
-        anytype,
-        transform.get_producer_of_operand(anytype, mul_op, operand_number=1),
-        operand_number=0,
-    )
-
-    transform_ext.replace_with_fused_attention(
-        q=q,
-        k=k,
-        v=v,
-        p=transform.get_producer_of_operand(anytype, pv_matmul, operand_number=0),
-        scale=scale,
-        replaced=pv_matmul,
-        tile_size=fa_params["inner_loop_tile_size"],
-        causal=fa_params.get("causal", False),
-    )
+    transform.apply_cse(forall)
+    canonicalize(forall)
+    named = match(forall, ops={"linalg.fill", "linalg.elementwise"})
+    structured.structured_generalize(anytype, named)
+    with ir.InsertionPoint(transform.apply_patterns(forall).patterns):
+        structured.apply_patterns_linalg_fold_unit_extent_dims_via_slices()
+        transform.apply_patterns_canonicalization()
+    transform.apply_cse(forall)
+    with ir.InsertionPoint(transform.apply_patterns(forall).patterns):
+        tensor.apply_patterns_tensor_merge_consecutive_insert_extract_slice()
+        tensor.apply_patterns_tensor_drop_redundant_insert_slice_rank_expansion()
+        tensor.apply_patterns_tensor_fold_tensor_subset_ops()
+        transform.apply_patterns_canonicalization()
+    transform.apply_cse(forall)
+    annotate_fastmath_flags(forall)
 
 
 def xegpu_fa_annotation(gf, fa_params):
@@ -413,16 +387,10 @@ def _bundle(
     # generics first (no fusion/cleanup, so rmsnorm handles survive), then the
     # rmsnorms (which fuse + cleanup).
     #
-    # Generic build order: each rmsnorm contributes [ss_sum, normed] (2), each
-    # elementwise contributes 1, each RoPE contributes 1 (one multi-output generic),
-    # and each fused-attention contributes [QK^T, @V] (2) -- the GQA QK^T and @V
-    # contractions are linalg.generic ops (not batch_matmul) indexing the narrow
-    # K/V by the outer kv dim, emitted right after the q/k/v cast ews. The slices are
-    # reconstructed from `kinds`. 'fused_attention' softmax generics do not exist
-    # yet (it is tiled last, softmax still un-decomposed). The attention core's
-    # linalg.mul (scale) is a named op, not a generic, so excluded. (The head reshape
-    # is a pure memref view -- no generic, no kernel; see Builder.heads_view.)
-    ngen_total = 2 * n_rms + n_ew + n_rope + 2 * n_fa
+    # Each attention region contributes QK, optional mask, max, exp, sum,
+    # P@V and the final divide/cast. Scale remains a named elementwise op.
+    fa_generics = 6 + int(fa_params["causal"]) if n_fa else 0
+    ngen_total = 2 * n_rms + n_ew + n_rope + fa_generics * n_fa
     gen_handles = match_and_split(mod, ops={"linalg.generic"}, nhandles=ngen_total)
     # Walk kinds to assign generic handles to ops. The 'fused_attention' kinds entry
     # follows its four q/k/v/x cast ews, so gi has advanced past them and lands on
@@ -440,8 +408,8 @@ def _bundle(
             rope_handles.append(gen_handles[gi])
             gi += 1
         elif k == "fused_attention":
-            fa_slices.append((gen_handles[gi], gen_handles[gi + 1]))
-            gi += 2
+            fa_slices.append(gen_handles[gi + fa_generics - 1])
+            gi += fa_generics
         # matmul contributes no bare linalg.generic here
 
     # 1) Tile rmsnorms first, using preserved (ss_sum, normed) handles.
@@ -494,18 +462,10 @@ def _bundle(
     for mm, mmp in zip(mms, mm_params_list):
         _tile_one_matmul(mm, mmp)
 
-    # 5) Fused-attention regions. Done last so the generic pre-split above ran while
-    #    each fused_attention softmax was still one linalg.softmax (its decomposition generics
-    #    don't exist yet, so they can't inflate ngen_total). The QK^T/@V generics
-    #    use their preserved (pre-split) handles; the softmaxes still match by count.
-    #    Tile+fuse each region into one forall (softmax decompose happens in-region).
-    if n_fa:
-        fa_softmaxes = match_and_split(mod, ops={"linalg.softmax"}, nhandles=n_fa)
-        for r, (qkt_gen, pv_gen) in enumerate(fa_slices):
-            _, forall = _tile_one_fused_attention_region(
-                qkt_gen, pv_gen, fa_softmaxes[r], fa_params
-            )
-            _fuse_attention_in_region(anytype, forall, fa_params)
+    # Tile each attention output, then fuse its max -> exp -> (sum, P@V) chain.
+    for output_op in fa_slices:
+        _, forall = _tile_one_fused_attention_region(anytype, output_op, fa_params)
+        _fuse_attention_in_region(anytype, forall, fa_params)
 
     func = match(mod, ops={"func.func"})
     lh_transform.cleanup(func)
@@ -525,6 +485,8 @@ def _bundle(
         for idx, kind in enumerate(kinds):
             if kind == "fused_attention":
                 lh_transform.loop_hoisting(match(foralls[idx], ops={"scf.for"}))
+        lh_transform.cleanup(func)
+        func = apply_registered_pass(func, "remove-dead-values")
         lh_transform.cleanup(func)
         # Kernels tiled with a batch-of-1 head/row dim (fused attention, RoPE)
         # carry a leading unit dim; drop it so the 3D vectors collapse to the 2D
