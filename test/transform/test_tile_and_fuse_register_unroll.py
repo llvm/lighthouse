@@ -349,6 +349,59 @@ module {
 """
 
 
+ELTWISE_NARROW_INNER_DIMS = """
+#id = affine_map<(d0, d1, d2) -> (d0, d1, d2)>
+#perm = affine_map<(d0, d1, d2) -> (d2, d0, d1)>
+module {
+  func.func @even_inner(%x: tensor<1x1024x2xf32>) -> tensor<1x1024x2xbf16> {
+    %e = tensor.empty() : tensor<1x1024x2xbf16>
+    %a = linalg.generic {indexing_maps = [#id, #id], iterator_types = ["parallel", "parallel", "parallel"]}
+        ins(%x : tensor<1x1024x2xf32>) outs(%e : tensor<1x1024x2xbf16>) {
+    ^bb0(%i: f32, %o: bf16):
+      %v = arith.truncf %i : f32 to bf16
+      linalg.yield %v : bf16
+    } -> tensor<1x1024x2xbf16>
+    return %a : tensor<1x1024x2xbf16>
+  }
+
+  func.func @odd_inner(%x: tensor<8x40x3xf32>) -> tensor<8x40x3xf32> {
+    %e = tensor.empty() : tensor<8x40x3xf32>
+    %a = linalg.generic {indexing_maps = [#id, #id], iterator_types = ["parallel", "parallel", "parallel"]}
+        ins(%x : tensor<8x40x3xf32>) outs(%e : tensor<8x40x3xf32>) {
+    ^bb0(%i: f32, %o: f32):
+      %v = math.exp %i : f32
+      linalg.yield %v : f32
+    } -> tensor<8x40x3xf32>
+    return %a : tensor<8x40x3xf32>
+  }
+
+  func.func @dynamic_outer(%x: tensor<4x?x2xf32>) -> tensor<4x?x2xf32> {
+    %c1 = arith.constant 1 : index
+    %d = tensor.dim %x, %c1 : tensor<4x?x2xf32>
+    %e = tensor.empty(%d) : tensor<4x?x2xf32>
+    %a = linalg.generic {indexing_maps = [#id, #id], iterator_types = ["parallel", "parallel", "parallel"]}
+        ins(%x : tensor<4x?x2xf32>) outs(%e : tensor<4x?x2xf32>) {
+    ^bb0(%i: f32, %o: f32):
+      %v = math.exp %i : f32
+      linalg.yield %v : f32
+    } -> tensor<4x?x2xf32>
+    return %a : tensor<4x?x2xf32>
+  }
+
+  func.func @permuted_map(%x: tensor<32x2x4xi8>) -> tensor<32x2x4xi8> {
+    %e = tensor.empty() : tensor<32x2x4xi8>
+    %a = linalg.generic {indexing_maps = [#perm, #perm], iterator_types = ["parallel", "parallel", "parallel"]}
+        ins(%x : tensor<32x2x4xi8>) outs(%e : tensor<32x2x4xi8>) {
+    ^bb0(%i: i8, %o: i8):
+      %v = math.absi %i : i8
+      linalg.yield %v : i8
+    } -> tensor<32x2x4xi8>
+    return %a : tensor<32x2x4xi8>
+  }
+}
+"""
+
+
 # CHECK-LABEL: Test: tile_and_unroll_annotated
 # CHECK: func.func @main
 # CHECK-NOT: scf.for
@@ -597,4 +650,23 @@ with TargetInfo.override(features=["avx2"]):
         "eltwise_dtype_width_adaptive_register_unroll_avx2",
         ELTWISE_DTYPE_WIDTHS,
         assign_elementwise_register_unroll64,
+    )
+
+
+# Inner dims narrower than a vector are taken whole and the next dim fills the
+# remaining lanes with a divisor of its dim size; a dynamic dim stays untiled.
+# CHECK-LABEL: Test: eltwise_narrow_inner_dims_register_unroll
+# CHECK: func.func @even_inner
+# CHECK: transform_ext.tile_sizes = array<i64: 1, 16, 2>
+# CHECK: func.func @odd_inner
+# CHECK: transform_ext.tile_sizes = array<i64: 1, 5, 3>
+# CHECK: func.func @dynamic_outer
+# CHECK: transform_ext.tile_sizes = array<i64: 1, 1, 2>
+# CHECK: func.func @permuted_map
+# CHECK: transform_ext.tile_sizes = array<i64: 2, 4, 8>
+with TargetInfo.override(features=["avx512f"]):
+    run(
+        "eltwise_narrow_inner_dims_register_unroll",
+        ELTWISE_NARROW_INNER_DIMS,
+        assign_elementwise_register_unroll,
     )

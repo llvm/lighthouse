@@ -4,7 +4,7 @@ from mlir.dialects import linalg
 from lighthouse.execution.target import TargetInfo
 from lighthouse.utils.mlir import linalg_inputs, linalg_outputs, opview
 
-from .common import parallel_and_reduction_dims
+from .common import largest_divisor, parallel_and_reduction_dims
 
 
 def _contraction_operand_types(
@@ -66,6 +66,38 @@ def vector_lane_count(target: TargetInfo | None, elem_type: ir.Type) -> int:
     return 16
 
 
+def _vector_tiles(dim_sizes: list[int], vector_width: int) -> list[int]:
+    """Tiles of the trailing dims spanning one vector register.
+
+    Inner dims narrower than the vector are taken whole and the next dims
+    tiled by a divisor of the lanes left, so a narrow innermost dim does not
+    shrink the tiles to a few elements.
+    """
+    if dim_sizes:
+        innermost_size = dim_sizes[-1]
+        if (
+            ir.ShapedType.is_dynamic_size(innermost_size)
+            or innermost_size >= vector_width
+        ):
+            return [vector_width]
+
+    tiles: list[int] = []
+    remaining = vector_width
+    for dim_size in reversed(dim_sizes):
+        dynamic = ir.ShapedType.is_dynamic_size(dim_size)
+        if dynamic:
+            tiles.append(1)
+            break
+        if dim_size >= remaining:
+            tiles.append(largest_divisor(dim_size, remaining))
+            break
+        tiles.append(max(1, dim_size))
+        remaining //= tiles[-1]
+        if remaining <= 1:
+            break
+    return tiles[::-1]
+
+
 def generic_parallel_tiles(
     op: ir.Operation | ir.OpView,
     out_map: ir.AffineMap,
@@ -75,9 +107,9 @@ def generic_parallel_tiles(
     parallel_dims, _ = parallel_and_reduction_dims(out_map)
     if not parallel_dims:
         return []
-    out_elem = ir.ShapedType(linalg_outputs(op)[0].type).element_type
-    inner = vector_lane_count(target, out_elem)
-    return [inner] if len(parallel_dims) == 1 else [1, inner]
+    out_type = ir.ShapedType(linalg_outputs(op)[0].type)
+    vector_width = vector_lane_count(target, out_type.element_type)
+    return _vector_tiles(out_type.shape, vector_width)
 
 
 def generic_reduction_tiles() -> list[int]:
