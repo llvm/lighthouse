@@ -25,21 +25,9 @@ def derive_flash_attention(anytype, func, reduction_tile, n_parallel):
     scale_mul_op = prod(anytype, max_op, operand_number=0)
     transpose_op = prod(anytype, qk_op, operand_number=1)
 
-    # Tile only the final reduction axis. The parameterized schedule uses a
-    # static size; the modular schedule supplies a transform parameter.
+    # Tile only the final reduction axis.
     sizes = [0] * n_parallel + [reduction_tile]
-    if isinstance(reduction_tile, int):
-        _, reduction_loop = structured.structured_tile_using_for(
-            anytype,
-            [anytype],
-            max_op,
-            dynamic_sizes=[],
-            interchange=[],
-            static_sizes=sizes,
-            scalable_sizes=[False] * len(sizes),
-        )
-    else:
-        _, [reduction_loop], _ = lh_transform.tile(max_op, tile_sizes=sizes)
+    _, [reduction_loop], _ = lh_transform.tile(max_op, tile_sizes=sizes)
     transform.annotate(reduction_loop, transform_ext.REDUCTION_LOOP_ATTR_NAME)
 
     # Fuse the row sum first. P@V still needs the original exp term.
