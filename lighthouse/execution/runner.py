@@ -69,6 +69,8 @@ class Runner:
         self.shared_libs = list(dict.fromkeys(shared_libs))
         self.opt_level = opt_level
         self.engine = self._get_engine()
+        # The functions of the engine, looked up on first call.
+        self._functions: dict[str, Callable] = {}
         self._configure_system()
 
     def _configure_system(self):
@@ -211,7 +213,10 @@ class Runner:
                 function_name = payload_function_name
 
             # Now lookup and call the function
-            func = self.engine.lookup(function_name)
+            func = self._functions.get(function_name)
+            if func is None:
+                func = self.engine.lookup(function_name)
+                self._functions[function_name] = func
             func(args)
 
             # If an argument access callback is provided,
