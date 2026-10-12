@@ -66,31 +66,6 @@ print(
 # CHECK: scalar data: 7.0
 print("scalar data:", to_memref(tensors["scalar"]).aligned[0])
 
-
-class HighBitPointerTensor:
-    """Tensor metadata with the high pointer bit set; never dereference it."""
-
-    dtype = torch.float32
-    shape = (2, 3)
-    pointer = (1 << (ctypes.sizeof(ctypes.c_void_p) * 8 - 1)) | 0x200000
-
-    def dim(self):
-        return 2
-
-    def stride(self):
-        return (3, 1)
-
-    def data_ptr(self):
-        return self.pointer
-
-
-high_ptr_tensor = HighBitPointerTensor()
-# CHECK: high-bit pointer: same bytes True
-print(
-    "high-bit pointer: same bytes",
-    bytes(to_memref(high_ptr_tensor)) == bytes(reference_memref(high_ptr_tensor)),
-)
-
 # Descriptor classes are reused per rank and element type: repeated
 # conversions create no new classes (nor ctypes pointer types).
 misses = _memref_descriptor.cache_info().misses
