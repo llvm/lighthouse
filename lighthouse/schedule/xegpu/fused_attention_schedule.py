@@ -21,7 +21,7 @@ from .lowering_common import (
 from lighthouse.schedule import schedule_boilerplate
 from lighthouse.schedule.parameters import ScheduleParameters
 from lighthouse.dialects.transform import transform_ext
-from .attention_fusion import derive_flash_attention, annotate_fastmath_flags
+from .attention_fusion import transform_to_flash_attention, annotate_fastmath_flags
 
 
 def fused_attention_schedule(
@@ -216,7 +216,7 @@ def bundle_xegpu_fused_attention_schedule(
     # Fuse the inner attention loop before vectorization.
     reduction_tile = layer_params["reduction_tile"]
 
-    derive_flash_attention(
+    transform_to_flash_attention(
         anytype,
         func,
         reduction_tile,

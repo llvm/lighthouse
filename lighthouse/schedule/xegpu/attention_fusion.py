@@ -8,7 +8,7 @@ from lighthouse.pipeline.helper import canonicalize, match
 from lighthouse.dialects.transform import transform_ext
 
 
-def derive_flash_attention(anytype, func, reduction_tile, n_parallel):
+def transform_to_flash_attention(anytype, func, reduction_tile, n_parallel):
     """Fold the attention chain into the tiled row-max loop.
 
     After generalization: ``s = Q@K^T * scale``, ``m = max(s)``,
@@ -91,29 +91,25 @@ def annotate_fastmath_flags(func: ir.Value[transform.AnyOpType]) -> None:
     Preserve any flags already chosen by the payload. `afn` on the exps
     selects native math; `reassoc,arcp` on each quotient permits exp(a-b).
     """
-    anytype = transform.AnyOpType.get()
     no_fastmath = ir.Attribute.parse("#arith.fastmath<none>")
     fast = transform.param_constant(
         transform.AnyParamType.get(), ir.Attribute.parse("#arith.fastmath<fast>")
     )
-    for op_name in ("math.exp", "arith.subf"):
-        unmarked = structured.structured_match(
-            anytype, func, ops=[op_name], op_attrs={"fastmath": no_fastmath}
-        )
-        transform.annotate(unmarked, "fastmath", param=fast)
+    unmarked = match(
+        func, ops=["math.exp", "arith.subf"], op_attrs={"fastmath": no_fastmath}
+    )
+    transform.annotate(unmarked, "fastmath", param=fast)
 
     quotient_flags = transform.param_constant(
         transform.AnyParamType.get(),
         ir.Attribute.parse("#arith.fastmath<reassoc,arcp>"),
     )
-    reduction_loop = structured.structured_match(
-        anytype,
+    reduction_loop = match(
         func,
         ops=["scf.for"],
         op_attrs={transform_ext.REDUCTION_LOOP_ATTR_NAME: ir.UnitAttr.get()},
     )
-    correction_divs = structured.structured_match(
-        anytype,
+    correction_divs = match(
         reduction_loop,
         ops=["arith.divf"],
         op_attrs={"fastmath": no_fastmath},
