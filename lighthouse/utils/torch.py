@@ -81,9 +81,16 @@ def to_memref(input: torch.Tensor) -> ctypes.Structure:
         input.dim(), torch_dtype_to_ctype(input.dtype)
     )
     data_ptr = input.data_ptr()
+    # The allocated field is signed; wrap high-bit XPU addresses as ctypes does.
     # PyTorch strides are in element units (unlike NumPy which uses bytes)
     return descriptor.from_buffer_copy(
-        layout.pack(data_ptr, data_ptr, 0, *input.shape, *input.stride())
+        layout.pack(
+            ctypes.c_long(data_ptr).value,
+            data_ptr,
+            0,
+            *input.shape,
+            *input.stride(),
+        )
     )
 
 
