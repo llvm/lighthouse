@@ -307,3 +307,109 @@ with TargetInfo.override(features=["amx_tile"]):
         F32_MATMUL,
         lambda: build_register_unroll(),
     )
+
+
+# bf16 contraction in VNNI layout: A [M, K/2, 2], B [K/2, N, 2].
+BF16_VNNI_CONTRACT = """
+#mA = affine_map<(m, n, k, v) -> (m, k, v)>
+#mB = affine_map<(m, n, k, v) -> (k, n, v)>
+#mC = affine_map<(m, n, k, v) -> (m, n)>
+module {
+  func.func @main(%a: tensor<128x32x2xbf16>, %b: tensor<32x128x2xbf16>,
+        %o: tensor<128x128xf32>) -> tensor<128x128xf32> {
+    %c = linalg.contract indexing_maps = [#mA, #mB, #mC]
+        ins(%a, %b : tensor<128x32x2xbf16>, tensor<32x128x2xbf16>)
+        outs(%o : tensor<128x128xf32>) -> tensor<128x128xf32>
+    return %c : tensor<128x128xf32>
+  }
+}
+"""
+
+
+# Blocked VNNI layout with an outer K-block reduction dim: A [KB, M, K/2, 2],
+# B [KB, K/2, N, 2].
+BF16_BLOCKED_VNNI_CONTRACT = """
+#mA = affine_map<(m, n, kb, k, v) -> (kb, m, k, v)>
+#mB = affine_map<(m, n, kb, k, v) -> (kb, k, n, v)>
+#mC = affine_map<(m, n, kb, k, v) -> (m, n)>
+module {
+  func.func @main(%a: tensor<4x128x16x2xbf16>, %b: tensor<4x16x128x2xbf16>,
+        %o: tensor<128x128xf32>) -> tensor<128x128xf32> {
+    %c = linalg.contract indexing_maps = [#mA, #mB, #mC]
+        ins(%a, %b : tensor<4x128x16x2xbf16>, tensor<4x16x128x2xbf16>)
+        outs(%o : tensor<128x128xf32>) -> tensor<128x128xf32>
+    return %c : tensor<128x128xf32>
+  }
+}
+"""
+
+
+# The same two reduction dims, but B is [N, K/2, 2]: not the VNNI layout.
+BF16_NON_VNNI_CONTRACT = """
+#mA = affine_map<(m, n, k, v) -> (m, k, v)>
+#mB = affine_map<(m, n, k, v) -> (n, k, v)>
+#mC = affine_map<(m, n, k, v) -> (m, n)>
+module {
+  func.func @main(%a: tensor<128x32x2xbf16>, %b: tensor<128x32x2xbf16>,
+        %o: tensor<128x128xf32>) -> tensor<128x128xf32> {
+    %c = linalg.contract indexing_maps = [#mA, #mB, #mC]
+        ins(%a, %b : tensor<128x32x2xbf16>, tensor<128x32x2xbf16>)
+        outs(%o : tensor<128x128xf32>) -> tensor<128x128xf32>
+    return %c : tensor<128x128xf32>
+  }
+}
+"""
+
+
+def build_contract(strategy: str):
+    with schedule_boilerplate() as (sched, named_seq):
+        ops = lh_transform.match_op(named_seq.bodyTarget, "linalg.contract")
+        assign_tile_sizes(ops, strategy=strategy)
+        transform.yield_()
+    return sched
+
+
+# A VNNI AMX tile spans 16 K-pairs: K/2 gets 16 and the VNNI dim its factor.
+# CHECK-LABEL: Test: bf16_amx_vnni_register_reduction
+# CHECK: linalg.contract
+# CHECK-SAME: transform_ext.tile_sizes = array<i64: 0, 0, 16, 2>
+with TargetInfo.override(features=["amx_tile"]):
+    run(
+        "bf16_amx_vnni_register_reduction",
+        BF16_VNNI_CONTRACT,
+        lambda: build_contract("register_reduction"),
+    )
+
+
+# CHECK-LABEL: Test: bf16_amx_vnni_register_unroll
+# CHECK: linalg.contract
+# CHECK-SAME: transform_ext.tile_sizes = array<i64: 16, 16, 16, 2>
+with TargetInfo.override(features=["amx_tile"]):
+    run(
+        "bf16_amx_vnni_register_unroll",
+        BF16_VNNI_CONTRACT,
+        lambda: build_contract("register_unroll"),
+    )
+
+
+# Other reduction dims (the K blocks) are unit-tiled.
+# CHECK-LABEL: Test: bf16_amx_blocked_vnni_register_reduction
+# CHECK: linalg.contract
+# CHECK-SAME: transform_ext.tile_sizes = array<i64: 0, 0, 1, 16, 2>
+with TargetInfo.override(features=["amx_tile"]):
+    run(
+        "bf16_amx_blocked_vnni_register_reduction",
+        BF16_BLOCKED_VNNI_CONTRACT,
+        lambda: build_contract("register_reduction"),
+    )
+
+
+# CHECK-LABEL: Test: bf16_amx_non_vnni_register_reduction
+# CHECK: linalg.contract
+# CHECK-SAME: transform_ext.tile_sizes = array<i64: 0, 0, 1, 32>
+with TargetInfo.override(features=["amx_tile"]):
+    run(
+        "bf16_amx_non_vnni_register_reduction",
+        BF16_NON_VNNI_CONTRACT,
+        lambda: build_contract("register_reduction"),
+    )

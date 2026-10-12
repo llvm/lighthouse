@@ -1,6 +1,6 @@
 from mlir import ir
 
-from lighthouse.utils.mlir import dim_position, linalg_outputs
+from lighthouse.utils.mlir import dim_position, linalg_outputs, vnni_reduction_dims
 
 
 def parallel_and_reduction_dims(out_map: ir.AffineMap) -> tuple[list[int], list[int]]:
@@ -43,6 +43,21 @@ def assign_reduction_tiles(
     if reduction_dims:
         protected = set(reduction_dims[-len(red_tiles) :]) if red_tiles else set()
         unitize_unassigned_dims(reduction_dims, sizes, protected=protected)
+
+
+def assign_amx_reduction_tiles(
+    op: ir.Operation | ir.OpView, reduction_dims: list[int], sizes: list[int]
+) -> None:
+    """AMX reduction tiles: 32 K elements, or 16 VNNI groups in VNNI layout."""
+    vnni = vnni_reduction_dims(op)
+    if vnni is None:
+        assign_reduction_tiles(reduction_dims, [32], sizes)
+        return
+    # The VNNI AMX microkernel reads a 16 x (16 * factor) tile per operand.
+    for dim in reduction_dims:
+        sizes[dim] = 1
+    sizes[vnni.k_dim] = 16
+    sizes[vnni.vnni_dim] = vnni.factor
 
 
 def unitize_unassigned_dims(
