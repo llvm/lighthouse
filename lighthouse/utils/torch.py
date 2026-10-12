@@ -81,9 +81,13 @@ def to_memref(input: torch.Tensor) -> ctypes.Structure:
         input.dim(), torch_dtype_to_ctype(input.dtype)
     )
     data_ptr = input.data_ptr()
+    # The allocated field is a signed intptr; wrap high-bit GPU pointers just
+    # as ctypes does when assigning that field directly.
+    allocated_type = descriptor._fields_[0][1]
+    allocated_ptr = allocated_type(data_ptr).value
     # PyTorch strides are in element units (unlike NumPy which uses bytes)
     return descriptor.from_buffer_copy(
-        layout.pack(data_ptr, data_ptr, 0, *input.shape, *input.stride())
+        layout.pack(allocated_ptr, data_ptr, 0, *input.shape, *input.stride())
     )
 
 

@@ -95,9 +95,7 @@ def annotate_fastmath_flags(func: ir.Value[transform.AnyOpType]) -> None:
     fast = transform.param_constant(
         transform.AnyParamType.get(), ir.Attribute.parse("#arith.fastmath<fast>")
     )
-    unmarked = match(
-        func, ops=["math.exp", "arith.subf"], op_attrs={"fastmath": no_fastmath}
-    )
+    unmarked = match(func, ops=["math.exp"], op_attrs={"fastmath": no_fastmath})
     transform.annotate(unmarked, "fastmath", param=fast)
 
     quotient_flags = transform.param_constant(
