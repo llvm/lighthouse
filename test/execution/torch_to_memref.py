@@ -4,6 +4,7 @@
 """Tests for converting PyTorch tensors to memref descriptors."""
 
 import ctypes
+from types import SimpleNamespace
 
 import torch
 from mlir.runtime.np_to_memref import (
@@ -52,6 +53,21 @@ tensors = {
 for name, tensor in tensors.items():
     desc, ref = to_memref(tensor), reference_memref(tensor)
     print(f"{name}: same bytes", bytes(desc) == bytes(ref))
+
+# XPU addresses can set the high bit, while the descriptor's allocated field
+# is a signed c_long. This synthetic tensor needs no GPU or valid allocation.
+high_bit_tensor = SimpleNamespace(
+    dtype=torch.bfloat16,
+    shape=(2, 3),
+    dim=lambda: 2,
+    data_ptr=lambda: 0xFF00000000200000,
+    stride=lambda: (3, 1),
+)
+# CHECK: high-bit pointer: same bytes True
+print(
+    "high-bit pointer: same bytes",
+    bytes(to_memref(high_bit_tensor)) == bytes(reference_memref(high_bit_tensor)),
+)
 
 sliced = to_memref(tensors["sliced"])
 # CHECK: sliced shape: [2, 3] strides: [6, 1] data: [8.0, 9.0, 10.0]
