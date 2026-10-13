@@ -19,7 +19,6 @@ from .ops.infer_xegpu_reduction_params import infer_xegpu_reduction_params
 from .ops.trace_producers import trace_producers
 from .ops.reverse_handles import reverse_handles
 from .ops.update_address_space import update_address_space
-from .ops.replace_with_fused_attention import replace_with_fused_attention
 from .ops.filter_num_loops import filter_num_loops
 from .ops.filter_elementwise import filter_elementwise
 from .ops.fuse_elementwise_op import fuse_elementwise_op
@@ -73,7 +72,6 @@ __all__ = [
     "propagate_tile_sizes",
     "register_and_load",
     "replace",
-    "replace_with_fused_attention",
     "reverse_handles",
     "sfc_remap_forall",
     "sink_extract_slice_into_loop",
