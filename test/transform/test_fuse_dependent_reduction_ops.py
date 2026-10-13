@@ -213,15 +213,16 @@ def test_attention_structure() -> None:
 # CHECK:             arith.addf
 
 # The second chain. No clone this time: the row sum is gone, so the contraction is
-# E's only remaining user and E itself is fused. Its correction runs over the
-# contraction's *wider* 64x128 accumulator -- the per-row factor broadcast over N.
+# E's only remaining user and E itself is fused. Its correction stays row-wise;
+# only the rescale multiply broadcasts it over the wider 64x128 accumulator.
 # CHECK:           %[[P2:.+]] = linalg.generic
 # CHECK-SAME:          ins(%{{.+}}, %[[MNEW]] : tensor<64x32xf32>, tensor<64xf32>)
 # CHECK:             math.exp
-# CHECK:           linalg.generic {{.*}}ins(%[[MNEW]], %[[MOLD]] : tensor<64xf32>, tensor<64xf32>) outs(%{{.+}} : tensor<64x128xf32>)
+# CHECK:           %[[OFACTOR:.+]] = linalg.generic {{.*}}ins(%[[MNEW]], %[[MOLD]] : tensor<64xf32>, tensor<64xf32>) outs(%{{.+}} : tensor<64xf32>)
 # CHECK:           arith.cmpf oeq
 # CHECK:           arith.select
-# CHECK:           %[[OSCALED:.+]] = linalg.elementwise <mul>
+# CHECK:           %[[OSCALED:.+]] = linalg.generic {{.*}}ins(%{{.+}}, %[[OFACTOR]] : tensor<64x128xf32>, tensor<64xf32>)
+# CHECK:             arith.mulf
 
 # The contraction reads V sliced along the shared reduction axis.
 # CHECK:           %[[VT:.+]] = tensor.extract_slice %[[V]][%[[IV]], 0] [32, 128] [1, 1]

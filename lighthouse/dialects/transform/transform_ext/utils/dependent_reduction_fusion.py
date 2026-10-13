@@ -11,6 +11,10 @@ Recognized softmax chains use ``exp(m_old - m_new)`` and zero weights for
 empty (-inf-only) tiles. It assumes finite auxiliary inputs such as V and leaves
 the fully-masked-row output guard to the final normalization.
 
+Correction factors are computed only over the dimensions their accumulator
+inputs reference, then broadcast when rescaling R2. CSE can share identical
+factors across consumer reductions with the same computation/accumulator types.
+
 E's loop-carried full result is stale until the final tile and is removed after
 vectorization. If E has other users, fuse a clone and leave E outside the loop
 to compute its final result for them.
@@ -191,6 +195,7 @@ class _CorrectionPlan:
     """Read-only information needed to build both correction terms."""
 
     factor_maps: ir.ArrayAttr
+    factor_dims: tuple[int, ...]
     compute_type: ir.Type
     neutral_by_op: tuple[ir.Attribute | None, ...]
     guard_softmax: bool = False
@@ -245,7 +250,16 @@ def plan_correction_factor(
         projected = irr.project_dims(mapped, {r2_red_dim})
         assert projected is not None and projected.n_dims == rank
         factor_maps.append(projected)
-    factor_maps.append(ir.AffineMap.get_identity(rank))
+    factor_dims = tuple(
+        sorted({expr.position for imap in factor_maps for expr in imap.results})
+    )
+    unused_dims = set(range(rank)) - set(factor_dims)
+    compact_maps = []
+    for imap in factor_maps:
+        compact = irr.project_dims(imap, unused_dims)
+        assert compact is not None
+        compact_maps.append(compact)
+    compact_maps.append(ir.AffineMap.get_identity(len(factor_dims)))
 
     e_type = ir.ShapedType(e.results[0].type).element_type
     compute_type = irr.wider_float_type(e_type, r2_type.element_type)
@@ -272,7 +286,8 @@ def plan_correction_factor(
         )
         neutrals.append(neutral)
     return _CorrectionPlan(
-        ir.ArrayAttr.get([ir.AffineMapAttr.get(m) for m in factor_maps]),
+        ir.ArrayAttr.get([ir.AffineMapAttr.get(m) for m in compact_maps]),
+        factor_dims,
         compute_type,
         tuple(neutrals),
         guard_softmax,
@@ -338,19 +353,22 @@ def _correction_factor(
     r2_accumulator: ir.Value,
     plan: _CorrectionPlan,
 ) -> ir.Value:
-    """Build ``term(new) / term(old)`` over R2's parallel result shape.
+    """Build ``term(new) / term(old)`` only over its dependent dimensions.
 
     Use the prevalidated maps and compute type, then narrow the ratio to R2's
     accumulator type if needed.
     """
     accumulator_type = ir.RankedTensorType(r2_accumulator.type)
-    rank = accumulator_type.rank
+    rank = len(plan.factor_dims)
     iterator_types = ir.ArrayAttr.get(
         [ir.Attribute.parse("#linalg.iterator_type<parallel>") for _ in range(rank)]
     )
     element_type = accumulator_type.element_type
     compute_type = plan.compute_type
-    init = tensor.empty(irr.mixed_sizes(r2_accumulator), compute_type)
+    accumulator_sizes = irr.mixed_sizes(r2_accumulator)
+    init = tensor.empty(
+        [accumulator_sizes[dim] for dim in plan.factor_dims], compute_type
+    )
 
     if plan.guard_softmax:
         _, new_max, old_max = accumulators[0]
@@ -429,6 +447,42 @@ def _correction_factor(
     # Narrow the ratio back to R2's accumulator type, which the rescale multiply and
     # the fused R2 both work in.
     return _cast_tensor(factor, element_type)
+
+
+def _rescale_accumulator(
+    accumulator: ir.Value, factor: ir.Value, factor_dims: tuple[int, ...]
+) -> ir.Value:
+    """Broadcast the compact factor directly into the accumulator multiply."""
+    shaped = ir.RankedTensorType(accumulator.type)
+    if len(factor_dims) == shaped.rank:
+        return _emit_elementwise(
+            linalg.ElementwiseKind.mul,
+            lambda a, b: arith.mulf(a, b),
+            [accumulator, factor],
+            accumulator,
+        )
+    identity = ir.AffineMapAttr.get(ir.AffineMap.get_identity(shaped.rank))
+    broadcast = ir.AffineMapAttr.get(
+        ir.AffineMap.get(
+            shaped.rank, 0, [ir.AffineDimExpr.get(dim) for dim in factor_dims]
+        )
+    )
+    op = linalg.GenericOp(
+        result_tensors=[accumulator.type],
+        inputs=[accumulator, factor],
+        outputs=[accumulator],
+        indexing_maps=ir.ArrayAttr.get([identity, broadcast, identity]),
+        iterator_types=ir.ArrayAttr.get(
+            [
+                ir.Attribute.parse("#linalg.iterator_type<parallel>")
+                for _ in range(shaped.rank)
+            ]
+        ),
+    )
+    body = op.regions[0].blocks.append(*[shaped.element_type] * 3)
+    with ir.InsertionPoint(body):
+        linalg.yield_([arith.mulf(body.arguments[0], body.arguments[1])])
+    return op.results[0]
 
 
 def fuse_dependent_reduction_ops(
@@ -556,11 +610,8 @@ def fuse_dependent_reduction_ops(
         factor = _correction_factor(
             e_or_clone, r2, accumulators, r2_acc_tile, correction_plan
         )
-        corrected_r2_acc = _emit_elementwise(
-            linalg.ElementwiseKind.mul,
-            lambda a, b: arith.mulf(a, b),
-            [r2_acc_tile, factor],
-            r2_acc_tile,
+        corrected_r2_acc = _rescale_accumulator(
+            r2_acc_tile, factor, correction_plan.factor_dims
         )
 
         # --- Build fused R2 that accumulates this tile into the rescaled sum ---
