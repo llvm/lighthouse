@@ -85,7 +85,7 @@ def to_memref(input: torch.Tensor) -> ctypes.Structure:
     # PyTorch strides are in element units (unlike NumPy which uses bytes)
     return descriptor.from_buffer_copy(
         layout.pack(
-            ctypes.c_long(data_ptr).value,
+            ctypes.c_longlong(data_ptr).value,
             data_ptr,
             0,
             *input.shape,
