@@ -71,8 +71,8 @@ func.func @pv_batched(%p: tensor<4x4x64x512xbf16>, %l: tensor<4x4x64xbf16>,
 
 #: A mask-to-zero ``arith.select`` sits between the divide and the multiply: the
 #: softmax fully-masked-row guard the newer torch-mlir emits. Its masked value is
-#: zero, so it commutes with the scale (``0 / l == 0``) and the divide still sinks;
-#: the select stays in the rebuilt body, now reading the numerator directly.
+#: zero. The select stays in the rebuilt body, now reading the numerator directly,
+#: and the epilogue bypasses division on masked rows even when l is NaN or zero.
 MASK_TO_ZERO = """
 #ik = affine_map<(d0, d1, d2) -> (d0, d2)>
 #i  = affine_map<(d0, d1, d2) -> (d0)>
@@ -355,7 +355,7 @@ def test_mask_to_zero() -> None:
 
 # The rebuilt contraction keeps the select but drops the scale operand and the divide.
 # CHECK-LABEL: func.func @pv_masked
-# CHECK:         linalg.generic
+# CHECK:         %[[MASKED:.+]] = linalg.generic
 # CHECK-SAME:      iterator_types = ["parallel", "parallel", "reduction"]
 # CHECK-SAME:      ins(%arg0, %arg2, %arg3
 # CHECK:           arith.select
@@ -367,7 +367,10 @@ def test_mask_to_zero() -> None:
 # The divide follows it, once per output element, reading the row scale.
 # CHECK:         %[[N:.+]] = linalg.generic
 # CHECK-SAME:      iterator_types = ["parallel", "parallel"]
-# CHECK:           arith.divf
+# CHECK-SAME:      ins(%[[MASKED]], %arg1, %arg2
+# CHECK:         ^bb0(%[[ACC:[a-zA-Z0-9_]+]]: f32, %[[S:[a-zA-Z0-9_]+]]: f32, %[[MASK:[a-zA-Z0-9_]+]]: i1,
+# CHECK:           %[[DIV:.+]] = arith.divf %[[ACC]], %[[S]]
+# CHECK:           arith.select %[[MASK]], %[[ACC]], %[[DIV]]
 # CHECK:         return %[[N]]
 
 
@@ -415,6 +418,20 @@ def test_select_nonzero_is_rejected() -> None:
 # CHECK: not consumed by the contraction's multiply-accumulate
 
 
+def test_reduction_varying_mask_is_rejected() -> None:
+    """A per-key predicate cannot guard normalization in the output space."""
+    source = MASK_TO_ZERO.replace("tensor<64xi1>", "tensor<64x512xi1>").replace(
+        "[#ik, #i, #i, #kj, #ij]", "[#ik, #i, #ik, #kj, #ij]"
+    )
+    with ir.Context(), ir.Location.unknown():
+        lh_dialects.register_and_load()
+        expect_rejected(source)
+
+
+# CHECK-LABEL: rejected: reduction-varying mask
+# CHECK: the mask varies along the contraction's reduction dim
+
+
 def test_composite_scale_map_is_rejected() -> None:
     """A scale map that is not a plain dim projection cannot be re-expressed."""
     with ir.Context(), ir.Location.unknown():
@@ -449,6 +466,8 @@ if __name__ == "__main__":
     test_scale_not_multiplied_is_rejected()
     print("rejected: select nonzero fill")
     test_select_nonzero_is_rejected()
+    print("rejected: reduction-varying mask")
+    test_reduction_varying_mask_is_rejected()
     print("rejected: composite scale map")
     test_composite_scale_map_is_rejected()
     print("rejected: named contraction")

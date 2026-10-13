@@ -79,9 +79,10 @@ def flash_attention_schedule(tile_size: int = 32) -> ir.Module:
     with schedule_boilerplate() as (sched, seq):
         generics = lh_transform.match_op(seq.bodyTarget, "linalg.generic")
         anyop = transform.AnyOpType.get()
-        # In program order: the max (R1), the exp term (E), the row sum (R2a), the
-        # contraction (R2b) and the normalizing divide.
-        r1, e, r2a, r2b, _divide = transform.split_handle([anyop] * 5, generics)
+        reductions = transform_ext.filter_reduction_ops(generics)
+        r1, r2a, r2b = transform.split_handle([anyop] * 3, reductions)
+        exp = lh_transform.match_op(seq.bodyTarget, "math.exp")
+        e = transform.get_parent_op(anyop, exp, op_name="linalg.generic")
 
         _tiled_r1, r1_loop = structured.TileUsingForOp(r1, sizes=[0, tile_size]).results
         transform.annotate(r1_loop, transform_ext.REDUCTION_LOOP_ATTR_NAME)
@@ -89,9 +90,11 @@ def flash_attention_schedule(tile_size: int = 32) -> ir.Module:
         # First chain: the row sum. This fuses a *clone* of E, since E still feeds
         # the contraction, and leaves the original E in place for it.
         loop = transform_ext.fuse_dependent_reduction_ops(e, r2a, r1_loop)
-        # The first fusion consumed the handle to E; the original E is still the
-        # contraction's operand, so re-derive it from there.
-        e_again = transform.get_producer_of_operand(anyop, r2b, 0)
+        # Reacquire E even when a mask sits between it and the contraction.
+        exp = transform_ext.extract_handle(
+            lh_transform.match_op(seq.bodyTarget, "math.exp"), -1
+        )
+        e_again = transform.get_parent_op(anyop, exp, op_name="linalg.generic")
         # Second chain: the contraction, into the same (now replaced) loop.
         loop = transform_ext.fuse_dependent_reduction_ops(e_again, r2b, loop)
         transform.annotate(loop, "flash_attention_loop")
@@ -145,16 +148,13 @@ def test_softmax_structure() -> None:
 # CHECK:             arith.subf
 # CHECK:             math.exp
 
-# The online correction: E isolated on the max, evaluated at the new and the old
-# max, their ratio rescaling the running sum.
+# Softmax is recognized from the payload, without a schedule flag.
 # CHECK:           %[[SOLD:.+]] = tensor.extract_slice %[[SARG]]
-# CHECK:           %[[TNEW:.+]] = linalg.generic {{.*}}ins(%[[MNEW]] :
-# CHECK:             arith.subf %{{.+}}, %in
+# CHECK:           %[[F:.+]] = linalg.generic {{.*}}ins(%[[MNEW]], %[[MOLD]] :
+# CHECK:             arith.cmpf oeq
+# CHECK:             arith.subf
 # CHECK:             math.exp
-# CHECK:           %[[TOLD:.+]] = linalg.generic {{.*}}ins(%[[MOLD]] :
-# CHECK:             arith.subf %{{.+}}, %in
-# CHECK:             math.exp
-# CHECK:           %[[F:.+]] = linalg.elementwise <div> ins(%[[TNEW]], %[[TOLD]]
+# CHECK:             arith.select
 # CHECK:           %[[SCALED:.+]] = linalg.elementwise <mul> ins(%[[SOLD]], %[[F]]
 
 # The fused R2 accumulates this tile's terms into the rescaled running sum.
@@ -204,7 +204,8 @@ def test_attention_structure() -> None:
 # CHECK:           %[[P1:.+]] = linalg.generic
 # CHECK-SAME:          ins(%{{.+}}, %[[MNEW]] : tensor<64x32xf32>, tensor<64xf32>)
 # CHECK:             math.exp
-# CHECK:           linalg.elementwise <div>
+# CHECK:           arith.cmpf oeq
+# CHECK:           arith.select
 # CHECK:           %[[LSCALED:.+]] = linalg.elementwise <mul>
 # CHECK:           linalg.generic
 # CHECK-SAME:          ins(%[[P1]] : tensor<64x32xf32>)
@@ -217,8 +218,9 @@ def test_attention_structure() -> None:
 # CHECK:           %[[P2:.+]] = linalg.generic
 # CHECK-SAME:          ins(%{{.+}}, %[[MNEW]] : tensor<64x32xf32>, tensor<64xf32>)
 # CHECK:             math.exp
-# CHECK:           linalg.generic {{.*}}ins(%[[MNEW]] : tensor<64xf32>) outs(%{{.+}} : tensor<64x128xf32>)
-# CHECK:           linalg.elementwise <div>
+# CHECK:           linalg.generic {{.*}}ins(%[[MNEW]], %[[MOLD]] : tensor<64xf32>, tensor<64xf32>) outs(%{{.+}} : tensor<64x128xf32>)
+# CHECK:           arith.cmpf oeq
+# CHECK:           arith.select
 # CHECK:           %[[OSCALED:.+]] = linalg.elementwise <mul>
 
 # The contraction reads V sliced along the shared reduction axis.
@@ -255,17 +257,14 @@ def test_mixed_precision_softmax() -> None:
 
 # The correction is evaluated in f32 -- the wider of E's f16 and R2's f32
 # accumulator -- so the f16 running max enters the body and is widened there.
-# CHECK:           linalg.generic {{.*}}ins(%[[MNEW]] : tensor<64xf16>) outs(%{{.+}} : tensor<64xf32>)
+# CHECK:           linalg.generic {{.*}}ins(%[[MNEW]], %[[MOLD]] : tensor<64xf16>, tensor<64xf16>) outs(%{{.+}} : tensor<64xf32>)
 # CHECK:             %[[WNEW:.+]] = arith.extf %in : f16 to f32
-# CHECK:             arith.subf %{{.+}}, %[[WNEW]] : f32
+# CHECK:             %[[WOLD:.+]] = arith.extf %{{.+}} : f16 to f32
+# CHECK:             arith.subf %[[WOLD]], %[[WNEW]] : f32
 # CHECK:             math.exp %{{.+}} : f32
-# CHECK:           linalg.generic {{.*}}ins(%[[MOLD]] : tensor<64xf16>) outs(%{{.+}} : tensor<64xf32>)
-# CHECK:             %[[WOLD:.+]] = arith.extf %in : f16 to f32
-# CHECK:             arith.subf %{{.+}}, %[[WOLD]] : f32
-# CHECK:             math.exp %{{.+}} : f32
+# CHECK:             arith.select
 
 # The factor already has R2's element type, so it rescales the running sum directly.
-# CHECK:           linalg.elementwise <div> ins(%{{.+}} : tensor<64xf32>, tensor<64xf32>)
 # CHECK:           %[[SCALED:.+]] = linalg.elementwise <mul>
 # CHECK-SAME:          tensor<64xf32>, tensor<64xf32>
 # CHECK:           linalg.generic
@@ -366,6 +365,94 @@ def test_unsupported_correction_keeps_payload() -> None:
 # CHECK-NEXT: Payload unchanged
 
 
+def test_guarded_mixed_precision_softmax() -> None:
+    with ir.Context(), ir.Location.unknown():
+        lh_dialects.register_and_load()
+        payload = apply_schedule(
+            MIXED_SOFTMAX,
+            mixed_softmax_schedule,
+            32,
+        )
+        print("Test: guarded mixed precision", flush=True)
+        print(payload)
+
+
+# CHECK-LABEL: Test: guarded mixed precision
+# CHECK: arith.cmpf oeq, {{.*}} : f16
+# CHECK: arith.select {{.*}} : f16
+# CHECK: arith.subf {{.*}} : f16
+# CHECK: math.exp {{.*}} : f16
+# CHECK: %[[NEW:.+]] = arith.extf {{.*}} : f16 to f32
+# CHECK: %[[OLD:.+]] = arith.extf {{.*}} : f16 to f32
+# CHECK: arith.cmpf oeq, %[[OLD]], {{.*}} : f32
+# CHECK: %[[DELTA:.+]] = arith.subf %[[OLD]], %[[NEW]] : f32
+# CHECK: math.exp %[[DELTA]] : f32
+# CHECK: arith.select {{.*}} : f32
+
+
+def test_unsupported_masks_keep_payload() -> None:
+    masks = {
+        "nonzero": (
+            "    %condition = arith.constant true\n"
+            "    %one = arith.constant 1.0 : f32\n"
+            "    %selected = arith.select %condition, %one, %pv : f32"
+        ),
+        "E-dependent": (
+            "    %condition = arith.cmpf ogt, %pv, %zero : f32\n"
+            "    %selected = arith.select %condition, %zero, %pv : f32"
+        ),
+    }
+    for name, body in masks.items():
+        mask = """
+  %masked = linalg.generic {indexing_maps = [#rowcol, #rowcol],
+      iterator_types = ["parallel", "parallel"]}
+      ins(%p : tensor<64x512xf32>) outs(%p_init : tensor<64x512xf32>) {
+  ^bb0(%pv: f32, %out: f32):
+BODY
+    linalg.yield %selected : f32
+  } -> tensor<64x512xf32>
+""".replace("BODY", body)
+        source = ATTENTION.replace("  // R2b:", mask + "\n  // R2b:").replace(
+            "ins(%p, %v :", "ins(%masked, %v :"
+        )
+        with ir.Context(), ir.Location.unknown():
+            lh_dialects.register_and_load()
+            payload = ir.Module.parse(source)
+            with schedule_boilerplate() as (tile, sequence):
+                reductions = transform_ext.filter_reduction_ops(
+                    lh_transform.match_op(sequence.bodyTarget, "linalg.generic")
+                )
+                r1 = transform_ext.extract_handle(reductions, 0)
+                structured.TileUsingForOp(r1, sizes=[0, 32])
+                transform.yield_([])
+            tile.body.operations[0].apply(payload.operation)
+            before = str(payload)
+            with schedule_boilerplate() as (fuse, sequence):
+                loop = lh_transform.match_op(sequence.bodyTarget, "scf.for")
+                exp = lh_transform.match_op(sequence.bodyTarget, "math.exp")
+                e = transform.get_parent_op(
+                    transform.AnyOpType.get(), exp, op_name="linalg.generic"
+                )
+                contractions = transform_ext.filter_contraction_ops(
+                    lh_transform.match_op(sequence.bodyTarget, "linalg.generic")
+                )
+                transform_ext.fuse_dependent_reduction_ops(e, contractions, loop)
+                transform.yield_([])
+            try:
+                fuse.body.operations[0].apply(payload.operation)
+            except ValueError as error:
+                assert "Failed to apply named transform sequence" in str(error)
+            else:
+                raise AssertionError(f"unexpectedly accepted {name} mask")
+            assert str(payload) == before
+            assert payload.operation.verify()
+        print(f"Rejected {name} mask without changing payload")
+
+
+# CHECK: Rejected nonzero mask without changing payload
+# CHECK: Rejected E-dependent mask without changing payload
+
+
 if __name__ == "__main__":
     test_softmax_structure()
     test_attention_structure()
@@ -373,3 +460,5 @@ if __name__ == "__main__":
     test_absf_correction()
     test_mixed_constant_correction()
     test_unsupported_correction_keeps_payload()
+    test_guarded_mixed_precision_softmax()
+    test_unsupported_masks_keep_payload()

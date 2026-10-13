@@ -273,57 +273,87 @@ def _check_r2_inputs(
     r2: ir.OpView,
     e_input_index: int,
 ) -> None:
-    """Require one E input, optionally with an independent second input."""
+    """Require all auxiliary inputs to be independent of E and the running R1."""
     inputs = linalg_inputs(r2)
-    if len(inputs) not in (1, 2):
-        raise FusionRejected("R2 must have one or two inputs")
-    if len(inputs) == 2:
-        other = inputs[1 - e_input_index]
-        if depends_on_op(other, e) or depends_on_op(other, r1_loop):
-            raise FusionRejected(
-                "R2 contribution has another input dependent on E or R1"
-            )
+    if len(inputs) > 1:
+        for i in range(len(inputs)):
+            if i == e_input_index:
+                continue
+            other = inputs[i]
+            if depends_on_op(other, e) or depends_on_op(other, r1_loop):
+                raise FusionRejected(
+                    "R2 contribution has another input dependent on E or R1"
+                )
 
 
 def _check_r2_body_pattern(
     r2: ir.OpView, e_input_index: int, contribution: ir.Value, combiner: ir.Operation
 ) -> None:
-    """Accept casts of inputs, then E + acc or E * V + acc."""
+    """Prove the contribution scales linearly with E, including zero masks."""
     body = r2.regions[0].blocks[0]
     ops = [opview(op) for op in list(body.operations)[:-1]]
-    first_core = 0
-    # Skip casting operations at the beginning of the R2 body
-    while first_core < len(ops) and isinstance(
-        ops[first_core], (arith.ExtFOp, arith.TruncFOp)
-    ):
-        first_core += 1
-    core = ops[first_core:]
+    e_arg = body.arguments[e_input_index]
 
-    def input_arg(value: ir.Value) -> ir.Value:
-        """Follow input casts back to a scalar R2 block argument."""
+    def zero(value: ir.Value) -> bool:
+        if isinstance(value, ir.BlockArgument) and value.owner == body:
+            index = list(body.arguments).index(value)
+            return index < len(linalg_inputs(r2)) and _is_defined_as_zero(
+                linalg_inputs(r2)[index]
+            )
         producer = defining_op(value)
-        while (
-            producer is not None
-            and producer.block == body
-            and isinstance(producer.opview, (arith.ExtFOp, arith.TruncFOp))
+        if producer is not None and isinstance(
+            producer.opview, (arith.ExtFOp, arith.TruncFOp)
         ):
-            value = producer.operands[0]
-            producer = defining_op(value)
-        return value
+            return zero(producer.operands[0])
+        return _is_defined_as_zero(value)
 
-    if not core or core[-1].operation != combiner:
+    def independent(value: ir.Value) -> bool:
+        if value == e_arg:
+            return False
+        producer = defining_op(value)
+        return (
+            producer is None
+            or producer.block != body
+            or all(independent(operand) for operand in producer.operands)
+        )
+
+    def scales_with_e(value: ir.Value) -> bool:
+        if value == e_arg:
+            return True
+        producer = defining_op(value)
+        if producer is None or producer.block != body:
+            return False
+        op = producer.opview
+        if isinstance(op, (arith.ExtFOp, arith.TruncFOp)):
+            return scales_with_e(op.operands[0])
+        if isinstance(op, arith.MulFOp):
+            a, b = op.operands
+            return (scales_with_e(a) and independent(b)) or (
+                independent(a) and scales_with_e(b)
+            )
+        if isinstance(op, arith.SelectOp):
+            condition, a, b = op.operands
+            return independent(condition) and (
+                (scales_with_e(a) and (scales_with_e(b) or zero(b)))
+                or (zero(a) and scales_with_e(b))
+            )
+        return False
+
+    if not ops or ops[-1].operation != combiner:
         raise FusionRejected("R2 body must end in its accumulator addf")
-    if len(linalg_inputs(r2)) == 1:
-        if len(core) == 1 and input_arg(contribution) == body.arguments[e_input_index]:
-            return
-    elif len(core) == 2 and isinstance(core[0], arith.MulFOp):
-        mul = core[0]
-        factors = [input_arg(value) for value in mul.operands]
-        input_args = set(list(body.arguments)[:2])
-        if contribution == mul.results[0] and set(factors) == input_args:
-            return
+    if any(
+        len(op.regions)
+        or not op.operation.name.startswith(
+            ("arith.", "math.", "linalg.index", "affine.apply")
+        )
+        for op in ops
+    ):
+        raise FusionRejected("R2 body contains unsupported scalar operations")
+    if scales_with_e(contribution):
+        return
     raise FusionRejected(
-        "R2 body must add E or multiply two distinct inputs before adding"
+        "R2 contribution must scale linearly with E; masks must be independent "
+        "and select zero or an E-scaled value"
     )
 
 
@@ -595,8 +625,9 @@ def check_legal_fusion_triple(
     * The R1 loop, E, and R2 occupy the same block.
     * Exactly one R2 input reads E's result.
     * R2 has one innermost reduction iterator. Its output map preserves the
-      parallel dimensions in order. Every R2 input map contains the reduction
-      iterator and consists only of pure dimension expressions.
+      parallel dimensions in order. The E input map contains the reduction
+      iterator; auxiliary inputs may broadcast across it. Input maps consist
+      only of pure dimension expressions.
     * R2's map for E's result and E's output map have the same rank and only
       dimension expressions; together they identify the E reduction axis.
     * R1's loop bounds and step are constant, the step is positive, the R2
@@ -612,8 +643,9 @@ def check_legal_fusion_triple(
       Each non-sibling input also feeds E after tracing tile slices. Their
       equal-rank, dimension-only maps yield a consistent, complete R1-to-E
       loop mapping that aligns the reduction axes.
-    * R2 sums E or a product of E and one independent input. Input casts may
-      precede the final ``mulf``/``addf``; its init is zero.
+    * R2 sums a contribution that scales linearly with E. Casts, products with
+      independent inputs and independent selects of zero are supported.
+      Its init is zero.
     * R2's result type is f16, bf16, f32, or f64, and E's result type can be
       widened with it to evaluate the correction.
     * E's scalar body can be cloned at that type: captured values can convert
@@ -667,7 +699,7 @@ def check_legal_fusion_triple(
             f"R2 output map is not the identity projection: {r2_output_map}"
         )
 
-    # Each R2 input must admit slicing along the shared reduction axis.
+    # E carries the reduction axis; auxiliary inputs may broadcast across it.
     for index, _ in enumerate(linalg_inputs(r2)):
         imap = indexing_maps(r2)[index]
         carries_red_dim = False
@@ -678,7 +710,7 @@ def check_legal_fusion_triple(
                 )
             if expr.position == r2_red_dims[0]:
                 carries_red_dim = True
-        if not carries_red_dim:
+        if index == r2_e_operand and not carries_red_dim:
             raise FusionRejected(
                 f"R2 input is not reduced along R2's reduction axis (map does "
                 f"not reference dim {r2_red_dims[0]}): {imap}"

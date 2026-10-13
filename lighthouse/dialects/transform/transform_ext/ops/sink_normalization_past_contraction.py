@@ -46,6 +46,9 @@ class SinkNormalizationPastContractionOp(
       * its body to hold an ``arith.divf``/``arith.mulf`` on two input block
         arguments, feeding the multiply-accumulate (optionally through a mask-to-zero
         ``arith.select``, the softmax fully-masked-row guard);
+      * a mask condition, if present, to be an input broadcast along the reduction.
+        Masked rows retain the masked contraction result without applying the sunk
+        scale, including when the scale is zero, infinite or NaN;
       * the scale operand not to reference the reduction dim -- the condition that
         lets it factor out;
       * the scale's element type to be convertible to the contraction's accumulator

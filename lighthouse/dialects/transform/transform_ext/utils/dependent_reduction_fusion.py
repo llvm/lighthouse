@@ -7,6 +7,10 @@ value, and reduces the tile. For example, in softmax the rescale factor for old
 sum accumulator is ``exp(-m_new) / exp(-m_old)`` before adding this contribution
 of current tile ``sum(exp(x_tile - m_new))``.
 
+Recognized softmax chains use ``exp(m_old - m_new)`` and zero weights for
+empty (-inf-only) tiles. It assumes finite auxiliary inputs such as V and leaves
+the fully-masked-row output guard to the final normalization.
+
 E's loop-carried full result is stale until the final tile and is removed after
 vectorization. If E has other users, fuse a clone and leave E outside the loop
 to compute its final result for them.
@@ -15,7 +19,7 @@ to compute its final result for them.
 from dataclasses import dataclass
 
 from mlir import ir
-from mlir.dialects import arith, linalg, scf, tensor
+from mlir.dialects import arith, linalg, math, scf, tensor
 
 from lighthouse.utils.mlir import (
     indexing_maps as get_indexing_maps,
@@ -189,12 +193,37 @@ class _CorrectionPlan:
     factor_maps: ir.ArrayAttr
     compute_type: ir.Type
     neutral_by_op: tuple[ir.Attribute | None, ...]
+    guard_softmax: bool = False
+
+
+def _is_softmax(r1_loop: ir.OpView, e: ir.OpView) -> bool:
+    indices, results = collect_r1_as_elementwise_inputs(r1_loop, e)
+    body = e.regions[0].blocks[0]
+    ops = list(body.operations)
+    if len(indices) == 1 and len(ops) == 3:
+        sub, exp, yield_op = [opview(op) for op in ops]
+        inner = map_loop_results_to_inner_reductions(r1_loop)[results[0]]
+        inner_ops = list(inner.regions[0].blocks[0].operations)
+        if (
+            isinstance(sub, arith.SubFOp)
+            and isinstance(exp, math.ExpOp)
+            and sub.operands[1] == body.arguments[indices[0]]
+            and sub.operands[0] in list(body.arguments)[: len(linalg_inputs(e))]
+            and sub.operands[0] != sub.operands[1]
+            and exp.operands[0] == sub.results[0]
+            and yield_op.operands[0] == exp.results[0]
+            and len(inner_ops) == 2
+            and isinstance(opview(inner_ops[0]), arith.MaximumFOp)
+        ):
+            return True
+    return False
 
 
 def plan_correction_factor(
     r1_loop: ir.OpView, e: ir.OpView, r2: ir.OpView
 ) -> _CorrectionPlan:
     """Assemble correction maps and constants after fusion legality succeeds."""
+    guard_softmax = _is_softmax(r1_loop, e)
     accumulator_indices, _ = collect_r1_as_elementwise_inputs(r1_loop, e)
     r2_e_index = find_r2_elementwise_operand(r2, e)
     e_out_map = get_indexing_maps(e)[len(linalg_inputs(e))]
@@ -246,6 +275,7 @@ def plan_correction_factor(
         ir.ArrayAttr.get([ir.AffineMapAttr.get(m) for m in factor_maps]),
         compute_type,
         tuple(neutrals),
+        guard_softmax,
     )
 
 
@@ -321,6 +351,39 @@ def _correction_factor(
     element_type = accumulator_type.element_type
     compute_type = plan.compute_type
     init = tensor.empty(irr.mixed_sizes(r2_accumulator), compute_type)
+
+    if plan.guard_softmax:
+        _, new_max, old_max = accumulators[0]
+        op = linalg.GenericOp(
+            result_tensors=[init.type],
+            inputs=[new_max, old_max],
+            outputs=[init],
+            indexing_maps=ir.ArrayAttr.get(
+                [plan.factor_maps[0], plan.factor_maps[0], plan.factor_maps[1]]
+            ),
+            iterator_types=iterator_types,
+        )
+        body = op.regions[0].blocks.append(
+            ir.ShapedType(new_max.type).element_type,
+            ir.ShapedType(old_max.type).element_type,
+            compute_type,
+        )
+        with ir.InsertionPoint(body):
+            new = irr.cast_float(body.arguments[0], compute_type)
+            old = irr.cast_float(body.arguments[1], compute_type)
+            zero = arith.constant(compute_type, ir.FloatAttr.get(compute_type, 0.0))
+            ninf = arith.constant(
+                compute_type, ir.FloatAttr.get(compute_type, float("-inf"))
+            )
+            empty = arith.cmpf(arith.CmpFPredicate.OEQ, old, ninf)
+            factor = math.exp(arith.subf(old, new))
+            linalg.yield_([arith.select(empty, zero, factor)])
+        factor = op.results[0]
+        return (
+            factor
+            if compute_type == element_type
+            else _cast_tensor(factor, element_type)
+        )
 
     def build_term(pick) -> ir.Value:
         inputs = [pick(acc) for acc in accumulators]
@@ -471,6 +534,17 @@ def fuse_dependent_reduction_ops(
         fused_e = _clone_generic_with_operands(
             e_or_clone, fused_e_inputs, [e_dest_tile], [e_dest_tile.type]
         )
+        if correction_plan.guard_softmax:
+            sub = opview(fused_e.regions[0].blocks[0].operations[0])
+            maximum = sub.operands[1]
+            with ir.InsertionPoint(sub):
+                zero = arith.constant(maximum.type, ir.FloatAttr.get(maximum.type, 0.0))
+                ninf = arith.constant(
+                    maximum.type, ir.FloatAttr.get(maximum.type, float("-inf"))
+                )
+                empty = arith.cmpf(arith.CmpFPredicate.OEQ, maximum, ninf)
+                # exp(-inf - 0) is zero, unlike exp(-inf - -inf).
+                sub.operands[1] = arith.select(empty, zero, maximum)
 
         # --- Construct the online correction that rescales R2's running accumulator ---
         r2_out_map = get_indexing_maps(r2)[len(linalg_inputs(r2))]
@@ -508,6 +582,13 @@ def fuse_dependent_reduction_ops(
         fused_r2 = _clone_generic_with_operands(
             r2, r2_inputs, [corrected_r2_acc], [r2.results[0].type]
         )
+        for op in list(fused_r2.regions[0].blocks[0].operations):
+            if isinstance(op, linalg.IndexOp) and op.dim.value == r2_red_dim:
+                uses = list(op.result.uses)
+                with ir.InsertionPoint.after(op):
+                    shifted = arith.addi(op.result, iv)
+                for use in uses:
+                    use.owner.operands[use.operand_number] = shifted
 
         # --- the new yield ---
         yielded = [value_map[o] for o in old_body_ops[-1].operands]

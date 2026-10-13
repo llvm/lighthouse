@@ -38,6 +38,12 @@ class SinkResult(NamedTuple):
     normalization: ir.OpView
 
 
+class _MaskInfo(NamedTuple):
+    value: ir.Value
+    indexing_map: ir.AffineMap
+    zero_on_true: bool
+
+
 class ScaleInfo(NamedTuple):
     """The scale found in a contraction's body, once found legal to move out."""
 
@@ -49,6 +55,8 @@ class ScaleInfo(NamedTuple):
     scale_map: ir.AffineMap
     #: The body ``divf``/``mulf`` to replicate after the contraction.
     scale_op: ir.OpView
+    #: A row guard whose masked contraction result must bypass normalization.
+    mask: _MaskInfo | None = None
 
 
 def sink_normalization_past_contraction(contraction, rewriter):
@@ -119,12 +127,34 @@ def analyze_scale_info(contraction: ir.OpView):
             f"cannot re-express the scale's map {scale_map} without the reduction dim "
             f"d{red_dim}: it is not a plain dim projection"
         )
+    mask = None
+    consumer = _consumer_through_casts(scale_op.results[0])
+    if isinstance(consumer, arith.SelectOp):
+        condition = consumer.operands[0]
+        if condition not in inputs:
+            return None, "the mask condition must be a contraction input argument"
+        mask_index = args.index(condition)
+        mask_map = indexing_maps(contraction)[mask_index]
+        if any(
+            isinstance(expr, ir.AffineDimExpr) and expr.position == red_dim
+            for expr in mask_map.results
+        ):
+            return None, "the mask varies along the contraction's reduction dim"
+        sunk_mask_map = project_dims(mask_map, {red_dim})
+        if sunk_mask_map is None:
+            return None, "cannot re-express the mask's map without the reduction dim"
+        mask = _MaskInfo(
+            contraction.operands[mask_index],
+            sunk_mask_map,
+            _is_float_zero(consumer.operands[1]),
+        )
     return (
         ScaleInfo(
             scale_index=scale_index,
             scale=scale,
             scale_map=sunk_scale_map,
             scale_op=scale_op,
+            mask=mask,
         ),
         None,
     )
@@ -161,9 +191,8 @@ def _feeds_multiply_accumulate(scale_op, body: ir.Block, init_arg) -> bool:
     accumulator precisions differ.
 
     A mask-to-zero ``arith.select`` -- the softmax fully-masked-row guard -- may also
-    sit between the scale and the multiply. Since its masked value is zero, it commutes
-    with the scale (``0 / s == 0``, ``0 * s == 0``), so sinking still preserves the
-    value and the select stays in the rebuilt body reading the numerator directly.
+    sit between the scale and the multiply. The select stays in the rebuilt body;
+    masked rows must also bypass the sunk scale, which may be zero, infinite or NaN.
     """
     consumer = _consumer_through_casts(scale_op.results[0])
     if isinstance(consumer, arith.SelectOp):
@@ -297,28 +326,37 @@ def _emit_scale(contraction: ir.OpView, scale_info: ScaleInfo, downstream: list[
         n_loops - 1, 0, [ir.AffineDimExpr.get(i) for i in range(n_loops - 1)]
     )
     parallel = ir.Attribute.parse("#linalg.iterator_type<parallel>")
+    inputs = [result, scale_info.scale]
+    maps = [result_map, scale_info.scale_map]
+    if scale_info.mask is not None:
+        inputs.append(scale_info.mask.value)
+        maps.append(scale_info.mask.indexing_map)
 
     with ir.InsertionPoint.after(contraction.operation), contraction.location:
         scaled = linalg.GenericOp(
             result_tensors=[result.type],
-            inputs=[result, scale_info.scale],
+            inputs=inputs,
             outputs=[_empty_like(result)],
             indexing_maps=ir.ArrayAttr.get(
-                [
-                    ir.AffineMapAttr.get(result_map),
-                    ir.AffineMapAttr.get(scale_info.scale_map),
-                    ir.AffineMapAttr.get(result_map),
-                ]
+                [ir.AffineMapAttr.get(m) for m in [*maps, result_map]]
             ),
             iterator_types=ir.ArrayAttr.get([parallel] * (n_loops - 1)),
         )
         elem = ir.ShapedType(result.type).element_type
         block = scaled.regions[0].blocks.append(
-            elem, ir.ShapedType(scale_info.scale.type).element_type, elem
+            *[ir.ShapedType(v.type).element_type for v in inputs], elem
         )
         with ir.InsertionPoint(block):
             operand = cast_float(block.arguments[1], elem)
             value = type(scale_info.scale_op)(block.arguments[0], operand).result
+            if scale_info.mask is not None:
+                unscaled = block.arguments[0]
+                true_value, false_value = (
+                    (unscaled, value)
+                    if scale_info.mask.zero_on_true
+                    else (value, unscaled)
+                )
+                value = arith.select(block.arguments[2], true_value, false_value)
             linalg.yield_([value])
 
     for owner, index in downstream:
