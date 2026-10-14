@@ -126,22 +126,15 @@ def transform_to_flash_attention(
     func = apply_registered_pass(func, "remove-dead-values")
     lh_transform.cleanup(func)
 
-    # Drop the unit batch dim after fusion so XeGPU sees rank-2 tiles. Generalize
-    # named ops for the linalg fold; tensor patterns then compose leftover slices.
-    named_ops = lh_transform.match_op(
-        func, ["linalg.transpose", "linalg.fill", "linalg.elementwise"]
-    )
-    structured.structured_generalize(anytype, named_ops)
+    # Clean up, e.g. remove singleton batch dims to get 2D matmul ops.
     with ir.InsertionPoint(transform.apply_patterns(func).patterns):
         structured.apply_patterns_linalg_fold_unit_extent_dims_via_slices()
-        transform.apply_patterns_canonicalization()
-    transform.apply_cse(func)
-    with ir.InsertionPoint(transform.apply_patterns(func).patterns):
+        tensor.apply_patterns_tensor_reassociative_reshape_folding()
+        structured.apply_patterns_linalg_swap_extract_slice_with_fill()
+        tensor.apply_patterns_tensor_fold_tensor_empty(fold_single_use_only=True)
         tensor.apply_patterns_tensor_merge_consecutive_insert_extract_slice()
-        tensor.apply_patterns_tensor_drop_redundant_insert_slice_rank_expansion()
-        tensor.apply_patterns_tensor_fold_tensor_subset_ops()
-        transform.apply_patterns_canonicalization()
-    transform.apply_cse(func)
+
+    lh_transform.cleanup(func)
     return func
 
 
