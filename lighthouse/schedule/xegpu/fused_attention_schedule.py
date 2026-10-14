@@ -234,6 +234,10 @@ def bundle_xegpu_fused_attention_schedule(
     if stop_at_stage == "reduction-tiled":
         raise PipelineInterrupt()
 
+    # Inline splat-constant generic inputs (e.g. masked-select zero) as
+    # scalars so they are not vectorized into reads of constant tensors.
+    func = transform_ext.fold_scalar_or_splat_constant(func)
+
     # Vectorize
     func = vectorize(mod, payload_func=func)
 
