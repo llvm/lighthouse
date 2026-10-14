@@ -21,11 +21,27 @@ def _producer(value):
 
 def _constant(value, expected):
     op = _producer(value)
+    # A slice of a splat constant is the same splat.
+    while isinstance(op, tensor.ExtractSliceOp):
+        op = _producer(op.source)
+    if isinstance(op, arith.ConstantOp) and isinstance(op.value, ir.DenseElementsAttr):
+        attr = op.value
+        return attr.is_splat and attr.get_splat_value().value == expected
     return (
         isinstance(op, arith.ConstantOp)
         and isinstance(op.value, (ir.FloatAttr, ir.IntegerAttr, ir.BoolAttr))
         and op.value.value == expected
     )
+
+
+def _body_constant(consumer, value, expected):
+    """A scalar constant, or a block argument fed by a splat constant input."""
+    if _constant(value, expected):
+        return True
+    body = consumer.regions[0].blocks[0]
+    inputs = list(linalg_inputs(consumer))
+    arguments = list(body.arguments)[: len(inputs)]
+    return value in arguments and _constant(inputs[arguments.index(value)], expected)
 
 
 def _full_slice_source(value):
@@ -80,26 +96,54 @@ def _row_reduction(op):
     )
 
 
-def _mask_reduction(op):
+def _mask_scores(op):
+    """Return the scores of an all-``-inf`` row reduction, or None.
+
+    The ``-inf`` test is either inlined into the ``andi`` reduction or produced
+    by a separate identity-mapped elementwise generic feeding it.
+    """
     if not _row_reduction(op):
-        return False
+        return None
     body = op.regions[0].blocks[0]
     combined = _producer(body.operations[-1].operands[0])
     if not isinstance(combined, arith.AndIOp):
-        return False
+        return None
     lhs, rhs = combined.operands
     if lhs == body.arguments[1]:
         lhs, rhs = rhs, lhs
-    return (
-        rhs == body.arguments[1]
-        and _negative_infinity_test(lhs, body.arguments[0])
-        and _filled_with(linalg_outputs(op)[0], 1)
-    )
+    if rhs != body.arguments[1] or not _filled_with(linalg_outputs(op)[0], 1):
+        return None
+    if _negative_infinity_test(lhs, body.arguments[0]):
+        return linalg_inputs(op)[0]
+    if lhs != body.arguments[0]:
+        return None
+    test = _producer(linalg_inputs(op)[0])
+    if not (
+        isinstance(test, linalg.GenericOp)
+        and not reduction_dims(test)
+        and len(linalg_inputs(test)) == 1
+        and len(test.results) == 1
+        and all(
+            imap == ir.AffineMap.get_identity(num_loops(test))
+            for imap in indexing_maps(test)
+        )
+    ):
+        return None
+    test_body = test.regions[0].blocks[0]
+    if _negative_infinity_test(
+        test_body.operations[-1].operands[0], test_body.arguments[0]
+    ):
+        return linalg_inputs(test)[0]
+    return None
+
+
+def _mask_reduction(op):
+    return _mask_scores(op) is not None
 
 
 def _matching_maximum(loop, mask):
     """Find a full-row running maximum over exactly this mask's score tiles."""
-    scores = linalg_inputs(mask)[0]
+    scores = _mask_scores(mask)
     shape = list(ir.ShapedType(scores.type).shape)
     if not shape or any(dim <= 0 for dim in shape):
         return None
@@ -201,11 +245,16 @@ def _guarded_probability(value, maximum):
 
 
 def _prefix_mask_use(consumer, operand_index, maximum):
-    """Only substitute a prefix predicate when its selected weights are zero."""
+    """Only substitute a prefix predicate when its selected weights are zero.
+
+    The consumer is either the PV reduction with the mask inlined or a separate
+    elementwise mask producer feeding it. Either way, a prefix-empty row has
+    zero guarded probabilities, so both predicates select identical values.
+    """
     if not isinstance(consumer, linalg.GenericOp):
         return False
     inputs = list(linalg_inputs(consumer))
-    if operand_index >= len(inputs) or not reduction_dims(consumer):
+    if operand_index >= len(inputs):
         return False
     body = consumer.regions[0].blocks[0]
     argument = body.arguments[operand_index]
@@ -215,7 +264,7 @@ def _prefix_mask_use(consumer, operand_index, maximum):
         if not (
             isinstance(select, arith.SelectOp)
             and use.operand_number == 0
-            and _constant(select.operands[1], 0.0)
+            and _body_constant(consumer, select.operands[1], 0.0)
             and select.operands[2] in list(body.arguments)[: len(inputs)]
         ):
             return False

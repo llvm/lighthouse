@@ -7,8 +7,8 @@ reduction loop, turning a two-pass reduction into an online (one-pass) one. Thre
 scenarios are covered:
 
   1. **softmax** -- ``max`` then ``sum(exp)``, with the normalizing divide reading
-     ``E``'s full extent. Because ``E`` has a consumer besides ``R2``, the op fuses
-     a *clone* and leaves the original outside for the divide.
+     ``E``'s full extent. The op fuses an E tile and leaves the original E
+     outside, reading the final max, for the divide.
   2. **flash attention** -- one ``exp`` term feeding both a row sum and a `P @ V`
      contraction. Applying the op once per consumer reduction folds both into a
      single loop, leaving only the normalization outside.
@@ -87,8 +87,7 @@ def flash_attention_schedule(tile_size: int = 32) -> ir.Module:
         _tiled_r1, r1_loop = structured.TileUsingForOp(r1, sizes=[0, tile_size]).results
         transform.annotate(r1_loop, transform_ext.REDUCTION_LOOP_ATTR_NAME)
 
-        # First chain: the row sum. This fuses a *clone* of E, since E still feeds
-        # the contraction, and leaves the original E in place for it.
+        # First chain: the row sum. The original E stays for the contraction.
         loop = transform_ext.fuse_dependent_reduction_ops(e, r2a, r1_loop)
         # Reacquire E even when a mask sits between it and the contraction.
         exp = transform_ext.extract_handle(
@@ -124,13 +123,13 @@ def test_softmax_structure() -> None:
         print(apply_schedule(SOFTMAX, online_softmax_schedule, 32))
 
 
-# The fused loop carries three accumulators: the running max, the (stale,
-# write-only) full-extent E result and the running sum.
+# The fused loop carries only the running max and the running sum; E's tile is
+# not written back to a full-extent result.
 # CHECK-LABEL: func.func @softmax
 # CHECK-SAME:      %[[X:[a-zA-Z0-9_]+]]: tensor<64x512xf32>
-# CHECK:         %[[LOOP:.+]]:3 = scf.for %[[IV:[a-zA-Z0-9_]+]] =
-# CHECK-SAME:        iter_args(%[[MARG:[a-zA-Z0-9_]+]] = %{{[a-zA-Z0-9_]+}}, %[[EARG:[a-zA-Z0-9_]+]] = %{{[a-zA-Z0-9_]+}}, %[[SARG:[a-zA-Z0-9_]+]] = %{{[a-zA-Z0-9_]+}})
-# CHECK-SAME:        -> (tensor<64xf32>, tensor<64x512xf32>, tensor<64xf32>)
+# CHECK:         %[[LOOP:.+]]:2 = scf.for %[[IV:[a-zA-Z0-9_]+]] =
+# CHECK-SAME:        iter_args(%[[MARG:[a-zA-Z0-9_]+]] = %{{[a-zA-Z0-9_]+}}, %[[SARG:[a-zA-Z0-9_]+]] = %{{[a-zA-Z0-9_]+}})
+# CHECK-SAME:        -> (tensor<64xf32>, tensor<64xf32>)
 
 # R1 over this tile. %[[MOLD]] is its DPS init, i.e. the previous running max.
 # CHECK:           %[[MOLD:.+]] = tensor.extract_slice %[[MARG]]
@@ -138,10 +137,10 @@ def test_softmax_structure() -> None:
 # CHECK-SAME:          outs(%[[MOLD]] :
 # CHECK:             arith.maximumf
 
-# The fused clone of E, cut from the full 512 extent to the 32-wide tile and
-# reading the *new* max.
+# The fused E, cut from the full 512 extent to the 32-wide tile and reading the
+# *new* max. Its init is a fresh tile of E's init, not a loop-carried value.
 # CHECK:           %[[XT:.+]] = tensor.extract_slice %[[X]][0, %[[IV]]] [64, 32] [1, 1]
-# CHECK:           %[[ET:.+]] = tensor.extract_slice %[[EARG]][0, %[[IV]]] [64, 32] [1, 1]
+# CHECK:           %[[ET:.+]] = tensor.extract_slice %{{.+}}[0, %[[IV]]] [64, 32] [1, 1]
 # CHECK:           %[[P:.+]] = linalg.generic
 # CHECK-SAME:          ins(%[[XT]], %[[MNEW]] : tensor<64x32xf32>, tensor<64xf32>)
 # CHECK-SAME:          outs(%[[ET]] : tensor<64x32xf32>)
@@ -162,7 +161,7 @@ def test_softmax_structure() -> None:
 # CHECK-SAME:          ins(%[[P]] : tensor<64x32xf32>)
 # CHECK-SAME:          outs(%[[SCALED]] : tensor<64xf32>)
 # CHECK:             arith.addf
-# CHECK:           tensor.insert_slice %[[P]] into %[[EARG]][0, %[[IV]]] [64, 32] [1, 1]
+# CHECK-NOT:       tensor.insert_slice %[[P]]
 # CHECK:           tensor.insert_slice %[[SNEW]] into %[[SARG]]
 # CHECK:         } {__reduction_loop__, online_softmax_loop}
 
@@ -173,7 +172,7 @@ def test_softmax_structure() -> None:
 # CHECK:           arith.subf
 # CHECK:           math.exp
 # CHECK:         linalg.generic
-# CHECK-SAME:        ins(%[[PFINAL]], %[[LOOP]]#2 : tensor<64x512xf32>, tensor<64xf32>)
+# CHECK-SAME:        ins(%[[PFINAL]], %[[LOOP]]#1 : tensor<64x512xf32>, tensor<64xf32>)
 # CHECK:           arith.divf
 
 
@@ -184,18 +183,16 @@ def test_attention_structure() -> None:
         print(apply_schedule(ATTENTION, flash_attention_schedule, 32))
 
 
-# Both consumer reductions end up in one loop, which now carries five accumulators,
-# in this order: the running max, the first chain's full-extent (stale, write-only) E
-# result, the running row sum, the second chain's E result, and the running
-# contraction accumulator.
+# Both consumer reductions end up in one loop, which carries three accumulators:
+# the running max, the running row sum and the running contraction accumulator.
 # CHECK-LABEL: func.func @attention
 # CHECK-SAME:      %[[X:[a-zA-Z0-9_]+]]: tensor<64x512xf32>
 # CHECK-SAME:      %[[V:[a-zA-Z0-9_]+]]: tensor<512x128xf32>
-# CHECK:         %[[LOOP:.+]]:5 = scf.for %[[IV:[a-zA-Z0-9_]+]] =
+# CHECK:         %[[LOOP:.+]]:3 = scf.for %[[IV:[a-zA-Z0-9_]+]] =
 # CHECK-SAME:        iter_args(%[[MARG:[a-zA-Z0-9_]+]] = %{{[a-zA-Z0-9_]+}},
-# CHECK-SAME:        -> (tensor<64xf32>, tensor<64x512xf32>, tensor<64xf32>, tensor<64x512xf32>, tensor<64x128xf32>)
+# CHECK-SAME:        -> (tensor<64xf32>, tensor<64xf32>, tensor<64x128xf32>)
 
-# R1 over this tile, then the first chain: E's clone, its correction and the row
+# R1 over this tile, then the first chain: E's tile, its correction and the row
 # sum accumulating into the rescaled running sum.
 # CHECK:           %[[MOLD:.+]] = tensor.extract_slice %[[MARG]]
 # CHECK:           %[[MNEW:.+]] = linalg.generic
@@ -212,9 +209,9 @@ def test_attention_structure() -> None:
 # CHECK-SAME:          outs(%[[LSCALED]] : tensor<64xf32>)
 # CHECK:             arith.addf
 
-# The second chain. No clone this time: the row sum is gone, so the contraction is
-# E's only remaining user and E itself is fused. Its correction stays row-wise;
-# only the rescale multiply broadcasts it over the wider 64x128 accumulator.
+# The second chain rebuilds the same E tile (the IR is not CSE'd here). Its
+# correction stays row-wise; only the rescale multiply broadcasts it over the
+# wider 64x128 accumulator.
 # CHECK:           %[[P2:.+]] = linalg.generic
 # CHECK-SAME:          ins(%{{.+}}, %[[MNEW]] : tensor<64x32xf32>, tensor<64xf32>)
 # CHECK:             math.exp
@@ -233,7 +230,7 @@ def test_attention_structure() -> None:
 
 # Only the normalization is left outside, reading the two running results.
 # CHECK:         linalg.generic
-# CHECK-SAME:        ins(%[[LOOP]]#4, %[[LOOP]]#2 : tensor<64x128xf32>, tensor<64xf32>)
+# CHECK-SAME:        ins(%[[LOOP]]#2, %[[LOOP]]#1 : tensor<64x128xf32>, tensor<64xf32>)
 # CHECK:           arith.divf
 
 
@@ -247,9 +244,9 @@ def test_mixed_precision_softmax() -> None:
 # The running max and the term stay f16; only the sum accumulator is f32.
 # CHECK-LABEL: func.func @mixed_softmax
 # CHECK-SAME:      %[[X:[a-zA-Z0-9_]+]]: tensor<64x512xf16>
-# CHECK:         %[[LOOP:.+]]:3 = scf.for %[[IV:[a-zA-Z0-9_]+]] =
-# CHECK-SAME:        iter_args(%[[MARG:[a-zA-Z0-9_]+]] = %{{[a-zA-Z0-9_]+}}, %{{[a-zA-Z0-9_]+}} = %{{[a-zA-Z0-9_]+}}, %[[SARG:[a-zA-Z0-9_]+]] = %{{[a-zA-Z0-9_]+}})
-# CHECK-SAME:        -> (tensor<64xf16>, tensor<64x512xf16>, tensor<64xf32>)
+# CHECK:         %[[LOOP:.+]]:2 = scf.for %[[IV:[a-zA-Z0-9_]+]] =
+# CHECK-SAME:        iter_args(%[[MARG:[a-zA-Z0-9_]+]] = %{{[a-zA-Z0-9_]+}}, %[[SARG:[a-zA-Z0-9_]+]] = %{{[a-zA-Z0-9_]+}})
+# CHECK-SAME:        -> (tensor<64xf16>, tensor<64xf32>)
 # CHECK:           %[[MOLD:.+]] = tensor.extract_slice %[[MARG]]
 # CHECK:           %[[MNEW:.+]] = linalg.generic
 # CHECK:             arith.maximumf %{{.+}} : f16

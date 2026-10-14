@@ -20,9 +20,15 @@ from lighthouse.utils.mlir import defining_op, linalg_inputs
 
 
 def _prepare_consumer(e, r2):
-    """Inline the elementwise path from E into a temporary R2 for analysis."""
+    """Inline the elementwise path from E into a temporary R2 for analysis.
+
+    Return the temporary candidate (or None without intermediates) and the
+    intermediate ops ordered from E to R2. The loop is built from the original
+    ops so intermediates stay outside R2's body.
+    """
     candidate = None
     consumer = r2
+    chain = []
     try:
         while e.results[0] not in linalg_inputs(consumer):
             edges = [
@@ -42,6 +48,7 @@ def _prepare_consumer(e, r2):
                 raise legality.FusionRejected(
                     "cannot inline the intermediate producer into R2"
                 )
+            chain.insert(0, producer.opview)
             if candidate is not None:
                 candidate.operation.erase()
             candidate = consumer = fused
@@ -55,7 +62,7 @@ def _prepare_consumer(e, r2):
                 ) from error
         result = candidate
         candidate = None
-        return result
+        return result, chain
     finally:
         if candidate is not None:
             candidate.operation.erase()
@@ -82,8 +89,10 @@ class FuseDependentReductionOpsOp(
     R1 is supplied as a tiled ``scf.for``, conventionally marked
     ``__reduction_loop__``; E and R2 are ``linalg.generic`` ops. E reads R1's
     result, and R2 reduces E's result, possibly through elementwise intermediates.
-    The loop step supplies the tile size. Intermediates are inlined into the
-    selected consumer for analysis; their other users are preserved.
+    The loop step supplies the tile size. Intermediates are inlined into a
+    temporary consumer for analysis only. In the fused loop they are tiled as
+    separate elementwise ops between E and R2, so R2 keeps its own body (e.g. a
+    plain multiply-add contraction); their other users are preserved.
 
     Other users of E keep the original while a clone is fused. One call handles
     one R2. The returned loop retains any reduction marker for another call.
@@ -161,24 +170,26 @@ class FuseDependentReductionOpsOp(
             result_to_inner = legality.map_loop_results_to_inner_reductions(r1_loop)
             candidate = None
             try:
-                candidate = _prepare_consumer(e, r2)
+                candidate, chain = _prepare_consumer(e, r2)
                 consumer = candidate if candidate is not None else r2
                 e_tiled_dim, tile_size = legality.check_legal_fusion_triple(
                     r1_loop, result_to_inner, e, consumer
                 )
                 correction_plan = plan_correction_factor(r1_loop, e, consumer)
+                # The inlined candidate is only needed for analysis.
+                if candidate is not None:
+                    candidate.operation.erase()
+                    candidate = None
                 fused = apply_fusion(
                     rewriter,
                     r1_loop,
                     e,
-                    consumer,
+                    r2,
                     e_tiled_dim,
                     tile_size,
                     correction_plan,
+                    chain,
                 )
-                if candidate is not None:
-                    candidate = None
-                    rewriter.replace_op(r2, [fused.results[len(fused.results) - 1]])
             except legality.FusionRejected as rejected:
                 print(
                     f"fuse_dependent_reduction_ops: could not fuse the elementwise "

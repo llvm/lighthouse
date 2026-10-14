@@ -32,7 +32,6 @@ __all__ = [
     "collect_r1_as_elementwise_inputs",
     "find_r2_elementwise_operand",
     "map_loop_results_to_inner_reductions",
-    "needs_elementwise_clone",
 ]
 
 #: Marks an ``scf.for`` as a tiled reduction loop.
@@ -355,12 +354,6 @@ def _check_r2_body_pattern(
         "R2 contribution must scale linearly with E; masks must be independent "
         "and select zero or an E-scaled value"
     )
-
-
-def needs_elementwise_clone(e: ir.OpView, r2: ir.OpView) -> bool:
-    """Preserve E outside the loop when another user needs its final result."""
-    r2_op = r2.operation
-    return any(user != r2_op for user in op_users(e.results[0]))
 
 
 #: `v` is independent of every block argument (a loop-invariant scalar).
