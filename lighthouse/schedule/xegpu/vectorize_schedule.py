@@ -1,8 +1,6 @@
 from mlir import ir
 from mlir.dialects import transform
 
-import lighthouse.transform as lh_transform
-from lighthouse.pipeline.helper import apply_registered_pass
 from lighthouse.schedule import schedule_boilerplate
 from . import lowering_common
 
@@ -31,8 +29,6 @@ def vectorize_schedule(
             deduplicate=True,
         )
         func = lowering_common.vectorize(payload_mod, payload_func=func)
-        func = apply_registered_pass(func, "remove-dead-values")
-        lh_transform.cleanup(func)
         transform.yield_()
 
     return schedule
