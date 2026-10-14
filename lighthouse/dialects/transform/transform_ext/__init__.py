@@ -22,6 +22,7 @@ from .ops.update_address_space import update_address_space
 from .ops.filter_num_loops import filter_num_loops
 from .ops.filter_elementwise import filter_elementwise
 from .ops.fuse_elementwise_op import fuse_elementwise_op
+from .ops.fold_reshape_ops_by_expansion import fold_reshape_ops_by_expansion
 from .ops.filter_by_name import filter_by_name
 from .ops.filter_reduction_ops import filter_reduction_ops
 from .ops.fuse_dependent_reduction_ops import fuse_dependent_reduction_ops
@@ -58,6 +59,7 @@ __all__ = [
     "filter_non_contraction_reductions",
     "filter_num_loops",
     "filter_reduction_ops",
+    "fold_reshape_ops_by_expansion",
     "fuse_dependent_reduction_ops",
     "fuse_elementwise_op",
     "get_fusion_roots",
