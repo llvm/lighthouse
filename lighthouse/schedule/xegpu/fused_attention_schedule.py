@@ -149,11 +149,7 @@ def bundle_xegpu_fused_attention_schedule(
     # Convert linalg.elementwise and linalg.batch_matmul to linalg.generic
     structured.structured_generalize(
         anytype,
-        structured.structured_match(
-            anytype,
-            func,
-            ops=["linalg.elementwise", "linalg.batch_matmul"],
-        ),
+        lh_transform.match_op(func, ["linalg.elementwise", "linalg.batch_matmul"]),
     )
 
     # Temporary Python equivalent of the native reshape-expansion patterns.
@@ -192,7 +188,7 @@ def bundle_xegpu_fused_attention_schedule(
 
     # Move the normalizing divide past @V to form the deferred-divide chain.
     contraction_ops = transform_ext.filter_contraction_ops(
-        structured.structured_match(anytype, func, ops=["linalg.generic"])
+        lh_transform.match_op(func, ["linalg.generic"])
     )
     pv_contraction = transform_ext.extract_handle(contraction_ops, -1)
     transform_ext.sink_normalization_past_contraction(pv_contraction)
@@ -204,9 +200,7 @@ def bundle_xegpu_fused_attention_schedule(
         assert wg == 1, "WG tile must be of form [1, ..., wg_rows]"
     wg_rows = wg_tile[-1]
 
-    linalg_ops = structured.structured_match(
-        anytype, func, ops=["linalg.generic", "linalg.batch_matmul"]
-    )
+    linalg_ops = lh_transform.match_op(func, ["linalg.generic", "linalg.batch_matmul"])
     leaf_linalg_op = transform_ext.extract_handle(linalg_ops, -1)
     lh_transform.tile(
         leaf_linalg_op,
