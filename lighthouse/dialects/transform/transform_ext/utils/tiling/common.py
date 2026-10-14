@@ -15,6 +15,16 @@ def parallel_and_reduction_dims(out_map: ir.AffineMap) -> tuple[list[int], list[
     return parallel_dims, reduction_dims
 
 
+def largest_divisor(dim_size: int | None, limit: int) -> int:
+    """Largest divisor of `dim_size` not above `limit` (1 for unknown sizes)."""
+    if dim_size is None:
+        return 1
+    for tile in range(min(dim_size, max(1, limit)), 0, -1):
+        if dim_size % tile == 0:
+            return tile
+    return 1
+
+
 def assign_from_tail(dims: list[int], values: list[int], sizes: list[int]) -> None:
     """Write `values` onto `sizes` at the trailing `dims`, aligning both by their tails."""
     if not dims or not values:
