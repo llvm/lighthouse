@@ -150,10 +150,11 @@ def annotate_fastmath_flags(func: ir.Value[transform.AnyOpType]) -> None:
 
     Preserve any flags already chosen by the payload. `afn` on the exps
     selects native math; `reassoc,arcp` on each quotient permits exp(a-b).
+    We cannot use `fast` in case `-inf` occurs in the P scores.
     """
     no_fastmath = ir.Attribute.parse("#arith.fastmath<none>")
     fast = transform.param_constant(
-        transform.AnyParamType.get(), ir.Attribute.parse("#arith.fastmath<fast>")
+        transform.AnyParamType.get(), ir.Attribute.parse("#arith.fastmath<afn>")
     )
     unmarked = match(func, ops=["math.exp"], op_attrs={"fastmath": no_fastmath})
     transform.annotate(unmarked, "fastmath", param=fast)
