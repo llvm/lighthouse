@@ -248,7 +248,7 @@ def annotate_attention(gpu_func: ir.Operation, anchor_op: ir.Operation):
 
     # First load_nd: Q layout
     load_op = transform_ext.extract_handle(load_nd_ops, 0, silenceable=True)
-    q_load_inst_data = [16, 32]
+    q_load_inst_data = [16, 16]
     xegpu.set_anchor_layout(
         load_op,
         sg_layout=out_sg_layout,
