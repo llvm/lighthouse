@@ -22,8 +22,11 @@ class SinkNormalizationPastContractionOp(
 
     Worth doing when the reduction dim is very large compared to the other dims.
 
-    The scale is expected inside the contraction's body, i.e. scale is already
-    fused into the contraction's body.
+    The scale may be inside the contraction's body or in a separate elementwise
+    producer feeding a plain multiply-add contraction. The latter may pass through
+    a zero-mask producer and static collapse/expand-shape operations. These
+    producers are cloned without the scale for this consumer, preserving other
+    users and keeping masking outside the contraction body.
 
     Before:
     ```
@@ -43,7 +46,7 @@ class SinkNormalizationPastContractionOp(
       * Exactly one payload op for `contraction`;
       * `contraction` to be a `linalg.generic` with exactly one reduction dim, that
         dim innermost, and an identity output map;
-      * its body to hold an ``arith.divf``/``arith.mulf`` on two input block
+      * in the fused-body form, an ``arith.divf``/``arith.mulf`` on two input block
         arguments, feeding the multiply-accumulate (optionally through a mask-to-zero
         ``arith.select``, the softmax fully-masked-row guard);
       * a mask condition, if present, to be an input broadcast along the reduction.
@@ -54,10 +57,16 @@ class SinkNormalizationPastContractionOp(
       * the scale's element type to be convertible to the contraction's accumulator
         type (it is widened when the divide moves).
 
+    The separate-producer form requires static positive reshape extents, a
+    zero-initialized contraction, and identity output/numerator maps in the
+    elementwise scale and mask producers. The scale and mask are indexed through
+    the reshapes into the output space; neither may depend on the reduction.
+    Unsupported or ambiguous producer chains fail without modifying the payload.
+
     Args:
-        contraction: Handle to the contraction carrying the scale.
+        contraction: Handle to the contraction carrying or consuming the scale.
     Returns:
-        rewritten_contraction: The contraction rebuilt without the scale operand.
+        rewritten_contraction: The contraction rebuilt without the normalization.
         sunk_normalization: The new linalg.generic applying the scale after it.
     """
 

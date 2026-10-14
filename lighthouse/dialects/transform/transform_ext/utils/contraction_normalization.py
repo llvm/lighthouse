@@ -9,6 +9,7 @@ from lighthouse.utils.mlir import (
     can_cast_float,
     cast_float,
     clone_block_body,
+    defining_op,
     indexing_maps,
     linalg_inputs,
     linalg_outputs,
@@ -66,10 +67,278 @@ def sink_normalization_past_contraction(contraction, rewriter):
     explaining why the rewrite does not apply.
     """
     contraction = opview(contraction)
+    if _plain_contraction(contraction):
+        plan, error = _analyze_producer_scale(contraction)
+        if error is not None:
+            return None, error
+        return _apply_producer_scale(contraction, plan, rewriter), None
     scale_info, error = analyze_scale_info(contraction)
     if error is not None:
         return None, error
     return _apply(contraction, scale_info, rewriter), None
+
+
+class _ProducerScale(NamedTuple):
+    operand_index: int
+    numerator: ir.Value
+    path: list[tuple[ir.OpView, int]]
+    info: ScaleInfo
+
+
+def _producer(value):
+    op = defining_op(value)
+    return opview(op) if op is not None else None
+
+
+def _plain_contraction(op):
+    if not isinstance(op, linalg.GenericOp) or len(linalg_inputs(op)) != 2:
+        return False
+    body = op.regions[0].blocks[0]
+    if len(body.arguments) != 3:
+        return False
+    args = list(body.arguments)
+    product = _consumer_through_casts(args[0])
+    if (
+        not isinstance(product, arith.MulFOp)
+        or _consumer_through_casts(args[1]) != product
+    ):
+        return False
+    add = _consumer_through_casts(product.results[0])
+    return (
+        isinstance(add, arith.AddFOp)
+        and args[2] in add.operands
+        and body.operations[-1].operands[0] == add.results[0]
+        and all(
+            isinstance(
+                inner,
+                (
+                    arith.ExtFOp,
+                    arith.TruncFOp,
+                    arith.MulFOp,
+                    arith.AddFOp,
+                    linalg.YieldOp,
+                ),
+            )
+            for inner in body.operations
+        )
+    )
+
+
+def _zero_tensor(value):
+    op = _producer(value)
+    if isinstance(op, arith.ConstantOp):
+        attr = op.value
+        return (
+            isinstance(attr, ir.DenseFPElementsAttr)
+            and attr.is_splat
+            and ir.FloatAttr(attr.get_splat_value()).value == 0.0
+        )
+    if isinstance(op, linalg.FillOp):
+        return _is_float_zero(op.inputs[0])
+    if isinstance(op, (tensor.CollapseShapeOp, tensor.ExpandShapeOp)):
+        return _zero_tensor(op.src)
+    return False
+
+
+def _expr_dims(expr):
+    if isinstance(expr, ir.AffineDimExpr):
+        return {expr.position}
+    if isinstance(expr, ir.AffineBinaryExpr):
+        return _expr_dims(expr.lhs) | _expr_dims(expr.rhs)
+    return set()
+
+
+def _output_map(imap, reduction_dim):
+    if any(reduction_dim in _expr_dims(expr) for expr in imap.results):
+        return None
+    substitutions = ir.AffineMap.get(
+        reduction_dim,
+        0,
+        [ir.AffineDimExpr.get(i) for i in range(reduction_dim)]
+        + [ir.AffineConstantExpr.get(0)],
+    )
+    return ir.AffineMap.get(
+        reduction_dim, 0, [expr.compose(substitutions) for expr in imap.results]
+    )
+
+
+def _compose_map(imap, coordinates):
+    return ir.AffineMap.get(
+        coordinates.n_dims,
+        0,
+        [expr.compose(coordinates) for expr in imap.results],
+    )
+
+
+def _reshape_coordinates(op, coordinates):
+    """Map contraction indices back through a static reassociation reshape."""
+    source_shape = list(ir.ShapedType(op.src.type).shape)
+    result_shape = list(ir.ShapedType(op.result.type).shape)
+    if any(size <= 0 for size in source_shape + result_shape):
+        return None
+    groups = [
+        [int(ir.IntegerAttr(axis)) for axis in group] for group in op.reassociation
+    ]
+    expressions = []
+    if isinstance(op, tensor.CollapseShapeOp):
+        for index, group in enumerate(groups):
+            stride = 1
+            reversed_group = []
+            for axis in reversed(group):
+                expr = ir.AffineExpr.get_floor_div(
+                    coordinates.results[index], ir.AffineConstantExpr.get(stride)
+                )
+                if axis != group[0]:
+                    expr = ir.AffineExpr.get_mod(
+                        expr, ir.AffineConstantExpr.get(source_shape[axis])
+                    )
+                reversed_group.append(expr)
+                stride *= source_shape[axis]
+            expressions.extend(reversed(reversed_group))
+    else:
+        for group in groups:
+            expr = ir.AffineConstantExpr.get(0)
+            for axis in group:
+                expr = expr * result_shape[axis] + coordinates.results[axis]
+            expressions.append(expr)
+    return ir.AffineMap.get(coordinates.n_dims, 0, expressions)
+
+
+def _trace_producer_scale(contraction, operand_index):
+    value = linalg_inputs(contraction)[operand_index]
+    coordinates = indexing_maps(contraction)[operand_index]
+    red_dim = reduction_dims(contraction)[0]
+    path = []
+    mask = None
+    while (op := _producer(value)) is not None:
+        if op.operation.block != contraction.operation.block:
+            return None, None
+        if isinstance(op, (tensor.CollapseShapeOp, tensor.ExpandShapeOp)):
+            coordinates = _reshape_coordinates(op, coordinates)
+            if coordinates is None:
+                return (
+                    None,
+                    "normalization paths require positive static reshape extents",
+                )
+            path.append((op, 0))
+            value = op.src
+            continue
+        if not (
+            isinstance(op, linalg.GenericOp)
+            and not reduction_dims(op)
+            and len(op.results) == 1
+            and all(isinstance(v.type, ir.RankedTensorType) for v in op.operands)
+        ):
+            return None, None
+        maps = indexing_maps(op)
+        inputs = list(linalg_inputs(op))
+        identity = ir.AffineMap.get_identity(num_loops(op))
+        if maps[-1] != identity or not ir.ShapedType(value.type).has_static_shape:
+            return None, "normalization producers require a static identity output map"
+        body = op.regions[0].blocks[0]
+        args = list(body.arguments)[: len(inputs)]
+        scalar = _producer(body.operations[-1].operands[0])
+        # Only constants may accompany the selected scalar operation.
+        if any(
+            inner.operation != getattr(scalar, "operation", None)
+            and not isinstance(inner, (arith.ConstantOp, linalg.YieldOp))
+            for inner in body.operations
+        ):
+            return None, None
+        if isinstance(scalar, arith.SelectOp):
+            if mask is not None or scalar.operands[0] not in args:
+                return None, "expected a single input row-mask predicate"
+            cond, true_value, false_value = scalar.operands
+
+            def is_zero(v):
+                return _is_float_zero(v) or (
+                    v in args and _zero_tensor(inputs[args.index(v)])
+                )
+
+            zero_on_true = is_zero(true_value)
+            data = false_value if zero_on_true else true_value
+            if not (zero_on_true or is_zero(false_value)) or data not in args:
+                return None, "normalization mask must select zero or its input"
+            data_index = args.index(data)
+            cond_index = args.index(cond)
+            mask_map = _output_map(_compose_map(maps[cond_index], coordinates), red_dim)
+            if mask_map is None:
+                return None, "the mask varies along the contraction's reduction dim"
+            mask = _MaskInfo(inputs[cond_index], mask_map, zero_on_true)
+            if maps[data_index] != identity or inputs[data_index].type != value.type:
+                return None, "normalization mask must preserve its data operand layout"
+            path.append((op, data_index))
+            value = inputs[data_index]
+            continue
+        if not isinstance(scalar, _SCALE_OPS) or not all(
+            v in args for v in scalar.operands
+        ):
+            return None, None
+        numerator_index, scale_index = [args.index(v) for v in scalar.operands]
+        if (
+            maps[numerator_index] != identity
+            or inputs[numerator_index].type != value.type
+        ):
+            return None, "normalization must preserve its numerator layout and type"
+        scale = inputs[scale_index]
+        scale_map = _output_map(_compose_map(maps[scale_index], coordinates), red_dim)
+        if scale_map is None:
+            return None, "the scale varies along the contraction's reduction dim"
+        accumulator_type = ir.ShapedType(contraction.results[0].type).element_type
+        if not can_cast_float(ir.ShapedType(scale.type).element_type, accumulator_type):
+            return None, "cannot convert the scale to the contraction accumulator type"
+        return _ProducerScale(
+            operand_index,
+            inputs[numerator_index],
+            path,
+            ScaleInfo(scale_index, scale, scale_map, scalar, mask),
+        ), None
+    return None, None
+
+
+def _analyze_producer_scale(contraction):
+    error = _shape_error(contraction)
+    if error is not None:
+        return None, error
+    if not all(
+        isinstance(value.type, ir.RankedTensorType)
+        and ir.ShapedType(value.type).has_static_shape
+        and all(size > 0 for size in ir.ShapedType(value.type).shape)
+        for value in contraction.operands
+    ):
+        return None, "producer normalization requires positive static tensor shapes"
+    plans = []
+    errors = []
+    for index in range(len(linalg_inputs(contraction))):
+        plan, error = _trace_producer_scale(contraction, index)
+        if plan is not None:
+            plans.append(plan)
+        if error is not None:
+            errors.append(error)
+    if errors:
+        return None, errors[0]
+    if len(plans) != 1:
+        return None, f"expected one separate normalization producer, found {len(plans)}"
+    if not _zero_tensor(linalg_outputs(contraction)[0]):
+        return None, "sinking a producer normalization requires a zero contraction init"
+    return plans[0], None
+
+
+def _apply_producer_scale(contraction, plan, rewriter):
+    downstream = [
+        (use.owner, use.operand_number) for use in contraction.results[0].uses
+    ]
+    with ir.InsertionPoint(contraction), contraction.location:
+        value = plan.numerator
+        for op, index in reversed(plan.path):
+            clone = opview(op.operation.clone())
+            clone.operands[index] = value
+            value = clone.results[0]
+        rebuilt = opview(contraction.operation.clone())
+        rebuilt.operands[plan.operand_index] = value
+    scaled = _emit_scale(rebuilt, plan.info, downstream)
+    rewriter.erase_op(contraction)
+    return SinkResult(rebuilt, scaled)
 
 
 def analyze_scale_info(contraction: ir.OpView):
