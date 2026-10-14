@@ -285,7 +285,7 @@ def infer_parameters(
             "sg_rows": 16,
             "subgroup_size": 16,
             "reduction_tile": 64,
-            "q_load_tile": [16, 32],
+            "q_load_tile": [16, 16],
             "v_load_tile": [32, 32],
             "prefetch_tile": [16, 32],
             "nb_prefetch": 1,
