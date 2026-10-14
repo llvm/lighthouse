@@ -71,6 +71,20 @@ def transform_to_flash_attention(
         lh_transform.match_op(func, "math.exp"), -1, silenceable=True
     )
     p_op = transform.get_parent_op(anytype, exp_op, op_name="linalg.generic")
+
+    # Keep track of V producers.
+    anyvalue = transform.AnyValueType.get()
+    v_op = transform.get_defining_op(
+        anytype,
+        transform.get_operand(anyvalue, pv_op, [1]),
+    )
+    v_producers = transform_ext.trace_producers(v_op)
+    v_producers = transform.merge_handles([v_op, v_producers])
+    v_producers = transform_ext.filter_by_name(
+        v_producers,
+        ["linalg.generic", "linalg.transpose"],
+    )
+
     # Fuse P@V contraction into the reduction loop.
     reduction_loop = transform_ext.fuse_dependent_reduction_ops(
         p_op, pv_op, reduction_loop
@@ -95,8 +109,9 @@ def transform_to_flash_attention(
         )
         return fused_loop
 
-    # Fuse all max producers into the reduction loop.
-    with lh_transform.foreach(max_producers) as producer:
+    # Fuse all V/max_op producers into the reduction loop.
+    all_producers = transform.merge_handles([v_producers, max_producers])
+    with lh_transform.foreach(all_producers) as producer:
         tiled_op, reduction_loop = structured.structured_fuse_into_containing_op(
             anytype,
             anytype,
