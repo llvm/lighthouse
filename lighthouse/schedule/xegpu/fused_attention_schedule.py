@@ -224,29 +224,18 @@ def bundle_xegpu_fused_attention_schedule(
         n_parallel=len(layer_params["wg_tile"]),
     )
 
-    if stop_at_stage == "reduction-tiled":
-        raise PipelineInterrupt()
-
     # Inline splat-constant generic inputs (e.g. masked-select zero) as
     # scalars so they are not vectorized into reads of constant tensors.
     func = transform_ext.fold_scalar_or_splat_constant(func)
 
+    annotate_fastmath_flags(func)
+    lh_transform.cleanup(func)
+
+    if stop_at_stage == "reduction-tiled":
+        raise PipelineInterrupt()
+
     # Vectorize
     func = vectorize(mod, payload_func=func)
-
-    # The accumulators of the flash loop are tensors at linalg level, so
-    # vectorization turns them into a transfer_read/transfer_write pair per
-    # iteration. Repeat the subset hoisting now that CSE has run, so that all
-    # accumulators are carried as vector iter_args, i.e. in registers.
-    reduction_loop = match(func, ops={"scf.for"})
-    lh_transform.loop_hoisting(reduction_loop)
-
-    annotate_fastmath_flags(func)
-    transform.apply_cse(func)
-    canonicalize(func)
-
-    func = apply_registered_pass(func, "remove-dead-values")
-    lh_transform.cleanup(func)
 
     if stop_at_stage == "vectorized":
         raise PipelineInterrupt()
