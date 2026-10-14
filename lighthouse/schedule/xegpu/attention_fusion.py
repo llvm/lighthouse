@@ -110,17 +110,32 @@ def transform_to_flash_attention(
         return fused_loop
 
     # Fuse all V/max_op producers into the reduction loop.
+    # TODO Implement a generic producer fuser.
     all_producers = transform.merge_handles([v_producers, max_producers])
     with lh_transform.foreach(all_producers) as producer:
-        tiled_op, reduction_loop = structured.structured_fuse_into_containing_op(
+        _, reduction_loop = structured.structured_fuse_into_containing_op(
             anytype,
             anytype,
             producer_op=producer,
             containing_op=reduction_loop,
         )
         transform.apply_dce(func)
-        fuse_fill_producers_to_loop(tiled_op, reduction_loop)
         transform.yield_()
+
+    # Fuse fills only once every max producer is in the loop.
+    reduction_loop = structured.structured_match(
+        anytype,
+        func,
+        op_attrs={transform_ext.REDUCTION_LOOP_ATTR_NAME: ir.UnitAttr.get()},
+    )
+    max_op = transform.get_parent_op(
+        anytype,
+        transform_ext.extract_handle(
+            lh_transform.match_op(func, ["arith.maximumf", "arith.maxnumf"]), 0
+        ),
+        op_name="linalg.generic",
+    )
+    fuse_fill_producers_to_loop(max_op, reduction_loop)
 
     transform.apply_cse(func)
     func = apply_registered_pass(func, "remove-dead-values")
