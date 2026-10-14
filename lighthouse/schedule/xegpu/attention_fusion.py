@@ -108,7 +108,6 @@ def transform_to_flash_attention(
         transform.yield_()
 
     transform.apply_cse(func)
-    func = apply_registered_pass(func, "linalg-fuse-elementwise-ops")
     func = apply_registered_pass(func, "remove-dead-values")
     lh_transform.cleanup(func)
 
