@@ -157,7 +157,6 @@ def bundle_xegpu_fused_attention_schedule(
     )
 
     # Temporary Python equivalent of the native reshape-expansion patterns.
-    # Keep operand preprocessing separate from contraction scalar bodies.
     func = transform_ext.fold_reshape_ops_by_expansion(func)
 
     # Normalize possible singleton dimensions so tile+fuse logic works.
