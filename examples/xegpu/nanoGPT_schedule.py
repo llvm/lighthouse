@@ -54,7 +54,7 @@ from lighthouse.pipeline.helper import (
     PipelineInterrupt,
 )
 from lighthouse.schedule import schedule_boilerplate
-from lighthouse.schedule.xegpu.attention_fusion import annotate_fastmath_flags
+from lighthouse.schedule.xegpu.attention_fusion import enable_fastmath_optimizations
 from lighthouse.schedule.xegpu.lowering_common import convert_to_gpu_launch
 from lighthouse.schedule.xegpu.mlp_schedule import xegpu_wg_annotation_for_mlp_layer
 from nanoGPT_payload import F32
@@ -311,7 +311,7 @@ def _fuse_attention_in_region(anytype, forall, fa_params):
         tensor.apply_patterns_tensor_fold_tensor_subset_ops()
         transform.apply_patterns_canonicalization()
     transform.apply_cse(forall)
-    annotate_fastmath_flags(forall)
+    enable_fastmath_optimizations(forall)
 
 
 def xegpu_fa_annotation(gf, fa_params):

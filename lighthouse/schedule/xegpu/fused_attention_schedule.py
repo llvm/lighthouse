@@ -21,7 +21,10 @@ from .lowering_common import (
 from lighthouse.schedule import schedule_boilerplate
 from lighthouse.schedule.parameters import ScheduleParameters
 from lighthouse.dialects.transform import transform_ext
-from .attention_fusion import transform_to_flash_attention, annotate_fastmath_flags
+from .attention_fusion import (
+    transform_to_flash_attention,
+    enable_fastmath_optimizations,
+)
 
 
 def fused_attention_schedule(
@@ -236,7 +239,7 @@ def bundle_xegpu_fused_attention_schedule(
     reduction_loop = match(func, ops={"scf.for"})
     lh_transform.loop_hoisting(reduction_loop)
 
-    annotate_fastmath_flags(func)
+    enable_fastmath_optimizations(func)
     transform.apply_cse(func)
     canonicalize(func)
 
