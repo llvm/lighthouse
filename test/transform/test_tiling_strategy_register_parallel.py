@@ -303,3 +303,131 @@ with TargetInfo.override(features=["avx512f"]):
 # CHECK-SAME: transform_ext.tile_sizes = array<i64: 1, 1, 16, 32>
 with TargetInfo.override(features=["avx512f"]):
     run("eltwise_register_parallel_avx512_4d", ELTWISE_4D, build_eltwise_schedule)
+
+
+def build_reduction_schedule():
+    with schedule_boilerplate() as (sched, named_seq):
+        ops = lh_transform.match_op(named_seq.bodyTarget, "linalg.generic")
+        assign_tile_sizes(
+            ops,
+            strategy="register_parallel",
+        )
+        transform.yield_()
+    return sched
+
+
+REDUCE_TEMPLATE = """
+#in = affine_map<IN_MAP>
+#out = affine_map<OUT_MAP>
+module {
+  func.func @main(%a: tensor<IN_TYPE>, %o: tensor<OUT_TYPE>) -> tensor<OUT_TYPE> {
+    %r = linalg.generic {indexing_maps = [#in, #out], iterator_types = [ITERS]}
+        ins(%a : tensor<IN_TYPE>) outs(%o : tensor<OUT_TYPE>) {
+    ^bb0(%in: f32, %out: f32):
+      %s = arith.addf %in, %out : f32
+      linalg.yield %s : f32
+    } -> tensor<OUT_TYPE>
+    return %r : tensor<OUT_TYPE>
+  }
+}
+"""
+
+
+def reduce_payload(in_map, out_map, iters, in_type, out_type):
+    return (
+        REDUCE_TEMPLATE.replace("IN_MAP", in_map)
+        .replace("OUT_MAP", out_map)
+        .replace("ITERS", iters)
+        .replace("IN_TYPE", in_type)
+        .replace("OUT_TYPE", out_type)
+    )
+
+
+ROW_REDUCE = reduce_payload(
+    "(d0, d1) -> (d0, d1)",
+    "(d0, d1) -> (d0)",
+    '"parallel", "reduction"',
+    "64x4096xf32",
+    "64xf32",
+)
+
+PARTIAL_REDUCE = reduce_payload(
+    "(d0, d1, d2) -> (d0, d1, d2)",
+    "(d0, d1, d2) -> (d0, d2)",
+    '"parallel", "reduction", "parallel"',
+    "64x32x128xf32",
+    "64x128xf32",
+)
+
+
+def column_reduce(shape):
+    n, c, h, w = shape
+    return reduce_payload(
+        "(d0, d1, d2, d3) -> (d0, d1, d2, d3)",
+        "(d0, d1, d2, d3) -> (d0, d2, d3)",
+        '"parallel", "reduction", "parallel", "parallel"',
+        f"{n}x{c}x{h}x{w}xf32",
+        f"{n}x{h}x{w}xf32",
+    )
+
+
+# A long row reduction gets all accumulator chains from its reduced vector dim,
+# so a single row is processed at a time.
+# CHECK-LABEL: Test: reduction_register_parallel_row
+# CHECK: linalg.generic
+# CHECK-SAME: transform_ext.tile_sizes = array<i64: 1, 0>
+with TargetInfo.override(arch="x86_64", features=["avx512f"]):
+    run("reduction_register_parallel_row", ROW_REDUCE, build_reduction_schedule)
+
+
+# A reduced dim shorter than a vector (e.g. a pooling window) has no lanes to
+# fill: the op is left to its neighbours' tiles.
+# CHECK-LABEL: Test: reduction_register_parallel_short_row
+# CHECK: linalg.generic
+# CHECK-NOT: transform_ext.tile_sizes
+# CHECK: return
+with TargetInfo.override(arch="x86_64", features=["avx512f"]):
+    run(
+        "reduction_register_parallel_short_row",
+        reduce_payload(
+            "(d0, d1) -> (d0, d1)",
+            "(d0, d1) -> (d0)",
+            '"parallel", "reduction"',
+            "64x4xf32",
+            "64xf32",
+        ),
+        build_reduction_schedule,
+    )
+
+# A split partial reduction keeps lanes x chains independent accumulators.
+# CHECK-LABEL: Test: reduction_register_parallel_partial
+# CHECK: linalg.generic
+# CHECK-SAME: transform_ext.tile_sizes = array<i64: 1, 0, 128>
+with TargetInfo.override(arch="x86_64", features=["avx512f"]):
+    run(
+        "reduction_register_parallel_partial",
+        PARTIAL_REDUCE,
+        build_reduction_schedule,
+    )
+
+# CHECK-LABEL: Test: reduction_register_parallel_column_avx2
+# CHECK: linalg.generic
+# CHECK-SAME: transform_ext.tile_sizes = array<i64: 1, 0, 1, 64>
+with TargetInfo.override(arch="x86_64", features=["avx2"]):
+    run(
+        "reduction_register_parallel_column_avx2",
+        column_reduce((4, 16, 64, 256)),
+        build_reduction_schedule,
+    )
+
+# A narrow contiguous dim provides only 2 chains; the rest are spread over the
+# next outer parallel dim.
+# CHECK-LABEL: Test: reduction_register_parallel_column_narrow
+# CHECK: linalg.generic
+# CHECK-SAME: transform_ext.tile_sizes = array<i64: 1, 0, 4, 32>
+with TargetInfo.override(arch="x86_64", features=["avx512f"]):
+    run(
+        "reduction_register_parallel_column_narrow",
+        column_reduce((2, 16, 8, 32)),
+        build_reduction_schedule,
+    )

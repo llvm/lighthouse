@@ -6,6 +6,7 @@ from mlir.dialects import transform
 import lighthouse.dialects as lh_dialects
 from lighthouse import transform as lh_transform
 from lighthouse.dialects.transform.transform_ext import assign_tile_sizes
+from lighthouse.execution.target import TargetInfo
 from lighthouse.schedule.builders import schedule_boilerplate
 
 
@@ -51,7 +52,7 @@ module {
 """
 
 
-# A non-contraction reduction: falls back to the generic reduction tile.
+# A non-contraction row reduction: tiled by the reduction register heuristic.
 GENERIC_REDUCE = """
 #id = affine_map<(d0, d1) -> (d0, d1)>
 #out = affine_map<(d0, d1) -> (d0)>
@@ -111,14 +112,131 @@ run(
 )
 
 
+# A row reduction tiles its reduced vector dim by lanes x accumulator chains.
 # CHECK-LABEL: Test: register_reduction_generic_reduce
 # CHECK: linalg.generic
-# CHECK-SAME: transform_ext.tile_sizes = array<i64: 0, 1>
-run(
-    "register_reduction_generic_reduce",
-    GENERIC_REDUCE,
-    lambda: build_schedule("linalg.generic"),
-)
+# CHECK-SAME: transform_ext.tile_sizes = array<i64: 0, 128>
+with TargetInfo.override(arch="x86_64", features=["avx512f"]):
+    run(
+        "register_reduction_generic_reduce",
+        GENERIC_REDUCE,
+        lambda: build_schedule("linalg.generic"),
+    )
+
+# CHECK-LABEL: Test: register_reduction_generic_reduce_avx2
+# CHECK: linalg.generic
+# CHECK-SAME: transform_ext.tile_sizes = array<i64: 0, 64>
+with TargetInfo.override(arch="x86_64", features=["avx2"]):
+    run(
+        "register_reduction_generic_reduce_avx2",
+        GENERIC_REDUCE,
+        lambda: build_schedule("linalg.generic"),
+    )
+
+
+REDUCE_TEMPLATE = """
+#in = affine_map<IN_MAP>
+#out = affine_map<OUT_MAP>
+module {
+  func.func @main(%a: tensor<IN_TYPE>, %o: tensor<OUT_TYPE>) -> tensor<OUT_TYPE> {
+    %r = linalg.generic {indexing_maps = [#in, #out], iterator_types = [ITERS]}
+        ins(%a : tensor<IN_TYPE>) outs(%o : tensor<OUT_TYPE>) {
+    ^bb0(%in: f32, %out: f32):
+      %s = arith.addf %in, %out : f32
+      linalg.yield %s : f32
+    } -> tensor<OUT_TYPE>
+    return %r : tensor<OUT_TYPE>
+  }
+}
+"""
+
+
+def reduce_payload(in_map, out_map, iters, in_type, out_type):
+    return (
+        REDUCE_TEMPLATE.replace("IN_MAP", in_map)
+        .replace("OUT_MAP", out_map)
+        .replace("ITERS", iters)
+        .replace("IN_TYPE", in_type)
+        .replace("OUT_TYPE", out_type)
+    )
+
+
+# RMSNorm-like channel reduction: the contiguous dim is parallel, so only the
+# reduced dim is unrolled by a small factor.
+# CHECK-LABEL: Test: register_reduction_column
+# CHECK: linalg.generic
+# CHECK-SAME: transform_ext.tile_sizes = array<i64: 0, 2, 0, 0>
+with TargetInfo.override(arch="x86_64", features=["avx512f"]):
+    run(
+        "register_reduction_column",
+        reduce_payload(
+            "(d0, d1, d2, d3) -> (d0, d1, d2, d3)",
+            "(d0, d1, d2, d3) -> (d0, d2, d3)",
+            '"parallel", "reduction", "parallel", "parallel"',
+            "4x16x64x256xf32",
+            "4x64x256xf32",
+        ),
+        lambda: build_schedule("linalg.generic"),
+    )
+
+
+# LayerNorm-like all-reduce: innermost reduced dim gets the vector tile, the
+# outer reduced dims are unit-tiled.
+# CHECK-LABEL: Test: register_reduction_all_reduce
+# CHECK: linalg.generic
+# CHECK-SAME: transform_ext.tile_sizes = array<i64: 0, 1, 1, 128>
+with TargetInfo.override(arch="x86_64", features=["avx512f"]):
+    run(
+        "register_reduction_all_reduce",
+        reduce_payload(
+            "(d0, d1, d2, d3) -> (d0, d1, d2, d3)",
+            "(d0, d1, d2, d3) -> (d0)",
+            '"parallel", "reduction", "reduction", "reduction"',
+            "16x64x256x256xf32",
+            "16xf32",
+        ),
+        lambda: build_schedule("linalg.generic"),
+    )
+
+
+# A short row reduction (e.g. the final one after a split) fits one horizontal
+# reduction: nothing to tile, so the op stays unannotated.
+# CHECK-LABEL: Test: register_reduction_short_row
+# CHECK: linalg.generic
+# CHECK-NOT: transform_ext.tile_sizes
+# CHECK: return
+with TargetInfo.override(arch="x86_64", features=["avx512f"]):
+    run(
+        "register_reduction_short_row",
+        reduce_payload(
+            "(d0, d1) -> (d0, d1)",
+            "(d0, d1) -> (d0)",
+            '"parallel", "reduction"',
+            "64x128xf32",
+            "64xf32",
+        ),
+        lambda: build_schedule("linalg.generic"),
+    )
+
+
+# Reduced dims shorter than a vector (e.g. a 4x4 pooling window) have no lanes
+# to fill: unit-tiling the outer window dim would unroll the op per element.
+# CHECK-LABEL: Test: register_reduction_short_window
+# CHECK: linalg.generic
+# CHECK-NOT: transform_ext.tile_sizes
+# CHECK: return
+with TargetInfo.override(arch="x86_64", features=["avx512f"]):
+    run(
+        "register_reduction_short_window",
+        reduce_payload(
+            "(d0, d1, d2) -> (d0, d1, d2)",
+            "(d0, d1, d2) -> (d0)",
+            '"parallel", "reduction", "reduction"',
+            "64x4x4xf32",
+            "64xf32",
+        ),
+        lambda: build_schedule("linalg.generic"),
+    )
 
 
 # No reduction dim: the op must be left unannotated.
