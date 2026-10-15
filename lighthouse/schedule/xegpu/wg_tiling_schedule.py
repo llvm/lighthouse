@@ -10,7 +10,10 @@ from lighthouse.pipeline.helper import (
 )
 from lighthouse.schedule import schedule_boilerplate
 from lighthouse.dialects.transform import transform_ext
-from .attention_fusion import transform_to_flash_attention, annotate_fastmath_flags
+from .attention_fusion import (
+    transform_to_flash_attention,
+    enable_fastmath_optimizations,
+)
 from .lowering_common import get_payload_func
 
 
@@ -202,7 +205,7 @@ def apply_attention_tiling(func: ir.Operation) -> ir.Operation:
     lh_transform.cleanup(func)
 
     transform_to_flash_attention(anytype, func, reduction_tile, n_parallel=3)
-    annotate_fastmath_flags(func)
+    enable_fastmath_optimizations(func)
     transform.apply_cse(func)
     lh_transform.cleanup(func)
 
