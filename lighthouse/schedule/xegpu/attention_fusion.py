@@ -8,9 +8,7 @@ from lighthouse.pipeline.helper import match, apply_registered_pass
 from lighthouse.dialects.transform import transform_ext
 
 
-def transform_to_flash_attention(
-    anytype, func, reduction_tile, n_parallel
-) -> ir.Operation:
+def transform_to_flash_attention(anytype, func, reduction_tile) -> ir.Operation:
     """Fold the attention chain into the tiled row-max loop.
 
     After generalization: ``s = Q@K^T * scale``, ``m = max(s)``,
@@ -19,6 +17,9 @@ def transform_to_flash_attention(
     Assumes finite V and finite or -inf scores; the output normalization must
     preserve the fully-masked-row guard. All--inf row masks are rewritten using
     the running/final maximum before sinking score producers.
+
+    `reduction_tile` is a vector where the leading parallel dimensions are
+    zero, e.g. `[0, 0, ..., tile_size]`.
     """
     # Match the necessary op handles. Number of reduction and elementwise loops
     # can vary due to possible prologue/epilogue and P mask generation.
@@ -57,8 +58,7 @@ def transform_to_flash_attention(
     p_op = transform.get_parent_op(anytype, exp_op, op_name="linalg.generic")
 
     # Tile max loop, only the final reduction dimension.
-    sizes = [0] * n_parallel + [reduction_tile]
-    _, [reduction_loop], _ = lh_transform.tile(max_op, tile_sizes=sizes)
+    _, [reduction_loop], _ = lh_transform.tile(max_op, tile_sizes=reduction_tile)
     transform.annotate(reduction_loop, transform_ext.REDUCTION_LOOP_ATTR_NAME)
 
     # Fuse the row sum first. P@V still needs the original exp term.
