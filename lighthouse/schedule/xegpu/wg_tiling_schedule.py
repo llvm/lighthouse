@@ -2,7 +2,7 @@
 
 from mlir import ir
 from mlir.dialects import transform
-from mlir.dialects.transform import structured
+from mlir.dialects.transform import structured, tensor
 import lighthouse.transform as lh_transform
 from lighthouse.pipeline.helper import (
     apply_registered_pass,
@@ -178,8 +178,17 @@ def apply_attention_tiling(func: ir.Operation) -> ir.Operation:
     """Apply attention-layer workgroup tiling to the given function."""
     anytype = transform.AnyOpType.get()
 
-    # Temporary Python equivalent of the native reshape-expansion patterns.
-    func = transform_ext.fold_reshape_ops_by_expansion(func)
+    # Clean up to fully expanded shapes by eliminating expand/collapse shape pairs.
+    # Generalize all transpose ops.
+    transpose_ops = lh_transform.match_op(func, "linalg.transpose")
+    structured.structured_generalize(anytype, transpose_ops)
+    for i in range(3):
+        # Fold reshape ops by expansion and fold extract_slice into tensor.empty
+        # Repeat until no more folding.
+        func = transform_ext.fold_reshape_ops_by_expansion(func)
+        with ir.InsertionPoint(transform.apply_patterns(func).patterns):
+            tensor.apply_patterns_tensor_fold_tensor_empty(fold_single_use_only=False)
+    lh_transform.cleanup(func)
 
     # Find the subtract and exp reduction loops and fuse them.
     subf_op = transform_ext.extract_handle(
@@ -221,7 +230,7 @@ def apply_attention_tiling(func: ir.Operation) -> ir.Operation:
     )
     lh_transform.cleanup(func)
 
-    func = transform_to_flash_attention(anytype, func, reduction_tile, n_parallel=3)
+    func = transform_to_flash_attention(anytype, func, reduction_tile)
 
     # Inline splat-constant generic inputs (e.g. masked-select zero) as
     # scalars so they are not vectorized into reads of constant tensors.
