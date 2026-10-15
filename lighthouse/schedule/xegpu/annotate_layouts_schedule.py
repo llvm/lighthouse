@@ -48,7 +48,11 @@ def annotate_ab_load(
         transform.yield_()
 
     # no transpose case
-    dpas_consumer_op = transform.select(anytype, user, "xegpu.dpas")
+    op_names = ["xegpu.dpas", "arith.truncf"]
+    dpas_consumer_op = transform.select(anytype, user, op_names[0])
+    for name in op_names[1:]:
+        maybe_consumer = transform.select(anytype, user, name)
+        dpas_consumer_op = transform.merge_handles([dpas_consumer_op, maybe_consumer])
     with lh_transform.foreach(dpas_consumer_op):
         # annotate dpas op operand
         xegpu.set_anchor_layout(dpas_op, index=index, **layout_dpas)
