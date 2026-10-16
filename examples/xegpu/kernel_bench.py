@@ -275,21 +275,49 @@ def infer_parameters(
         write_bytes = int(batch_size * n_head * n_ctx * d_head * nbytes)
 
         assert d_head == 64, f"d_head must be 64, got {d_head}"
-        layer_params = {
-            "layer_kind": "attention",
-            "batch_size": batch_size,
-            "n_head": n_head,
-            "n_ctx": n_ctx,
-            "d_head": d_head,
-            "wg_tile": [1, 1, 128],
-            "sg_rows": 16,
-            "subgroup_size": 16,
-            "reduction_tile": 64,
-            "q_load_tile": [16, 16],
-            "v_load_tile": [32, 32],
-            "prefetch_tile": [16, 32],
-            "nb_prefetch": 1,
-        }
+
+        max_elemwise_dims = 0
+        for layer in [s for s in func_metadata["layers"] if s["kind"] == "elemwise"]:
+            max_elemwise_dims = max(max_elemwise_dims, len(layer["shape"]))
+
+        if max_elemwise_dims == 4:
+            # MHA case
+            layer_params = {
+                "layer_kind": "attention",
+                "batch_size": batch_size,
+                "n_head": n_head,
+                "n_ctx": n_ctx,
+                "d_head": d_head,
+                "wg_tile": [1, 1, 128],
+                "sg_rows": 16,
+                "subgroup_size": 16,
+                "reduction_tile": [0, 0, 0, 64],
+                "q_load_tile": [16, 16],
+                "v_load_tile": [32, 32],
+                "prefetch_tile": [16, 32],
+                "nb_prefetch": 1,
+            }
+        elif max_elemwise_dims == 5:
+            # GQA case
+            layer_params = {
+                "layer_kind": "attention",
+                "batch_size": batch_size,
+                "n_head": n_head,
+                "n_ctx": n_ctx,
+                "d_head": d_head,
+                "wg_tile": [1, 1, 1, 128],
+                "sg_rows": 16,
+                "subgroup_size": 16,
+                "reduction_tile": [0, 0, 0, 0, 64],
+                "q_load_tile": [16, 16],
+                "v_load_tile": [32, 32],
+                "prefetch_tile": [16, 32],
+                "nb_prefetch": 1,
+            }
+        else:
+            raise ValueError(
+                f"Unsupported attention layer dimensionality: {max_elemwise_dims}"
+            )
 
         schedule_params = ScheduleParameters([layer_params])
         schedule_kind = "attention"
@@ -947,6 +975,7 @@ def parser_cli_args():
             "initial",
             "cleanup",
             "tiled",
+            "reduction-tiled",
             "vectorized",
             "bufferized",
             "gpu-outlining",
