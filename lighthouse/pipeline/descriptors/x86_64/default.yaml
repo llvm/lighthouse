@@ -1,5 +1,9 @@
 # The default optimizing pipeline for x86 architecture.
 Pipeline:
+  # Remove asserts - their presence within Linalg op regions blocks vectorization.
+  - schedule: "asserts.py[gen=remove_asserts]"
+  - include: cleanup.yaml
+
   ## Initial elementwise operations fusion to group them.
   - pass: "linalg-fuse-elementwise-ops"
 

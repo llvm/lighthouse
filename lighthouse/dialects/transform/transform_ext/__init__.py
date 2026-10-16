@@ -40,6 +40,7 @@ from .ops.get_fusion_roots import get_fusion_roots
 from .ops.propagate_tile_sizes import propagate_tile_sizes
 from .utils.dependent_reduction_legality import REDUCTION_LOOP_ATTR_NAME
 from .ops.sfc_remap_forall import sfc_remap_forall
+from .ops.remove_asserts import remove_asserts
 from .ops.sink_extract_slice_into_loop import sink_extract_slice_into_loop
 from .ops.sink_normalization_past_contraction import (
     sink_normalization_past_contraction,
@@ -80,6 +81,7 @@ __all__ = [
     "param_cmp_eq",
     "propagate_tile_sizes",
     "register_and_load",
+    "remove_asserts",
     "replace",
     "reverse_handles",
     "rewrite_attention_row_mask",
