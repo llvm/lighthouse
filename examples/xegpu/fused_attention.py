@@ -348,7 +348,7 @@ if __name__ == "__main__":
         "wg_tile": [1, args.wg_rows],
         "sg_rows": args.sg_rows,
         "subgroup_size": args.subgroup_size,
-        "reduction_tile": args.reduction_tile,
+        "reduction_tile": [0, 0, args.reduction_tile],
         "q_load_tile": args.q_load_tile,
         "v_load_tile": args.v_load_tile,
         "prefetch_tile": args.prefetch_tile,
