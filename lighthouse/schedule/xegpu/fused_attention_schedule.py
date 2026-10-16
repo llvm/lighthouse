@@ -149,15 +149,16 @@ def bundle_xegpu_fused_attention_schedule(
     # Convert linalg.elementwise and linalg.batch_matmul to linalg.generic
     structured.structured_generalize(
         anytype,
-        structured.structured_match(
-            anytype,
-            func,
-            ops=["linalg.elementwise", "linalg.batch_matmul"],
-        ),
+        lh_transform.match_op(func, ["linalg.elementwise", "linalg.batch_matmul"]),
     )
+
+    # Temporary Python equivalent of the native reshape-expansion patterns.
+    func = transform_ext.fold_reshape_ops_by_expansion(func)
 
     # Normalize possible singleton dimensions so tile+fuse logic works.
     with ir.InsertionPoint(transform.apply_patterns(func).patterns):
+        # Drop unused argmax results so online fusion sees a simple row max.
+        structured.apply_patterns_linalg_erase_unused_operands_and_results()
         # fold unit dims in linalg.generic op inputs
         structured.apply_patterns_linalg_fold_unit_extent_dims_via_slices()
         # fold tensor.extract_slice(tensor.expand_shape(x)) into x
@@ -168,24 +169,26 @@ def bundle_xegpu_fused_attention_schedule(
         tensor.apply_patterns_tensor_fold_tensor_empty(fold_single_use_only=True)
     lh_transform.cleanup(func)
 
-    # Fuse the subtract into exp before the broad elementwise pass. Before WG
-    # tiling, the reductions are Q@K^T, row max, row sum, P@V in that order.
-    reductions = transform_ext.filter_reduction_ops(
-        structured.structured_match(anytype, func, ops=["linalg.generic"])
+    # Find the subtract and exp reduction loops and fuse them.
+    subf_op = transform_ext.extract_handle(
+        lh_transform.match_op(func, "arith.subf"),
+        0,
+        silenceable=True,
     )
-    _, _, row_sum, _ = transform.split_handle([anytype] * 4, reductions)
-    exp_op = transform.get_producer_of_operand(anytype, row_sum, operand_number=0)
-    sub_op = transform.get_producer_of_operand(anytype, exp_op, operand_number=0)
-    transform_ext.fuse_elementwise_op(sub_op, exp_op)
+    subf_loop = transform.get_parent_op(anytype, subf_op, op_name="linalg.generic")
+    exp_op = transform_ext.extract_handle(
+        lh_transform.match_op(func, "math.exp"),
+        0,
+        silenceable=True,
+    )
+    exp_loop = transform.get_parent_op(anytype, exp_op, op_name="linalg.generic")
+    transform_ext.fuse_elementwise_op(subf_loop, exp_loop)
 
-    # The broad pass also folds reshapes around batched matmul.
-    func = apply_registered_pass(func, "linalg-fuse-elementwise-ops")
     lh_transform.cleanup(func)
 
-    # The pass above folds the normalizing divide into the @V contraction's body.
-    # Move it past the contraction to form the deferred-divide chain.
+    # Move the normalizing divide past @V to form the deferred-divide chain.
     contraction_ops = transform_ext.filter_contraction_ops(
-        structured.structured_match(anytype, func, ops=["linalg.generic"])
+        lh_transform.match_op(func, ["linalg.generic"])
     )
     pv_contraction = transform_ext.extract_handle(contraction_ops, -1)
     transform_ext.sink_normalization_past_contraction(pv_contraction)
@@ -197,11 +200,9 @@ def bundle_xegpu_fused_attention_schedule(
         assert wg == 1, "WG tile must be of form [1, ..., wg_rows]"
     wg_rows = wg_tile[-1]
 
-    linalg_ops = structured.structured_match(
-        anytype, func, ops=["linalg.generic", "linalg.batch_matmul"]
-    )
+    linalg_ops = lh_transform.match_op(func, ["linalg.generic", "linalg.batch_matmul"])
     leaf_linalg_op = transform_ext.extract_handle(linalg_ops, -1)
-    leaf_generic_wg, _, _ = lh_transform.tile(
+    lh_transform.tile(
         leaf_linalg_op,
         tile_sizes=wg_tile,
         fuse_producers=True,
@@ -216,32 +217,25 @@ def bundle_xegpu_fused_attention_schedule(
     # Fuse the inner attention loop before vectorization.
     reduction_tile = layer_params["reduction_tile"]
 
-    transform_to_flash_attention(
+    func = transform_to_flash_attention(
         anytype,
         func,
         reduction_tile,
         n_parallel=len(layer_params["wg_tile"]),
     )
 
+    # Inline splat-constant generic inputs (e.g. masked-select zero) as
+    # scalars so they are not vectorized into reads of constant tensors.
+    func = transform_ext.fold_scalar_or_splat_constant(func)
+
+    annotate_fastmath_flags(func)
+    lh_transform.cleanup(func)
+
     if stop_at_stage == "reduction-tiled":
         raise PipelineInterrupt()
 
     # Vectorize
     func = vectorize(mod, payload_func=func)
-
-    # The accumulators of the flash loop are tensors at linalg level, so
-    # vectorization turns them into a transfer_read/transfer_write pair per
-    # iteration. Repeat the subset hoisting now that CSE has run, so that all
-    # accumulators are carried as vector iter_args, i.e. in registers.
-    reduction_loop = match(func, ops={"scf.for"})
-    lh_transform.loop_hoisting(reduction_loop)
-
-    annotate_fastmath_flags(func)
-    transform.apply_cse(func)
-    canonicalize(func)
-
-    func = apply_registered_pass(func, "remove-dead-values")
-    lh_transform.cleanup(func)
 
     if stop_at_stage == "vectorized":
         raise PipelineInterrupt()

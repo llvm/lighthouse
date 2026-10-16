@@ -332,7 +332,7 @@ def main() -> None:
     )
 
     # CHECK-LABEL: Case: squared E contribution
-    # CHECK-NEXT: Not legal to fuse: R2 body must add E or multiply two distinct inputs before adding
+    # CHECK-NEXT: Not legal to fuse: R2 contribution must scale linearly with E
     check_case(
         "squared E contribution",
         replace_once(
