@@ -25,6 +25,7 @@ from .attention_fusion import (
     transform_to_flash_attention,
     enable_fastmath_optimizations,
 )
+from .annotate_layouts_schedule import add_prefetch
 
 
 def fused_attention_schedule(
@@ -155,9 +156,6 @@ def bundle_xegpu_fused_attention_schedule(
         lh_transform.match_op(func, ["linalg.elementwise", "linalg.batch_matmul"]),
     )
 
-    # Temporary Python equivalent of the native reshape-expansion patterns.
-    func = transform_ext.fold_reshape_ops_by_expansion(func)
-
     # Normalize possible singleton dimensions so tile+fuse logic works.
     with ir.InsertionPoint(transform.apply_patterns(func).patterns):
         # Drop unused argmax results so online fusion sees a simple row max.
@@ -170,6 +168,18 @@ def bundle_xegpu_fused_attention_schedule(
         structured.apply_patterns_linalg_swap_extract_slice_with_fill()
         # fold tensor.extract_slice(tensor.empty(...)) into tensor.tensor_empty(...)
         tensor.apply_patterns_tensor_fold_tensor_empty(fold_single_use_only=True)
+    lh_transform.cleanup(func)
+
+    # Clean up to fully expanded shapes by eliminating expand/collapse shape pairs.
+    # Generalize all transpose ops.
+    transpose_ops = lh_transform.match_op(func, "linalg.transpose")
+    structured.structured_generalize(anytype, transpose_ops)
+    for i in range(3):
+        # Fold reshape ops by expansion and fold extract_slice into tensor.empty
+        # Repeat until no more folding.
+        func = transform_ext.fold_reshape_ops_by_expansion(func)
+        with ir.InsertionPoint(transform.apply_patterns(func).patterns):
+            tensor.apply_patterns_tensor_fold_tensor_empty(fold_single_use_only=False)
     lh_transform.cleanup(func)
 
     # Find the subtract and exp reduction loops and fuse them.
@@ -218,18 +228,24 @@ def bundle_xegpu_fused_attention_schedule(
         raise PipelineInterrupt()
 
     # Fuse the inner attention loop before vectorization.
-    reduction_tile = layer_params["reduction_tile"]
+    reduction_tile_vector = layer_params["reduction_tile"]
+    reduction_tile = reduction_tile_vector[-1]
 
     func = transform_to_flash_attention(
         anytype,
         func,
-        reduction_tile,
-        n_parallel=len(layer_params["wg_tile"]),
+        reduction_tile_vector,
     )
 
     # Inline splat-constant generic inputs (e.g. masked-select zero) as
     # scalars so they are not vectorized into reads of constant tensors.
     func = transform_ext.fold_scalar_or_splat_constant(func)
+    lh_transform.cleanup(func)
+
+    # Write the result through an expanded view of the output memref so the GQA
+    # collapse_shape leaves the write path and bufferization elides the output
+    # buffer + copy.
+    func = transform_ext.expand_output_destination(func)
 
     if stop_at_stage == "reduction-tiled":
         raise PipelineInterrupt()
@@ -237,18 +253,7 @@ def bundle_xegpu_fused_attention_schedule(
     # Vectorize
     func = vectorize(mod, payload_func=func)
 
-    # The accumulators of the flash loop are tensors at linalg level, so
-    # vectorization turns them into a transfer_read/transfer_write pair per
-    # iteration. Repeat the subset hoisting now that CSE has run, so that all
-    # accumulators are carried as vector iter_args, i.e. in registers.
-    reduction_loop = match(func, ops={"scf.for"})
-    lh_transform.loop_hoisting(reduction_loop)
-
     enable_fastmath_optimizations(func)
-    transform.apply_cse(func)
-    canonicalize(func)
-
-    func = apply_registered_pass(func, "remove-dead-values")
     lh_transform.cleanup(func)
 
     if stop_at_stage == "vectorized":
@@ -290,6 +295,19 @@ def bundle_xegpu_fused_attention_schedule(
     gpu_mod = match(mod, ops={"gpu.module"})
     gpu_func = match(gpu_mod, ops={"gpu.func"})
 
+    # Define XeGPU layout parameters
+    d_head = layer_params["d_head"]
+    sg_rows = layer_params["sg_rows"]
+
+    # The K/V prefetches cover the same [reduction_tile, d_head] tile as the
+    # loads, but are distributed over the subgroups.
+    prefetch_sg_data = layer_params["prefetch_tile"]
+    prefetch_sg_layout = [
+        reduction_tile // prefetch_sg_data[0],
+        d_head // prefetch_sg_data[1],
+    ]
+    prefetch_inst_data = list(prefetch_sg_data)
+
     # Insert prefetches for the K and V tiles of the reduction loop. Each
     # inserts nb_prefetch prefetches ahead of the loop plus one per iteration,
     # at induction_var + nb_prefetch * step. This must run before the wg-level
@@ -297,17 +315,34 @@ def bundle_xegpu_fused_attention_schedule(
     # load's descriptor. The layouts of the emitted prefetch_nd ops are set
     # together with the other wg-level layouts.
     nb_prefetch = layer_params.get("nb_prefetch", 1)
-    if nb_prefetch > 0:
-        reduction_loop = match(gpu_func, ops={"scf.for"})
-        kv_load_ops = match_and_split(reduction_loop, ops={"xegpu.load_nd"}, nhandles=2)
-        for load_op in kv_load_ops:
-            xegpu.insert_prefetch(load_op, nb_prefetch=nb_prefetch)
-        transform.apply_cse(gpu_func)
-        canonicalize(gpu_func)
 
-    # Define XeGPU layout parameters
-    d_head = layer_params["d_head"]
-    sg_rows = layer_params["sg_rows"]
+    def _add_prefetch(load_op):
+        add_prefetch(
+            load_op,
+            nb_prefetch,
+            sg_layout=prefetch_sg_layout,
+            sg_data=prefetch_sg_data,
+            inst_data=prefetch_inst_data,
+        )
+
+    if nb_prefetch > 0:
+        # Add prefetch ops to loads within the reduction loop.
+        reduction_loop = transform_ext.extract_handle(
+            lh_transform.match_op(gpu_func, "scf.for"), 0, silenceable=True
+        )
+        load_ops = lh_transform.match_op(reduction_loop, "xegpu.load_nd")
+        with lh_transform.foreach(load_ops) as load_op:
+            _add_prefetch(load_op)
+            transform.yield_()
+        # Handle possible nested scf.for loop
+        nested_for_ops = lh_transform.match_op(reduction_loop, "scf.for")
+        with lh_transform.foreach(nested_for_ops) as for_op:
+            nested_load_ops = lh_transform.match_op(for_op, "xegpu.load_nd")
+            with lh_transform.foreach(nested_load_ops) as load_op:
+                _add_prefetch(load_op)
+                transform.yield_()
+            transform.yield_()
+        lh_transform.cleanup(gpu_func)
 
     # Q, the attention weights and the output are all [wg_rows, d_head] tiles
     # that are split by rows over the subgroups. Only the memory ops carry
@@ -334,15 +369,6 @@ def bundle_xegpu_fused_attention_schedule(
     kt_sg_data = [d_head, reduction_tile]
     # V operand of the P@V DPAS: [reduction_tile, d_head]
     v_sg_data = [reduction_tile, d_head]
-
-    # The K/V prefetches cover the same [reduction_tile, d_head] tile as the
-    # loads, but are distributed over the subgroups.
-    prefetch_sg_data = layer_params["prefetch_tile"]
-    prefetch_sg_layout = [
-        reduction_tile // prefetch_sg_data[0],
-        d_head // prefetch_sg_data[1],
-    ]
-    prefetch_inst_data = list(prefetch_sg_data)
 
     # Set layout attributes for xegpu.store_nd ops.
     store_nd_op = match_and_split(gpu_func, ops={"xegpu.store_nd"}, nhandles=1)[0]
