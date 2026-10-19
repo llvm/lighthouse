@@ -9,6 +9,7 @@ from .ops.get_tile_sizes import get_tile_sizes
 from .ops.param_cmp_eq import param_cmp_eq
 from .ops.replace import replace
 from .ops.convert_func_results_to_args import convert_func_results_to_args
+from .ops.narrow_vector_contract_operands import narrow_vector_contract_operands
 from .ops.emit_definite_failure import emit_definite_failure
 from .ops.extract_handle import extract_handle
 from .ops.get_tileable_consumers import get_tileable_consumers
@@ -22,9 +23,13 @@ from .ops.update_address_space import update_address_space
 from .ops.filter_num_loops import filter_num_loops
 from .ops.filter_elementwise import filter_elementwise
 from .ops.fuse_elementwise_op import fuse_elementwise_op
+from .ops.fold_reshape_ops_by_expansion import fold_reshape_ops_by_expansion
+from .ops.fold_scalar_or_splat_constant import fold_scalar_or_splat_constant
 from .ops.filter_by_name import filter_by_name
 from .ops.filter_reduction_ops import filter_reduction_ops
 from .ops.fuse_dependent_reduction_ops import fuse_dependent_reduction_ops
+from .ops.filter_non_contraction_reductions import filter_non_contraction_reductions
+from .ops.rewrite_attention_row_mask import rewrite_attention_row_mask
 from .ops.filter_contraction_ops import filter_contraction_ops
 from .ops.get_leading_unit_tile_sizes import get_leading_unit_tile_sizes
 from .ops.move_offsets_to_subview import move_offsets_to_subview
@@ -53,8 +58,11 @@ __all__ = [
     "filter_by_name",
     "filter_contraction_ops",
     "filter_elementwise",
+    "filter_non_contraction_reductions",
     "filter_num_loops",
     "filter_reduction_ops",
+    "fold_reshape_ops_by_expansion",
+    "fold_scalar_or_splat_constant",
     "fuse_dependent_reduction_ops",
     "fuse_elementwise_op",
     "get_fusion_roots",
@@ -68,11 +76,13 @@ __all__ = [
     "infer_xegpu_gemm_params",
     "infer_xegpu_reduction_params",
     "move_offsets_to_subview",
+    "narrow_vector_contract_operands",
     "param_cmp_eq",
     "propagate_tile_sizes",
     "register_and_load",
     "replace",
     "reverse_handles",
+    "rewrite_attention_row_mask",
     "sfc_remap_forall",
     "sink_extract_slice_into_loop",
     "sink_normalization_past_contraction",

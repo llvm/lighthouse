@@ -25,7 +25,8 @@ def apply_gemm_tiling(
 ) -> ir.Operation:
     """Apply GEMM tiling to the given function."""
 
-    anytype = transform.AnyOpType.get()
+    # Fuse elementwise ops first to simplify the graph.
+    func = apply_registered_pass(func, "linalg-fuse-elementwise-ops")
 
     matmul_ops = lh_transform.match_op(func, "linalg.matmul")
     # Ensure lowering fails if no matmul ops exist.
@@ -58,13 +59,12 @@ def apply_gemm_tiling(
 
         # k loop tiling
         wg_matmul = match(wg_loop, ops={"linalg.matmul"})
-        _, [k_loop], _ = lh_transform.tile(wg_matmul, tile_sizes=[0, 0, _k_tile])
-        lh_transform.cleanup(wg_loop)
-        # if there's a transpose op fuse it into the k loop
-        transpose_op = match(wg_loop, ops={"linalg.transpose"})
-        structured.structured_fuse_into_containing_op(
-            anytype, anytype, transpose_op, k_loop
+        lh_transform.tile(
+            wg_matmul,
+            tile_sizes=[0, 0, _k_tile],
+            fuse_producers=True,
         )
+        lh_transform.cleanup(wg_loop)
         transform.yield_()
     lh_transform.cleanup(func)
     return func
@@ -74,6 +74,9 @@ def apply_reduction_tiling(func: ir.Operation) -> ir.Operation:
     """Apply reduction tiling to the given function."""
 
     anytype = transform.AnyOpType.get()
+
+    # Fuse elementwise ops first to simplify the graph.
+    func = apply_registered_pass(func, "linalg-fuse-elementwise-ops")
 
     # TODO implement actual pattern matching and anchor op inference
     anchor_op = lh_transform.match_op(func, "linalg.generic")
@@ -178,12 +181,29 @@ def apply_attention_tiling(func: ir.Operation) -> ir.Operation:
     """Apply attention-layer workgroup tiling to the given function."""
     anytype = transform.AnyOpType.get()
 
-    # Payloads write the softmax in the conventional order, with the normalizing
-    # divide before the `@V` contraction, and the pass above fuse that divide into
-    # the contraction's body. Move it past the contraction, so the op sequence is
-    # amenable to flash attention style fusion.
+    # Temporary Python equivalent of the native reshape-expansion patterns.
+    func = transform_ext.fold_reshape_ops_by_expansion(func)
+
+    # Find the subtract and exp reduction loops and fuse them.
+    subf_op = transform_ext.extract_handle(
+        lh_transform.match_op(func, "arith.subf"),
+        0,
+        silenceable=True,
+    )
+    subf_loop = transform.get_parent_op(anytype, subf_op, op_name="linalg.generic")
+    exp_op = transform_ext.extract_handle(
+        lh_transform.match_op(func, "math.exp"),
+        0,
+        silenceable=True,
+    )
+    exp_loop = transform.get_parent_op(anytype, exp_op, op_name="linalg.generic")
+    transform_ext.fuse_elementwise_op(subf_loop, exp_loop)
+
+    lh_transform.cleanup(func)
+
+    # Move the normalizing divide past @V to form the deferred-divide chain.
     contraction_ops = transform_ext.filter_contraction_ops(
-        lh_transform.match_op(func, "linalg.generic")
+        structured.structured_match(anytype, func, ops=["linalg.generic"])
     )
     pv_contraction = transform_ext.extract_handle(contraction_ops, -1, silenceable=True)
     transform_ext.sink_normalization_past_contraction(pv_contraction)
@@ -204,9 +224,13 @@ def apply_attention_tiling(func: ir.Operation) -> ir.Operation:
     )
     lh_transform.cleanup(func)
 
-    transform_to_flash_attention(anytype, func, reduction_tile, n_parallel=3)
+    func = transform_to_flash_attention(anytype, func, reduction_tile, n_parallel=3)
+
+    # Inline splat-constant generic inputs (e.g. masked-select zero) as
+    # scalars so they are not vectorized into reads of constant tensors.
+    func = transform_ext.fold_scalar_or_splat_constant(func)
+
     enable_fastmath_optimizations(func)
-    transform.apply_cse(func)
     lh_transform.cleanup(func)
 
     return func

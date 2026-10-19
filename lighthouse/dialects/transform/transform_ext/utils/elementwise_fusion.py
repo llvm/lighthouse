@@ -119,13 +119,12 @@ def _clone(operation, mapping):
     mapping.update(zip(operation.results, cloned.results))
 
 
-def fuse_elementwise(producer, consumer, rewriter) -> ir.Operation | None:
-    """Fuse one producer input edge, preserving the original producer and users.
+def build_fused_elementwise(producer, consumer) -> ir.OpView | None:
+    """Build a detached fused consumer without changing either original op.
 
-    Only the selected consumer is replaced. Other users continue to use the
-    original producer. Producer outs tensors become fused inputs when their
+    Producer outs tensors become fused inputs when their
     values are read by the body or their shapes are needed for loop bounds.
-    Return the fused op on success, or None with the payload unchanged on failure.
+    Return None if the edge cannot be fused.
     """
     # Require one producer-to-consumer input edge and validate fusion legality.
     producer, consumer = opview(producer), opview(consumer)
@@ -236,6 +235,14 @@ def fuse_elementwise(producer, consumer, rewriter) -> ir.Operation | None:
         linalg.YieldOp(
             [mapping.get(value, value) for value in consumer_ops[-1].operands]
         )
+    return fused
+
+
+def fuse_elementwise(producer, consumer, rewriter) -> ir.Operation | None:
+    """Fuse one input edge, preserving the producer and its other users."""
+    fused = build_fused_elementwise(producer, consumer)
+    if fused is None:
+        return None
     # Verify in place for captured-value dominance; discard only the candidate on failure.
     ir.InsertionPoint(consumer).insert(fused.operation)
     try:

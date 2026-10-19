@@ -4,7 +4,6 @@ from mlir import ir
 from mlir.dialects import transform
 from mlir.dialects.transform import structured, tensor
 import lighthouse.transform as lh_transform
-from lighthouse.pipeline.helper import apply_registered_pass
 from lighthouse.schedule import schedule_boilerplate
 from .lowering_common import get_payload_func
 
@@ -45,6 +44,8 @@ def cleanup_schedule(
 
         # Normalize possible singleton dimensions so tile+fuse logic works.
         with ir.InsertionPoint(transform.apply_patterns(func).patterns):
+            # drop unused argmax results so online fusion sees a simple row max
+            structured.apply_patterns_linalg_erase_unused_operands_and_results()
             # fold unit dims in linalg.generic op inputs
             structured.apply_patterns_linalg_fold_unit_extent_dims_via_slices()
             # fold tensor.extract_slice(tensor.expand_shape(x)) into x
@@ -53,10 +54,6 @@ def cleanup_schedule(
             structured.apply_patterns_linalg_swap_extract_slice_with_fill()
             # fold tensor.extract_slice(tensor.empty(...)) into tensor.tensor_empty(...)
             tensor.apply_patterns_tensor_fold_tensor_empty(fold_single_use_only=True)
-        lh_transform.cleanup(func)
-
-        # Fuse elementwise ops, also removes unused linalg op results (if any).
-        func = apply_registered_pass(func, "linalg-fuse-elementwise-ops")
         lh_transform.cleanup(func)
 
         transform.yield_()

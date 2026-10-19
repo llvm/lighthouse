@@ -7,6 +7,14 @@ value, and reduces the tile. For example, in softmax the rescale factor for old
 sum accumulator is ``exp(-m_new) / exp(-m_old)`` before adding this contribution
 of current tile ``sum(exp(x_tile - m_new))``.
 
+Recognized softmax chains use ``exp(m_old - m_new)`` and zero weights for
+empty (-inf-only) tiles. It assumes finite auxiliary inputs such as V and leaves
+the fully-masked-row output guard to the final normalization.
+
+Correction factors are computed only over the dimensions their accumulator
+inputs reference, then broadcast when rescaling R2. CSE can share identical
+factors across consumer reductions with the same computation/accumulator types.
+
 E's loop-carried full result is stale until the final tile and is removed after
 vectorization. If E has other users, fuse a clone and leave E outside the loop
 to compute its final result for them.
@@ -15,7 +23,7 @@ to compute its final result for them.
 from dataclasses import dataclass
 
 from mlir import ir
-from mlir.dialects import arith, linalg, scf, tensor
+from mlir.dialects import arith, linalg, math, scf, tensor
 
 from lighthouse.utils.mlir import (
     indexing_maps as get_indexing_maps,
@@ -31,7 +39,6 @@ from lighthouse.dialects.transform.transform_ext.utils.dependent_reduction_legal
     collect_r1_as_elementwise_inputs,
     find_r2_elementwise_operand,
     map_loop_results_to_inner_reductions,
-    needs_elementwise_clone,
 )
 
 __all__ = ["fuse_dependent_reduction_ops", "plan_correction_factor"]
@@ -187,14 +194,40 @@ class _CorrectionPlan:
     """Read-only information needed to build both correction terms."""
 
     factor_maps: ir.ArrayAttr
+    factor_dims: tuple[int, ...]
     compute_type: ir.Type
     neutral_by_op: tuple[ir.Attribute | None, ...]
+    guard_softmax: bool = False
+
+
+def _is_softmax(r1_loop: ir.OpView, e: ir.OpView) -> bool:
+    indices, results = collect_r1_as_elementwise_inputs(r1_loop, e)
+    body = e.regions[0].blocks[0]
+    ops = list(body.operations)
+    if len(indices) == 1 and len(ops) == 3:
+        sub, exp, yield_op = [opview(op) for op in ops]
+        inner = map_loop_results_to_inner_reductions(r1_loop)[results[0]]
+        inner_ops = list(inner.regions[0].blocks[0].operations)
+        if (
+            isinstance(sub, arith.SubFOp)
+            and isinstance(exp, math.ExpOp)
+            and sub.operands[1] == body.arguments[indices[0]]
+            and sub.operands[0] in list(body.arguments)[: len(linalg_inputs(e))]
+            and sub.operands[0] != sub.operands[1]
+            and exp.operands[0] == sub.results[0]
+            and yield_op.operands[0] == exp.results[0]
+            and len(inner_ops) == 2
+            and isinstance(opview(inner_ops[0]), arith.MaximumFOp)
+        ):
+            return True
+    return False
 
 
 def plan_correction_factor(
     r1_loop: ir.OpView, e: ir.OpView, r2: ir.OpView
 ) -> _CorrectionPlan:
     """Assemble correction maps and constants after fusion legality succeeds."""
+    guard_softmax = _is_softmax(r1_loop, e)
     accumulator_indices, _ = collect_r1_as_elementwise_inputs(r1_loop, e)
     r2_e_index = find_r2_elementwise_operand(r2, e)
     e_out_map = get_indexing_maps(e)[len(linalg_inputs(e))]
@@ -216,7 +249,16 @@ def plan_correction_factor(
         projected = irr.project_dims(mapped, {r2_red_dim})
         assert projected is not None and projected.n_dims == rank
         factor_maps.append(projected)
-    factor_maps.append(ir.AffineMap.get_identity(rank))
+    factor_dims = tuple(
+        sorted({expr.position for imap in factor_maps for expr in imap.results})
+    )
+    unused_dims = set(range(rank)) - set(factor_dims)
+    compact_maps = []
+    for imap in factor_maps:
+        compact = irr.project_dims(imap, unused_dims)
+        assert compact is not None
+        compact_maps.append(compact)
+    compact_maps.append(ir.AffineMap.get_identity(len(factor_dims)))
 
     e_type = ir.ShapedType(e.results[0].type).element_type
     compute_type = irr.wider_float_type(e_type, r2_type.element_type)
@@ -243,9 +285,11 @@ def plan_correction_factor(
         )
         neutrals.append(neutral)
     return _CorrectionPlan(
-        ir.ArrayAttr.get([ir.AffineMapAttr.get(m) for m in factor_maps]),
+        ir.ArrayAttr.get([ir.AffineMapAttr.get(m) for m in compact_maps]),
+        factor_dims,
         compute_type,
         tuple(neutrals),
+        guard_softmax,
     )
 
 
@@ -308,19 +352,55 @@ def _correction_factor(
     r2_accumulator: ir.Value,
     plan: _CorrectionPlan,
 ) -> ir.Value:
-    """Build ``term(new) / term(old)`` over R2's parallel result shape.
+    """Build ``term(new) / term(old)`` only over its dependent dimensions.
 
     Use the prevalidated maps and compute type, then narrow the ratio to R2's
     accumulator type if needed.
     """
     accumulator_type = ir.RankedTensorType(r2_accumulator.type)
-    rank = accumulator_type.rank
+    rank = len(plan.factor_dims)
     iterator_types = ir.ArrayAttr.get(
         [ir.Attribute.parse("#linalg.iterator_type<parallel>") for _ in range(rank)]
     )
     element_type = accumulator_type.element_type
     compute_type = plan.compute_type
-    init = tensor.empty(irr.mixed_sizes(r2_accumulator), compute_type)
+    accumulator_sizes = irr.mixed_sizes(r2_accumulator)
+    init = tensor.empty(
+        [accumulator_sizes[dim] for dim in plan.factor_dims], compute_type
+    )
+
+    if plan.guard_softmax:
+        _, new_max, old_max = accumulators[0]
+        op = linalg.GenericOp(
+            result_tensors=[init.type],
+            inputs=[new_max, old_max],
+            outputs=[init],
+            indexing_maps=ir.ArrayAttr.get(
+                [plan.factor_maps[0], plan.factor_maps[0], plan.factor_maps[1]]
+            ),
+            iterator_types=iterator_types,
+        )
+        body = op.regions[0].blocks.append(
+            ir.ShapedType(new_max.type).element_type,
+            ir.ShapedType(old_max.type).element_type,
+            compute_type,
+        )
+        with ir.InsertionPoint(body):
+            new = irr.cast_float(body.arguments[0], compute_type)
+            old = irr.cast_float(body.arguments[1], compute_type)
+            zero = arith.constant(compute_type, ir.FloatAttr.get(compute_type, 0.0))
+            ninf = arith.constant(
+                compute_type, ir.FloatAttr.get(compute_type, float("-inf"))
+            )
+            empty = arith.cmpf(arith.CmpFPredicate.OEQ, old, ninf)
+            factor = math.exp(arith.subf(old, new))
+            linalg.yield_([arith.select(empty, zero, factor)])
+        factor = op.results[0]
+        return (
+            factor
+            if compute_type == element_type
+            else _cast_tensor(factor, element_type)
+        )
 
     def build_term(pick) -> ir.Value:
         inputs = [pick(acc) for acc in accumulators]
@@ -368,6 +448,99 @@ def _correction_factor(
     return _cast_tensor(factor, element_type)
 
 
+def _rescale_accumulator(
+    accumulator: ir.Value, factor: ir.Value, factor_dims: tuple[int, ...]
+) -> ir.Value:
+    """Broadcast the compact factor directly into the accumulator multiply."""
+    shaped = ir.RankedTensorType(accumulator.type)
+    if len(factor_dims) == shaped.rank:
+        return _emit_elementwise(
+            linalg.ElementwiseKind.mul,
+            lambda a, b: arith.mulf(a, b),
+            [accumulator, factor],
+            accumulator,
+        )
+    identity = ir.AffineMapAttr.get(ir.AffineMap.get_identity(shaped.rank))
+    broadcast = ir.AffineMapAttr.get(
+        ir.AffineMap.get(
+            shaped.rank, 0, [ir.AffineDimExpr.get(dim) for dim in factor_dims]
+        )
+    )
+    op = linalg.GenericOp(
+        result_tensors=[accumulator.type],
+        inputs=[accumulator, factor],
+        outputs=[accumulator],
+        indexing_maps=ir.ArrayAttr.get([identity, broadcast, identity]),
+        iterator_types=ir.ArrayAttr.get(
+            [
+                ir.Attribute.parse("#linalg.iterator_type<parallel>")
+                for _ in range(shaped.rank)
+            ]
+        ),
+    )
+    body = op.regions[0].blocks.append(*[shaped.element_type] * 3)
+    with ir.InsertionPoint(body):
+        linalg.yield_([arith.mulf(body.arguments[0], body.arguments[1])])
+    return op.results[0]
+
+
+def _tiled_dim_of_input(
+    consumer: ir.OpView, operand_index: int, consumer_dim: int
+) -> int | None:
+    """Return the producer tensor dim that `consumer_dim` reads through an input."""
+    maps = get_indexing_maps(consumer)
+    for position, expr in enumerate(maps[operand_index].results):
+        if isinstance(expr, ir.AffineDimExpr) and expr.position == consumer_dim:
+            return position
+    return None
+
+
+def _chain_tiled_dims(
+    e: ir.OpView,
+    chain: list[ir.OpView],
+    r2: ir.OpView,
+    r2_red_dim: int,
+    e_tiled_dim: int,
+) -> list[int]:
+    """Return each intermediate's loop dim that follows R2's reduction tile."""
+    tiled_dims = []
+    for op in chain:
+        if reduction_dims(op) or len(op.results) != 1:
+            raise FusionRejected("intermediates must be single-result elementwise ops")
+    consumer, consumer_dim = r2, r2_red_dim
+    for producer in reversed([e, *chain]):
+        indices = [
+            index
+            for index, operand in enumerate(linalg_inputs(consumer))
+            if operand == producer.results[0]
+        ]
+        if not indices:
+            raise FusionRejected("intermediate chain is not connected to R2")
+        position = _tiled_dim_of_input(consumer, indices[0], consumer_dim)
+        if position is None:
+            raise FusionRejected("intermediate does not carry R2's reduction axis")
+        out_map = get_indexing_maps(producer)[len(linalg_inputs(producer))]
+        expr = out_map.results[position]
+        if not isinstance(expr, ir.AffineDimExpr):
+            raise FusionRejected("intermediate output map is not a projection")
+        consumer, consumer_dim = producer, expr.position
+        tiled_dims.insert(0, consumer_dim)
+    if tiled_dims[0] != e_tiled_dim:
+        raise FusionRejected("intermediate chain changes E's tiled axis")
+    return tiled_dims[1:]
+
+
+def _shift_index_ops(op: ir.OpView, dim: int, offset: ir.Value) -> None:
+    """Offset ``linalg.index`` of a tiled dim by the tile start."""
+    for inner in list(op.regions[0].blocks[0].operations):
+        if isinstance(inner, linalg.IndexOp) and inner.dim.value == dim:
+            uses = list(inner.result.uses)
+            with ir.InsertionPoint.after(inner):
+                shifted = arith.addi(inner.result, offset)
+            for use in uses:
+                use.owner.operands[use.operand_number] = shifted
+
+
 def fuse_dependent_reduction_ops(
     rewriter,
     r1_loop: ir.OpView,
@@ -376,41 +549,45 @@ def fuse_dependent_reduction_ops(
     e_tiled_dim: int,
     tile_size: int,
     correction_plan: _CorrectionPlan,
+    chain: list[ir.OpView] | None = None,
 ) -> ir.OpView:
-    """Rebuild R1's loop with fused E and R2, using the checked tile axis."""
+    """Rebuild R1's loop with fused E and R2, using the checked tile axis.
+
+    `chain` lists all-parallel intermediates between E and R2. They are tiled
+    as separate ops inside the loop, so R2 keeps its own body. The in-loop E
+    and chain tiles use the running R1 value and only feed R2, so their full
+    extent is not carried; the originals keep serving other users with the
+    final R1 value and are erased once dead.
+    """
     r1_loop, e, r2 = opview(r1_loop), opview(e), opview(r2)
+    chain = [opview(op) for op in (chain or [])]
     r2_red_dim = reduction_dims(r2)[0]
     num_old_results = len(list(r1_loop.results))
+    chain_dims = (
+        _chain_tiled_dims(e, chain, r2, r2_red_dim, e_tiled_dim) if chain else []
+    )
 
     # This can reject cross-block moves; do it before cloning E or changing R2.
+    internal = {op.results[0] for op in (e, *chain)}
     to_hoist = [
         operand
-        for consumer in (e, r2)
+        for consumer in (e, *chain, r2)
         for operand in consumer.operands
-        if not irr.depends_on_op(operand, r1_loop)
+        if operand not in internal and not irr.depends_on_op(operand, r1_loop)
     ]
     if not irr.move_value_definitions(to_hoist, e):
         raise FusionRejected(
             "could not move E and R2's operand definitions above the reduction loop"
         )
 
-    # If E has other users, we need to clone it for the fusion.
-    e_or_clone = e
-    if needs_elementwise_clone(e, r2):
-        r2_e_index = find_r2_elementwise_operand(r2, e)
-        with ir.InsertionPoint(e), e.location:
-            clone = opview(e.operation.clone())
-        r2.operands[r2_e_index] = clone.results[0]
-        e_or_clone = clone
-
     # Build at E's position, after its init and before later R1 users.
-    anchor = e_or_clone
-    e_dest = linalg_outputs(e_or_clone)[0]
+    anchor = e
+    e_dest = linalg_outputs(e)[0]
     r2_dest = linalg_outputs(r2)[0]
 
     result_to_inner = map_loop_results_to_inner_reductions(r1_loop)
     accumulator_indices, accumulator_result_indices = collect_r1_as_elementwise_inputs(
-        r1_loop, e_or_clone
+        r1_loop, e
     )
 
     # Build the new fused loop.
@@ -419,15 +596,15 @@ def fuse_dependent_reduction_ops(
             r1_loop.lowerBound,
             r1_loop.upperBound,
             r1_loop.step,
-            list(r1_loop.initArgs) + [e_dest, r2_dest],
+            list(r1_loop.initArgs) + [r2_dest],
         )
     # Preserve the reduction marker for a later fusion.
     for name, attr in irr.op_attributes(r1_loop).items():
         new_loop.operation.attributes[name] = attr
 
     iv = new_loop.induction_variable
-    e_arg = new_loop.inner_iter_args[num_old_results]
-    r2_arg = new_loop.inner_iter_args[num_old_results + 1]
+    r2_result_index = num_old_results
+    r2_arg = new_loop.inner_iter_args[r2_result_index]
 
     value_map: dict = {r1_loop.induction_variable: iv}
     value_map.update(zip(r1_loop.inner_iter_args, new_loop.inner_iter_args))
@@ -451,7 +628,7 @@ def fuse_dependent_reduction_ops(
             accumulator_values[index] = (new_value, old_value)
 
         fused_e_inputs = []
-        for index, operand in enumerate(linalg_inputs(e_or_clone)):
+        for index, operand in enumerate(linalg_inputs(e)):
             if index in accumulator_values:
                 # Accumulators broadcast across the reduction axis.
                 fused_e_inputs.append(accumulator_values[index][0])
@@ -460,17 +637,29 @@ def fuse_dependent_reduction_ops(
                 fused_e_inputs.append(
                     _tile_slice(
                         operand,
-                        get_indexing_maps(e_or_clone)[index],
+                        get_indexing_maps(e)[index],
                         e_tiled_dim,
                         iv,
                         tile_size,
                     )
                 )
-        e_out_map = get_indexing_maps(e_or_clone)[len(linalg_inputs(e_or_clone))]
-        e_dest_tile = _tile_slice(e_arg, e_out_map, e_tiled_dim, iv, tile_size)
+        e_out_map = get_indexing_maps(e)[len(linalg_inputs(e))]
+        # A fresh tile: equal E tiles of sibling fusions can then be CSE'd.
+        e_dest_tile = _tile_slice(e_dest, e_out_map, e_tiled_dim, iv, tile_size)
         fused_e = _clone_generic_with_operands(
-            e_or_clone, fused_e_inputs, [e_dest_tile], [e_dest_tile.type]
+            e, fused_e_inputs, [e_dest_tile], [e_dest_tile.type]
         )
+        if correction_plan.guard_softmax:
+            sub = opview(fused_e.regions[0].blocks[0].operations[0])
+            maximum = sub.operands[1]
+            with ir.InsertionPoint(sub):
+                zero = arith.constant(maximum.type, ir.FloatAttr.get(maximum.type, 0.0))
+                ninf = arith.constant(
+                    maximum.type, ir.FloatAttr.get(maximum.type, float("-inf"))
+                )
+                empty = arith.cmpf(arith.CmpFPredicate.OEQ, maximum, ninf)
+                # exp(-inf - 0) is zero, unlike exp(-inf - -inf).
+                sub.operands[1] = arith.select(empty, zero, maximum)
 
         # --- Construct the online correction that rescales R2's running accumulator ---
         r2_out_map = get_indexing_maps(r2)[len(linalg_inputs(r2))]
@@ -479,22 +668,34 @@ def fuse_dependent_reduction_ops(
             (index, new_value, old_value)
             for index, (new_value, old_value) in accumulator_values.items()
         ]
-        factor = _correction_factor(
-            e_or_clone, r2, accumulators, r2_acc_tile, correction_plan
-        )
-        corrected_r2_acc = _emit_elementwise(
-            linalg.ElementwiseKind.mul,
-            lambda a, b: arith.mulf(a, b),
-            [r2_acc_tile, factor],
-            r2_acc_tile,
+        factor = _correction_factor(e, r2, accumulators, r2_acc_tile, correction_plan)
+        corrected_r2_acc = _rescale_accumulator(
+            r2_acc_tile, factor, correction_plan.factor_dims
         )
 
+        # --- Tile the intermediates as separate ops between E and R2 ---
+        tiled_values = {e.results[0]: fused_e.results[0]}
+        for op, tiled_dim in zip(chain, chain_dims):
+            maps = get_indexing_maps(op)
+            num_inputs = len(linalg_inputs(op))
+            inputs = [
+                tiled_values[operand]
+                if operand in tiled_values
+                else _tile_slice(operand, maps[index], tiled_dim, iv, tile_size)
+                for index, operand in enumerate(linalg_inputs(op))
+            ]
+            dest = _tile_slice(
+                linalg_outputs(op)[0], maps[num_inputs], tiled_dim, iv, tile_size
+            )
+            tiled = _clone_generic_with_operands(op, inputs, [dest], [dest.type])
+            _shift_index_ops(tiled, tiled_dim, iv)
+            tiled_values[op.results[0]] = tiled.results[0]
+
         # --- Build fused R2 that accumulates this tile into the rescaled sum ---
-        e_result = e_or_clone.results[0]
         r2_inputs = []
         for index, operand in enumerate(linalg_inputs(r2)):
-            if operand == e_result:
-                r2_inputs.append(fused_e.results[0])
+            if operand in tiled_values:
+                r2_inputs.append(tiled_values[operand])
             else:
                 r2_inputs.append(
                     _tile_slice(
@@ -508,14 +709,10 @@ def fuse_dependent_reduction_ops(
         fused_r2 = _clone_generic_with_operands(
             r2, r2_inputs, [corrected_r2_acc], [r2.results[0].type]
         )
+        _shift_index_ops(fused_r2, r2_red_dim, iv)
 
         # --- the new yield ---
         yielded = [value_map[o] for o in old_body_ops[-1].operands]
-        yielded.append(
-            _insert_tile_slice(
-                fused_e.results[0], e_arg, e_out_map, e_tiled_dim, iv, tile_size
-            )
-        )
         yielded.append(
             _insert_tile_slice(
                 fused_r2.results[0], r2_arg, r2_out_map, r2_red_dim, iv, tile_size
@@ -524,8 +721,9 @@ def fuse_dependent_reduction_ops(
         scf.YieldOp(yielded)
 
     # --- retire the originals -------------------------------------------------
-    # Replace R2 first so E's full-extent loop result becomes dead.
-    rewriter.replace_op(r2, [new_loop.results[num_old_results + 1]])
-    rewriter.replace_op(e_or_clone, [new_loop.results[num_old_results]])
+    rewriter.replace_op(r2, [new_loop.results[r2_result_index]])
+    for op in reversed([e, *chain]):
+        if not list(op.results[0].uses):
+            rewriter.erase_op(op)
     rewriter.replace_op(r1_loop, list(new_loop.results)[:num_old_results])
     return new_loop

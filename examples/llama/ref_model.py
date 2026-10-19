@@ -273,9 +273,13 @@ class Transformer(nn.Module):
             # only for the new sequence. Thus, the matrix of scores is of size
             # (seqlen, cache_len + seqlen), and the only masked entries are (i, j) for
             # j > cache_len + i, since row i corresponds to token cache_len + i.
-            mask = torch.hstack(
-                [torch.zeros((seqlen, start_pos), device=tokens.device), mask]
-            ).type_as(h)
+            # Skip the empty (seqlen, 0) prefix when start_pos == 0: torch-mlir
+            # cannot lower the resulting zero-sized aten.empty_strided.
+            if start_pos > 0:
+                mask = torch.hstack(
+                    [torch.zeros((seqlen, start_pos), device=tokens.device), mask]
+                )
+            mask = mask.type_as(h)
 
         for layer in self.layers:
             h = layer(h, start_pos, freqs_cis, mask)

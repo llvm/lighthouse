@@ -25,6 +25,25 @@ def largest_divisor(dim_size: int | None, limit: int) -> int:
     return 1
 
 
+def largest_multiple_divisor(
+    dim_size: int | None, limit: int, multiple_of: int
+) -> int | None:
+    """Largest multiple of `multiple_of` <= `limit` dividing `dim_size`.
+
+    Sizes not above `limit` are taken whole; None when nothing divides.
+    """
+    if dim_size is None:
+        return None
+    if dim_size <= limit:
+        return dim_size
+    tile = (limit // multiple_of) * multiple_of
+    while tile >= multiple_of:
+        if dim_size % tile == 0:
+            return tile
+        tile -= multiple_of
+    return None
+
+
 def assign_from_tail(dims: list[int], values: list[int], sizes: list[int]) -> None:
     """Write `values` onto `sizes` at the trailing `dims`, aligning both by their tails."""
     if not dims or not values:
