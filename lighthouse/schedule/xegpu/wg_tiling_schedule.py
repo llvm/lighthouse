@@ -10,10 +10,7 @@ from lighthouse.pipeline.helper import (
 )
 from lighthouse.schedule import schedule_boilerplate
 from lighthouse.dialects.transform import transform_ext
-from .attention_fusion import (
-    transform_to_flash_attention,
-    enable_fastmath_optimizations,
-)
+from .attention_fusion import transform_to_flash_attention
 from .lowering_common import get_payload_func
 
 
@@ -238,8 +235,6 @@ def apply_attention_tiling(func: ir.Operation) -> ir.Operation:
     # Inline splat-constant generic inputs (e.g. masked-select zero) as
     # scalars so they are not vectorized into reads of constant tensors.
     func = transform_ext.fold_scalar_or_splat_constant(func)
-
-    enable_fastmath_optimizations(func)
     lh_transform.cleanup(func)
 
     # Write the result through an expanded view of the output memref so the GQA

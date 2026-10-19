@@ -2,6 +2,8 @@ from mlir import ir
 from mlir.dialects import transform
 
 from lighthouse.schedule import schedule_boilerplate
+from .attention_fusion import enable_fastmath_optimizations
+
 from . import lowering_common
 
 
@@ -29,6 +31,8 @@ def vectorize_schedule(
             deduplicate=True,
         )
         func = lowering_common.vectorize(payload_mod, payload_func=func)
+        enable_fastmath_optimizations(func)
+
         transform.yield_()
 
     return schedule
