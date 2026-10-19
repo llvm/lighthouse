@@ -316,30 +316,23 @@ def bundle_xegpu_fused_attention_schedule(
     # together with the other wg-level layouts.
     nb_prefetch = layer_params.get("nb_prefetch", 1)
 
-    def _add_prefetch(load_op):
-        add_prefetch(
-            load_op,
-            nb_prefetch,
-            sg_layout=prefetch_sg_layout,
-            sg_data=prefetch_sg_data,
-            inst_data=prefetch_inst_data,
-        )
-
     if nb_prefetch > 0:
         # Add prefetch ops to loads within the reduction loop.
-        reduction_loop = transform_ext.extract_handle(
-            lh_transform.match_op(gpu_func, "scf.for"), 0, silenceable=True
-        )
-        load_ops = lh_transform.match_op(reduction_loop, "xegpu.load_nd")
-        with lh_transform.foreach(load_ops) as load_op:
-            _add_prefetch(load_op)
-            transform.yield_()
-        # Handle possible nested scf.for loop
-        nested_for_ops = lh_transform.match_op(reduction_loop, "scf.for")
-        with lh_transform.foreach(nested_for_ops) as for_op:
-            nested_load_ops = lh_transform.match_op(for_op, "xegpu.load_nd")
-            with lh_transform.foreach(nested_load_ops) as load_op:
-                _add_prefetch(load_op)
+        all_load_ops = lh_transform.match_op(gpu_func, "xegpu.load_nd")
+        with lh_transform.foreach(all_load_ops) as load_op:
+            # Loop over each load op.
+            parent_for = transform.get_parent_op(
+                anytype, load_op, op_name="scf.for", allow_empty_results=True
+            )
+            with lh_transform.foreach(parent_for):
+                # Add prefetch if parent is an scf.for loop.
+                add_prefetch(
+                    load_op,
+                    nb_prefetch,
+                    sg_layout=prefetch_sg_layout,
+                    sg_data=prefetch_sg_data,
+                    inst_data=prefetch_inst_data,
+                )
                 transform.yield_()
             transform.yield_()
         lh_transform.cleanup(gpu_func)
@@ -404,16 +397,6 @@ def bundle_xegpu_fused_attention_schedule(
         sg_data=kv_load_sg_data,
         inst_data=v_load_inst_data,
     )
-
-    # Set layout for all K/V xegpu.prefetch_nd ops
-    if nb_prefetch > 0:
-        prefetch_ops = match(gpu_func, ops={"xegpu.prefetch_nd"})
-        xegpu.set_anchor_layout(
-            prefetch_ops,
-            sg_layout=prefetch_sg_layout,
-            sg_data=prefetch_sg_data,
-            inst_data=prefetch_inst_data,
-        )
 
     # Set layout for xegpu.dpas ops (2 total: Q@K^T and P@V)
     dpas_ops = match_and_split(gpu_func, ops={"xegpu.dpas"}, nhandles=2)
