@@ -153,18 +153,24 @@ def transform_to_flash_attention(
     return func
 
 
-def annotate_fastmath_flags(func: ir.Value[transform.AnyOpType]) -> None:
-    """Mark online rescale quotients for LLVM's MathToXeVM simplification.
+def enable_fastmath_optimizations(target: ir.Value[transform.AnyOpType]) -> None:
+    """Enable attention-specific floating-point optimizations.
 
-    Preserve any flags already chosen by the payload. `afn` on the exps
-    selects native math; `reassoc,arcp` on each quotient permits exp(a-b).
+    Mark unflagged exponentials as fast to select native math, and mark
+    correction quotients with `reassoc,arcp` to permit exp(a-b) simplification.
+    Preserve fast-math flags already chosen by the payload.
+
+    Change vector maximum reductions to maxnum reductions. This permits a
+    cheaper SPIR-V lowering.
+    FIXME: But this ignores NaN operands and may choose either sign for a zero
+    result, so callers must accept those semantics.
     We cannot use `fast` in case `-inf` occurs in the P scores.
     """
     no_fastmath = ir.Attribute.parse("#arith.fastmath<none>")
     fast = transform.param_constant(
         transform.AnyParamType.get(), ir.Attribute.parse("#arith.fastmath<afn>")
     )
-    unmarked = match(func, ops=["math.exp"], op_attrs={"fastmath": no_fastmath})
+    unmarked = match(target, ops=["math.exp"], op_attrs={"fastmath": no_fastmath})
     transform.annotate(unmarked, "fastmath", param=fast)
 
     quotient_flags = transform.param_constant(
@@ -172,7 +178,7 @@ def annotate_fastmath_flags(func: ir.Value[transform.AnyOpType]) -> None:
         ir.Attribute.parse("#arith.fastmath<reassoc,arcp>"),
     )
     reduction_loop = match(
-        func,
+        target,
         ops=["scf.for"],
         op_attrs={transform_ext.REDUCTION_LOOP_ATTR_NAME: ir.UnitAttr.get()},
     )
@@ -182,3 +188,14 @@ def annotate_fastmath_flags(func: ir.Value[transform.AnyOpType]) -> None:
         op_attrs={"fastmath": no_fastmath},
     )
     transform.annotate(correction_divs, "fastmath", param=quotient_flags)
+
+    maximum = ir.Attribute.parse("#vector.kind<maximumf>")
+    maxnum = transform.param_constant(
+        transform.AnyParamType.get(), ir.Attribute.parse("#vector.kind<maxnumf>")
+    )
+    maximum_reductions = match(
+        target,
+        ops=["vector.multi_reduction"],
+        op_attrs={"kind": maximum},
+    )
+    transform.annotate(maximum_reductions, "kind", param=maxnum)

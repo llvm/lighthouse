@@ -21,7 +21,10 @@ from .lowering_common import (
 from lighthouse.schedule import schedule_boilerplate
 from lighthouse.schedule.parameters import ScheduleParameters
 from lighthouse.dialects.transform import transform_ext
-from .attention_fusion import transform_to_flash_attention, annotate_fastmath_flags
+from .attention_fusion import (
+    transform_to_flash_attention,
+    enable_fastmath_optimizations,
+)
 
 
 def fused_attention_schedule(
@@ -228,14 +231,25 @@ def bundle_xegpu_fused_attention_schedule(
     # scalars so they are not vectorized into reads of constant tensors.
     func = transform_ext.fold_scalar_or_splat_constant(func)
 
-    annotate_fastmath_flags(func)
-    lh_transform.cleanup(func)
-
     if stop_at_stage == "reduction-tiled":
         raise PipelineInterrupt()
 
     # Vectorize
     func = vectorize(mod, payload_func=func)
+
+    # The accumulators of the flash loop are tensors at linalg level, so
+    # vectorization turns them into a transfer_read/transfer_write pair per
+    # iteration. Repeat the subset hoisting now that CSE has run, so that all
+    # accumulators are carried as vector iter_args, i.e. in registers.
+    reduction_loop = match(func, ops={"scf.for"})
+    lh_transform.loop_hoisting(reduction_loop)
+
+    enable_fastmath_optimizations(func)
+    transform.apply_cse(func)
+    canonicalize(func)
+
+    func = apply_registered_pass(func, "remove-dead-values")
+    lh_transform.cleanup(func)
 
     if stop_at_stage == "vectorized":
         raise PipelineInterrupt()

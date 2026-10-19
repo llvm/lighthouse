@@ -10,7 +10,10 @@ from lighthouse.pipeline.helper import (
 )
 from lighthouse.schedule import schedule_boilerplate
 from lighthouse.dialects.transform import transform_ext
-from .attention_fusion import transform_to_flash_attention, annotate_fastmath_flags
+from .attention_fusion import (
+    transform_to_flash_attention,
+    enable_fastmath_optimizations,
+)
 from .lowering_common import get_payload_func
 
 
@@ -227,7 +230,7 @@ def apply_attention_tiling(func: ir.Operation) -> ir.Operation:
     # scalars so they are not vectorized into reads of constant tensors.
     func = transform_ext.fold_scalar_or_splat_constant(func)
 
-    annotate_fastmath_flags(func)
+    enable_fastmath_optimizations(func)
     lh_transform.cleanup(func)
 
     return func
