@@ -11,6 +11,8 @@ Pipeline:
   - schedule: "vectorization.py[gen=vectorize_all]"
   - schedule: "vectorization.py[gen=lower_vector_multi_reductions]"
   - schedule: "vectorization.py[gen=flatten_vector_ops]"
+  - schedule: "vectorization.py[gen=linearize_vector_ops]"
+  - schedule: "math.py[gen=poly_approx]"
 
   ## Lower to LLVM
   - include: llvm-lowering.yaml
