@@ -15,17 +15,23 @@ class InferXeGPUAttentionParamsOp(
     (K/V sequence) tile size. `wg_tile` and `sg_tile` are params associated with
     one i64 per iteration dimension (in loop order), so they can be passed
     directly to the tiling routines without splitting; `reduction_tile` is a
-    scalar i64 param.
+    list of i64 params in loop order.
 
     NOTE: This is just a placeholder implementation with hard-coded tile sizes.
 
     Args:
         target: Handle to the attention anchor op(s).
+        force_wg_tile: Optional workgroup tile sizes, used verbatim.
+        force_sg_tile: Optional subgroup tile sizes, used verbatim.
+        force_reduction_tile: Optional reduction tile sizes, used verbatim.
     Return:
         Params holding the wg, sg, and reduction tile sizes.
     """
 
     target: ext.Operand[transform.AnyOpType]
+    force_wg_tile: ext.Operand[transform.AnyParamType] | None = None
+    force_sg_tile: ext.Operand[transform.AnyParamType] | None = None
+    force_reduction_tile: ext.Operand[transform.AnyParamType] | None = None
     wg_tile: ext.Result[transform.AnyParamType[()]] = ext.infer_result()
     sg_tile: ext.Result[transform.AnyParamType[()]] = ext.infer_result()
     reduction_tile: ext.Result[transform.AnyParamType[()]] = ext.infer_result()
@@ -54,9 +60,7 @@ class InferXeGPUAttentionParamsOp(
                 return DiagnosedSilenceableFailure.SilenceableFailure
             target_op = target_ops[0]
             rank = ir.ShapedType(target_op.results[0].type).rank
-
-            size_attrs = InferXeGPUAttentionParamsOp._size_attrs
-
+            # TODO infer tile sizes from problem shape
             wg_rows, sg_rows, reduction_tile = 128, 16, 64
 
             if isinstance(target_op, linalg.GenericOp):
@@ -64,7 +68,11 @@ class InferXeGPUAttentionParamsOp(
                 # WG/SG row sizes and the reduction (K/V seq) tile are hard-coded.
                 # Tile every leading parallel dim (incl. the GQA group) by 1, the
                 # query-row dim by the WG row size, and leave d_head untiled.
-                if rank == 4:  # plain MHA: (batch, head, query_row, d_head)
+                if rank == 3:  # plain 3D attention: (head, query_row, d_head)
+                    wg, sg = [1, wg_rows], [0, sg_rows]
+                    red = [0, 0, reduction_tile]
+                elif rank == 4:  # plain MHA: (batch, head, query_row, d_head)
+                    wg_rows, sg_rows, reduction_tile = 128, 16, 64
                     wg, sg = [1, 1, wg_rows], [0, 0, sg_rows]
                     red = [0, 0, 0, reduction_tile]
                 elif rank == 5:  # GQA: (batch, kv_head, group, query_row, d_head)
@@ -79,9 +87,10 @@ class InferXeGPUAttentionParamsOp(
             elif isinstance(target_op, vector.ContractionOp) and rank == 2:
                 # Assume tiled vector.contract, op's result shape is
                 # (wg_rows, reduction_tile)
-                wg_rows, _ = ir.ShapedType(target_op.results[0].type).shape
-                wg = [wg_rows, 0]
-                sg = [sg_rows, 0]
+                wg_rows, reduction_tile = ir.ShapedType(target_op.results[0].type).shape
+                # Tile sizes are now for 2D case
+                wg = [wg_rows]
+                sg = [sg_rows]
                 red = [0, reduction_tile]
             else:
                 op.location.emit_error(
@@ -89,6 +98,23 @@ class InferXeGPUAttentionParamsOp(
                     f"op {target_op.operation.name} with rank {rank}"
                 )
                 return DiagnosedSilenceableFailure.SilenceableFailure
+            if op.force_wg_tile is not None:
+                forced_attr = state.get_params(op.force_wg_tile)
+                _wg = [ir.IntegerAttr(a).value for a in ir.ArrayAttr(forced_attr[0])]
+                wg = _wg[-len(wg) :]  # drop leading dims if inferred is shorter
+                print(f"Overriding {wg=}")
+            if op.force_sg_tile is not None:
+                forced_attr = state.get_params(op.force_sg_tile)
+                _sg = [ir.IntegerAttr(a).value for a in ir.ArrayAttr(forced_attr[0])]
+                sg = _sg[-len(sg) :]  # drop leading dims if inferred is shorter
+                print(f"Overriding {sg=}")
+            if op.force_reduction_tile is not None:
+                forced_attr = state.get_params(op.force_reduction_tile)
+                _red = [ir.IntegerAttr(a).value for a in ir.ArrayAttr(forced_attr[0])]
+                red = _red[-len(red) :]  # drop leading dims if inferred is shorter
+                print(f"Overriding {red=}")
+
+            size_attrs = InferXeGPUAttentionParamsOp._size_attrs
             results.set_params(op.wg_tile, size_attrs(wg))
             results.set_params(op.sg_tile, size_attrs(sg))
             results.set_params(op.reduction_tile, size_attrs(red))
@@ -112,16 +138,47 @@ class InferXeGPUAttentionParamsOp(
 
 def infer_xegpu_attention_params(
     target: ir.Value[transform.AnyOpType],
+    force_wg_tile: list[int] | None = None,
+    force_sg_tile: list[int] | None = None,
+    force_reduction_tile: list[int] | None = None,
 ) -> tuple[ir.Value, ir.Value, ir.Value]:
     """
     snake_case wrapper to create an InferXeGPUAttentionParamsOp.
 
     Args:
         target: Handle to the attention anchor op(s).
+        force_wg_tile: Optional workgroup tile sizes, used verbatim.
+        force_sg_tile: Optional subgroup tile sizes, used verbatim.
+        force_reduction_tile: Optional reduction tile sizes, used verbatim.
     Return:
         Tuple of params holding the wg and sg tile sizes (one i64 per iteration
-        dimension, ready to pass to the tiling routines) and the scalar
-        reduction tile size.
+        dimension, ready to pass to the tiling routines) and the reduction
+        tile sizes in loop order.
     """
-    op = InferXeGPUAttentionParamsOp(target=target)
+    wg_param = None
+    if force_wg_tile is not None:
+        wg_param = transform.ParamConstantOp(
+            transform.AnyParamType.get(),
+            ir.ArrayAttr.get(InferXeGPUAttentionParamsOp._size_attrs(force_wg_tile)),
+        )
+    sg_param = None
+    if force_sg_tile is not None:
+        sg_param = transform.ParamConstantOp(
+            transform.AnyParamType.get(),
+            ir.ArrayAttr.get(InferXeGPUAttentionParamsOp._size_attrs(force_sg_tile)),
+        )
+    reduction_param = None
+    if force_reduction_tile is not None:
+        reduction_param = transform.ParamConstantOp(
+            transform.AnyParamType.get(),
+            ir.ArrayAttr.get(
+                InferXeGPUAttentionParamsOp._size_attrs(force_reduction_tile)
+            ),
+        )
+    op = InferXeGPUAttentionParamsOp(
+        target=target,
+        force_wg_tile=wg_param,
+        force_sg_tile=sg_param,
+        force_reduction_tile=reduction_param,
+    )
     return op.wg_tile, op.sg_tile, op.reduction_tile
