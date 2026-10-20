@@ -14,6 +14,7 @@ from .vectorization import vectorize_all
 from .vectorization import x86_vectorization
 from .bufferization import bufferize
 from .debug import print_ir
+from .asserts import remove_asserts
 from .omp import parallelize
 
 __all__ = [
@@ -28,6 +29,7 @@ __all__ = [
     "lower_vector_multi_reductions",
     "parallelize",
     "print_ir",
+    "remove_asserts",
     "schedule_boilerplate",
     "simplify_vector_ops",
     "tile_ops",
