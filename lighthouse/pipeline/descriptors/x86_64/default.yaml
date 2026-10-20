@@ -5,7 +5,13 @@ Pipeline:
   - include: cleanup.yaml
 
   ## Initial elementwise operations fusion to group them.
-  - pass: "linalg-fuse-elementwise-ops"
+  # Disabled due to problem on larger graphs.
+  # TODO: Investigate and report the root cause.
+  # - pass: "linalg-fuse-elementwise-ops"
+
+  # Fold unit-extent dimensions to unblock tiling which can fail on constants
+  # in indexing maps present in place of unit dimensions.
+  - pass: "linalg-fold-unit-extent-dims"
 
   ## CPU layout packing.
   - include: pack.yaml {
