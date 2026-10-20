@@ -12,6 +12,8 @@ from .vectorization import lower_vector_multi_reductions
 from .vectorization import vectorize_linalg
 from .vectorization import vectorize_all
 from .vectorization import x86_vectorization
+from .vectorization import linearize_vector_ops
+from .math import poly_approx
 from .bufferization import bufferize
 from .debug import print_ir
 from .asserts import remove_asserts
@@ -26,8 +28,10 @@ __all__ = [
     "flatten_vector_ops",
     "hoist_loops",
     "linalg_contract_fold_unit_dims",
+    "linearize_vector_ops",
     "lower_vector_multi_reductions",
     "parallelize",
+    "poly_approx",
     "print_ir",
     "remove_asserts",
     "schedule_boilerplate",
