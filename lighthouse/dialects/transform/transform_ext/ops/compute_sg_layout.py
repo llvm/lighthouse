@@ -98,6 +98,10 @@ class ComputeSgLayoutOp(TransformExtensionDialect.Operation, name="compute_sg_la
                     layout = r // s
                 if w > 0 and s > 0:
                     layout = w // s
+                if layout < 1:
+                    raise ValueError(
+                        f"Invalid sg_layout value: {layout}. wg={w}, sg={s}, red={r}."
+                    )
                 sg_layout.append(layout)
                 # sg_data tracks the tiled dim: subgroup tile, else reduction.
                 sg_data.append(s if s > 0 else (r if r > 0 else 1))
