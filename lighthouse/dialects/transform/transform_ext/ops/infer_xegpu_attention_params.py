@@ -60,22 +60,25 @@ class InferXeGPUAttentionParamsOp(
                 return DiagnosedSilenceableFailure.SilenceableFailure
             target_op = target_ops[0]
             rank = ir.ShapedType(target_op.results[0].type).rank
-            # TODO infer tile sizes from problem shape
-            wg_rows, sg_rows, reduction_tile = 128, 16, 64
+
+            sg_rows = 16  # TODO implement sg_rows selection heuristic
 
             if isinstance(target_op, linalg.GenericOp):
-                # Assume non-tiled linalg.matmul
-                # WG/SG row sizes and the reduction (K/V seq) tile are hard-coded.
+                # Assume non-tiled linalg.matmul; 3 shape variants:
+                # multi-head attention: (head, query_row, d_head)
+                # batched multi-head attention: (batch, head, query_row, d_head)
+                # batched grouped-query attention: (batch, kv_head, group, query_row, d_head)
+                wg_rows, reduction_tile = 128, 64  # TODO tile size selection
                 # Tile every leading parallel dim (incl. the GQA group) by 1, the
                 # query-row dim by the WG row size, and leave d_head untiled.
-                if rank == 3:  # plain 3D attention: (head, query_row, d_head)
+                if rank == 3:  # plain MHA
                     wg, sg = [1, wg_rows], [0, sg_rows]
                     red = [0, 0, reduction_tile]
-                elif rank == 4:  # plain MHA: (batch, head, query_row, d_head)
+                elif rank == 4:  # batched MHA
                     wg_rows, sg_rows, reduction_tile = 128, 16, 64
                     wg, sg = [1, 1, wg_rows], [0, 0, sg_rows]
                     red = [0, 0, 0, reduction_tile]
-                elif rank == 5:  # GQA: (batch, kv_head, group, query_row, d_head)
+                elif rank == 5:  # batched grouped-query attention (GQA)
                     wg, sg = [1, 1, 1, wg_rows], [0, 0, 0, sg_rows]
                     red = [0, 0, 0, 0, reduction_tile]
                 else:
@@ -85,12 +88,23 @@ class InferXeGPUAttentionParamsOp(
                     )
                     return DiagnosedSilenceableFailure.SilenceableFailure
             elif isinstance(target_op, vector.ContractionOp) and rank == 2:
-                # Assume tiled vector.contract, op's result shape is
-                # (wg_rows, reduction_tile)
+                # Assume tiled vector.contract, result shape is (wg_rows, reduction_tile)
                 wg_rows, reduction_tile = ir.ShapedType(target_op.results[0].type).shape
                 # Tile sizes are now for 2D case
                 wg = [wg_rows]
                 sg = [sg_rows]
+                red = [0, reduction_tile]
+            elif (
+                target_op.name == "xegpu.dpas" and rank == 2
+            ):  # FIXME xegpu py bindings
+                # Assumes anchor op is the Q@K^T DPAS op is in fused reduction loop
+                # Result shape is (wg_rows, reduction_tile)
+                # Operand A shape is (wg_rows, d_head)
+                wg_rows, reduction_tile = ir.ShapedType(target_op.results[0].type).shape
+                wg_rows, d_head = ir.ShapedType(target_op.operands[0].type).shape
+                assert d_head == 64, "annotate_attention expects d_head to be 64"
+                wg = [wg_rows, 1]
+                sg = [sg_rows, 0]
                 red = [0, reduction_tile]
             else:
                 op.location.emit_error(
@@ -102,17 +116,14 @@ class InferXeGPUAttentionParamsOp(
                 forced_attr = state.get_params(op.force_wg_tile)
                 _wg = [ir.IntegerAttr(a).value for a in ir.ArrayAttr(forced_attr[0])]
                 wg = _wg[-len(wg) :]  # drop leading dims if inferred is shorter
-                print(f"Overriding {wg=}")
             if op.force_sg_tile is not None:
                 forced_attr = state.get_params(op.force_sg_tile)
                 _sg = [ir.IntegerAttr(a).value for a in ir.ArrayAttr(forced_attr[0])]
                 sg = _sg[-len(sg) :]  # drop leading dims if inferred is shorter
-                print(f"Overriding {sg=}")
             if op.force_reduction_tile is not None:
                 forced_attr = state.get_params(op.force_reduction_tile)
                 _red = [ir.IntegerAttr(a).value for a in ir.ArrayAttr(forced_attr[0])]
                 red = _red[-len(red) :]  # drop leading dims if inferred is shorter
-                print(f"Overriding {red=}")
 
             size_attrs = InferXeGPUAttentionParamsOp._size_attrs
             results.set_params(op.wg_tile, size_attrs(wg))
