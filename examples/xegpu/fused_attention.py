@@ -20,8 +20,57 @@ from lighthouse.ingress.mlir_gen import get_mlir_elem_type
 from lighthouse.ingress.mlir_gen.gpu_attention_payload import (
     generate_gpu_attention_payload,
 )
-from lighthouse.schedule.xegpu import fused_attention_schedule, xegpu_to_binary
+from lighthouse.schedule.xegpu import fused_attention_schedule
 from lighthouse.schedule.parameters import ScheduleParameters
+from lighthouse.schedule import xegpu
+
+
+def get_xegpu_pipeline(parameters: dict, stop_at_stage: str) -> list:
+    wg_tile = parameters.get("wg_tile", None)
+    sg_tile = parameters.get("sg_tile", None)
+    reduction_tile = parameters.get("reduction_tile", None)
+    nb_prefetch = parameters.get("nb_prefetch", None)
+    prefetch_tile = parameters.get("prefetch_tile", None)
+    q_load_tile = parameters.get("q_load_tile", None)
+    v_load_tile = parameters.get("v_load_tile", None)
+    schedules = []
+    if stop_at_stage == "initial":
+        return schedules
+    schedules.append(xegpu.cleanup_schedule())
+    if stop_at_stage == "cleanup":
+        return schedules
+    schedules.append(
+        xegpu.wg_tiling_schedule(
+            wg_tile=wg_tile,
+            reduction_tile=reduction_tile,
+        )
+    )
+    if stop_at_stage == "tiled":
+        return schedules
+    schedules.append(xegpu.vectorize_schedule())
+    if stop_at_stage == "vectorized":
+        return schedules
+    schedules.append(xegpu.bufferize_schedule())
+    if stop_at_stage == "bufferized":
+        return schedules
+    schedules.append(xegpu.outline_gpu_func_schedule(sg_tile=sg_tile))
+    if stop_at_stage == "gpu-outlining":
+        return schedules
+    schedules.append(xegpu.vector_to_xegpu_schedule())
+    if stop_at_stage == "xegpu-initial":
+        return schedules
+    schedules.append(
+        xegpu.annotate_layouts_schedule(
+            sg_tile=sg_tile,
+            nb_prefetch=nb_prefetch,
+            prefetch_tile=prefetch_tile,
+            q_load_tile=q_load_tile,
+            v_load_tile=v_load_tile,
+        )
+    )
+    if stop_at_stage == "xegpu-wg":
+        return schedules
+    return schedules
 
 
 def fused_attention_complexity(
@@ -188,17 +237,25 @@ class XeGPUFusedAttention:
         schedules = []
         schedules.append(Runner.get_bench_wrapper_schedule(self.payload_function_name))
 
-        schedules.append(
-            fused_attention_schedule(
-                stop_at_stage=stop_at_stage,
-                params=parameters,
+        use_gpu_pipeline = True
+        if not use_gpu_pipeline:
+            schedules.append(
+                fused_attention_schedule(
+                    stop_at_stage=stop_at_stage,
+                    params=parameters,
+                )
             )
-        )
+        else:
+            schedules.extend(
+                get_xegpu_pipeline(
+                    parameters=parameters[0], stop_at_stage=stop_at_stage
+                )
+            )
 
         if stop_at_stage and stop_at_stage != "final":
             return schedules
 
-        schedules.append(xegpu_to_binary())
+        schedules.append(xegpu.xegpu_to_binary())
 
         return schedules
 
@@ -308,6 +365,7 @@ def parse_cli():
         type=str,
         choices=[
             "initial",
+            "cleanup",
             "tiled",
             "reduction-tiled",
             "vectorized",
@@ -341,13 +399,14 @@ if __name__ == "__main__":
 
     layer_params = {
         "layer_kind": "attention",
-        "batch_size": args.batch_size,
-        "n_head": args.n_head,
-        "n_ctx": args.n_ctx,
-        "d_head": args.d_head,
+        "batch_size": args.batch_size,  # TODO deprecate
+        "n_head": args.n_head,  # TODO deprecate
+        "n_ctx": args.n_ctx,  # TODO deprecate
+        "d_head": args.d_head,  # TODO deprecate
         "wg_tile": [1, args.wg_rows],
-        "sg_rows": args.sg_rows,
-        "subgroup_size": args.subgroup_size,
+        "sg_rows": args.sg_rows,  # TODO deprecate
+        "sg_tile": [0, args.sg_rows],
+        "subgroup_size": args.subgroup_size,  # TODO deprecate, used in num_threads
         "reduction_tile": [0, 0, args.reduction_tile],
         "q_load_tile": args.q_load_tile,
         "v_load_tile": args.v_load_tile,
