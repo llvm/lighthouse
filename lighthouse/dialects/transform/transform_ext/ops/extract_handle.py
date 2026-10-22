@@ -1,8 +1,14 @@
+from typing import TypeVar
+
 from mlir import ir
 from mlir.dialects import ext, transform
+from mlir.dialects._ods_common import get_op_result_or_value
 from mlir.dialects.transform import DiagnosedSilenceableFailure
 
 from lighthouse.dialects.transform.transform_ext import TransformExtensionDialect
+
+
+HandleType = TypeVar("HandleType", bound=transform.AnyOpType | transform.AnyParamType)
 
 
 class ExtractHandleOp(TransformExtensionDialect.Operation, name="extract_handle"):
@@ -10,20 +16,20 @@ class ExtractHandleOp(TransformExtensionDialect.Operation, name="extract_handle"
     Returns the handle at the specified index in `target`.
 
     Args:
-        target: Handle(s) to target op(s)
+        target: Handle associated with operations or parameters.
         index: Index of the handle to extract. Supports Python-style indexing.
         silenceable: If False (default), an out-of-range index raises a
             definite failure; if True, a silenceable failure.
     Returns:
-        The handle at the specified index in `target`.
+        A handle of the same type as `target`, associated with its indexed element.
     """
 
-    target: ext.Operand[transform.AnyOpType]
+    target: ext.Operand[HandleType]
     index: ext.Operand[transform.AnyParamType]
     silenceable: ir.IntegerAttr = ext.attribute(
         default_factory=lambda: ir.IntegerAttr.get(ir.IntegerType.get_signless(1), 0)
     )
-    ops: ext.Result[transform.AnyOpType[()]] = ext.infer_result()
+    ops: ext.Result[HandleType] = ext.result(default_factory=transform.AnyOpType.get)
 
     @classmethod
     def attach_interface_impls(cls, ctx=None):
@@ -38,14 +44,19 @@ class ExtractHandleOp(TransformExtensionDialect.Operation, name="extract_handle"
             results: transform.TransformResults,
             state: transform.TransformState,
         ) -> DiagnosedSilenceableFailure:
-            target_ops = state.get_payload_ops(op.target)
+            is_param = isinstance(op.target.type, transform.AnyParamType)
+            targets = (
+                state.get_params(op.target)
+                if is_param
+                else state.get_payload_ops(op.target)
+            )
             index_attr = state.get_params(op.index)
             if len(index_attr) == 1 and isinstance(index_attr[0], ir.IntegerAttr):
                 index = index_attr[0].value
             else:
                 return DiagnosedSilenceableFailure.SilenceableFailure
 
-            n = len(target_ops)
+            n = len(targets)
             if index >= n or index < -n:
                 msg = (
                     f"extract_handle: invalid index {index} for target of length {n}. "
@@ -56,8 +67,11 @@ class ExtractHandleOp(TransformExtensionDialect.Operation, name="extract_handle"
                     return DiagnosedSilenceableFailure.SilenceableFailure
                 op.location.emit_error(msg)
                 return DiagnosedSilenceableFailure.DefiniteFailure
-            handle = target_ops[index]
-            results.set_ops(op.ops, [handle])
+            handle = targets[index]
+            if is_param:
+                results.set_params(op.ops, [handle])
+            else:
+                results.set_ops(op.ops, [handle])
             return DiagnosedSilenceableFailure.Success
 
         @staticmethod
@@ -75,27 +89,29 @@ class ExtractHandleOp(TransformExtensionDialect.Operation, name="extract_handle"
 
 
 def extract_handle(
-    target: ir.Value[transform.AnyOpType],
+    target: ir.Value[HandleType],
     index: int | ir.Value[transform.AnyParamType],
     silenceable: bool = False,
-) -> ir.Value:
+) -> ir.Value[HandleType]:
     """
     snake_case wrapper to create a ExtractHandleOp.
 
     Args:
-        target: Handle(s) to target op(s)
+        target: Handle associated with operations or parameters.
         index: Index of the handle to extract. Supports Python-style indexing.
         silenceable: If False (default), an out-of-range index raises a
             definite failure; if True, a silenceable failure.
     Returns:
-        The handle at the specified index in `target`.
+        A handle of the same type as `target`, associated with its indexed element.
     """
+    target = get_op_result_or_value(target)
     if isinstance(index, int):
         param_attr = ir.IntegerAttr.get(ir.IntegerType.get_signless(64), index)
         index = transform.ParamConstantOp(transform.AnyParamType.get(), param_attr)
 
     return ExtractHandleOp(
         target=target,
+        ops=target.type,
         index=index,
         silenceable=ir.IntegerAttr.get(
             ir.IntegerType.get_signless(1), int(silenceable)
