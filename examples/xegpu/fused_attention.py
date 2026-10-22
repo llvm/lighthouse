@@ -20,7 +20,6 @@ from lighthouse.ingress.mlir_gen import get_mlir_elem_type
 from lighthouse.ingress.mlir_gen.gpu_attention_payload import (
     generate_gpu_attention_payload,
 )
-from lighthouse.schedule.xegpu import fused_attention_schedule
 from lighthouse.schedule.parameters import ScheduleParameters
 from lighthouse.schedule import xegpu
 
@@ -236,21 +235,9 @@ class XeGPUFusedAttention:
         """Generate transform schedule for fused attention."""
         schedules = []
         schedules.append(Runner.get_bench_wrapper_schedule(self.payload_function_name))
-
-        use_gpu_pipeline = True
-        if not use_gpu_pipeline:
-            schedules.append(
-                fused_attention_schedule(
-                    stop_at_stage=stop_at_stage,
-                    params=parameters,
-                )
-            )
-        else:
-            schedules.extend(
-                get_xegpu_pipeline(
-                    parameters=parameters[0], stop_at_stage=stop_at_stage
-                )
-            )
+        schedules.extend(
+            get_xegpu_pipeline(parameters=parameters[0], stop_at_stage=stop_at_stage)
+        )
 
         if stop_at_stage and stop_at_stage != "final":
             return schedules
@@ -399,14 +386,8 @@ if __name__ == "__main__":
 
     layer_params = {
         "layer_kind": "attention",
-        "batch_size": args.batch_size,  # TODO deprecate
-        "n_head": args.n_head,  # TODO deprecate
-        "n_ctx": args.n_ctx,  # TODO deprecate
-        "d_head": args.d_head,  # TODO deprecate
         "wg_tile": [1, args.wg_rows],
-        "sg_rows": args.sg_rows,  # TODO deprecate
         "sg_tile": [0, args.sg_rows],
-        "subgroup_size": args.subgroup_size,  # TODO deprecate, used in num_threads
         "reduction_tile": [0, 0, args.reduction_tile],
         "q_load_tile": args.q_load_tile,
         "v_load_tile": args.v_load_tile,
