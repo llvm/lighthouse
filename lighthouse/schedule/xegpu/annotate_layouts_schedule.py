@@ -210,10 +210,12 @@ def annotate_reduction(gpu_func: ir.Operation, anchor_op: ir.Operation):
 
 
 def annotate_attention(gpu_func: ir.Operation, anchor_op: ir.Operation):
-    wg_tile, sg_tile, reduction_tile = transform_ext.infer_xegpu_attention_params(
-        anchor_op
-    )
+    # wg_tile, sg_tile, reduction_tile = transform_ext.infer_xegpu_attention_params(
+    #     anchor_op
+    # )
     # TODO infer the layout parameters - hardcoded for now
+
+    anytype = transform.AnyOpType.get()
 
     # Insert prefetches for the K and V tiles of the reduction loop. Each
     # inserts nb_prefetch prefetches ahead of the loop plus one per iteration,
@@ -227,16 +229,23 @@ def annotate_attention(gpu_func: ir.Operation, anchor_op: ir.Operation):
     prefetch_inst_data = list(prefetch_sg_data)
 
     if nb_prefetch > 0:
-        reduction_loop = lh_transform.match_op(gpu_func, "scf.for")
-        load_ops = lh_transform.match_op(reduction_loop, "xegpu.load_nd")
-        with lh_transform.foreach(load_ops) as load_op:
-            add_prefetch(
-                load_op,
-                nb_prefetch,
-                sg_layout=prefetch_sg_layout,
-                sg_data=prefetch_sg_data,
-                inst_data=prefetch_inst_data,
+        # Add prefetch ops to loads within the reduction loop.
+        all_load_ops = lh_transform.match_op(gpu_func, "xegpu.load_nd")
+        with lh_transform.foreach(all_load_ops) as load_op:
+            # Loop over each load op.
+            parent_for = transform.get_parent_op(
+                anytype, load_op, op_name="scf.for", allow_empty_results=True
             )
+            with lh_transform.foreach(parent_for):
+                # Add prefetch if parent is an scf.for loop.
+                add_prefetch(
+                    load_op,
+                    nb_prefetch,
+                    sg_layout=prefetch_sg_layout,
+                    sg_data=prefetch_sg_data,
+                    inst_data=prefetch_inst_data,
+                )
+                transform.yield_()
             transform.yield_()
         lh_transform.cleanup(gpu_func)
 

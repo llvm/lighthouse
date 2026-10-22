@@ -11,6 +11,7 @@ from .ops.replace import replace
 from .ops.convert_func_results_to_args import convert_func_results_to_args
 from .ops.narrow_vector_contract_operands import narrow_vector_contract_operands
 from .ops.emit_definite_failure import emit_definite_failure
+from .ops.expand_output_destination import expand_output_destination
 from .ops.extract_handle import extract_handle
 from .ops.get_tileable_consumers import get_tileable_consumers
 from .ops.get_tiling_sizes import get_tiling_sizes
@@ -55,6 +56,7 @@ __all__ = [
     "compute_sg_layout",
     "convert_func_results_to_args",
     "emit_definite_failure",
+    "expand_output_destination",
     "extract_handle",
     "filter_by_name",
     "filter_contraction_ops",

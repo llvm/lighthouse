@@ -654,9 +654,7 @@ def test_score_producer_fusion():
             module = ir.Module.parse(source)
             with schedule_boilerplate() as (schedule, sequence):
                 func = lh_transform.match_op(sequence.bodyTarget, "func.func")
-                transform_to_flash_attention(
-                    transform.AnyOpType.get(), func, 2, n_parallel=1
-                )
+                transform_to_flash_attention(transform.AnyOpType.get(), func, [0, 2])
                 transform.yield_([])
             schedule.body.operations[0].apply(module.operation)
             assert module.operation.verify()

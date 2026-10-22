@@ -238,9 +238,11 @@ def _trace_producer_scale(contraction, operand_index):
         body = op.regions[0].blocks[0]
         args = list(body.arguments)[: len(inputs)]
         scalar = _producer(body.operations[-1].operands[0])
+        if scalar is None:
+            return None, None
         # Only constants may accompany the selected scalar operation.
         if any(
-            inner.operation != getattr(scalar, "operation", None)
+            inner.operation != scalar.operation
             and not isinstance(inner, (arith.ConstantOp, linalg.YieldOp))
             for inner in body.operations
         ):

@@ -275,21 +275,49 @@ def infer_parameters(
         write_bytes = int(batch_size * n_head * n_ctx * d_head * nbytes)
 
         assert d_head == 64, f"d_head must be 64, got {d_head}"
-        layer_params = {
-            "layer_kind": "attention",
-            "batch_size": batch_size,
-            "n_head": n_head,
-            "n_ctx": n_ctx,
-            "d_head": d_head,
-            "wg_tile": [1, 1, 128],
-            "sg_rows": 16,
-            "subgroup_size": 16,
-            "reduction_tile": 64,
-            "q_load_tile": [16, 16],
-            "v_load_tile": [32, 32],
-            "prefetch_tile": [16, 32],
-            "nb_prefetch": 1,
-        }
+
+        max_elemwise_dims = 0
+        for layer in [s for s in func_metadata["layers"] if s["kind"] == "elemwise"]:
+            max_elemwise_dims = max(max_elemwise_dims, len(layer["shape"]))
+
+        if max_elemwise_dims == 4:
+            # MHA case
+            layer_params = {
+                "layer_kind": "attention",
+                "batch_size": batch_size,
+                "n_head": n_head,
+                "n_ctx": n_ctx,
+                "d_head": d_head,
+                "wg_tile": [1, 1, 128],
+                "sg_rows": 16,
+                "subgroup_size": 16,
+                "reduction_tile": [0, 0, 0, 64],
+                "q_load_tile": [16, 16],
+                "v_load_tile": [32, 32],
+                "prefetch_tile": [16, 32],
+                "nb_prefetch": 1,
+            }
+        elif max_elemwise_dims == 5:
+            # GQA case
+            layer_params = {
+                "layer_kind": "attention",
+                "batch_size": batch_size,
+                "n_head": n_head,
+                "n_ctx": n_ctx,
+                "d_head": d_head,
+                "wg_tile": [1, 1, 1, 128],
+                "sg_rows": 16,
+                "subgroup_size": 16,
+                "reduction_tile": [0, 0, 0, 0, 64],
+                "q_load_tile": [16, 16],
+                "v_load_tile": [32, 32],
+                "prefetch_tile": [16, 32],
+                "nb_prefetch": 1,
+            }
+        else:
+            raise ValueError(
+                f"Unsupported attention layer dimensionality: {max_elemwise_dims}"
+            )
 
         schedule_params = ScheduleParameters([layer_params])
         schedule_kind = "attention"
@@ -919,6 +947,12 @@ def parser_cli_args():
         help="IDs of specific benchmarks to execute (default: all)",
     )
     parser.add_argument(
+        "-i",
+        "--input",
+        nargs="+",
+        help="Input Python kernel files. Can be used instead of --level and --benchmark to specify custom kernels.",
+    )
+    parser.add_argument(
         "--datatype",
         type=str,
         default="bf16",
@@ -941,6 +975,7 @@ def parser_cli_args():
             "initial",
             "cleanup",
             "tiled",
+            "reduction-tiled",
             "vectorized",
             "bufferized",
             "gpu-outlining",
@@ -995,11 +1030,21 @@ if __name__ == "__main__":
     args = parser_cli_args()
     kb_level = args.level
     benchmarks = args.benchmark
+    input_files = args.input
+    if input_files is not None and kb_level is not None and benchmarks is not None:
+        raise ValueError("Cannot set both --input, and --level and --benchmark. ")
+    if input_files is None and kb_level is None and benchmarks is None:
+        raise ValueError("Either --input or --level and --benchmark must be specified.")
+
     stop_at_stage = args.dump_kernel
     input_shapes = parse_input_shapes(args.input_shapes)
 
-    kb_pattern = f"level{kb_level}/*.py"
-    bench_list = get_benchmarks(kb_pattern, include=benchmarks)
+    if input_files is None:
+        kb_pattern = f"level{kb_level}/*.py"
+        bench_list = get_benchmarks(kb_pattern, include=benchmarks)
+    else:
+        bench_list = [(i + 1, Path(f)) for i, f in enumerate(input_files)]
+        kb_level = 0
 
     if args.dump_csv and not stop_at_stage:
         csv_file = "out_kernelbench.csv"
@@ -1008,7 +1053,7 @@ if __name__ == "__main__":
         csv_logger = None
 
     for bench_id, bench_path in bench_list:
-        short_path = bench_path.parent.name + "/" + bench_path.name
+        short_path = Path(*bench_path.parts[-2:])
         print("-" * 80)
         print(f"Executing benchmark: {short_path}", flush=True)
         entry = {
