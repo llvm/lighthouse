@@ -293,12 +293,6 @@ def parse_cli():
         help="Number of Q*K^T*V rows computed by each subgroup",
     )
     parser.add_argument(
-        "--subgroup-size",
-        type=int,
-        default=16,
-        help="Subgroup size",
-    )
-    parser.add_argument(
         "--reduction-tile",
         type=int,
         default=64,
@@ -355,7 +349,6 @@ def parse_cli():
             "initial",
             "cleanup",
             "tiled",
-            "reduction-tiled",
             "vectorized",
             "bufferized",
             "gpu-outlining",
