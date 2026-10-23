@@ -69,8 +69,6 @@ from lighthouse.pipeline.driver import TransformDriver
 from lighthouse.schedule.xegpu import (
     mlp_schedule,
     elemwise_schedule,
-    xegpu_to_binary,
-    reduction_schedule,
 )
 from lighthouse.pipeline.helper import PipelineInterrupt
 from lighthouse.ingress.torch import gpu_backend, TargetDialect
@@ -545,34 +543,6 @@ def infer_params_and_lower(
     return lowered_mod
 
 
-def get_xegpu_pipeline(stop_at_stage):
-    schedules = []
-    if stop_at_stage == "initial":
-        return schedules
-    schedules.append(xegpu.cleanup_schedule())
-    if stop_at_stage == "cleanup":
-        return schedules
-    schedules.append(xegpu.wg_tiling_schedule())
-    if stop_at_stage == "tiled":
-        return schedules
-    schedules.append(xegpu.vectorize_schedule())
-    if stop_at_stage == "vectorized":
-        return schedules
-    schedules.append(xegpu.bufferize_schedule())
-    if stop_at_stage == "bufferized":
-        return schedules
-    schedules.append(xegpu.outline_gpu_func_schedule())
-    if stop_at_stage == "gpu-outlining":
-        return schedules
-    schedules.append(xegpu.vector_to_xegpu_schedule())
-    if stop_at_stage == "xegpu-initial":
-        return schedules
-    schedules.append(xegpu.annotate_layouts_schedule())
-    if stop_at_stage == "xegpu-wg":
-        return schedules
-    return schedules
-
-
 def lower_to_llvm(
     mod: ir.Module,
     schedule_kind: str,
@@ -586,7 +556,9 @@ def lower_to_llvm(
     """Lower payload module to LLVM using the specified schedule and parameters."""
     Runner.make_function_callable(mod, payload_func_name)
     if use_gpu_pipeline:
-        pipeline = get_xegpu_pipeline(stop_at_stage)
+        pipeline = xegpu.get_xegpu_pipeline(
+            parameters=schedule_params[0], stop_at_stage=stop_at_stage
+        )
     else:
         if schedule_kind == "mlp":
             schedule = mlp_schedule(
@@ -602,24 +574,20 @@ def lower_to_llvm(
                 stop_at_stage=stop_at_stage,
             )
         elif schedule_kind == "reduction":
-            schedule = reduction_schedule(
-                params=schedule_params,
-                payload_func_name=payload_func_name,
-                stop_at_stage=stop_at_stage,
-            )
+            raise NotImplementedError("Reduction kernels require --use-gpu-pipeline.")
         elif schedule_kind == "attention":
             raise NotImplementedError("Attention kernels require --use-gpu-pipeline.")
         else:
             raise ValueError(f"Unsupported schedule kind: {schedule_kind}")
         pipeline = [schedule]
+        if not stop_at_stage or stop_at_stage == "final":
+            pipeline.append(xegpu.xegpu_to_binary())
 
     # define lowering pipeline
     schedules = []
     if benchmark:
         schedules.append(Runner.get_bench_wrapper_schedule(payload_func_name))
     schedules.extend(pipeline)
-    if not stop_at_stage or stop_at_stage == "final":
-        schedules.append(xegpu_to_binary())
     if not schedules:
         return mod
 

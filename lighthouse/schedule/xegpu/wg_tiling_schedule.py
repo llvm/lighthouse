@@ -67,7 +67,12 @@ def apply_gemm_tiling(
     return func
 
 
-def apply_reduction_tiling(func: ir.Operation) -> ir.Operation:
+def apply_reduction_tiling(
+    func: ir.Operation,
+    force_wg_tile: list[int] | None = None,
+    force_wg_subtile: list[int] | None = None,
+    force_reduction_tile: list[int] | None = None,
+) -> ir.Operation:
     """Apply reduction tiling to the given function."""
 
     anytype = transform.AnyOpType.get()
@@ -78,7 +83,17 @@ def apply_reduction_tiling(func: ir.Operation) -> ir.Operation:
     # TODO implement actual pattern matching and anchor op inference
     anchor_op = lh_transform.match_op(func, "linalg.generic")
     anchor_op = transform_ext.extract_handle(anchor_op, 0, silenceable=True)
-    wg_tile, _, reduction_tile = transform_ext.infer_xegpu_reduction_params(anchor_op)
+    wg_tile, _, reduction_tile = transform_ext.infer_xegpu_reduction_params(
+        anchor_op,
+        force_wg_tile=force_wg_tile,
+        force_reduction_tile=force_reduction_tile,
+    )
+
+    # Adding persistent reduction loop is only possible via forced args for now.
+    wg_subtile = None
+    if force_wg_subtile is not None:
+        wg_subtile = force_wg_subtile
+    apply_wg_subtile = wg_subtile is not None and sum(wg_subtile) > 0
 
     # WG row tiling
     generic_ops = structured.structured_match(anytype, func, ops=["linalg.generic"])
@@ -91,6 +106,19 @@ def apply_reduction_tiling(func: ir.Operation) -> ir.Operation:
         apply_cleanup=False,
     )
     lh_transform.cleanup(func)
+
+    if apply_wg_subtile:
+        # Add a persistent loop to reduce wg tile size.
+        generic_ops = structured.structured_match(anytype, func, ops=["linalg.generic"])
+        leaf_generic = transform_ext.extract_handle(generic_ops, -1)
+        lh_transform.tile(
+            leaf_generic,
+            tile_sizes=wg_subtile,
+            fuse_producers=True,
+            use_forall=False,
+            apply_cleanup=False,
+        )
+        lh_transform.cleanup(func)
 
     def fuse_elemwise_producers_to_loop(target, parent_loop):
         """Fuses all elementwise producer ops of `target` into `parent_loop`."""
@@ -257,6 +285,7 @@ def wg_tiling_schedule(
     k_tile: int | None = None,
     reduction_tile: list[int] | None = None,
     payload_func_name: str | None = None,
+    wg_subtile: list[int] | None = None,
 ) -> ir.Module:
     """Tile the payload for workgroup parallelism and the reduction dimension."""
 
@@ -284,8 +313,12 @@ def wg_tiling_schedule(
             )
             transform.yield_([func])
         with alt.region(2) as func:
-            # TODO add support for forcing custom tile sizes
-            func = apply_reduction_tiling(func)
+            func = apply_reduction_tiling(
+                func,
+                force_wg_tile=wg_tile,
+                force_wg_subtile=wg_subtile,
+                force_reduction_tile=reduction_tile,
+            )
             transform.yield_([func])
         with alt.region(3) as func:
             transform_ext.emit_definite_failure(

@@ -103,14 +103,18 @@ def set_gpu_threads_gemm(
         transform.yield_()
 
 
-def set_gpu_threads_reduction(func: ir.Operation):
+def set_gpu_threads_reduction(
+    func: ir.Operation, force_sg_tile: list[int] | None = None
+):
     # Match vector.multi_reduction and call infer_xegpu_reduction_params
     launch_ops = lh_transform.match_op(func, "gpu.launch")
     with lh_transform.foreach(launch_ops) as launch_op:
         # Produces a silenceable failure if the match fails
         anchor_op = lh_transform.match_op(launch_op, "vector.multi_reduction")
         anchor_op = transform_ext.extract_handle(anchor_op, 0, silenceable=True)
-        wg_tile, sg_tile, _ = transform_ext.infer_xegpu_reduction_params(anchor_op)
+        wg_tile, sg_tile, _ = transform_ext.infer_xegpu_reduction_params(
+            anchor_op, force_sg_tile=force_sg_tile
+        )
         nb_threads = transform_ext.compute_num_threads(
             wg_tile, sg_tile, base=NB_WORKITEMS
         )
@@ -142,7 +146,7 @@ def outline(
         transform.yield_([func])
     with alt.region(2) as func:
         # Reduction schedule case
-        set_gpu_threads_reduction(func)
+        set_gpu_threads_reduction(func, force_sg_tile=sg_tile)
         transform.yield_([func])
     with alt.region(3) as func:
         transform_ext.emit_definite_failure(

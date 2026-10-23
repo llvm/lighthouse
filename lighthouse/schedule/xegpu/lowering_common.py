@@ -135,7 +135,7 @@ def vectorize(
     payload_func_name: str | None = None,
     payload_anchor_ops: str | list[str] | None = None,
     payload_func: transform.AnyOpType | None = None,
-    disable_multi_reduction_to_contract_patterns: bool = False,
+    disable_multi_reduction_to_contract: bool = False,
 ) -> transform.AnyOpType:
     """Vectorize and run loop-hoisting cleanup for the payload function."""
     if payload_func is None:
@@ -146,7 +146,7 @@ def vectorize(
         transform.any_op_t(),
         payload_func,
         fold_type_extensions_into_contract=True,
-        disable_multi_reduction_to_contract_patterns=disable_multi_reduction_to_contract_patterns,
+        disable_multi_reduction_to_contract_patterns=disable_multi_reduction_to_contract,
     )
 
     # Try to remove any unit dimensions that may have been introduced due to tiling (e.g. batch dim of 1)

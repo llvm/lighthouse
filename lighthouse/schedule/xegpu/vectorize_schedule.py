@@ -10,6 +10,7 @@ from . import lowering_common
 def vectorize_schedule(
     payload_func_name: str | None = None,
     disable_fastmath: bool = False,
+    disable_multi_reduction_to_contract: bool = False,
 ) -> ir.Module:
     """Vectorizes the payload function."""
 
@@ -31,7 +32,11 @@ def vectorize_schedule(
             op_name="builtin.module",
             deduplicate=True,
         )
-        func = lowering_common.vectorize(payload_mod, payload_func=func)
+        func = lowering_common.vectorize(
+            payload_mod,
+            payload_func=func,
+            disable_multi_reduction_to_contract=disable_multi_reduction_to_contract,
+        )
         if not disable_fastmath:
             enable_fastmath_optimizations(func)
 
