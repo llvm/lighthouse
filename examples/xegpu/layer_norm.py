@@ -1,4 +1,5 @@
 # RUN: %PYTHON %s --dump-kernel=xegpu-wg | FileCheck %s
+# RUN: %PYTHON %s --wg-rows 32 --sg-rows 16 --reduction-step-size 32 --dump-kernel=xegpu-wg | FileCheck %s
 # CHECK: module attributes {gpu.container_module} {
 
 """
@@ -22,6 +23,55 @@ from lighthouse.ingress.mlir_gen.gpu_layer_norm_payload import (
 )
 from lighthouse.schedule.parameters import ScheduleParameters
 from lighthouse.schedule.xegpu import reduction_schedule, xegpu_to_binary
+from lighthouse.schedule import xegpu
+
+
+def get_xegpu_pipeline(
+    parameters: dict,
+    stop_at_stage: str,
+    disable_multi_reduction_to_contract: bool = False,
+) -> list:
+    wg_tile = parameters.get("wg_tile", None)
+    sg_tile = parameters.get("sg_tile", None)
+    reduction_tile = parameters.get("reduction_tile", None)
+    schedules = []
+    if stop_at_stage == "initial":
+        return schedules
+    schedules.append(xegpu.cleanup_schedule())
+    if stop_at_stage == "cleanup":
+        return schedules
+    schedules.append(
+        xegpu.wg_tiling_schedule(
+            wg_tile=wg_tile,
+            reduction_tile=reduction_tile,
+        )
+    )
+    if stop_at_stage == "tiled":
+        return schedules
+    schedules.append(
+        xegpu.vectorize_schedule(
+            disable_multi_reduction_to_contract=disable_multi_reduction_to_contract,
+        )
+    )
+    if stop_at_stage == "vectorized":
+        return schedules
+    schedules.append(xegpu.bufferize_schedule())
+    if stop_at_stage == "bufferized":
+        return schedules
+    schedules.append(xegpu.outline_gpu_func_schedule(sg_tile=sg_tile))
+    if stop_at_stage == "gpu-outlining":
+        return schedules
+    schedules.append(xegpu.vector_to_xegpu_schedule())
+    if stop_at_stage == "xegpu-initial":
+        return schedules
+    schedules.append(
+        xegpu.annotate_layouts_schedule(
+            sg_tile=sg_tile,
+        )
+    )
+    if stop_at_stage == "xegpu-wg":
+        return schedules
+    return schedules
 
 
 def layer_norm_complexity(M: int, N: int, nbytes: int):
@@ -143,13 +193,24 @@ class XeGPULayerNorm:
         schedules = []
         schedules.append(Runner.get_bench_wrapper_schedule(self.payload_function_name))
 
-        schedules.append(
-            reduction_schedule(
-                payload_func_name=self.payload_function_name,
-                stop_at_stage=stop_at_stage,
-                params=parameters,
+        use_gpu_pipeline = True
+        if use_gpu_pipeline:
+            print("Using XeGPU pipeline")
+            schedules.extend(
+                get_xegpu_pipeline(
+                    parameters=parameters[0],
+                    stop_at_stage=stop_at_stage,
+                    disable_multi_reduction_to_contract=True,
+                )
             )
-        )
+        else:
+            schedules.append(
+                reduction_schedule(
+                    payload_func_name=self.payload_function_name,
+                    stop_at_stage=stop_at_stage,
+                    params=parameters,
+                )
+            )
 
         if stop_at_stage and stop_at_stage != "final":
             return schedules
@@ -264,7 +325,7 @@ if __name__ == "__main__":
                 "wg_tile": [args.wg_rows, 0],
                 "sg_tile": [args.sg_rows, 0],
                 "reduction_tile": [0, args.reduction_step_size],
-                "subgroup_size": args.subgroup_size,
+                "subgroup_size": args.subgroup_size,  # TODO deprecate
             }
         ]
     )
