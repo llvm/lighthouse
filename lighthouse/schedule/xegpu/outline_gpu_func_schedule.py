@@ -56,7 +56,9 @@ def outline_gpu_func_schedule(
     return schedule
 
 
-def set_gpu_threads_attention(func: ir.Operation):
+def set_gpu_threads_attention(
+    func: ir.Operation, force_sg_tile: list[int] | None = None
+):
     launch_ops = lh_transform.match_op(func, "gpu.launch")
     with lh_transform.foreach(launch_ops) as launch_op:
         # Ensure there's at least one multi_reduction op
@@ -64,7 +66,9 @@ def set_gpu_threads_attention(func: ir.Operation):
         transform_ext.extract_handle(red_op, 0, silenceable=True)
         anchor_op = lh_transform.match_op(launch_op, "vector.contract")
         anchor_op = transform_ext.extract_handle(anchor_op, 0, silenceable=True)
-        wg_tile, sg_tile, _ = transform_ext.infer_xegpu_attention_params(anchor_op)
+        wg_tile, sg_tile, _ = transform_ext.infer_xegpu_attention_params(
+            anchor_op, force_sg_tile=force_sg_tile
+        )
         nb_threads = transform_ext.compute_num_threads(
             wg_tile, sg_tile, base=NB_WORKITEMS
         )
@@ -73,7 +77,9 @@ def set_gpu_threads_attention(func: ir.Operation):
 
 
 def set_gpu_threads_gemm(
-    func: ir.Operation, sg_tile: list[int] | None = None, device: str | None = None
+    func: ir.Operation,
+    force_sg_tile: list[int] | None = None,
+    device: str | None = None,
 ):
     # Match vector.contract and call infer_xegpu_gemm_params
     launch_ops = lh_transform.match_op(func, "gpu.launch")
@@ -83,7 +89,7 @@ def set_gpu_threads_gemm(
         anchor_op = lh_transform.match_op(launch_op, "vector.contract")
         anchor_op = transform_ext.extract_handle(anchor_op, 0, silenceable=True)
         params = transform_ext.infer_xegpu_gemm_params(
-            anchor_op, force_sg_tile=sg_tile, device=device
+            anchor_op, force_sg_tile=force_sg_tile, device=device
         )
         wg_m = transform_ext.get_param_dict_entry(params, "wg_m")
         wg_n = transform_ext.get_param_dict_entry(params, "wg_n")
@@ -128,11 +134,11 @@ def outline(
     )
     with alt.region(0) as func:
         # Attention schedule case
-        set_gpu_threads_attention(func)
+        set_gpu_threads_attention(func, force_sg_tile=sg_tile)
         transform.yield_([func])
     with alt.region(1) as func:
         # GEMM schedule case
-        set_gpu_threads_gemm(func, sg_tile=sg_tile, device=device)
+        set_gpu_threads_gemm(func, force_sg_tile=sg_tile, device=device)
         transform.yield_([func])
     with alt.region(2) as func:
         # Reduction schedule case

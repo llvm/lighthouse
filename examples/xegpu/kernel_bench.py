@@ -1,5 +1,6 @@
 # RUN: %PYTHON %s -l 2 -b 9 --dump-kernel=xegpu-wg | FileCheck %s
-# RUN: %PYTHON %s -l 1 -b 97 --input-shapes 32x32x512x64 32x32x512x64 32x32x512x64 --dump-kernel xegpu-wg | FileCheck %s
+# RUN: %PYTHON %s -l 2 -b 9 --dump-kernel=xegpu-wg --use-gpu-pipeline | FileCheck %s
+# RUN: %PYTHON %s -l 1 -b 97 --input-shapes 32x32x512x64 32x32x512x64 32x32x512x64 --dump-kernel xegpu-wg --use-gpu-pipeline | FileCheck %s
 # REQUIRES: torch
 # REQUIRES: kernel_bench
 
@@ -70,7 +71,6 @@ from lighthouse.schedule.xegpu import (
     elemwise_schedule,
     xegpu_to_binary,
     reduction_schedule,
-    fused_attention_schedule,
 )
 from lighthouse.pipeline.helper import PipelineInterrupt
 from lighthouse.ingress.torch import gpu_backend, TargetDialect
@@ -284,13 +284,8 @@ def infer_parameters(
             # MHA case
             layer_params = {
                 "layer_kind": "attention",
-                "batch_size": batch_size,
-                "n_head": n_head,
-                "n_ctx": n_ctx,
-                "d_head": d_head,
                 "wg_tile": [1, 1, 128],
-                "sg_rows": 16,
-                "subgroup_size": 16,
+                "sg_tile": [0, 0, 16],
                 "reduction_tile": [0, 0, 0, 64],
                 "q_load_tile": [16, 16],
                 "v_load_tile": [32, 32],
@@ -301,13 +296,8 @@ def infer_parameters(
             # GQA case
             layer_params = {
                 "layer_kind": "attention",
-                "batch_size": batch_size,
-                "n_head": n_head,
-                "n_ctx": n_ctx,
-                "d_head": d_head,
                 "wg_tile": [1, 1, 1, 128],
-                "sg_rows": 16,
-                "subgroup_size": 16,
+                "sg_tile": [0, 0, 16],
                 "reduction_tile": [0, 0, 0, 0, 64],
                 "q_load_tile": [16, 16],
                 "v_load_tile": [32, 32],
@@ -618,10 +608,7 @@ def lower_to_llvm(
                 stop_at_stage=stop_at_stage,
             )
         elif schedule_kind == "attention":
-            schedule = fused_attention_schedule(
-                params=schedule_params,
-                stop_at_stage=stop_at_stage,
-            )
+            raise NotImplementedError("Attention kernels require --use-gpu-pipeline.")
         else:
             raise ValueError(f"Unsupported schedule kind: {schedule_kind}")
         pipeline = [schedule]

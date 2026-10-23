@@ -64,10 +64,10 @@ def annotate_ab_load(
 def annotate_gemm(
     gpu_func_op: ir.Operation,
     dpas_op: ir.Operation,
-    sg_tile: tuple[int, int] | None = None,
+    force_sg_tile: tuple[int, int] | None = None,
 ):
     # TODO possibility to override all remaining params, load and prefetch tiles etc.
-    params = transform_ext.infer_xegpu_gemm_params(dpas_op, force_sg_tile=sg_tile)
+    params = transform_ext.infer_xegpu_gemm_params(dpas_op, force_sg_tile=force_sg_tile)
     wg_m = transform_ext.get_param_dict_entry(params, "wg_m")
     wg_n = transform_ext.get_param_dict_entry(params, "wg_n")
     sg_m = transform_ext.get_param_dict_entry(params, "sg_m")
@@ -209,24 +209,75 @@ def annotate_reduction(gpu_func: ir.Operation, anchor_op: ir.Operation):
     xegpu.set_anchor_layout(store_op, sg_layout=sg_layout, sg_data=sg_data)
 
 
-def annotate_attention(gpu_func: ir.Operation, anchor_op: ir.Operation):
-    # wg_tile, sg_tile, reduction_tile = transform_ext.infer_xegpu_attention_params(
-    #     anchor_op
-    # )
-    # TODO infer the layout parameters - hardcoded for now
+def annotate_attention(
+    gpu_func: ir.Operation,
+    anchor_op: ir.Operation,
+    force_sg_tile: tuple[int, ...] | None = None,
+    force_nb_prefetch: int | None = None,
+    force_prefetch_tile: tuple[int, int] | None = None,
+    force_q_load_tile: tuple[int, int] | None = None,
+    force_v_load_tile: tuple[int, int] | None = None,
+):
+    # Convert force_sg_tile from global problem shape to local 2D problem.
+    # global sg tile: [0, n, 0] -> [n, 0]
+    # global sg tile: [0, 0, n] -> [n, 0]
+    # global sg tile: [0, 0, 0, n, 0] -> [n, 0]
+    if force_sg_tile is not None:
+        force_sg_tile = list(force_sg_tile)
+        while force_sg_tile and force_sg_tile[0] == 0:
+            force_sg_tile = force_sg_tile[1:]
+        if not force_sg_tile or force_sg_tile[-1] != 0:
+            force_sg_tile.append(0)
+
+    # Infer tile sizes as 2D vectors
+    wg_tile_vec, sg_tile_vec, red_tile_vec = transform_ext.infer_xegpu_attention_params(
+        anchor_op, force_sg_tile=force_sg_tile
+    )
 
     anytype = transform.AnyOpType.get()
 
+    def int_to_param(value):
+        anyparam = transform.AnyParamType.get()
+        i64 = ir.IntegerType.get_signless(64)
+        return transform.ParamConstantOp(anyparam, ir.IntegerAttr.get(i64, value)).param
+
+    # At xegpu level attention problem is 2D:
+    # Q@K^T dpas: (wg_rows, d_head) * (d_head, red_tile) = (wg_rows, red_tile)
+    # P@V dpas: (wg_rows, red_tile) * (red_tile, d_head) = (wg_rows, d_head)
+
+    # TODO infer d_head value, infer_xegpu_attention_params returns it?
+    d_head = int_to_param(64)
+    red_tile = transform_ext.extract_handle(red_tile_vec, 1)
+    sg_rows = transform_ext.extract_handle(sg_tile_vec, 0)
+
+    # K and V tiles are not distributed but shared among SGs.
+    # They appear as the B operand in the Q@K^T and P@V DPAS ops.
+    kv_sg_layout = [1, 1]
+    # Both load the full local tile.
+    v_sg_data = [red_tile, d_head]
+    kv_load_sg_data = [red_tile, d_head]
+    # Load K column-major so that the transpose feeding the DPAS is a no-op.
+    kt_sg_data = [d_head, red_tile]
+    k_load_order = [0, 1]
+    # Q@K^T DPAS result tile shape
+    qk_sg_data = [sg_rows, red_tile]
+
     # Insert prefetches for the K and V tiles of the reduction loop. Each
     # inserts nb_prefetch prefetches ahead of the loop plus one per iteration,
-    # at induction_var + nb_prefetch * step. This must run before the wg-level
-    # layouts are set below, since the prefetch descriptor is cloned from the
-    # load's descriptor. The layouts of the emitted prefetch_nd ops are set
-    # together with the other wg-level layouts.
+    # at induction_var + nb_prefetch * step.
     nb_prefetch = 1
+    if force_nb_prefetch is not None:
+        nb_prefetch = force_nb_prefetch
+    prefetch_shape = [red_tile, d_head]  # prefetch the whole local tile
     prefetch_sg_data = [16, 32]
-    prefetch_sg_layout = [4, 2]
+    if force_prefetch_tile is not None:
+        assert len(force_prefetch_tile) == 2, "force_prefetch_tile must have length 2"
+        prefetch_sg_data = list(force_prefetch_tile)
+    prefetch_sg_data = [int_to_param(x) for x in prefetch_sg_data]
     prefetch_inst_data = list(prefetch_sg_data)
+    prefetch_sg_layout, _ = transform_ext.compute_sg_layout(
+        prefetch_shape, prefetch_sg_data
+    )
 
     if nb_prefetch > 0:
         # Add prefetch ops to loads within the reduction loop.
@@ -249,8 +300,12 @@ def annotate_attention(gpu_func: ir.Operation, anchor_op: ir.Operation):
             transform.yield_()
         lh_transform.cleanup(gpu_func)
 
-    out_sg_data = [16, 64]
-    out_sg_layout = [8, 1]
+    # Compute output layout from tile sizes
+    result_tile = transform.merge_handles([int_to_param(0), d_head])
+    out_sg_layout, out_sg_data = transform_ext.compute_sg_layout(
+        wg_tile_vec, sg_tile_vec, result_tile
+    )
+
     # Annotate the final store op
     store_nd_ops = lh_transform.match_op(gpu_func, "xegpu.store_nd")
     store_op = transform_ext.extract_handle(store_nd_ops, 0, silenceable=True)
@@ -262,6 +317,9 @@ def annotate_attention(gpu_func: ir.Operation, anchor_op: ir.Operation):
     # First load_nd: Q layout
     load_op = transform_ext.extract_handle(load_nd_ops, 0, silenceable=True)
     q_load_inst_data = [16, 16]
+    if force_q_load_tile is not None:
+        assert len(force_q_load_tile) == 2, "force_q_load_tile must have length 2"
+        q_load_inst_data = list(force_q_load_tile)
     xegpu.set_anchor_layout(
         load_op,
         sg_layout=out_sg_layout,
@@ -271,9 +329,6 @@ def annotate_attention(gpu_func: ir.Operation, anchor_op: ir.Operation):
 
     # Second load_nd: K layout
     load_op = transform_ext.extract_handle(load_nd_ops, 1, silenceable=True)
-    kv_sg_layout = [1, 1]
-    kv_load_sg_data = [64, 64]
-    k_load_order = [0, 1]
     xegpu.set_anchor_layout(
         load_op,
         sg_layout=kv_sg_layout,
@@ -284,6 +339,9 @@ def annotate_attention(gpu_func: ir.Operation, anchor_op: ir.Operation):
     # Third load_nd: V layout
     load_op = transform_ext.extract_handle(load_nd_ops, 2, silenceable=True)
     v_load_inst_data = [32, 32]
+    if force_v_load_tile is not None:
+        assert len(force_v_load_tile) == 2, "force_v_load_tile must have length 2"
+        v_load_inst_data = list(force_v_load_tile)
     xegpu.set_anchor_layout(
         load_op,
         sg_layout=kv_sg_layout,
@@ -304,7 +362,6 @@ def annotate_attention(gpu_func: ir.Operation, anchor_op: ir.Operation):
         index=0,
     )
     # Index 1: K^T layout
-    kt_sg_data = [64, 64]
     xegpu.set_anchor_layout(
         qk_dpas_op,
         sg_layout=kv_sg_layout,
@@ -315,7 +372,7 @@ def annotate_attention(gpu_func: ir.Operation, anchor_op: ir.Operation):
     xegpu.set_anchor_layout(
         qk_dpas_op,
         sg_layout=out_sg_layout,
-        sg_data=out_sg_data,
+        sg_data=qk_sg_data,
         index=2,
     )
 
@@ -325,11 +382,10 @@ def annotate_attention(gpu_func: ir.Operation, anchor_op: ir.Operation):
     xegpu.set_anchor_layout(
         pv_dpas_op,
         sg_layout=out_sg_layout,
-        sg_data=out_sg_data,
+        sg_data=qk_sg_data,
         index=0,
     )
     # Index 1: V layout
-    v_sg_data = [64, 64]
     xegpu.set_anchor_layout(
         pv_dpas_op,
         sg_layout=kv_sg_layout,
@@ -346,7 +402,12 @@ def annotate_attention(gpu_func: ir.Operation, anchor_op: ir.Operation):
 
 
 def analyze_and_annotate_gpu_func(
-    gpu_func_op: ir.Operation, sg_tile: tuple[int, int] | None = None
+    gpu_func_op: ir.Operation,
+    sg_tile: tuple[int, int] | None = None,
+    nb_prefetch: int | None = None,
+    prefetch_tile: tuple[int, int] | None = None,
+    q_load_tile: tuple[int, int] | None = None,
+    v_load_tile: tuple[int, int] | None = None,
 ):
     """
     Analyzes a GPU function operation and annotates it with layout information
@@ -355,6 +416,10 @@ def analyze_and_annotate_gpu_func(
     Args:
         gpu_func_op (ir.Operation): The GPU function operation to analyze and annotate.
         sg_tile (tuple[int, int] | None): Optional forced subgroup tile size.
+        nb_prefetch (int | None): Optional number of prefetches.
+        prefetch_tile (tuple[int, int] | None): Optional prefetch tile size.
+        q_load_tile (tuple[int, int] | None): Optional Q load tile size for attention.
+        v_load_tile (tuple[int, int] | None): Optional V load tile size for attention.
     """
 
     alt = lh_transform.alternatives(
@@ -366,16 +431,24 @@ def analyze_and_annotate_gpu_func(
         dpas_op = transform_ext.extract_handle(dpas_ops, 0, silenceable=True)
         anchor_op = lh_transform.match_op(gpu_func, "vector.multi_reduction")
         anchor_op = transform_ext.extract_handle(anchor_op, 0, silenceable=True)
-        annotate_attention(gpu_func, anchor_op)
+        annotate_attention(
+            gpu_func,
+            dpas_op,
+            force_sg_tile=sg_tile,
+            force_nb_prefetch=nb_prefetch,
+            force_prefetch_tile=prefetch_tile,
+            force_q_load_tile=q_load_tile,
+            force_v_load_tile=v_load_tile,
+        )
         transform.yield_([gpu_func])
     with alt.region(1) as gpu_func:
-        # For now let's assume gpu.func op contains only a single dpas op
+        # GEMM case; assume there's only one DPAS operation in the gpu.func
         dpas_ops = lh_transform.match_op(gpu_func, "xegpu.dpas")
         dpas_op = transform_ext.extract_handle(dpas_ops, 0, silenceable=True)
-        annotate_gemm(gpu_func, dpas_op, sg_tile=sg_tile)
+        annotate_gemm(gpu_func, dpas_op, force_sg_tile=sg_tile)
         transform.yield_([gpu_func])
     with alt.region(2) as gpu_func:
-        # Match multi_reduction op
+        # Reduction case; match vector.multi_reduction op
         anchor_op = lh_transform.match_op(gpu_func, "vector.multi_reduction")
         anchor_op = transform_ext.extract_handle(anchor_op, 0, silenceable=True)
         annotate_reduction(gpu_func, anchor_op)
@@ -392,13 +465,35 @@ def analyze_and_annotate_gpu_func(
 
 def annotate_layouts_schedule(
     sg_tile: tuple[int, int] | None = None,
+    nb_prefetch: int | None = None,
+    prefetch_tile: tuple[int, int] | None = None,
+    q_load_tile: tuple[int, int] | None = None,
+    v_load_tile: tuple[int, int] | None = None,
 ) -> ir.Module:
-    """Adds xegpu layout annotations and prefetch ops to relevant ops."""
+    """
+    Adds xegpu layout annotations and prefetch ops to relevant ops.
+
+    Args:
+        sg_tile (tuple[int, int] | None): Optional forced subgroup tile size.
+        nb_prefetch (int | None): Optional number of prefetches.
+        prefetch_tile (tuple[int, int] | None): Optional prefetch tile size.
+        q_load_tile (tuple[int, int] | None): Optional Q load tile size for attention.
+        v_load_tile (tuple[int, int] | None): Optional V load tile size for attention.
+    Returns:
+        Schedule module.
+    """
 
     with schedule_boilerplate() as (schedule, named_seq):
         gpu_func_ops = lh_transform.match_op(named_seq.bodyTarget, "gpu.func")
         with lh_transform.foreach(gpu_func_ops) as gpu_func_op:
-            analyze_and_annotate_gpu_func(gpu_func_op, sg_tile=sg_tile)
+            analyze_and_annotate_gpu_func(
+                gpu_func_op,
+                sg_tile=sg_tile,
+                nb_prefetch=nb_prefetch,
+                prefetch_tile=prefetch_tile,
+                q_load_tile=q_load_tile,
+                v_load_tile=v_load_tile,
+            )
             transform.yield_()
         transform.yield_()
 

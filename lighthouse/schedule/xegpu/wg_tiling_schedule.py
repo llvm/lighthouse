@@ -16,8 +16,8 @@ from .lowering_common import get_payload_func
 
 def apply_gemm_tiling(
     func: ir.Operation,
-    wg_tile: list[int] | None = None,
-    k_tile: int | None = None,
+    force_wg_tile: list[int] | None = None,
+    force_k_tile: int | None = None,
     device: str | None = None,
 ) -> ir.Operation:
     """Apply GEMM tiling to the given function."""
@@ -31,14 +31,14 @@ def apply_gemm_tiling(
     with lh_transform.foreach(matmul_ops) as matmul_op:
         params = transform_ext.infer_xegpu_gemm_params(
             matmul_op,
-            force_wg_tile=wg_tile,
-            force_k_tile=k_tile,
+            force_wg_tile=force_wg_tile,
+            force_k_tile=force_k_tile,
             device=device,
         )
         wg_m = transform_ext.get_param_dict_entry(params, "wg_m")
         wg_n = transform_ext.get_param_dict_entry(params, "wg_n")
-        _k_tile = transform_ext.get_param_dict_entry(params, "k_tile")
-        _wg_tile = [wg_m, wg_n]
+        k_tile = transform_ext.get_param_dict_entry(params, "k_tile")
+        wg_tile = [wg_m, wg_n]
 
         # find the last tileable consumer of the matmul
         consumers = transform_ext.get_tileable_consumers(matmul_op)
@@ -47,7 +47,7 @@ def apply_gemm_tiling(
         # wg tiling
         _, [wg_loop], _ = lh_transform.tile(
             leaf_consumer_op,
-            tile_sizes=_wg_tile,
+            tile_sizes=wg_tile,
             fuse_producers=True,
             use_forall=True,
             apply_cleanup=False,
@@ -58,7 +58,7 @@ def apply_gemm_tiling(
         wg_matmul = match(wg_loop, ops={"linalg.matmul"})
         lh_transform.tile(
             wg_matmul,
-            tile_sizes=[0, 0, _k_tile],
+            tile_sizes=[0, 0, k_tile],
             fuse_producers=True,
         )
         lh_transform.cleanup(wg_loop)
@@ -174,7 +174,11 @@ def apply_reduction_tiling(func: ir.Operation) -> ir.Operation:
     return func
 
 
-def apply_attention_tiling(func: ir.Operation) -> ir.Operation:
+def apply_attention_tiling(
+    func: ir.Operation,
+    force_wg_tile: int | None = None,
+    force_reduction_tile: int | None = None,
+) -> ir.Operation:
     """Apply attention-layer workgroup tiling to the given function."""
     anytype = transform.AnyOpType.get()
 
@@ -219,7 +223,9 @@ def apply_attention_tiling(func: ir.Operation) -> ir.Operation:
     linalg_ops = lh_transform.match_op(func, ["linalg.generic", "linalg.batch_matmul"])
     leaf_linalg_op = transform_ext.extract_handle(linalg_ops, -1, silenceable=True)
     wg_tile, _sg_tile, reduction_tile = transform_ext.infer_xegpu_attention_params(
-        leaf_linalg_op
+        leaf_linalg_op,
+        force_wg_tile=force_wg_tile,
+        force_reduction_tile=force_reduction_tile,
     )
     lh_transform.tile(
         leaf_linalg_op,
@@ -249,6 +255,7 @@ def apply_attention_tiling(func: ir.Operation) -> ir.Operation:
 def wg_tiling_schedule(
     wg_tile: list[int] | None = None,
     k_tile: int | None = None,
+    reduction_tile: list[int] | None = None,
     payload_func_name: str | None = None,
 ) -> ir.Module:
     """Tile the payload for workgroup parallelism and the reduction dimension."""
@@ -269,11 +276,12 @@ def wg_tiling_schedule(
             payload_func, num_alternatives=4, result_types=[payload_func.type]
         )
         with alt.region(0) as func:
-            func = apply_gemm_tiling(func, wg_tile=wg_tile, k_tile=k_tile)
+            func = apply_gemm_tiling(func, force_wg_tile=wg_tile, force_k_tile=k_tile)
             transform.yield_([func])
         with alt.region(1) as func:
-            # TODO add support for forcing custom tile sizes
-            func = apply_attention_tiling(func)
+            func = apply_attention_tiling(
+                func, force_wg_tile=wg_tile, force_reduction_tile=reduction_tile
+            )
             transform.yield_([func])
         with alt.region(2) as func:
             # TODO add support for forcing custom tile sizes

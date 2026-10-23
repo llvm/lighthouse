@@ -182,12 +182,15 @@ def enable_fastmath_optimizations(target: ir.Value[transform.AnyOpType]) -> None
         ops=["scf.for"],
         op_attrs={transform_ext.REDUCTION_LOOP_ATTR_NAME: ir.UnitAttr.get()},
     )
-    correction_divs = match(
-        reduction_loop,
-        ops=["arith.divf"],
-        op_attrs={"fastmath": no_fastmath},
-    )
-    transform.annotate(correction_divs, "fastmath", param=quotient_flags)
+    with lh_transform.foreach(reduction_loop) as loop:
+        # Handle zero or multiple reduction loops gracefully.
+        correction_divs = match(
+            loop,
+            ops=["arith.divf"],
+            op_attrs={"fastmath": no_fastmath},
+        )
+        transform.annotate(correction_divs, "fastmath", param=quotient_flags)
+        transform.yield_()
 
     maximum = ir.Attribute.parse("#vector.kind<maximumf>")
     maxnum = transform.param_constant(
