@@ -69,7 +69,6 @@ from lighthouse.pipeline.driver import TransformDriver
 from lighthouse.schedule.xegpu import (
     mlp_schedule,
     elemwise_schedule,
-    reduction_schedule,
 )
 from lighthouse.pipeline.helper import PipelineInterrupt
 from lighthouse.ingress.torch import gpu_backend, TargetDialect
@@ -575,11 +574,7 @@ def lower_to_llvm(
                 stop_at_stage=stop_at_stage,
             )
         elif schedule_kind == "reduction":
-            schedule = reduction_schedule(
-                params=schedule_params,
-                payload_func_name=payload_func_name,
-                stop_at_stage=stop_at_stage,
-            )
+            raise NotImplementedError("Reduction kernels require --use-gpu-pipeline.")
         elif schedule_kind == "attention":
             raise NotImplementedError("Attention kernels require --use-gpu-pipeline.")
         else:

@@ -1,7 +1,6 @@
 from .xegpu_to_binary import xegpu_to_binary
 from .mlp_schedule import mlp_schedule, matmul_schedule
 from .elemwise_schedule import elemwise_schedule
-from .reduction_schedule import reduction_schedule
 from .outline_gpu_func_schedule import outline_gpu_func_schedule
 from .annotate_layouts_schedule import annotate_layouts_schedule
 from .vectorize_schedule import vectorize_schedule
@@ -35,7 +34,6 @@ __all__ = [
     "mlp_schedule",
     "outline_gpu_func_schedule",
     "outline_gpu_function",
-    "reduction_schedule",
     "vector_to_xegpu_schedule",
     "vectorize_bufferize_and_outline_gpu_func",
     "vectorize_schedule",
