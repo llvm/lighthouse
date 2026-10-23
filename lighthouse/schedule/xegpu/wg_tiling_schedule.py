@@ -67,7 +67,11 @@ def apply_gemm_tiling(
     return func
 
 
-def apply_reduction_tiling(func: ir.Operation) -> ir.Operation:
+def apply_reduction_tiling(
+    func: ir.Operation,
+    force_wg_tile: list[int] | None = None,
+    force_reduction_tile: list[int] | None = None,
+) -> ir.Operation:
     """Apply reduction tiling to the given function."""
 
     anytype = transform.AnyOpType.get()
@@ -78,7 +82,11 @@ def apply_reduction_tiling(func: ir.Operation) -> ir.Operation:
     # TODO implement actual pattern matching and anchor op inference
     anchor_op = lh_transform.match_op(func, "linalg.generic")
     anchor_op = transform_ext.extract_handle(anchor_op, 0, silenceable=True)
-    wg_tile, _, reduction_tile = transform_ext.infer_xegpu_reduction_params(anchor_op)
+    wg_tile, _, reduction_tile = transform_ext.infer_xegpu_reduction_params(
+        anchor_op,
+        force_wg_tile=force_wg_tile,
+        force_reduction_tile=force_reduction_tile,
+    )
 
     # WG row tiling
     generic_ops = structured.structured_match(anytype, func, ops=["linalg.generic"])
@@ -284,8 +292,11 @@ def wg_tiling_schedule(
             )
             transform.yield_([func])
         with alt.region(2) as func:
-            # TODO add support for forcing custom tile sizes
-            func = apply_reduction_tiling(func)
+            func = apply_reduction_tiling(
+                func,
+                force_wg_tile=wg_tile,
+                force_reduction_tile=reduction_tile,
+            )
             transform.yield_([func])
         with alt.region(3) as func:
             transform_ext.emit_definite_failure(
