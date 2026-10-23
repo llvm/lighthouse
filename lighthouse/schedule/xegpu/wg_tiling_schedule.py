@@ -279,7 +279,6 @@ def wg_tiling_schedule(
             func = apply_gemm_tiling(func, force_wg_tile=wg_tile, force_k_tile=k_tile)
             transform.yield_([func])
         with alt.region(1) as func:
-            # TODO add support for forcing custom tile sizes
             func = apply_attention_tiling(
                 func, force_wg_tile=wg_tile, force_reduction_tile=reduction_tile
             )
