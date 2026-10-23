@@ -21,6 +21,7 @@ def get_xegpu_pipeline(
         parameters = {}
     wg_tile = parameters.get("wg_tile", None)
     sg_tile = parameters.get("sg_tile", None)
+    wg_subtile = parameters.get("wg_subtile", None)
     reduction_tile = parameters.get("reduction_tile", None)
     schedules = []
     if stop_at_stage == "initial":
@@ -32,6 +33,7 @@ def get_xegpu_pipeline(
         xegpu.wg_tiling_schedule(
             wg_tile=wg_tile,
             reduction_tile=reduction_tile,
+            wg_subtile=wg_subtile,
         )
     )
     if stop_at_stage == "tiled":
