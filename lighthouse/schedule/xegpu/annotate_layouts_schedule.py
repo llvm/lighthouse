@@ -65,9 +65,29 @@ def annotate_gemm(
     gpu_func_op: ir.Operation,
     dpas_op: ir.Operation,
     force_sg_tile: tuple[int, int] | None = None,
+    force_wg_tile: tuple[int, int] | None = None,
+    force_k_tile: int | None = None,
+    force_load_tile_a: tuple[int, int] | None = None,
+    force_load_tile_b: tuple[int, int] | None = None,
+    force_prefetch_tile_a: tuple[int, int] | None = None,
+    force_prefetch_tile_b: tuple[int, int] | None = None,
+    force_prefetch_a_nb: int | None = None,
+    force_prefetch_b_nb: int | None = None,
+    device: str | None = None,
 ):
-    # TODO possibility to override all remaining params, load and prefetch tiles etc.
-    params = transform_ext.infer_xegpu_gemm_params(dpas_op, force_sg_tile=force_sg_tile)
+    params = transform_ext.infer_xegpu_gemm_params(
+        dpas_op,
+        force_wg_tile=list(force_wg_tile) if force_wg_tile is not None else None,
+        force_sg_tile=list(force_sg_tile) if force_sg_tile is not None else None,
+        force_k_tile=force_k_tile,
+        device=device,
+    )
+
+    def int_to_param(value: int):
+        anyparam = transform.AnyParamType.get()
+        i64 = ir.IntegerType.get_signless(64)
+        return transform.ParamConstantOp(anyparam, ir.IntegerAttr.get(i64, value)).param
+
     wg_m = transform_ext.get_param_dict_entry(params, "wg_m")
     wg_n = transform_ext.get_param_dict_entry(params, "wg_n")
     sg_m = transform_ext.get_param_dict_entry(params, "sg_m")
@@ -85,6 +105,19 @@ def annotate_gemm(
     prefetch_b_nb = transform_ext.get_param_dict_entry(params, "prefetch_b_nb")
     transpose_a = transform_ext.get_param_dict_entry(params, "transpose_a")
     transpose_b = transform_ext.get_param_dict_entry(params, "transpose_b")
+
+    if force_load_tile_a is not None:
+        load_a_m, load_a_k = [int_to_param(x) for x in force_load_tile_a]
+    if force_load_tile_b is not None:
+        load_b_k, load_b_n = [int_to_param(x) for x in force_load_tile_b]
+    if force_prefetch_tile_a is not None:
+        prefetch_a_m, prefetch_a_k = [int_to_param(x) for x in force_prefetch_tile_a]
+    if force_prefetch_tile_b is not None:
+        prefetch_b_k, prefetch_b_n = [int_to_param(x) for x in force_prefetch_tile_b]
+    if force_prefetch_a_nb is not None:
+        prefetch_a_nb = int_to_param(force_prefetch_a_nb)
+    if force_prefetch_b_nb is not None:
+        prefetch_b_nb = int_to_param(force_prefetch_b_nb)
 
     # Compute sg_layout[i] = wg_i // sg_i.
     sg_layout, _ = transform_ext.compute_sg_layout([wg_m, wg_n], [sg_m, sg_n])
@@ -413,6 +446,15 @@ def analyze_and_annotate_gpu_func(
     prefetch_tile: tuple[int, int] | None = None,
     q_load_tile: tuple[int, int] | None = None,
     v_load_tile: tuple[int, int] | None = None,
+    wg_tile: tuple[int, int] | None = None,
+    k_tile: int | None = None,
+    load_tile_a: tuple[int, int] | None = None,
+    load_tile_b: tuple[int, int] | None = None,
+    prefetch_tile_a: tuple[int, int] | None = None,
+    prefetch_tile_b: tuple[int, int] | None = None,
+    prefetch_a_nb: int | None = None,
+    prefetch_b_nb: int | None = None,
+    device: str | None = None,
 ):
     """
     Analyzes a GPU function operation and annotates it with layout information
@@ -450,7 +492,20 @@ def analyze_and_annotate_gpu_func(
         # GEMM case; assume there's only one DPAS operation in the gpu.func
         dpas_ops = lh_transform.match_op(gpu_func, "xegpu.dpas")
         dpas_op = transform_ext.extract_handle(dpas_ops, 0, silenceable=True)
-        annotate_gemm(gpu_func, dpas_op, force_sg_tile=sg_tile)
+        annotate_gemm(
+            gpu_func,
+            dpas_op,
+            force_sg_tile=sg_tile,
+            force_wg_tile=wg_tile,
+            force_k_tile=k_tile,
+            force_load_tile_a=load_tile_a,
+            force_load_tile_b=load_tile_b,
+            force_prefetch_tile_a=prefetch_tile_a,
+            force_prefetch_tile_b=prefetch_tile_b,
+            force_prefetch_a_nb=prefetch_a_nb,
+            force_prefetch_b_nb=prefetch_b_nb,
+            device=device,
+        )
         transform.yield_([gpu_func])
     with alt.region(2) as gpu_func:
         # Reduction case; match vector.multi_reduction op
@@ -474,6 +529,15 @@ def annotate_layouts_schedule(
     prefetch_tile: tuple[int, int] | None = None,
     q_load_tile: tuple[int, int] | None = None,
     v_load_tile: tuple[int, int] | None = None,
+    wg_tile: tuple[int, int] | None = None,
+    k_tile: int | None = None,
+    load_tile_a: tuple[int, int] | None = None,
+    load_tile_b: tuple[int, int] | None = None,
+    prefetch_tile_a: tuple[int, int] | None = None,
+    prefetch_tile_b: tuple[int, int] | None = None,
+    prefetch_a_nb: int | None = None,
+    prefetch_b_nb: int | None = None,
+    device: str | None = None,
 ) -> ir.Module:
     """
     Adds xegpu layout annotations and prefetch ops to relevant ops.
@@ -498,6 +562,15 @@ def annotate_layouts_schedule(
                 prefetch_tile=prefetch_tile,
                 q_load_tile=q_load_tile,
                 v_load_tile=v_load_tile,
+                wg_tile=wg_tile,
+                k_tile=k_tile,
+                load_tile_a=load_tile_a,
+                load_tile_b=load_tile_b,
+                prefetch_tile_a=prefetch_tile_a,
+                prefetch_tile_b=prefetch_tile_b,
+                prefetch_a_nb=prefetch_a_nb,
+                prefetch_b_nb=prefetch_b_nb,
+                device=device,
             )
             transform.yield_()
         transform.yield_()

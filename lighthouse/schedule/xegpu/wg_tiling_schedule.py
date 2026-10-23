@@ -286,6 +286,7 @@ def wg_tiling_schedule(
     reduction_tile: list[int] | None = None,
     payload_func_name: str | None = None,
     wg_subtile: list[int] | None = None,
+    device: str | None = None,
 ) -> ir.Module:
     """Tile the payload for workgroup parallelism and the reduction dimension."""
 
@@ -305,7 +306,12 @@ def wg_tiling_schedule(
             payload_func, num_alternatives=4, result_types=[payload_func.type]
         )
         with alt.region(0) as func:
-            func = apply_gemm_tiling(func, force_wg_tile=wg_tile, force_k_tile=k_tile)
+            func = apply_gemm_tiling(
+                func,
+                force_wg_tile=wg_tile,
+                force_k_tile=k_tile,
+                device=device,
+            )
             transform.yield_([func])
         with alt.region(1) as func:
             func = apply_attention_tiling(
