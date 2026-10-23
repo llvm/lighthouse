@@ -34,8 +34,7 @@ from lighthouse.execution import (
     GPUMemoryManager,
 )
 from lighthouse.utils.numpy import mlir_to_numpy_dtype
-from lighthouse.schedule.parameters import ScheduleParameters
-from lighthouse.schedule.xegpu import mlp_schedule, xegpu_to_binary
+from lighthouse.schedule import xegpu
 from lighthouse.ingress.mlir_gen import (
     generate_gpu_mlp_payload,
     get_mlir_elem_type,
@@ -247,26 +246,17 @@ class XeGPUMLP:
     def schedule_modules(
         self,
         stop_at_stage: str | None = None,
-        parameters: ScheduleParameters | None = None,
         device: str | None = None,
     ) -> list[ir.Module]:
-        assert parameters is not None, "Schedule parameters must be provided"
         schedules = []
         schedules.append(Runner.get_bench_wrapper_schedule(self.payload_function_name))
 
-        schedules.append(
-            mlp_schedule(
-                payload_func_name=self.payload_function_name,
-                device=device,
+        schedules.extend(
+            xegpu.get_xegpu_pipeline(
                 stop_at_stage=stop_at_stage,
-                params=parameters,
+                device=device,
             )
         )
-
-        if stop_at_stage and stop_at_stage != "final":
-            return schedules
-
-        schedules.append(xegpu_to_binary())
 
         return schedules
 
@@ -426,25 +416,10 @@ if __name__ == "__main__":
         ab_type = wload.ab_type
         acc_type = wload.acc_type
 
-        # Initialize layer parameters
-        params = []
-        for i, (M, N, K) in enumerate(matmuls):
-            layer_params = {
-                "layer_kind": "matmul",
-                "m": M,
-                "n": N,
-                "k": K,
-                "transpose_a": tr_a if i == 0 else False,
-                "transpose_b": tr_b,
-            }
-            params.append(layer_params)
-        params = ScheduleParameters(params)
-
         if args.dump_kernel or args.dump_schedule:
             pipeline = TransformDriver(
                 wload.schedule_modules(
                     stop_at_stage=args.dump_kernel,
-                    parameters=params,
                     device=args.target,
                 )
             )
@@ -452,14 +427,10 @@ if __name__ == "__main__":
             if args.dump_kernel:
                 print(payload)
             if args.dump_schedule:
-                for schedule_module in wload.schedule_modules(
-                    parameters=params, device=args.target
-                ):
+                for schedule_module in wload.schedule_modules(device=args.target):
                     print(schedule_module)
         else:
-            pipeline = TransformDriver(
-                wload.schedule_modules(parameters=params, device=args.target)
-            )
+            pipeline = TransformDriver(wload.schedule_modules(device=args.target))
             payload = pipeline.apply(wload.payload_module())
             runner = Runner(
                 payload,
