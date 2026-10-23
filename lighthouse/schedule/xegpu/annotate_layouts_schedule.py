@@ -196,9 +196,14 @@ def annotate_gemm(
     lh_transform.cleanup(gpu_func_op)
 
 
-def annotate_reduction(gpu_func: ir.Operation, anchor_op: ir.Operation):
+def annotate_reduction(
+    gpu_func: ir.Operation,
+    anchor_op: ir.Operation,
+    force_sg_tile: tuple[int, int] | None = None,
+):
     wg_tile, sg_tile, reduction_tile = transform_ext.infer_xegpu_reduction_params(
-        anchor_op
+        anchor_op,
+        force_sg_tile=list(force_sg_tile) if force_sg_tile is not None else None,
     )
     sg_layout, sg_data = transform_ext.compute_sg_layout(
         wg_tile, sg_tile, reduction_tile
@@ -451,7 +456,7 @@ def analyze_and_annotate_gpu_func(
         # Reduction case; match vector.multi_reduction op
         anchor_op = lh_transform.match_op(gpu_func, "vector.multi_reduction")
         anchor_op = transform_ext.extract_handle(anchor_op, 0, silenceable=True)
-        annotate_reduction(gpu_func, anchor_op)
+        annotate_reduction(gpu_func, anchor_op, force_sg_tile=sg_tile)
         transform.yield_([gpu_func])
     with alt.region(3) as gpu_func:
         # Exhausting all real alternatives is a hard error, not a recoverable
