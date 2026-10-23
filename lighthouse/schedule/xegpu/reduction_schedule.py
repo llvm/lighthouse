@@ -276,7 +276,7 @@ def bundle_xegpu_reduction_schedule(
     func = vectorize(
         mod,
         payload_func_name=payload_func_name,
-        disable_multi_reduction_to_contract_patterns=True,
+        disable_multi_reduction_to_contract=True,
     )
 
     # Convert math.fpowi to arith.mulf.
