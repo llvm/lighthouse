@@ -19,7 +19,7 @@ from lighthouse.utils.numpy import mlir_to_numpy_dtype
 from lighthouse.ingress.mlir_gen import get_mlir_elem_type
 from lighthouse.ingress.mlir_gen.gpu_softmax_payload import generate_gpu_softmax_payload
 from lighthouse.schedule.parameters import ScheduleParameters
-from lighthouse.schedule.xegpu import reduction_schedule, xegpu_to_binary
+from lighthouse.schedule import xegpu
 
 
 def softmax_complexity(M: int, N: int, nbytes: int):
@@ -138,20 +138,13 @@ class XeGPUSoftmax:
         """Generate transform schedule for softmax."""
         schedules = []
         schedules.append(Runner.get_bench_wrapper_schedule(self.payload_function_name))
-
-        schedules.append(
-            reduction_schedule(
-                payload_func_name=self.payload_function_name,
+        schedules.extend(
+            xegpu.get_xegpu_pipeline(
+                parameters=parameters[0],
                 stop_at_stage=stop_at_stage,
-                params=parameters,
+                disable_multi_reduction_to_contract=True,
             )
         )
-
-        if stop_at_stage and stop_at_stage != "final":
-            return schedules
-
-        schedules.append(xegpu_to_binary())
-
         return schedules
 
     def shared_libs(self) -> list[str]:
@@ -181,12 +174,6 @@ def parse_cli():
         type=int,
         default=8,
         help="Number of rows per subgroup.",
-    )
-    parser.add_argument(
-        "--subgroup-size",
-        type=int,
-        default=16,
-        help="Subgroup size.",
     )
     parser.add_argument(
         "--reduction-step-size",
@@ -250,11 +237,9 @@ if __name__ == "__main__":
         [
             {
                 "layer_kind": "reduction",
-                "sizes": args.sizes,
                 "wg_tile": [args.wg_rows, 0],
                 "sg_tile": [args.sg_rows, 0],
                 "reduction_tile": [0, args.reduction_step_size],
-                "subgroup_size": args.subgroup_size,
             }
         ]
     )
@@ -329,7 +314,6 @@ if __name__ == "__main__":
                 f"dt={dtype} "
                 f"wg-rows={args.wg_rows} "
                 f"sg-rows={args.sg_rows} "
-                f"subgroup-size={args.subgroup_size} "
                 f"time(us): {elapsed:.2f} "
                 f"GFLOPS: {gflops:.2f} "
             )
