@@ -66,7 +66,13 @@ class InferXeGPUReductionParamsOp(
                 wg_rows = 64
                 red_size = 32
             elif isinstance(target_op, vector.MultiDimReductionOp):
-                wg_rows, red_size = ir.ShapedType(target_op.operands[0].type).shape
+                input_shape = ir.ShapedType(target_op.operands[0].type).shape
+                if len(input_shape) != 2:
+                    op.location.emit_error(
+                        "infer_xegpu_reduction_params: expected 2D input for MultiDimReductionOp"
+                    )
+                    return DiagnosedSilenceableFailure.SilenceableFailure
+                wg_rows, red_size = input_shape
             else:
                 op.location.emit_error(
                     "infer_xegpu_reduction_params: unsupported reduction leaf "
