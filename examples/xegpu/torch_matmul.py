@@ -20,10 +20,7 @@ from lighthouse.schedule.parameters import ScheduleParameters
 from lighthouse.pipeline.driver import TransformDriver
 from lighthouse.utils.mlir import get_mlir_library_path
 from lighthouse.execution.runner import Runner
-from lighthouse.schedule.xegpu import (
-    mlp_schedule,
-    xegpu_to_binary,
-)
+from lighthouse.schedule import xegpu
 from lighthouse.ingress.torch import gpu_backend, TargetDialect
 
 
@@ -67,15 +64,12 @@ def schedule_modules(
     if benchmark:
         schedules.append(Runner.get_bench_wrapper_schedule(entry_func))
 
-    schedules.append(
-        mlp_schedule(
-            payload_func_name="main",
+    schedules.extend(
+        xegpu.get_xegpu_pipeline(
+            parameters=parameters[0],
             device=device,
-            params=parameters,
         )
     )
-
-    schedules.append(xegpu_to_binary())
 
     return schedules
 
@@ -104,9 +98,6 @@ def cli_parser(description):
     parser = argparse.ArgumentParser(
         description=description,
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
-    )
-    parser.add_argument(
-        "--all-knobs", action="store_true", help="Use knobs for all schedule parameters"
     )
     parser.add_argument(
         "--sizes",
