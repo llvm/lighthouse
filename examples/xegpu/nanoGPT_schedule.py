@@ -10,10 +10,10 @@ it rewrites the payload from high-level linalg ops down to GPU (XeGPU) kernels.
      `_tile_one_matmul` / `_tile_one_layernorm` / `_tile_one_fused_attention_region`
      helpers.
 
-We can't reuse the repo's per-op schedules (mlp_schedule)
-directly, because each assumes the module contains only its op.
-The nanoGPT module is mixed (matmul + layernorm + softmax + elementwise), so we
-build one combined schedule that handles all op classes. The strategy:
+We can't reuse the repo's per-op schedules directly, because each assumes the
+module contains only its op. The nanoGPT module is mixed (matmul + layernorm +
+softmax + elementwise), so we build one combined schedule that handles all op
+classes. The strategy:
 
   (a) Tile each op into its own parallel loop nest (`scf.forall` = the GPU
       work-group grid). Different op classes tile differently:
@@ -56,7 +56,7 @@ from lighthouse.pipeline.helper import (
 from lighthouse.schedule import schedule_boilerplate
 from lighthouse.schedule.xegpu.attention_fusion import enable_fastmath_optimizations
 from lighthouse.schedule.xegpu.lowering_common import convert_to_gpu_launch
-from lighthouse.schedule.xegpu.mlp_schedule import xegpu_wg_annotation_for_mlp_layer
+from lighthouse.schedule.xegpu.annotate_layouts_schedule import annotate_gemm
 from nanoGPT_payload import F32
 
 
@@ -688,7 +688,21 @@ def _bundle(
     for gm, kind in zip(gpu_mods, kinds):
         gf = match(gm, ops={"gpu.func"})
         if kind == "mm":
-            xegpu_wg_annotation_for_mlp_layer(gf, **mm_params)
+            dpas_op = match_and_split(gf, ops={"xegpu.dpas"}, nhandles=1)[0]
+            p = mm_params
+            annotate_gemm(
+                gf,
+                dpas_op,
+                force_wg_tile=[p["wg_m"], p["wg_n"]],
+                force_sg_tile=[p["sg_m"], p["sg_n"]],
+                force_k_tile=p["k_tile"],
+                force_load_tile_a=[p["load_a_m"], p["load_a_k"]],
+                force_load_tile_b=[p["load_b_k"], p["load_b_n"]],
+                force_prefetch_tile_a=[p["prefetch_a_m"], p["prefetch_a_k"]],
+                force_prefetch_tile_b=[p["prefetch_b_k"], p["prefetch_b_n"]],
+                force_prefetch_a_nb=p["prefetch_a_nb"],
+                force_prefetch_b_nb=p["prefetch_b_nb"],
+            )
         elif kind == "fa":
             xegpu_fa_annotation(gf, fa_params)
         else:
