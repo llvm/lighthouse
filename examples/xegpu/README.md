@@ -149,71 +149,12 @@ python mlp.py --bias --relu ...
 
 ## Kernel tuning
 
-### Exhaustive grid search
+### Matmul kernel tuning based on cost modeling
 
-`tune_matmul_gridsearch.py` performs an exhaustive grid search on a matrix multiplication kernel. It takes similar arguments as the `matmul.py` benchmark:
-
-```bash
-python tune_matmul_gridsearch.py --sizes 1024 2048 4096 --bias --relu --no-accumulate-c
-```
-
-The executed parameter combinations are stored in `out_gridsearch.csv` file along with the obtained performance metrics:
-
-```txt
-m,n,k,wg_m,wg_n,sg_m,sg_n,k_tile,load_a_m,load_a_k,load_b_k,load_b_n,prefetch_a_m,prefetch_a_k,prefetch_b_k,prefetch_b_n,prefetch_nb,time (us),GFLOPS/s
-4096,4096,4096,64,256,32,32,64,8,16,16,16,8,16,8,16,1,???,???
-...
-```
-
-To get information about the search space (e.g., tile parameter choices) without actually executing the kernels run with `--dry-run` flag:
+`tune_matmul_costmodel.py` uses cost-model estimates to select promising matrix multiplication configurations for benchmarking. Results are saved to `out_costmodel.csv`.
 
 ```bash
-python tune_matmul_gridsearch.py --dry-run
+python tune_matmul_costmodel.py --sizes 1024 2048 4096 --dry-run
 ```
 
-Example output:
-
-```txt
-Matmul problem size: [4096, 4096, 4096]
-ab_type='f16'
-c_type='f32'
-has_bias=False
-has_relu=False
-accumulate_c=True
-Variable set:
-wg_m=[64, 128, 256]
-wg_n=[64, 128, 256]
-sg_m=[32, 64, 128]
-sg_n=[32, 64, 128]
-k_tile=[16, 32, 64, 128, 256]
-load_a_m=[8, 16, 32]
-load_a_k=[8, 16, 32]
-load_b_k=[8, 16, 32]
-load_b_n=[8, 16, 32]
-prefetch_a_m=[8, 16, 32]
-prefetch_a_k=[8, 16, 32]
-prefetch_b_k=[8, 16, 32]
-prefetch_b_n=[8, 16, 32]
-prefetch_nb=[1]
-Total complexity: 2657205 configurations
-Number of executed configurations: 5292
-```
-
-Total complexity is the number of parameter combinations without any filtering. The number of executed configurations shows the number of valid combinations, i.e. ones that satisfy appropriate (e.g., hardware) constraints.
-
-To dump the best found configurations as JSON files at the end of the search, use `--dump-json n` flag where `n` stands for the number of best configurations. The files are named as `matmul_params_*_00.json` with increasing integer suffix (best configuration being 00).
-
-> [!NOTE]
-> Running the grid search typically takes several hours to complete.
-
-### Adaptive sampling with Genetic Algorithm
-
-`tune_matmul_ga.py` employs a genetic algorithm for adaptive sampling to explore the kernel tuning search space. This approach is typically an order of magnitude faster while discovering high throughput parameter combinations.
-
-The command-line interface is similar to `tune_matmul_gridsearch.py`:
-
-```bash
-python tune_matmul_ga.py --sizes 1024 2048 4096 --bias --relu --dump-json 10
-```
-
-The executed parameter combinations are stored in `out_genetic_algorithm.csv` file.
+Omit `--dry-run` to run the tuning and benchmark selected configurations; use `--dump-json 5` to save the five best configurations.
