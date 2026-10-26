@@ -53,7 +53,7 @@ from lighthouse.pipeline.helper import (
 )
 from lighthouse.schedule import schedule_boilerplate
 from lighthouse.schedule.xegpu.attention_fusion import enable_fastmath_optimizations
-from lighthouse.schedule.xegpu.mlp_schedule import xegpu_wg_annotation_for_mlp_layer
+from lighthouse.schedule.xegpu.annotate_layouts_schedule import annotate_gemm
 from lighthouse.schedule.xegpu.lowering_common import convert_to_gpu_launch
 from llama3_payload import F32
 
@@ -600,7 +600,21 @@ def _bundle(
     for gm, kind in zip(gpu_mods, kinds):
         gf = match(gm, ops={"gpu.func"})
         if kind == "matmul":
-            xegpu_wg_annotation_for_mlp_layer(gf, **mm_params_list[mi])
+            dpas_op = match_and_split(gf, ops={"xegpu.dpas"}, nhandles=1)[0]
+            p = mm_params_list[mi]
+            annotate_gemm(
+                gf,
+                dpas_op,
+                force_wg_tile=[p["wg_m"], p["wg_n"]],
+                force_sg_tile=[p["sg_m"], p["sg_n"]],
+                force_k_tile=p["k_tile"],
+                force_load_tile_a=[p["load_a_m"], p["load_a_k"]],
+                force_load_tile_b=[p["load_b_k"], p["load_b_n"]],
+                force_prefetch_tile_a=[p["prefetch_a_m"], p["prefetch_a_k"]],
+                force_prefetch_tile_b=[p["prefetch_b_k"], p["prefetch_b_n"]],
+                force_prefetch_a_nb=p["prefetch_a_nb"],
+                force_prefetch_b_nb=p["prefetch_b_nb"],
+            )
             mi += 1
         elif kind == "fused_attention":
             xegpu_fa_annotation(gf, fa_params)
