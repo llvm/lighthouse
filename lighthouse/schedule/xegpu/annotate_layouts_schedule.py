@@ -8,6 +8,7 @@ from lighthouse.dialects.transform import transform_ext
 
 from .matmul_constraints import (
     DPAS,
+    NB_WORKITEMS,
     PREFETCH_INST_DATA,
 )
 
@@ -194,7 +195,6 @@ def annotate_gemm(
         layout_prefetch_b,
         prefetch_b_nb,
     )
-
     # C tile layout
     output_layout = {
         "sg_layout": sg_layout,
@@ -203,20 +203,16 @@ def annotate_gemm(
     }
     # C tile dpas anchor layout
     xegpu.set_anchor_layout(dpas_op, index=2, **output_layout)
-    # annotate store op
-    # FIXME trace consumers of dpas op?
-    store_op_c = lh_transform.match_op(gpu_func_op, "xegpu.store_nd")
-    xegpu.set_anchor_layout(store_op_c, **output_layout)
 
-    # annotate the 1d load of the broadcast op with a slice layout
-    # NOTE assumes that xegpu.load is followed by vector.broadcast
-    maybe_bcast_load = lh_transform.match_op(gpu_func_op, "xegpu.load")
-    load_user = transform.get_consumers_of_result(anytype, maybe_bcast_load, 0)
-    bcast_ops = transform.select(anytype, load_user, "vector.broadcast")
-    with lh_transform.foreach(bcast_ops) as bcast_op:
-        bcast_load = xegpu.get_load_op(transform.get_operand(anyvalue, bcast_op, [0]))
-        xegpu.set_anchor_layout(bcast_load, index=0, **output_layout, slice_dims=[0])
+    store_op_c = lh_transform.match_op(gpu_func_op, "xegpu.store_nd")
+    with lh_transform.foreach(store_op_c) as store:
+        store_layout = transform_ext.infer_gemm_store_layout(
+            dpas_op, store, **output_layout
+        )
+        transform.annotate(store, "layout", param=store_layout)
         transform.yield_()
+
+    transform_ext.annotate_epilogue_broadcasts(store_op_c)
 
     lh_transform.cleanup(gpu_func_op)
 
@@ -439,6 +435,46 @@ def annotate_attention(
     )
 
 
+def annotate_elementwise(gpu_func: ir.Value[transform.AnyOpType]):
+    """Anchor single-subgroup memory tiles and their broadcast inputs."""
+    # Check that the elementwise kernel is using single subgroup (for now).
+    block_size = transform_ext.get_named_attribute(gpu_func, "known_block_size")
+    subgroup_size = transform.param_constant(
+        transform.AnyParamType.get(),
+        ir.DenseI32ArrayAttr.get([NB_WORKITEMS, 1, 1]),
+    )
+    transform_ext.param_cmp_eq(block_size, subgroup_size)
+    # Check that the kernel does not contain contract or reduction ops.
+    unsupported = lh_transform.match_op(
+        gpu_func,
+        ["xegpu.dpas", "vector.contract", "vector.multi_reduction", "vector.reduction"],
+    )
+    transform.match_operation_empty(unsupported)
+    # Check that there's at least one store op to anchor.
+    stores = lh_transform.match_op(gpu_func, "xegpu.store_nd")
+    transform_ext.extract_handle(stores, 0, silenceable=True)
+    memory_ops = lh_transform.match_op(gpu_func, ["xegpu.load_nd", "xegpu.store_nd"])
+    with lh_transform.foreach(memory_ops) as memory:
+        wg_tile, sg_tile = transform_ext.infer_xegpu_elementwise_params(memory)
+        dimensions = lh_transform.foreach(
+            wg_tile,
+            sg_tile,
+            result_types=[transform.AnyParamType.get()] * 2,
+        )
+        with dimensions as (wg_dim, sg_dim):
+            sg_layout, sg_data = transform_ext.compute_sg_layout(
+                wg_dim, sg_dim, ndims=1
+            )
+            transform.yield_([sg_layout[0], sg_data[0]])
+        xegpu.set_anchor_layout(
+            memory,
+            sg_layout=dimensions.results[0],
+            sg_data=dimensions.results[1],
+        )
+        transform.yield_()
+    transform_ext.annotate_epilogue_broadcasts(stores)
+
+
 def analyze_and_annotate_gpu_func(
     gpu_func_op: ir.Operation,
     sg_tile: tuple[int, int] | None = None,
@@ -458,7 +494,7 @@ def analyze_and_annotate_gpu_func(
 ):
     """
     Analyzes a GPU function operation and annotates it with layout information
-    for the contained DPAS operations.
+    for attention, GEMM, reduction, or single-subgroup elementwise kernels.
 
     Args:
         gpu_func_op (ir.Operation): The GPU function operation to analyze and annotate.
@@ -470,7 +506,7 @@ def analyze_and_annotate_gpu_func(
     """
 
     alt = lh_transform.alternatives(
-        gpu_func_op, num_alternatives=4, result_types=[gpu_func_op.type]
+        gpu_func_op, num_alternatives=5, result_types=[gpu_func_op.type]
     )
     with alt.region(0) as gpu_func:
         # Attention layer case; has both dpas and reduction ops
@@ -514,6 +550,9 @@ def analyze_and_annotate_gpu_func(
         annotate_reduction(gpu_func, anchor_op, force_sg_tile=sg_tile)
         transform.yield_([gpu_func])
     with alt.region(3) as gpu_func:
+        annotate_elementwise(gpu_func)
+        transform.yield_([gpu_func])
+    with alt.region(4) as gpu_func:
         # Exhausting all real alternatives is a hard error, not a recoverable
         # silenceable failure.
         transform_ext.emit_definite_failure(
