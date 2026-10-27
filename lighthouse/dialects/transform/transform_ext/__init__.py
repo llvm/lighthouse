@@ -27,6 +27,7 @@ from .ops.fuse_elementwise_op import fuse_elementwise_op
 from .ops.fuse_forall_epilogue import fuse_forall_epilogue
 from .ops.fold_reshape_ops_by_expansion import fold_reshape_ops_by_expansion
 from .ops.fold_scalar_or_splat_constant import fold_scalar_or_splat_constant
+from .ops.fold_tensor_vector_transfers import fold_tensor_vector_transfers
 from .ops.filter_by_name import filter_by_name
 from .ops.filter_reduction_ops import filter_reduction_ops
 from .ops.fuse_dependent_reduction_ops import fuse_dependent_reduction_ops
@@ -67,6 +68,7 @@ __all__ = [
     "filter_reduction_ops",
     "fold_reshape_ops_by_expansion",
     "fold_scalar_or_splat_constant",
+    "fold_tensor_vector_transfers",
     "fuse_dependent_reduction_ops",
     "fuse_elementwise_op",
     "fuse_forall_epilogue",
