@@ -16,6 +16,7 @@ from .ops.extract_handle import extract_handle
 from .ops.get_tileable_consumers import get_tileable_consumers
 from .ops.get_tiling_sizes import get_tiling_sizes
 from .ops.infer_xegpu_gemm_params import infer_xegpu_gemm_params
+from .ops.infer_gemm_store_layout import infer_gemm_store_layout
 from .ops.infer_xegpu_attention_params import infer_xegpu_attention_params
 from .ops.infer_xegpu_reduction_params import infer_xegpu_reduction_params
 from .ops.trace_producers import trace_producers
@@ -79,6 +80,7 @@ __all__ = [
     "get_tile_sizes",
     "get_tileable_consumers",
     "get_tiling_sizes",
+    "infer_gemm_store_layout",
     "infer_xegpu_attention_params",
     "infer_xegpu_gemm_params",
     "infer_xegpu_reduction_params",
