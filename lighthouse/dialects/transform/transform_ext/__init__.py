@@ -24,6 +24,7 @@ from .ops.update_address_space import update_address_space
 from .ops.filter_num_loops import filter_num_loops
 from .ops.filter_elementwise import filter_elementwise
 from .ops.fuse_elementwise_op import fuse_elementwise_op
+from .ops.fuse_forall_epilogue import fuse_forall_epilogue
 from .ops.fold_reshape_ops_by_expansion import fold_reshape_ops_by_expansion
 from .ops.fold_scalar_or_splat_constant import fold_scalar_or_splat_constant
 from .ops.filter_by_name import filter_by_name
@@ -68,6 +69,7 @@ __all__ = [
     "fold_scalar_or_splat_constant",
     "fuse_dependent_reduction_ops",
     "fuse_elementwise_op",
+    "fuse_forall_epilogue",
     "get_fusion_roots",
     "get_leading_unit_tile_sizes",
     "get_named_attribute",
