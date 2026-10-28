@@ -46,6 +46,7 @@ from .ops.get_fusion_roots import get_fusion_roots
 from .ops.propagate_tile_sizes import propagate_tile_sizes
 from .ops.tag_subgraphs import tag_subgraphs
 from .ops.get_subgraph_ops import get_subgraph_ops
+from .ops.clear_subgraph_tags import clear_subgraph_tags
 from .utils.dependent_reduction_legality import REDUCTION_LOOP_ATTR_NAME
 from .ops.sfc_remap_forall import sfc_remap_forall
 from .ops.remove_asserts import remove_asserts
@@ -83,6 +84,7 @@ __all__ = [
     "get_named_attribute",
     "get_param_dict_entry",
     "get_subgraph_ops",
+    "clear_subgraph_tags",
     "get_tile_sizes",
     "get_tileable_consumers",
     "get_tiling_sizes",
