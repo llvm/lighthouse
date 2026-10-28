@@ -31,7 +31,7 @@ from lighthouse.execution import (
     MemoryManager,
     GPUMemoryManager,
 )
-from lighthouse.schedule.xegpu import mlp_schedule, xegpu_to_binary
+from lighthouse.schedule import xegpu
 from lighthouse.utils.numpy import mlir_to_numpy_dtype
 from lighthouse.ingress.mlir_gen import generate_gpu_matmul_payload, get_mlir_elem_type
 from lighthouse.schedule.xegpu import XeGPUParameterSelector
@@ -210,19 +210,16 @@ class XeGPUMatMul:
         schedules = []
         schedules.append(Runner.get_bench_wrapper_schedule(self.payload_function_name))
 
-        schedules.append(
-            mlp_schedule(
-                payload_func_name=self.payload_function_name,
-                device=device,
+        schedules.extend(
+            xegpu.get_xegpu_pipeline(
+                parameters=parameters[0],
                 stop_at_stage=stop_at_stage,
-                params=parameters,
+                device=device,
             )
         )
 
         if stop_at_stage and stop_at_stage != "final":
             return schedules
-
-        schedules.append(xegpu_to_binary())
 
         return schedules
 
@@ -472,11 +469,6 @@ enabled via CLI arguments.
         [
             {
                 "layer_kind": "matmul",
-                "m": m,
-                "n": n,
-                "k": k,
-                "transpose_a": transpose_a,
-                "transpose_b": transpose_b,
             }
         ]
     )
@@ -502,7 +494,6 @@ enabled via CLI arguments.
     if args.prefetch_b_nb is not None:
         cli_params["prefetch_b_nb"] = args.prefetch_b_nb
 
-    # By default the tile size parameters are left undefined
     layer_params = params[0]
     if args.json:
         # Override parameters with values from JSON file if provided
@@ -510,10 +501,17 @@ enabled via CLI arguments.
         layer_params.update(json_params[0] if json_params else {})
         # Override with CLI params
         layer_params.update(cli_params)
-    elif cli_params:
+    else:
         # Get default parameters from selector
         param_selector = XeGPUParameterSelector(device=args.target)
-        def_params = param_selector.get_parameters((m, n, k), transpose_a, transpose_b)
+        def_params = param_selector.get_parameters(
+            (m, n, k),
+            transpose_a,
+            transpose_b,
+            wg_tile=args.wg_tile,
+            sg_tile=args.sg_tile,
+            k_tile=args.k_tile,
+        )
         layer_params.update(def_params[0])
         # Override with CLI params
         layer_params.update(cli_params)
