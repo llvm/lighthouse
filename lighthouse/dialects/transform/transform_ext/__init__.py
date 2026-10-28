@@ -51,6 +51,7 @@ from .utils.dependent_reduction_legality import REDUCTION_LOOP_ATTR_NAME
 from .ops.sfc_remap_forall import sfc_remap_forall
 from .ops.remove_asserts import remove_asserts
 from .ops.sink_extract_slice_into_loop import sink_extract_slice_into_loop
+from .ops.split_concat_output import split_concat_output
 from .ops.sink_normalization_past_contraction import (
     sink_normalization_past_contraction,
 )
@@ -60,6 +61,7 @@ __all__ = [
     "TransformExtensionDialect",
     "annotate_epilogue_broadcasts",
     "assign_tile_sizes",
+    "clear_subgraph_tags",
     "clear_tile_and_fuse_annotations",
     "compute_num_threads",
     "compute_sg_layout",
@@ -84,7 +86,6 @@ __all__ = [
     "get_named_attribute",
     "get_param_dict_entry",
     "get_subgraph_ops",
-    "clear_subgraph_tags",
     "get_tile_sizes",
     "get_tileable_consumers",
     "get_tiling_sizes",
@@ -105,6 +106,7 @@ __all__ = [
     "sfc_remap_forall",
     "sink_extract_slice_into_loop",
     "sink_normalization_past_contraction",
+    "split_concat_output",
     "tag_subgraphs",
     "trace_producers",
     "update_address_space",
