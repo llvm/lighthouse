@@ -44,6 +44,7 @@ from .ops.compute_num_threads import compute_num_threads
 from .ops.compute_sg_layout import compute_sg_layout
 from .ops.get_fusion_roots import get_fusion_roots
 from .ops.propagate_tile_sizes import propagate_tile_sizes
+from .ops.tag_subgraphs import tag_subgraphs
 from .utils.dependent_reduction_legality import REDUCTION_LOOP_ATTR_NAME
 from .ops.sfc_remap_forall import sfc_remap_forall
 from .ops.remove_asserts import remove_asserts
@@ -100,6 +101,7 @@ __all__ = [
     "sfc_remap_forall",
     "sink_extract_slice_into_loop",
     "sink_normalization_past_contraction",
+    "tag_subgraphs",
     "trace_producers",
     "update_address_space",
     "wrap_in_benching_func",
