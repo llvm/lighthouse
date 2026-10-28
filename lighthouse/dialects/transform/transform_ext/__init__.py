@@ -29,7 +29,7 @@ from .ops.reverse_handles import reverse_handles
 from .ops.update_address_space import update_address_space
 from .ops.filter_num_loops import filter_num_loops
 from .ops.filter_elementwise import filter_elementwise
-from .ops.fuse_elementwise_op import fuse_elementwise_op
+from .ops.fuse_elementwise_op import fuse_elementwise_op, fuse_elementwise_region
 from .ops.fuse_forall_epilogue import fuse_forall_epilogue
 from .ops.fold_reshape_ops_by_expansion import fold_reshape_ops_by_expansion
 from .ops.fold_scalar_or_splat_constant import fold_scalar_or_splat_constant
@@ -88,6 +88,7 @@ __all__ = [
     "fold_tensor_vector_transfers",
     "fuse_dependent_reduction_ops",
     "fuse_elementwise_op",
+    "fuse_elementwise_region",
     "fuse_forall_epilogue",
     "get_fusion_roots",
     "get_leading_unit_tile_sizes",

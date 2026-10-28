@@ -80,3 +80,68 @@ def fuse_elementwise_op(
 ) -> ir.Value:
     """Fuse ``producer`` into ``consumer`` and return the fused consumer handle."""
     return FuseElementwiseOp(producer=producer, consumer=consumer).fused
+
+
+class FuseElementwiseRegionOp(
+    TransformExtensionDialect.Operation, name="fuse_elementwise_region"
+):
+    """Greedily fuse generic elementwise input edges within each target region.
+
+    Unlike a function pass, this can be scoped to a non-isolated workgroup
+    loop, preventing fusion across kernel boundaries. Unsupported edges are
+    left unchanged.
+    """
+
+    target: ext.Operand[transform.AnyOpType]
+    result: ext.Result[transform.AnyOpType[()]] = ext.infer_result()
+
+    @classmethod
+    def attach_interface_impls(cls, ctx=None):
+        cls.TransformOpInterfaceModel.attach(cls.OPERATION_NAME, context=ctx)
+        cls.MemoryEffectsOpInterfaceModel.attach(cls.OPERATION_NAME, context=ctx)
+
+    class TransformOpInterfaceModel(transform.TransformOpInterface):
+        @staticmethod
+        def apply(op, rewriter, results, state):
+            targets = list(state.get_payload_ops(op.target))
+            for target in targets:
+                for region in target.regions:
+                    for block in region.blocks:
+                        for consumer in list(block.operations):
+                            if consumer.operation.name != "linalg.generic":
+                                continue
+                            while True:
+                                fused = None
+                                for value in consumer.operands:
+                                    if not isinstance(value, ir.OpResult):
+                                        continue
+                                    producer = value.owner.operation
+                                    if producer.block != block:
+                                        continue
+                                    fused = fuse_elementwise(
+                                        producer, consumer, rewriter
+                                    )
+                                    if fused is not None:
+                                        consumer = fused
+                                        break
+                                if fused is None:
+                                    break
+            results.set_ops(op.result, targets)
+            return DiagnosedSilenceableFailure.Success
+
+        @staticmethod
+        def allow_repeated_handle_operands(_op):
+            return False
+
+    class MemoryEffectsOpInterfaceModel(ir.MemoryEffectsOpInterface):
+        @staticmethod
+        def get_effects(op):
+            return (
+                transform.consumes_handle(op.op_operands)
+                + transform.produces_handle(op.results)
+                + transform.modifies_payload()
+            )
+
+
+def fuse_elementwise_region(target: ir.Value[transform.AnyOpType]) -> ir.Value:
+    return FuseElementwiseRegionOp(target=target).result
