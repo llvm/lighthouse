@@ -4,6 +4,7 @@ from mlir.dialects.transform import DiagnosedSilenceableFailure
 
 from lighthouse.dialects.transform.transform_ext import TransformExtensionDialect
 from lighthouse.dialects.transform.transform_ext.utils.subgraph_analysis import (
+    SUBGRAPH_EPILOGUE_ATTR_NAME,
     subgraph_id,
 )
 
@@ -19,11 +20,15 @@ class MatchSubgraphOp(TransformExtensionDialect.Operation, name="match_subgraph"
     operations. With `ops`, match
     those names within members, including their scalar bodies. "*" selects
     whole members. An empty id list matches nothing.
+    `role` selects all members, the scheduling body, or its layout epilogue.
     """
 
     target: ext.Operand[transform.AnyOpType]
     id: ext.Operand[transform.AnyParamType]
     ops: ir.ArrayAttr = ext.attribute()
+    role: ir.StringAttr = ext.attribute(
+        default_factory=lambda: ir.StringAttr.get("all")
+    )
     members: ext.Result[transform.AnyOpType[()]] = ext.infer_result()
 
     @classmethod
@@ -40,6 +45,11 @@ class MatchSubgraphOp(TransformExtensionDialect.Operation, name="match_subgraph"
                 return DiagnosedSilenceableFailure.SilenceableFailure
             expected = {ir.IntegerAttr(id).value for id in ids}
             members = []
+            if op.role.value not in ("all", "body", "epilogue"):
+                op.operation.location.emit_error(
+                    f"unknown subgraph role: {op.role.value}"
+                )
+                return DiagnosedSilenceableFailure.DefiniteFailure
             names = (
                 None
                 if "*" in [ir.StringAttr(name).value for name in op.ops]
@@ -48,6 +58,13 @@ class MatchSubgraphOp(TransformExtensionDialect.Operation, name="match_subgraph"
 
             def visit(inner):
                 if subgraph_id(inner) in expected:
+                    epilogue = SUBGRAPH_EPILOGUE_ATTR_NAME in inner.attributes
+                    if (
+                        op.role.value == "body"
+                        and epilogue
+                        or (op.role.value == "epilogue" and not epilogue)
+                    ):
+                        return ir.WalkResult.SKIP
                     if names is None:
                         members.append(inner)
                     else:
@@ -81,9 +98,15 @@ class MatchSubgraphOp(TransformExtensionDialect.Operation, name="match_subgraph"
 
 
 def match_subgraph(
-    target: ir.Value, id: ir.Value, ops: str | list[str] | None = None
+    target: ir.Value,
+    id: ir.Value,
+    ops: str | list[str] | None = None,
+    *,
+    role: str = "all",
 ) -> ir.Value:
     if isinstance(ops, str):
         ops = [ops]
     names = ir.ArrayAttr.get([ir.StringAttr.get(name) for name in (ops or ["*"])])
-    return MatchSubgraphOp(target=target, id=id, ops=names).members
+    return MatchSubgraphOp(
+        target=target, id=id, ops=names, role=ir.StringAttr.get(role)
+    ).members
