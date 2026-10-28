@@ -153,7 +153,22 @@ def infer_parameters(
             print(f"Layer {i}")
             for k, v in layer.items():
                 print(f"  {k}: {v}")
-    if len(matmuls) > 0 and len(batch_matmuls) == 0:
+    if matmuls and batch_matmuls:
+        # Composed graphs need independent inference for every kernel kind.
+        schedule_params = ScheduleParameters([{"layer_kind": "mixed"}])
+        schedule_kind = "mlp"
+        total_flops = sum(
+            2 * int(np.prod(layer["shape"])) for layer in matmuls + batch_matmuls
+        )
+        read_bytes = sum(
+            int(np.prod(t.shape)) * elemtype_bytes[str(t.element_type)]
+            for t in func_metadata["inputs"][:-1]
+        )
+        output = func_metadata["inputs"][-1]
+        write_bytes = (
+            int(np.prod(output.shape)) * elemtype_bytes[str(output.element_type)]
+        )
+    elif len(matmuls) > 0 and len(batch_matmuls) == 0:
         schedule_params = XeGPUParameterSelector().get_parameters_for_layers(matmuls)
         # check that all matmul dims are powers of 2
         for mmul in matmuls:
@@ -473,9 +488,20 @@ def infer_params_and_lower(
     kernel_metadata.update(func_metadata)
 
     matmuls = [layer for layer in func_metadata["layers"] if layer["kind"] == "matmul"]
-    if enable_tuning and len(matmuls) == 1 and schedule_kind == "mlp":
+    mixed_kernel_graph = bool(matmuls) and any(
+        layer["kind"] in ("reduction", "batch_matmul")
+        for layer in func_metadata["layers"]
+    )
+    cached_file_exists = os.path.isfile(params_cache_json)
+    if (
+        enable_tuning
+        and len(matmuls) == 1
+        and schedule_kind == "mlp"
+        and not mixed_kernel_graph
+        and (stop_at_stage is None or cached_file_exists)
+    ):
         # runtime tuning for matmul kernels
-        if os.path.isfile(params_cache_json):
+        if cached_file_exists:
             print(f"Loading cached parameters from {params_cache_json}")
             schedule_params = ScheduleParameters.from_json(filename=params_cache_json)
         else:
@@ -520,10 +546,11 @@ def infer_params_and_lower(
             for k, v in param_dict.items():
                 print(f"  {k}: {v}")
 
+    # GEMM overrides must not leak into normalization or attention kernels.
     lowered_mod = lower_to_llvm(
         mod=mod,
         schedule_kind=schedule_kind,
-        schedule_params=schedule_params,
+        schedule_params=None if mixed_kernel_graph else schedule_params,
         device="B70" if schedule_kind == "mlp" else None,
         stop_at_stage=stop_at_stage,
         benchmark=benchmark,
@@ -543,7 +570,7 @@ def infer_params_and_lower(
 def lower_to_llvm(
     mod: ir.Module,
     schedule_kind: str,
-    schedule_params: ScheduleParameters,
+    schedule_params: ScheduleParameters | None,
     device: str | None,
     stop_at_stage: str | None,
     benchmark: bool,
@@ -552,8 +579,12 @@ def lower_to_llvm(
     """Lower payload module to LLVM using the specified schedule and parameters."""
     Runner.make_function_callable(mod, payload_func_name)
     if schedule_kind in ("mlp", "reduction", "attention"):
-        parameters = schedule_params[0]
-        if schedule_kind == "mlp" and len(schedule_params) > 1:
+        parameters = schedule_params[0] if schedule_params is not None else None
+        if (
+            schedule_kind == "mlp"
+            and schedule_params is not None
+            and len(schedule_params) > 1
+        ):
             # TODO fix parameter propagation for multiple layers
             parameters = None
         pipeline = xegpu.get_xegpu_pipeline(
@@ -588,6 +619,72 @@ def lower_to_llvm(
     return driver.apply(mod)
 
 
+def dump_verification_failure(
+    result: torch.Tensor,
+    reference: torch.Tensor,
+    *,
+    atol: float,
+    rtol: float,
+    max_samples: int = 8,
+) -> None:
+    """Print mismatch counts and a few failing values, promoted for readability."""
+    print(
+        f"Result shape={tuple(result.shape)}, dtype={result.dtype}; "
+        f"reference shape={tuple(reference.shape)}, dtype={reference.dtype}"
+    )
+    if result.shape != reference.shape:
+        print("Shape mismatch; elementwise error diagnostics skipped.")
+        return
+    failed = ~torch.isclose(result, reference, atol=atol, rtol=rtol).cpu()
+    count = int(failed.sum())
+    print(
+        f"Failing elements: {count}/{failed.numel()}; atol={atol:.9g}, rtol={rtol:.9g}"
+    )
+    actual = result.detach().to(device="cpu", dtype=torch.float64).flatten()
+    expected = reference.detach().to(device="cpu", dtype=torch.float64).flatten()
+    for index in failed.flatten().nonzero().flatten()[:max_samples].tolist():
+        value, ref = actual[index].item(), expected[index].item()
+        print(
+            f"  flat_index={index}: result={value:.9g}, reference={ref:.9g}, "
+            f"abs_error={abs(value - ref):.9g}"
+        )
+
+
+@torch.no_grad()
+def prepare_verification_inputs(
+    model: torch.nn.Module,
+    inputs: list[torch.Tensor],
+    *,
+    identity_weights: bool,
+    power_of_two_inputs: list[int] | None,
+) -> None:
+    """Simplify verification data without changing the model graph."""
+    linears = [
+        module for module in model.modules() if isinstance(module, torch.nn.Linear)
+    ]
+    if identity_weights and not linears:
+        raise ValueError("--identity-weights requires a model with a Linear module")
+    for index in power_of_two_inputs or []:
+        if not 0 <= index < len(inputs):
+            raise ValueError(
+                f"--power-of-two-inputs: input index {index} is out of range"
+            )
+        value = inputs[index]
+        if not value.is_floating_point() or not bool(torch.isfinite(value).all()):
+            raise ValueError(
+                f"--power-of-two-inputs: input {index} must be finite and floating-point"
+            )
+    if identity_weights:
+        for module in linears:
+            torch.nn.init.eye_(module.weight)
+            if module.bias is not None:
+                torch.nn.init.zeros_(module.bias)
+    for index in power_of_two_inputs or []:
+        value = inputs[index]
+        mantissa, exponent = torch.frexp(value.float())
+        value.copy_(torch.ldexp(mantissa.sign(), exponent - 1))
+
+
 def lower_and_execute_benchmark(
     filepath: str,
     level: int,
@@ -602,6 +699,8 @@ def lower_and_execute_benchmark(
     stop_at_stage: str | None = None,
     verbose: int = 0,
     dump_parameters: bool = True,
+    identity_weights: bool = False,
+    power_of_two_inputs: list[int] | None = None,
     enable_tuning: bool = True,
 ) -> dict:
     """
@@ -621,13 +720,19 @@ def lower_and_execute_benchmark(
         stop_at_stage: Stage at which to stop the lowering pipeline.
         verbose: Verbosity level.
         dump_parameters: Whether to save applied schedule parameters as JSON.
-        enable_tuning: Whether to tune runtime schedule parameters.
+        identity_weights: Use rectangular identity Linear weights and zero biases
+            for verification only.
+        power_of_two_inputs: Zero-based input indices whose nonzero magnitudes
+            are rounded down to powers of two for verification only.
+        enable_tuning: Whether to enable runtime tuning.
     Returns:
         A dictionary containing benchmark performance metrics.
     """
     assert datatype in ["f16", "bf16"], "Unsupported datatype"
     model_dtype = dtype_to_torch_dtype(datatype)
     execute = stop_at_stage is None
+
+    torch.manual_seed(42)  # set random seed
 
     # import torch model
     forced_inputs = None
@@ -650,12 +755,24 @@ def lower_and_execute_benchmark(
     )
 
     # initialize all model weights to random values
-    torch.manual_seed(42)  # set random seed
     for param in torch_model.parameters():
         torch.nn.init.uniform_(param, a=-0.5, b=0.5)
         if is_mlp and param.ndim == 2:
             # scale columns to unit norm for more stable correctness verification
             param.data /= param.data.norm(dim=0, keepdim=True) + 1e-6
+
+    prepare_verification_inputs(
+        torch_model,
+        torch_inputs,
+        identity_weights=identity_weights,
+        power_of_two_inputs=power_of_two_inputs,
+    )
+    if identity_weights or power_of_two_inputs:
+        print(
+            f"Verification data: identity_weights={identity_weights}, "
+            f"power_of_two_inputs={power_of_two_inputs or []}; "
+            "dense random weights and selected inputs will be used for timing"
+        )
 
     if execute:
         if compute_reference_on_cpu:
@@ -672,6 +789,15 @@ def lower_and_execute_benchmark(
                 torch_model = torch_model.to("xpu")
                 result_ref = torch_model(*torch_inputs).to("cpu")
 
+    # Generate parameter json file name
+    if level > 0:
+        # KernelBench kernel, use level and id
+        params_cache_json = f"kb_params_level{level}-{id}.json"
+    else:
+        # custom kernel, use filename
+        stem = Path(filepath).stem.replace("_", "-")
+        params_cache_json = f"kb_params_{stem}.json"
+
     # compile and execute the model with the MLIR backend
     torch_all_inputs = [*torch_model.parameters(), *torch_inputs]
     # get payload metadata as a side effect
@@ -683,9 +809,9 @@ def lower_and_execute_benchmark(
         benchmark=True,
         payload_func_name="main",
         stop_at_stage=stop_at_stage,
-        params_cache_json=f"kb_params_level{level}-{id}.json",
+        params_cache_json=params_cache_json,
         dump_parameters=dump_parameters,
-        enable_tuning=execute and enable_tuning,
+        enable_tuning=enable_tuning,
         verbose=verbose,
     )
     backend = gpu_backend(
@@ -752,21 +878,14 @@ def lower_and_execute_benchmark(
         verified = 1 if success else 0
         print(f"Verification {'PASSED' if success else 'FAILED'}")
         if verbose > 0 and not success:
-            diff = result - result_ref
-            # compute max absolute and relative differences to guide tolerance
-            max_abs_diff = abs(diff).max()
-            print(f"Reference solution range: [{result_ref.min()}, {result_ref.max()}]")
-            print(f"Max abs difference: {max_abs_diff:.3e}")
-
-            # compute require atol/rtol for this result keeping rtol/atol fixed
-            print(f"atol={atol:.3e}, rtol={rtol:.3e}")
-            abs_diff = diff.abs()
-            abs_ref = result_ref.abs()
-            required_atol = (abs_diff - rtol * abs_ref).max().item()
-            required_rtol = ((abs_diff - atol) / abs_ref.clamp_min(1e-30)).max().item()
-            print("Possible tolerances for this result to pass:")
-            print(f"  atol={required_atol:.3e}, rtol={rtol:.3e}")
-            print(f"  atol={atol:.3e}, rtol={required_rtol:.3e}")
+            print(f"Reference backend: {'CPU' if compute_reference_on_cpu else 'XPU'}")
+            print(
+                f"Input dtypes: {[str(inp.dtype) for inp in torch_inputs]}; "
+                f"parameter dtypes: {sorted({str(p.dtype) for p in torch_model.parameters()})}"
+            )
+            dump_verification_failure(
+                result, result_ref, atol=float(atol), rtol=float(rtol)
+            )
 
     # re-generate random, nonzero weights for performance measurement
     for param in torch_model.parameters():
@@ -774,6 +893,9 @@ def lower_and_execute_benchmark(
         # replace zeros with random +/-0.5
         rnd_sign = torch.sign(torch.rand_like(param.data) - 0.5)
         param.data[param.data == 0] = 0.5 * rnd_sign[param.data == 0]
+
+    for index in set(power_of_two_inputs or []):
+        torch_inputs[index].normal_()
 
     # benchmark
     if verbose > 0:
@@ -943,6 +1065,21 @@ def parser_cli_args():
         help="Number of warmup runs (default: 500)",
     )
     parser.add_argument(
+        "--identity-weights",
+        action="store_true",
+        help="Verify with rectangular identity Linear weights and zero biases. "
+        "Timing still uses dense random weights.",
+    )
+    parser.add_argument(
+        "--power-of-two-inputs",
+        type=int,
+        nargs="+",
+        metavar="INDEX",
+        help="Zero-based model input indices to simplify for verification: round "
+        "nonzero magnitudes down to powers of two, preserving signs and zeros. "
+        "Selected inputs are randomized again for timing.",
+    )
+    parser.add_argument(
         "--compute-reference-on-cpu",
         action="store_true",
         help="Compute the reference result on CPU instead of the device.",
@@ -988,6 +1125,11 @@ if __name__ == "__main__":
     if input_files is None:
         kb_pattern = f"level{kb_level}/*.py"
         bench_list = get_benchmarks(kb_pattern, include=benchmarks)
+        if not bench_list:
+            raise ValueError(
+                "Could not find any KernelBench kernels. "
+                "Install submodules with 'git submodule update --init --recursive'."
+            )
     else:
         bench_list = [(i + 1, Path(f)) for i, f in enumerate(input_files)]
         kb_level = 0
@@ -1026,6 +1168,8 @@ if __name__ == "__main__":
                 nruns=args.nruns,
                 nwarmup=args.nwarmup,
                 compute_reference_on_cpu=args.compute_reference_on_cpu,
+                identity_weights=args.identity_weights,
+                power_of_two_inputs=args.power_of_two_inputs,
                 verbose=args.verbose,
                 stop_at_stage=stop_at_stage,
                 dump_parameters=args.dump_parameters,
