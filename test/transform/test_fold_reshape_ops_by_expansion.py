@@ -83,6 +83,26 @@ func.func @indices(%x: tensor<6x4xf32>, %bias: tensor<6xf32>) -> tensor<4x2x3xf3
 }
 """
 
+TRANSPOSE = """
+func.func @transpose(%x: tensor<6x4xf32>) -> tensor<4x2x3xf32> {
+  %empty = tensor.empty() : tensor<4x6xf32>
+  %t = linalg.transpose ins(%x : tensor<6x4xf32>)
+    outs(%empty : tensor<4x6xf32>) permutation = [1,0]
+  %expanded = tensor.expand_shape %t [[0],[1,2]] output_shape [4,2,3]
+    : tensor<4x6xf32> into tensor<4x2x3xf32>
+  return %expanded : tensor<4x2x3xf32>
+}
+"""
+
+TRANSPOSE_COLLAPSE = TRANSPOSE.replace(
+    "(%x: tensor<6x4xf32>)", "(%input: tensor<2x3x4xf32>)"
+).replace(
+    "  %empty =",
+    """  %x = tensor.collapse_shape %input [[0,1],[2]]
+    : tensor<2x3x4xf32> into tensor<6x4xf32>
+  %empty =""",
+)
+
 
 def schedule(*, cleanup=True):
     with schedule_boilerplate() as (module, sequence):
@@ -204,6 +224,56 @@ def test_unsupported():
 # CHECK: Unsupported reshape candidates are unchanged
 
 
+def test_named_transpose():
+    with ir.Context(), ir.Location.unknown():
+        lh_dialects.register_and_load()
+        for source in (TRANSPOSE, TRANSPOSE_COLLAPSE):
+            module = apply(source)
+            (transpose,) = operations(module, "linalg.transpose")
+            assert list(transpose.permutation) == [2, 0, 1]
+            assert list(transpose.input.type.shape) == [2, 3, 4]
+            assert list(transpose.results[0].type.shape) == [4, 2, 3]
+            assert not operations(module, "linalg.generic")
+            assert not operations(module, "tensor.collapse_shape")
+    print("Expansion preserves named transposes and updates their permutations")
+
+
+# CHECK: Expansion preserves named transposes and updates their permutations
+
+
+def test_scheduling_metadata_is_opaque():
+    with ir.Context(), ir.Location.unknown():
+        lh_dialects.register_and_load()
+        source = EXPAND.replace(
+            "test.marker",
+            "transform_ext.subgraph_id = 7 : i64, "
+            'transform_ext.subgraph_kind = "attention", transform_ext.subgraph_epilogue',
+        )
+        module = apply(source, cleanup=False)
+        (generic,) = operations(module, "linalg.generic")
+        assert list(generic.results[0].type.shape) == [4, 2, 3]
+        assert "transform_ext.subgraph_epilogue" in generic.attributes
+        reshapes = operations(module, "tensor.expand_shape") + operations(
+            module, "tensor.collapse_shape"
+        )
+        assert reshapes
+        assert all(
+            not any(
+                name in op.attributes
+                for name in (
+                    "transform_ext.subgraph_id",
+                    "transform_ext.subgraph_kind",
+                    "transform_ext.subgraph_epilogue",
+                )
+            )
+            for op in reshapes
+        )
+    print("Reshape folding neither filters nor propagates scheduling metadata")
+
+
+# CHECK: Reshape folding neither filters nor propagates scheduling metadata
+
+
 def test_numerics():
     x = np.arange(24, dtype=np.float32).reshape(2, 3, 4) / 8
     w = np.arange(20, dtype=np.float32).reshape(4, 5) / 8
@@ -220,6 +290,8 @@ def test_numerics():
             (COLLAPSE, [x, w], -x @ w),
             (REDUCTION_COLLAPSE, [x.reshape(6, 2, 2), w], -x @ w),
             (EXPAND, [x.reshape(6, 4), bias], indexed),
+            (TRANSPOSE, [x.reshape(6, 4)], x.transpose(2, 0, 1)),
+            (TRANSPOSE_COLLAPSE, [x], x.transpose(2, 0, 1)),
         ):
             for transformed in (False, True):
                 runner, name = compile_payload(
@@ -277,5 +349,7 @@ def test_normalization_schedule():
 if __name__ == "__main__":
     test_structure()
     test_unsupported()
+    test_named_transpose()
+    test_scheduling_metadata_is_opaque()
     test_numerics()
     test_normalization_schedule()
