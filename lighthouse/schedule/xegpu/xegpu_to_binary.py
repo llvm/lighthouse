@@ -3,6 +3,7 @@ from mlir.dialects import transform
 
 from ..builders import schedule_boilerplate
 from lighthouse.pipeline.helper import apply_registered_pass
+from lighthouse.dialects.transform import transform_ext
 
 
 def xegpu_to_binary(
@@ -23,7 +24,7 @@ def xegpu_to_binary(
     if large_register_file:
         options["igc-cmd-options"] = "-ze-opt-large-register-file"
     with schedule_boilerplate() as (schedule, named_seq):
-        target = named_seq.bodyTarget
+        target = transform_ext.expand_bool_to_float(named_seq.bodyTarget)
         apply_registered_pass(
             target,
             "gpu-lower-to-xevm-pipeline",
