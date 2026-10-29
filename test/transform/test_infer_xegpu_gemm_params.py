@@ -9,6 +9,9 @@ import lighthouse.dialects as lh_dialects
 import lighthouse.transform as lh_transform
 from lighthouse.dialects.transform import transform_ext
 from lighthouse.schedule.builders import schedule_boilerplate
+from lighthouse.dialects.transform.transform_ext.utils.matmul_analysis import (
+    analyze_matmul_op,
+)
 
 # Global (untiled) GEMM: M=512, N=8192, K=1024, no transpose.
 GEMM_PAYLOAD = """
@@ -107,3 +110,49 @@ run("infer_xegpu_gemm_params", GEMM_PAYLOAD)
 # CHECK-DAG: transpose_a = 1 : i64
 # CHECK-DAG: transpose_b = 0 : i64
 run("infer_xegpu_gemm_params_transpose_a", GEMM_TRANSPOSE_A_PAYLOAD)
+
+
+MERGED_HEADS_PAYLOAD = """
+module {
+  func.func @payload(%x: tensor<4x4x128x64xf16>, %w: tensor<256x128xf16>,
+                    %init: tensor<256x128xf32>) -> tensor<256x128xf32> {
+    %slice = tensor.extract_slice %x[0,0,0,0] [2,4,128,64] [1,1,1,1]
+      : tensor<4x4x128x64xf16> to tensor<2x4x128x64xf16>
+    %empty = tensor.empty() : tensor<2x128x4x64xf16>
+    %t = linalg.transpose ins(%slice : tensor<2x4x128x64xf16>)
+      outs(%empty : tensor<2x128x4x64xf16>) permutation = [0,2,1,3]
+    %merged = tensor.collapse_shape %t [[0,1],[2,3]]
+      : tensor<2x128x4x64xf16> into tensor<256x256xf16>
+    %out = linalg.matmul ins(%merged, %w : tensor<256x256xf16>, tensor<256x128xf16>)
+      outs(%init : tensor<256x128xf32>) -> tensor<256x128xf32>
+    return %out : tensor<256x128xf32>
+  }
+}
+"""
+
+with ir.Context(), ir.Location.unknown():
+    lh_dialects.register_and_load()
+    computed = MERGED_HEADS_PAYLOAD.replace(
+        "    %out = linalg.matmul",
+        """    %computed = linalg.generic {
+        indexing_maps = [affine_map<(m,k)->(m,k)>, affine_map<(m,k)->(m,k)>],
+        iterator_types = ["parallel", "parallel"]}
+        ins(%merged : tensor<256x256xf16>)
+        outs(%merged : tensor<256x256xf16>) {
+      ^bb0(%in: f16, %out: f16):
+        %neg = arith.negf %in : f16
+        linalg.yield %neg : f16
+    } -> tensor<256x256xf16>
+    %out = linalg.matmul""",
+    ).replace("ins(%merged, %w", "ins(%computed, %w")
+    for payload in (MERGED_HEADS_PAYLOAD, computed):
+        module = ir.Module.parse(payload)
+        assert module.operation.verify()
+        matmul = next(
+            op
+            for op in module.body.operations[0].body.blocks[0].operations
+            if op.operation.name == "linalg.matmul"
+        )
+        assert analyze_matmul_op(matmul) == ((256, 128, 256), False, False)
+print("Head-merged GEMM inference stops at the rank-changing view")
+# CHECK: Head-merged GEMM inference stops at the rank-changing view
