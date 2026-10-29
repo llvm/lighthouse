@@ -1,0 +1,92 @@
+# RUN: %PYTHON %S/kernel_bench.py --input %s --dump-kernel xegpu-wg | FileCheck %s --implicit-check-not=memref.alloc --implicit-check-not=memref.copy --implicit-check-not=math.log
+# REQUIRES: torch, torch_mlir
+
+# CHECK-COUNT-6: gpu.alloc
+# CHECK-NOT: gpu.alloc
+# CHECK: gpu.func @main_kernel
+# CHECK: math.rsqrt
+# CHECK-NOT: xegpu.dpas
+# CHECK: gpu.func @main_kernel
+# CHECK: xegpu.dpas
+# CHECK-NOT: vector.multi_reduction
+# CHECK: gpu.func @main_kernel
+# CHECK: xegpu.dpas
+# CHECK-NOT: vector.multi_reduction
+# CHECK: gpu.func @main_kernel
+# CHECK: xegpu.dpas
+# CHECK-NOT: vector.multi_reduction
+# CHECK: gpu.func @main_kernel
+# CHECK: arith.negf
+# CHECK-NOT: xegpu.dpas
+# CHECK: gpu.func @main_kernel
+# CHECK: arith.negf
+# CHECK-NOT: xegpu.dpas
+# CHECK: gpu.func @main_kernel
+# CHECK: arith.cmpi sge
+# CHECK-NOT: math.log
+# CHECK: xegpu.dpas
+# CHECK: vector.multi_reduction
+# CHECK: math.exp
+# CHECK: xegpu.dpas
+# CHECK: xegpu.store_nd
+# CHECK-NOT: gpu.func
+
+"""Llama 3.2 1B shared input RMSNorm, Q/K/V projections, RoPE and causal GQA.
+
+The attention result is head-major, before output projection and residual
+addition. Normalization, projections and RoPE are materialized separately.
+"""
+
+import torch
+import torch.nn as nn
+
+from llama_rope import get_rope_tables, rotate_half
+
+
+batch_size = 4
+n_ctx = 512
+dim = 2048
+num_heads = 32
+num_kv_heads = 8
+d_head = 64
+
+
+class Model(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.norm_weight = nn.Parameter(torch.ones(dim))
+        self.q_proj = nn.Linear(dim, num_heads * d_head, bias=False)
+        self.k_proj = nn.Linear(dim, num_kv_heads * d_head, bias=False)
+        self.v_proj = nn.Linear(dim, num_kv_heads * d_head, bias=False)
+
+    def forward(
+        self, x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor
+    ) -> torch.Tensor:
+        batch, sequence, _ = x.shape
+        h = x.float()
+        variance = h.pow(2).mean(dim=-1, keepdim=True)
+        h = self.norm_weight * (h * torch.rsqrt(variance + 1e-5)).to(x.dtype)
+        q = self.q_proj(h).view(batch, sequence, num_heads, d_head).transpose(1, 2)
+        k = self.k_proj(h).view(batch, sequence, num_kv_heads, d_head).transpose(1, 2)
+        v = self.v_proj(h).view(batch, sequence, num_kv_heads, d_head).transpose(1, 2)
+        cos = cos[None, None, :, :]
+        sin = sin[None, None, :, :]
+        q = q * cos + rotate_half(q) * sin
+        k = k * cos + rotate_half(k) * sin
+        rows = torch.arange(sequence, device=x.device)
+        allowed = rows[:, None] >= rows[None, :]
+        # Avoid SDPA's XPU mask-factory and boolean-mask import failures.
+        mask = allowed.to(dtype=x.dtype).log()
+        return torch.nn.functional.scaled_dot_product_attention(
+            q, k, v, attn_mask=mask, is_causal=False, enable_gqa=True
+        )
+
+
+def get_inputs():
+    x = torch.randn(batch_size, n_ctx, dim)
+    cos, sin = get_rope_tables(torch.arange(n_ctx))
+    return [x, cos, sin]
+
+
+def get_init_inputs():
+    return []
