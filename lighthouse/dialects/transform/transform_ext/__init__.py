@@ -14,6 +14,7 @@ from .ops.narrow_vector_contract_operands import narrow_vector_contract_operands
 from .ops.emit_definite_failure import emit_definite_failure
 from .ops.expand_output_destination import expand_output_destination
 from .ops.expand_bool_to_float import expand_bool_to_float
+from .ops.match_subgraph import match_subgraph
 from .ops.extract_handle import extract_handle
 from .ops.get_tileable_consumers import get_tileable_consumers
 from .ops.get_tiling_sizes import get_tiling_sizes
@@ -96,6 +97,7 @@ __all__ = [
     "infer_xegpu_elementwise_params",
     "infer_xegpu_gemm_params",
     "infer_xegpu_reduction_params",
+    "match_subgraph",
     "move_offsets_to_subview",
     "narrow_vector_contract_operands",
     "param_cmp_eq",
