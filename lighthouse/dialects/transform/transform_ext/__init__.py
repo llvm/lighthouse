@@ -47,6 +47,7 @@ from .ops.compute_sg_layout import compute_sg_layout
 from .ops.get_fusion_roots import get_fusion_roots
 from .ops.propagate_tile_sizes import propagate_tile_sizes
 from .ops.tag_subgraphs import tag_subgraphs
+from .ops.prepare_subgraphs import prepare_subgraphs
 from .ops.get_subgraph_ops import get_subgraph_ops
 from .ops.clear_subgraph_tags import clear_subgraph_tags
 from .utils.dependent_reduction_legality import REDUCTION_LOOP_ATTR_NAME
@@ -101,6 +102,7 @@ __all__ = [
     "move_offsets_to_subview",
     "narrow_vector_contract_operands",
     "param_cmp_eq",
+    "prepare_subgraphs",
     "propagate_tile_sizes",
     "register_and_load",
     "remove_asserts",
