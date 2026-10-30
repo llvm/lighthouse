@@ -5,12 +5,32 @@
 # RUN: %PYTHON %s --dump-kernel=xegpu-wg --transpose-b | FileCheck %s
 # RUN: %PYTHON %s --dump-kernel=xegpu-wg --bias | FileCheck %s
 # RUN: %PYTHON %s --dump-kernel=xegpu-wg --relu | FileCheck %s
-# RUN: %PYTHON %s --dump-kernel=xegpu-wg --bias --relu | FileCheck %s
+# RUN: %PYTHON %s --dump-kernel=xegpu-wg --bias --relu | FileCheck %s --check-prefix=EPILOGUE
 # RUN: %PYTHON %s --dump-kernel=xegpu-wg --no-accumulate-c | FileCheck %s
 # RUN: %PYTHON %s --dump-kernel=xegpu-wg --truncate-c | FileCheck %s
 # RUN: %PYTHON %s --dump-kernel=xegpu-wg --bias --truncate-c | FileCheck %s
-# RUN: %PYTHON %s --dump-kernel=xegpu-wg --bias --relu --no-accumulate-c | FileCheck %s
+# RUN: %PYTHON %s --dump-kernel=xegpu-wg --bias --relu --no-accumulate-c | FileCheck %s --check-prefixes=EPILOGUE,NOACC
 # CHECK: module attributes {gpu.container_module} {
+# NOACC-LABEL: func.func @payload(
+# NOACC-NOT: gpu.alloc
+# NOACC-NOT: vector.transfer_write
+# NOACC: gpu.launch_func
+# NOACC-NEXT: return
+# EPILOGUE-LABEL: gpu.func @payload_kernel(
+# EPILOGUE-NOT: gpu.alloc
+# NOACC: %[[ZERO:.*]] = arith.constant dense<0.000000e+00> : vector<256x256xf32>
+# EPILOGUE: xegpu.load {{.*}}layout = #xegpu.slice<
+# EPILOGUE: vector.broadcast
+# NOACC-NOT: xegpu.load_nd
+# EPILOGUE: scf.for
+# NOACC-SAME: iter_args({{.*}} = %[[ZERO]])
+# EPILOGUE: xegpu.dpas
+# EPILOGUE: arith.addf
+# EPILOGUE: arith.maximumf
+# EPILOGUE: xegpu.store_nd
+# EPILOGUE-NOT: gpu.alloc
+# EPILOGUE-NOT: memref.copy
+# EPILOGUE: gpu.return
 
 """
 XeGPU matrix multiplication example.
