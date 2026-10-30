@@ -6,8 +6,24 @@
 # RUN: %PYTHON %s --dump-kernel=xegpu-wg --hidden-sizes 1024 1024 --relu | FileCheck %s
 # RUN: %PYTHON %s --dump-kernel=xegpu-wg --hidden-sizes 1024 1024 --bias | FileCheck %s
 # RUN: %PYTHON %s --dump-kernel=xegpu-wg --hidden-sizes 1024 1024 --accumulate-c | FileCheck %s
-# RUN: %PYTHON %s --dump-kernel=xegpu-wg --hidden-sizes 1024 1024 --bias --relu --accumulate-c | FileCheck %s
+# RUN: %PYTHON %s --dump-kernel=xegpu-wg --hidden-sizes 1024 1024 --bias --relu --accumulate-c | FileCheck %s --check-prefix=ACCUMULATE
 # CHECK: module attributes {gpu.container_module} {
+# ACCUMULATE-LABEL: gpu.func @payload_kernel(
+# ACCUMULATE: %[[ZERO0:.*]] = arith.constant dense<0.000000e+00> : vector<128x256xf32>
+# ACCUMULATE: scf.for {{.*}} iter_args({{.*}} = %[[ZERO0]])
+# ACCUMULATE: xegpu.dpas
+# ACCUMULATE: gpu.return
+# ACCUMULATE-LABEL: gpu.func @payload_kernel(
+# ACCUMULATE: %[[ZERO1:.*]] = arith.constant dense<0.000000e+00> : vector<128x256xf32>
+# ACCUMULATE: scf.for {{.*}} iter_args({{.*}} = %[[ZERO1]])
+# ACCUMULATE: xegpu.dpas
+# ACCUMULATE: gpu.return
+# ACCUMULATE-LABEL: gpu.func @payload_kernel(
+# ACCUMULATE: %[[OUTPUT:.*]] = xegpu.load_nd
+# ACCUMULATE: %[[ACC:.*]] = arith.extf %[[OUTPUT]]
+# ACCUMULATE: scf.for {{.*}} iter_args({{.*}} = %[[ACC]])
+# ACCUMULATE: xegpu.dpas
+# ACCUMULATE: gpu.return
 
 """
 XeGPU MLP benchmark.
@@ -52,6 +68,7 @@ def check_correctness(
     transpose_a: bool = False,
     transpose_b: bool = False,
     verbose: int = 0,
+    accumulate_c: bool = False,
 ) -> bool:
     output_array, input_array, *rest = initial_host_arrays
     if has_bias:
@@ -74,6 +91,8 @@ def check_correctness(
         if transpose_b:
             W = W.T
         D_ref = a_array @ W
+        if accumulate_c and i == len(weights) - 1:
+            D_ref += output_array
         if has_bias:
             D_ref += biases[i]
         if has_relu and i < len(weights) - 1:
@@ -106,7 +125,8 @@ class XeGPUMLP:
     Multi-layer perceptron (MLP) kernel on XeGPU.
 
     Optionally adds a ReLU operation after each layer.
-    Optionally adds a bias term in each layer (not implemented yet).
+    Optionally adds a bias term in each layer.
+    Accumulation adds the supplied output buffer only to the final layer.
     """
 
     payload_function_name: ClassVar[str] = "payload"
@@ -338,8 +358,8 @@ def parse_cli():
     parser.add_argument(
         "--accumulate-c",
         action="store_true",
-        help="Use matrix-multiply-accumulate layers instead of initializing the "
-        "accumulator tile with zeros.",
+        help="Accumulate the final layer into the supplied output buffer. "
+        "Hidden-layer accumulators always start from zero.",
     )
     parser.add_argument(
         "--check-result",
@@ -461,6 +481,7 @@ if __name__ == "__main__":
                     transpose_a=tr_a,
                     transpose_b=tr_b,
                     verbose=args.verbose,
+                    accumulate_c=wload.accumulate_c,
                 )
                 if not success:
                     raise ValueError("Result mismatch!")

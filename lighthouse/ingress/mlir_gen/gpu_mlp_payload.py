@@ -24,7 +24,11 @@ def generate_gpu_mlp_payload(
     accumulate_c: bool,
     relu_on_final_layer: bool = False,
 ) -> ir.Module:
-    """Generate payload function module for an MLP kernel."""
+    """Generate an MLP payload, optionally accumulating into the final output.
+
+    Hidden layers always start from zero; only the final layer has an externally
+    supplied accumulator.
+    """
     mod = ir.Module.create()
     a_shape = (batch_size, input_size) if not transpose_a else (input_size, batch_size)
     memref_in_t = ir.MemRefType.get(a_shape, ab_type)
@@ -69,22 +73,7 @@ def generate_gpu_mlp_payload(
                 layer_transpose_a = (
                     transpose_a and i == 0
                 )  # transpose A only for the first layer
-                M, K = (
-                    layer_input_tensor.type.shape[::-1]
-                    if layer_transpose_a
-                    else layer_input_tensor.type.shape
-                )
-                K, N = (
-                    weight_tensor.type.shape[::-1]
-                    if transpose_b
-                    else weight_tensor.type.shape
-                )
-                c_tensor = None
-                if accumulate_c:
-                    if i == nlayers - 1:
-                        c_tensor = output_tensor
-                    else:
-                        c_tensor = tensor.empty((M, N), ab_type)
+                c_tensor = output_tensor if accumulate_c and i == nlayers - 1 else None
                 # skip relu for final layer
                 hidden_layer = i < nlayers - 1
                 layer_output = emit_mlp_layer(
