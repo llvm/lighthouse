@@ -228,7 +228,11 @@ def convert_to_gpu_launch(
     payload_anchor_ops: str | list[str] | None = None,
     payload_func: transform.AnyOpType | None = None,
 ) -> transform.AnyOpType:
-    """Convert scf.forall/scf.parallel structure to gpu.launch."""
+    """Convert forall loops to GPU launches without serializing excess axes.
+
+    Collapse leading parallel dimensions when necessary to fit the three GPU
+    grid dimensions, retaining the innermost parallel tiles as grid axes.
+    """
     if payload_func is None:
         payload_func = get_payload_func(
             mod, func_name=payload_func_name, op_name=payload_anchor_ops
@@ -236,7 +240,9 @@ def convert_to_gpu_launch(
 
     forall_loops = match(payload_func, ops={"scf.forall"})
     with lh_transform.foreach(forall_loops) as forall_op:
-        loop.loop_forall_to_parallel([transform.any_op_t()], forall_op)
+        parallel = loop.loop_forall_to_parallel([transform.any_op_t()], forall_op)
+        # GPU mapping serializes dimensions beyond x/y/z unless collapsed.
+        transform_ext.collapse_parallel(parallel, max_rank=3)
         transform.yield_()
 
     # convert scf.parallel to gpu.launch
