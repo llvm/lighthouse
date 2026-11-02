@@ -22,6 +22,7 @@ from lighthouse.utils.mlir import get_mlir_library_path
 from lighthouse.execution.runner import Runner
 from lighthouse.schedule import xegpu
 from lighthouse.ingress.torch import gpu_backend, TargetDialect
+from lighthouse.schedule.xegpu import XeGPUParameterSelector
 
 
 class Model(nn.Module):
@@ -206,53 +207,59 @@ enabled via CLI arguments.
 
     # Problem size
     m, n, k = args.sizes if args.sizes else (4096, 4096, 4096)
+    transpose_a = False
+    transpose_b = False
+
     # Set required parameters
     params = ScheduleParameters(
         [
             {
                 "layer_kind": "matmul",
-                "m": m,
-                "n": n,
-                "k": k,
             }
         ]
     )
+
+    # Collect parameters from CLI arguments
+    cli_params = {}
+    if args.wg_tile:
+        cli_params["wg_m"], cli_params["wg_n"] = args.wg_tile
+    if args.sg_tile:
+        cli_params["sg_m"], cli_params["sg_n"] = args.sg_tile
+    if args.k_tile:
+        cli_params["k_tile"] = args.k_tile
+    if args.load_tile_a:
+        cli_params["load_a_m"], cli_params["load_a_k"] = args.load_tile_a
+    if args.load_tile_b:
+        cli_params["load_b_k"], cli_params["load_b_n"] = args.load_tile_b
+    if args.prefetch_tile_a:
+        cli_params["prefetch_a_m"], cli_params["prefetch_a_k"] = args.prefetch_tile_a
+    if args.prefetch_tile_b:
+        cli_params["prefetch_b_k"], cli_params["prefetch_b_n"] = args.prefetch_tile_b
+    if args.prefetch_a_nb is not None:
+        cli_params["prefetch_a_nb"] = args.prefetch_a_nb
+    if args.prefetch_b_nb is not None:
+        cli_params["prefetch_b_nb"] = args.prefetch_b_nb
+
     layer_params = params[0]
     if args.json:
         # Override parameters with values from JSON file if provided
         with open(args.json) as f:
             json_params = json.load(f)
         layer_params.update(json_params)
-
-    # Override parameters with CLI args if provided
-    if args.wg_tile:
-        layer_params["wg_m"], layer_params["wg_n"] = args.wg_tile
-    if args.sg_tile:
-        layer_params["sg_m"], layer_params["sg_n"] = args.sg_tile
-    if args.k_tile:
-        layer_params["k_tile"] = args.k_tile
-    if args.load_tile_a:
-        layer_params["load_a_m"], layer_params["load_a_k"] = args.load_tile_a
-    if args.load_tile_b:
-        layer_params["load_b_k"], layer_params["load_b_n"] = args.load_tile_b
-    if args.prefetch_tile_a:
-        layer_params["prefetch_a_m"], layer_params["prefetch_a_k"] = (
-            args.prefetch_tile_a
+    else:
+        # Get default parameters from selector
+        param_selector = XeGPUParameterSelector(device=args.target)
+        def_params = param_selector.get_parameters(
+            (m, n, k),
+            transpose_a,
+            transpose_b,
+            wg_tile=args.wg_tile,
+            sg_tile=args.sg_tile,
+            k_tile=args.k_tile,
         )
-    if args.prefetch_tile_b:
-        layer_params["prefetch_b_k"], layer_params["prefetch_b_n"] = (
-            args.prefetch_tile_b
-        )
-    if args.prefetch_a_nb is not None:
-        layer_params["prefetch_a_nb"] = args.prefetch_a_nb
-    if args.prefetch_b_nb is not None:
-        layer_params["prefetch_b_nb"] = args.prefetch_b_nb
-
-    for param_key, v in layer_params.items():
-        if v is None:
-            raise ValueError(
-                f"Parameter {param_key} is not set. Please provide it via CLI or JSON file."
-            )
+        layer_params.update(def_params[0])
+        # Override with CLI params
+        layer_params.update(cli_params)
 
     with ir.Context() as ctx, ir.Location.unknown():
         lh_dialects.register_and_load()
