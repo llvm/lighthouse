@@ -602,6 +602,7 @@ def lower_and_execute_benchmark(
     stop_at_stage: str | None = None,
     verbose: int = 0,
     dump_parameters: bool = True,
+    enable_tuning: bool = True,
 ) -> dict:
     """
     High-level function to lower and execute a KernelBench benchmark.
@@ -620,6 +621,7 @@ def lower_and_execute_benchmark(
         stop_at_stage: Stage at which to stop the lowering pipeline.
         verbose: Verbosity level.
         dump_parameters: Whether to save applied schedule parameters as JSON.
+        enable_tuning: Whether to tune runtime schedule parameters.
     Returns:
         A dictionary containing benchmark performance metrics.
     """
@@ -683,7 +685,7 @@ def lower_and_execute_benchmark(
         stop_at_stage=stop_at_stage,
         params_cache_json=f"kb_params_level{level}-{id}.json",
         dump_parameters=dump_parameters,
-        enable_tuning=execute,
+        enable_tuning=execute and enable_tuning,
         verbose=verbose,
     )
     backend = gpu_backend(
@@ -946,6 +948,11 @@ def parser_cli_args():
         help="Compute the reference result on CPU instead of the device.",
     )
     parser.add_argument(
+        "--disable-tuning",
+        action="store_true",
+        help="Disable runtime tuning and use default schedule parameters.",
+    )
+    parser.add_argument(
         "--dump-parameters",
         action="store_true",
         help="Store used schedule parameters to disk in JSON format.",
@@ -1022,6 +1029,7 @@ if __name__ == "__main__":
                 verbose=args.verbose,
                 stop_at_stage=stop_at_stage,
                 dump_parameters=args.dump_parameters,
+                enable_tuning=not args.disable_tuning,
             )
             if stop_at_stage:
                 continue
