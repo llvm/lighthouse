@@ -2,6 +2,8 @@
 
 """Tensor-level concat splitting: structure, rejection and CPU execution."""
 
+from unittest.mock import patch
+
 import numpy as np
 from mlir import ir
 from mlir.dialects import transform
@@ -10,9 +12,13 @@ from mlir.passmanager import PassManager
 import lighthouse.dialects as lh_dialects
 import lighthouse.transform as lh_transform
 from lighthouse.dialects.transform import transform_ext
+from lighthouse.dialects.transform.transform_ext.ops.split_concat_output import (
+    _partition,
+)
 from lighthouse.execution.runner import Runner
 from lighthouse.schedule import schedule_boilerplate
 from lighthouse.schedule.xegpu.lowering_common import vectorize as vectorize_payload
+from lighthouse.utils.mlir import defining_op
 
 
 SOURCE = """
@@ -207,6 +213,70 @@ def test_rejections():
 # CHECK: Unsupported plans leave the entire output unchanged
 
 
+def test_partition_cache():
+    depth = 14
+    for has_concat in (False, True):
+        body = ["%empty = tensor.empty() : tensor<2x8xf32>"]
+        value = "%input"
+        if has_concat:
+            body.append(
+                "%concat = tensor.concat dim(1) %a, %b : "
+                "(tensor<2x3xf32>, tensor<2x5xf32>) -> tensor<2x8xf32>"
+            )
+            value = "%concat"
+        for i in range(depth):
+            for name, inputs in (
+                (f"left{i}", [value]),
+                (f"right{i}", [value]),
+                (f"merge{i}", [f"%left{i}", f"%right{i}"]),
+            ):
+                maps = ",".join(["affine_map<(i,j)->(i,j)>"] * (len(inputs) + 1))
+                types = ", ".join(["tensor<2x8xf32>"] * len(inputs))
+                args = ", ".join(f"%v{j}: f32" for j in range(len(inputs)))
+                body.append(f"""
+    %{name} = linalg.generic {{
+        indexing_maps=[{maps}], iterator_types=["parallel","parallel"]}}
+      ins({", ".join(inputs)} : {types})
+      outs(%empty : tensor<2x8xf32>) {{
+    ^bb0({args}, %out: f32):
+      linalg.yield %v0 : f32
+    }} -> tensor<2x8xf32>
+""")
+            value = f"%merge{i}"
+        module = ir.Module.parse(
+            "func.func @diamonds(%input: tensor<2x8xf32>, "
+            "%a: tensor<2x3xf32>, %b: tensor<2x5xf32>) -> tensor<2x8xf32> {\n"
+            + "\n".join(body)
+            + f"\nreturn {value} : tensor<2x8xf32>\n}}"
+        )
+        assert module.operation.verify()
+        (func,) = operations(module, "func.func")
+        block = func.regions[0].blocks[0]
+        result = list(block.operations)[-1].operands[0]
+        expected = (1, [0, 3, 8]) if has_concat else None
+        cache = {}
+        with patch(
+            "lighthouse.dialects.transform.transform_ext.ops."
+            "split_concat_output.defining_op",
+            wraps=defining_op,
+        ) as lookup:
+            assert _partition(result, block, cache) == expected
+            assert lookup.call_count == len(cache)
+            assert lookup.call_count <= 3 * depth + 2
+            if not has_concat:
+                assert lookup.call_count == 3 * depth + 2
+                assert all(partition is None for partition in cache.values())
+            calls = lookup.call_count
+            assert _partition(result, block, cache) == expected
+            assert lookup.call_count == calls
+            assert _partition(result, block, {}) == expected
+            assert lookup.call_count == 2 * calls
+    print("Partition searches visit shared values once, caching successes and misses")
+
+
+# CHECK: Partition searches visit shared values once, caching successes and misses
+
+
 def execute(module, inputs, expected):
     PassManager.parse(
         "builtin.module(empty-tensor-to-alloc-tensor,"
@@ -272,4 +342,5 @@ if __name__ == "__main__":
         test_structure()
         test_permuted_output()
         test_rejections()
+        test_partition_cache()
         test_numerics()

@@ -45,8 +45,14 @@ def _generic_maps(op):
     return maps
 
 
-def _partition(value, block):
+def _partition(value, block, cache):
     """Find one concat partition, mapped into the output's dimensions."""
+    if value not in cache:
+        cache[value] = _find_partition(value, block, cache)
+    return cache[value]
+
+
+def _find_partition(value, block, cache):
     owner = defining_op(value)
     if owner is None or owner.block != block or _shape(value) is None:
         return None
@@ -61,12 +67,12 @@ def _partition(value, block):
             cuts.append(cuts[-1] + shape[dim])
         return dim, cuts
     if isinstance(op, linalg.TransposeOp):
-        partition = _partition(op.operands[0], block)
+        partition = _partition(op.operands[0], block, cache)
         if partition is not None:
             dim, cuts = partition
             return list(op.permutation).index(dim), cuts
     if isinstance(op, (tensor.ExpandShapeOp, tensor.CollapseShapeOp)):
-        partition = _partition(op.src, block)
+        partition = _partition(op.src, block, cache)
         if partition is not None:
             dim, cuts = partition
             groups = [[int(axis) for axis in group] for group in op.reassociation]
@@ -83,7 +89,7 @@ def _partition(value, block):
         if maps is None:
             return None
         for operand, mapping in zip(op.operands, maps):
-            partition = _partition(operand, block)
+            partition = _partition(operand, block, cache)
             if partition is not None:
                 dim, cuts = partition
                 loop_dim = mapping.results[dim]
@@ -331,7 +337,7 @@ def _split(insert, rewriter):
         or any(int(s) != 1 for s in insert.static_strides)
     ):
         return
-    partition = _partition(insert.source, block)
+    partition = _partition(insert.source, block, {})
     if partition is None:
         return
     dim, cuts = partition
