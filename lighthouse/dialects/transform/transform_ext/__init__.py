@@ -3,7 +3,7 @@ from .dialect import TransformExtensionDialect
 
 from .ops.wrap_in_benching_func import wrap_in_benching_func
 from .ops.assign_tile_sizes import assign_tile_sizes
-from .ops.annotate_epilogue_broadcasts import annotate_epilogue_broadcasts
+from .ops.annotate_epilogue_loads import annotate_epilogue_loads
 from .ops.get_named_attribute import get_named_attribute
 from .ops.get_param_dict_entry import get_param_dict_entry
 from .ops.get_tile_sizes import get_tile_sizes
@@ -64,7 +64,7 @@ from .ops.sink_normalization_past_contraction import (
 __all__ = [
     "REDUCTION_LOOP_ATTR_NAME",
     "TransformExtensionDialect",
-    "annotate_epilogue_broadcasts",
+    "annotate_epilogue_loads",
     "assign_tile_sizes",
     "clear_subgraph_tags",
     "clear_tile_and_fuse_annotations",

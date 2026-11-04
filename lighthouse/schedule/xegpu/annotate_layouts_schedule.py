@@ -212,7 +212,7 @@ def annotate_gemm(
         transform.annotate(store, "layout", param=store_layout)
         transform.yield_()
 
-    transform_ext.annotate_epilogue_broadcasts(store_op_c)
+    transform_ext.annotate_epilogue_loads(store_op_c)
 
     lh_transform.cleanup(gpu_func_op)
 
@@ -436,7 +436,7 @@ def annotate_attention(
 
 
 def annotate_elementwise(gpu_func: ir.Value[transform.AnyOpType]):
-    """Anchor single-subgroup memory tiles and their broadcast inputs."""
+    """Anchor single-subgroup stores and propagate layouts to epilogue loads."""
     # Check that the elementwise kernel is using single subgroup (for now).
     block_size = transform_ext.get_named_attribute(gpu_func, "known_block_size")
     subgroup_size = transform.param_constant(
@@ -453,9 +453,8 @@ def annotate_elementwise(gpu_func: ir.Value[transform.AnyOpType]):
     # Check that there's at least one store op to anchor.
     stores = lh_transform.match_op(gpu_func, "xegpu.store_nd")
     transform_ext.extract_handle(stores, 0, silenceable=True)
-    memory_ops = lh_transform.match_op(gpu_func, ["xegpu.load_nd", "xegpu.store_nd"])
-    with lh_transform.foreach(memory_ops) as memory:
-        wg_tile, sg_tile = transform_ext.infer_xegpu_elementwise_params(memory)
+    with lh_transform.foreach(stores) as store:
+        wg_tile, sg_tile = transform_ext.infer_xegpu_elementwise_params(store)
         dimensions = lh_transform.foreach(
             wg_tile,
             sg_tile,
@@ -467,12 +466,12 @@ def annotate_elementwise(gpu_func: ir.Value[transform.AnyOpType]):
             )
             transform.yield_([sg_layout[0], sg_data[0]])
         xegpu.set_anchor_layout(
-            memory,
+            store,
             sg_layout=dimensions.results[0],
             sg_data=dimensions.results[1],
         )
         transform.yield_()
-    transform_ext.annotate_epilogue_broadcasts(stores)
+    transform_ext.annotate_epilogue_loads(stores)
 
 
 def analyze_and_annotate_gpu_func(

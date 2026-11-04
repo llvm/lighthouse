@@ -17,7 +17,10 @@ def _plan(store):
             continue
         visited.add(value)
         op = value.owner.operation
-        if op.name == "vector.broadcast":
+        if op.name in ("xegpu.load", "xegpu.load_nd"):
+            if list(ir.VectorType(value.type).shape) == shape:
+                annotations.append((op, "layout", layout))
+        elif op.name == "vector.broadcast":
             source = op.operands[0]
             if not isinstance(source.type, ir.VectorType):
                 continue
@@ -50,16 +53,19 @@ def _plan(store):
     return annotations
 
 
-class AnnotateEpilogueBroadcastsOp(
-    TransformExtensionDialect.Operation, name="annotate_epilogue_broadcasts"
+class AnnotateEpilogueLoadsOp(
+    TransformExtensionDialect.Operation, name="annotate_epilogue_loads"
 ):
-    """Assign store-derived layouts to directly loaded epilogue broadcasts.
+    """Assign store-derived layouts to ordinary and broadcast epilogue loads.
 
     Walks backwards through shape-preserving arithmetic/math from annotated
-    store_nd ops. A broadcast adding leading dimensions gets the store layout
-    on its result and a slice of that layout on its load and source operand.
-    This covers 1D bias and 2D RoPE tables without annotating GEMM operand loads.
-    Shape-changing paths and broadcasts stretching existing dims are not handled.
+    store_nd ops. Same-shaped xegpu.load/load_nd ops get the store layout.
+    A broadcast adding leading dimensions gets the store layout on its result
+    and a slice of that layout on its directly feeding load and source operand.
+    This covers elementwise inputs, 1D bias, and 2D RoPE tables without crossing
+    DPAS ops or annotating their GEMM operand loads. Shape-changing paths,
+    control flow, unrelated loads, and broadcasts stretching existing dims are
+    not handled; these require separate layout propagation.
     Conflicting existing annotations fail rather than being overwritten.
     """
 
@@ -77,7 +83,7 @@ class AnnotateEpilogueBroadcastsOp(
             for store in state.get_payload_ops(op.target):
                 if store.name != "xegpu.store_nd" or "layout" not in store.attributes:
                     store.location.emit_error(
-                        "annotate_epilogue_broadcasts: expected annotated store_nd"
+                        "annotate_epilogue_loads: expected annotated store_nd"
                     )
                     return DiagnosedSilenceableFailure.DefiniteFailure
                 for target, name, layout in _plan(store):
@@ -87,7 +93,7 @@ class AnnotateEpilogueBroadcastsOp(
                         existing = target.attributes[name]
                     if existing is not None and existing != layout:
                         target.location.emit_error(
-                            "annotate_epilogue_broadcasts: conflicting broadcast/load layout"
+                            "annotate_epilogue_loads: conflicting broadcast/load layout"
                         )
                         return DiagnosedSilenceableFailure.DefiniteFailure
                     planned[key] = layout
@@ -108,5 +114,5 @@ class AnnotateEpilogueBroadcastsOp(
             )
 
 
-def annotate_epilogue_broadcasts(target):
-    return AnnotateEpilogueBroadcastsOp(target=target)
+def annotate_epilogue_loads(target):
+    return AnnotateEpilogueLoadsOp(target=target)
