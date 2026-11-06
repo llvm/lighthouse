@@ -107,6 +107,39 @@ module {
 }
 """
 
+# A batch/sequence pair is flattened into M before vectorization, then a
+# leading unit dimension is removed with vector.shape_cast. The source memref
+# shape therefore has one more dimension than the contraction indexing map.
+VECTOR_CONTRACT_COLLAPSED_M = """
+#map = affine_map<(d0, d1, d2) -> (d0, d2)>
+#map1 = affine_map<(d0, d1, d2) -> (d1, d2)>
+#map2 = affine_map<(d0, d1, d2) -> (d0, d1)>
+module {
+  func.func @main(%a: memref<4x512x2048xbf16>,
+                  %b: memref<2048x2048xbf16>) -> vector<256x256xf32> {
+    %pad = arith.constant 0.0 : bf16
+    %cst = arith.constant dense<0.0> : vector<256x256xf32>
+    %c0 = arith.constant 0 : index
+    %batch = arith.constant 0 : index
+    %seq = arith.constant 0 : index
+    %k = arith.constant 0 : index
+    %av = vector.transfer_read %a[%batch, %seq, %k], %pad
+        {in_bounds = [true, true, true]}
+        : memref<4x512x2048xbf16>, vector<1x256x16xbf16>
+    %a2 = vector.shape_cast %av
+        : vector<1x256x16xbf16> to vector<256x16xbf16>
+    %bv = vector.transfer_read %b[%c0, %c0], %pad
+        {in_bounds = [true, true]}
+        : memref<2048x2048xbf16>, vector<256x16xbf16>
+    %c = vector.contract {indexing_maps = [#map, #map1, #map2],
+        iterator_types = ["parallel", "parallel", "reduction"],
+        kind = #vector.kind<add>} %a2, %bv, %cst
+        : vector<256x16xbf16>, vector<256x16xbf16> into vector<256x256xf32>
+    return %c : vector<256x256xf32>
+  }
+}
+"""
+
 # xegpu.dpas at the xegpu level: operands trace back to create_nd_tdesc of the
 # global memrefs; the B operand goes through a vector.transpose.
 XEGPU_DPAS = """
@@ -133,6 +166,18 @@ module {
   }
 }
 """
+
+# Rank-preserving subviews may retain the batch/sequence dimensions even
+# though their descriptor and DPAS operand are two-dimensional.
+XEGPU_DPAS_COLLAPSED_M = XEGPU_DPAS.replace(
+    "memref<1024x8192xbf16>", "memref<4x256x8192xbf16>"
+).replace(
+    "    %ta = xegpu.create_nd_tdesc %arg1 : memref<4x256x8192xbf16>",
+    "    %view = memref.subview %arg1[0,0,0] [1,256,8192] [1,1,1] "
+    ": memref<4x256x8192xbf16> to memref<256x8192xbf16, strided<[8192,1]>>\n"
+    "    %ta = xegpu.create_nd_tdesc %view "
+    ": memref<256x8192xbf16, strided<[8192,1]>>",
+)
 
 
 def find_op(op: ir.Operation, name: str):
@@ -177,6 +222,14 @@ run("linalg_matmul_transpose_first", MATMUL_WG_TILED_TRANSPOSE_FIRST, "linalg.ma
 # CHECK: shape=(1024, 4096, 8192) transpose_a=False transpose_b=True
 run("vector_contract", VECTOR_CONTRACT, "vector.contract")
 
+# CHECK-LABEL: Test: vector_contract_collapsed_m
+# CHECK: shape=(2048, 2048, 2048) transpose_a=False transpose_b=True
+run("vector_contract_collapsed_m", VECTOR_CONTRACT_COLLAPSED_M, "vector.contract")
+
 # CHECK-LABEL: Test: xegpu_dpas
 # CHECK: shape=(1024, 4096, 8192) transpose_a=False transpose_b=True
 run("xegpu_dpas", XEGPU_DPAS, "xegpu.dpas")
+
+# CHECK-LABEL: Test: xegpu_dpas_collapsed_m
+# CHECK: shape=(1024, 4096, 8192) transpose_a=False transpose_b=True
+run("xegpu_dpas_collapsed_m", XEGPU_DPAS_COLLAPSED_M, "xegpu.dpas")

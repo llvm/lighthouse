@@ -16,6 +16,9 @@ class InferXeGPUReductionParamsOp(
     loop order), so it can be passed directly to the tiling routines without
     splitting. The tile lengths depend on the problem (e.g. `[64, 0]` or
     `[0, 0, 64, 64]`).
+    Generic trailing reductions tile the last parallel dimension by 64 and
+    earlier parallel dimensions by one; the reduction tile is 32. Other
+    reduction iterator arrangements require the existing explicit overrides.
 
     Args:
         target: Handle to the reduction anchor op(s).
@@ -83,6 +86,23 @@ class InferXeGPUReductionParamsOp(
             wg = [wg_rows, 0]
             sg = [sg_default, 0]
             red = [0, red_size]
+            if isinstance(target_op, linalg.GenericOp) and any(
+                str(it) == "#linalg.iterator_type<reduction>"
+                for it in target_op.iterator_types
+            ):
+                iterators = [str(it) for it in target_op.iterator_types]
+                if iterators.count("#linalg.iterator_type<reduction>") != 1 or (
+                    iterators[-1] != "#linalg.iterator_type<reduction>"
+                ):
+                    if op.force_wg_tile is None or op.force_reduction_tile is None:
+                        return DiagnosedSilenceableFailure.SilenceableFailure
+                else:
+                    rank = len(iterators)
+                    if rank < 2:
+                        return DiagnosedSilenceableFailure.SilenceableFailure
+                    wg = [1] * (rank - 2) + [wg_rows, 0]
+                    sg = [1] * (rank - 2) + [sg_default, 0]
+                    red = [0] * (rank - 1) + [red_size]
 
             if op.force_wg_tile is not None:
                 forced_attr = state.get_params(op.force_wg_tile)

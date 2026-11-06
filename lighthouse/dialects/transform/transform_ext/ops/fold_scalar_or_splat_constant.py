@@ -125,10 +125,11 @@ class FoldScalarOrSplatConstantOp(
             if len(targets) != 1 or targets[0].name not in (
                 "func.func",
                 "builtin.module",
+                "scf.forall",
             ):
                 op.operation.location.emit_error(
                     "fold_scalar_or_splat_constant expects one func.func or "
-                    "builtin.module"
+                    "builtin.module or scf.forall"
                 )
                 return DiagnosedSilenceableFailure.SilenceableFailure
             _fold_all(targets[0], rewriter)

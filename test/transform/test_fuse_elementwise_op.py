@@ -89,6 +89,38 @@ module {
 run("simple", SIMPLE)
 
 
+def test_region_fusion():
+    with ir.Context(), ir.Location.unknown():
+        lh_dialects.register_and_load()
+        payload = ir.Module.parse(SIMPLE)
+        with ir.InsertionPoint(payload.body):
+            outside = payload.body.operations[0].clone()
+        outside.attributes["sym_name"] = ir.StringAttr.get("outside")
+        outside_before = str(outside)
+        with schedule_boilerplate() as (schedule, sequence):
+            func = transform.structured.structured_match(
+                transform.AnyOpType.get(),
+                sequence.bodyTarget,
+                ops=["func.func"],
+                op_attrs={"sym_name": ir.StringAttr.get("main")},
+            )
+            func = transform_ext.fuse_elementwise_region(func)
+            lh_transform.cleanup(func)
+            func = transform_ext.fuse_elementwise_region(func)
+            transform.yield_([])
+        schedule.body.operations[0].apply(payload.operation)
+        assert payload.operation.verify()
+        assert str(outside) == outside_before
+        main = payload.body.operations[0]
+        assert str(main).count("linalg.generic") == 1
+        assert "arith.negf" in str(main) and "math.exp" in str(main)
+        print("Region fusion is scoped, greedy, and idempotent")
+
+
+# CHECK: Region fusion is scoped, greedy, and idempotent
+test_region_fusion()
+
+
 # Other consumers keep their original input and body.
 SHARED_PRODUCER = """
 #id = affine_map<(d0) -> (d0)>

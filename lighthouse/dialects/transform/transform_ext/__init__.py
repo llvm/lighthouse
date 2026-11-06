@@ -3,6 +3,7 @@ from .dialect import TransformExtensionDialect
 
 from .ops.wrap_in_benching_func import wrap_in_benching_func
 from .ops.assign_tile_sizes import assign_tile_sizes
+from .ops.annotate_epilogue_loads import annotate_epilogue_loads
 from .ops.get_named_attribute import get_named_attribute
 from .ops.get_param_dict_entry import get_param_dict_entry
 from .ops.get_tile_sizes import get_tile_sizes
@@ -12,20 +13,27 @@ from .ops.convert_func_results_to_args import convert_func_results_to_args
 from .ops.narrow_vector_contract_operands import narrow_vector_contract_operands
 from .ops.emit_definite_failure import emit_definite_failure
 from .ops.expand_output_destination import expand_output_destination
+from .ops.expand_bool_to_float import expand_bool_to_float
+from .ops.fold_log_of_bool import fold_log_of_bool
+from .ops.match_subgraph import match_subgraph
 from .ops.extract_handle import extract_handle
 from .ops.get_tileable_consumers import get_tileable_consumers
 from .ops.get_tiling_sizes import get_tiling_sizes
 from .ops.infer_xegpu_gemm_params import infer_xegpu_gemm_params
+from .ops.infer_gemm_store_layout import infer_gemm_store_layout
 from .ops.infer_xegpu_attention_params import infer_xegpu_attention_params
+from .ops.infer_xegpu_elementwise_params import infer_xegpu_elementwise_params
 from .ops.infer_xegpu_reduction_params import infer_xegpu_reduction_params
 from .ops.trace_producers import trace_producers
 from .ops.reverse_handles import reverse_handles
 from .ops.update_address_space import update_address_space
 from .ops.filter_num_loops import filter_num_loops
 from .ops.filter_elementwise import filter_elementwise
-from .ops.fuse_elementwise_op import fuse_elementwise_op
+from .ops.fuse_elementwise_op import fuse_elementwise_op, fuse_elementwise_region
+from .ops.fuse_forall_epilogue import fuse_forall_epilogue
 from .ops.fold_reshape_ops_by_expansion import fold_reshape_ops_by_expansion
 from .ops.fold_scalar_or_splat_constant import fold_scalar_or_splat_constant
+from .ops.fold_tensor_vector_transfers import fold_tensor_vector_transfers
 from .ops.filter_by_name import filter_by_name
 from .ops.filter_reduction_ops import filter_reduction_ops
 from .ops.fuse_dependent_reduction_ops import fuse_dependent_reduction_ops
@@ -39,10 +47,16 @@ from .ops.compute_num_threads import compute_num_threads
 from .ops.compute_sg_layout import compute_sg_layout
 from .ops.get_fusion_roots import get_fusion_roots
 from .ops.propagate_tile_sizes import propagate_tile_sizes
+from .ops.tag_subgraphs import tag_subgraphs
+from .ops.prepare_subgraphs import prepare_subgraphs
+from .ops.collapse_parallel import collapse_parallel
+from .ops.get_subgraph_ops import get_subgraph_ops
+from .ops.clear_subgraph_tags import clear_subgraph_tags
 from .utils.dependent_reduction_legality import REDUCTION_LOOP_ATTR_NAME
 from .ops.sfc_remap_forall import sfc_remap_forall
 from .ops.remove_asserts import remove_asserts
 from .ops.sink_extract_slice_into_loop import sink_extract_slice_into_loop
+from .ops.split_concat_output import split_concat_output
 from .ops.sink_normalization_past_contraction import (
     sink_normalization_past_contraction,
 )
@@ -50,12 +64,16 @@ from .ops.sink_normalization_past_contraction import (
 __all__ = [
     "REDUCTION_LOOP_ATTR_NAME",
     "TransformExtensionDialect",
+    "annotate_epilogue_loads",
     "assign_tile_sizes",
+    "clear_subgraph_tags",
     "clear_tile_and_fuse_annotations",
+    "collapse_parallel",
     "compute_num_threads",
     "compute_sg_layout",
     "convert_func_results_to_args",
     "emit_definite_failure",
+    "expand_bool_to_float",
     "expand_output_destination",
     "extract_handle",
     "filter_by_name",
@@ -64,23 +82,32 @@ __all__ = [
     "filter_non_contraction_reductions",
     "filter_num_loops",
     "filter_reduction_ops",
+    "fold_log_of_bool",
     "fold_reshape_ops_by_expansion",
     "fold_scalar_or_splat_constant",
+    "fold_tensor_vector_transfers",
     "fuse_dependent_reduction_ops",
     "fuse_elementwise_op",
+    "fuse_elementwise_region",
+    "fuse_forall_epilogue",
     "get_fusion_roots",
     "get_leading_unit_tile_sizes",
     "get_named_attribute",
     "get_param_dict_entry",
+    "get_subgraph_ops",
     "get_tile_sizes",
     "get_tileable_consumers",
     "get_tiling_sizes",
+    "infer_gemm_store_layout",
     "infer_xegpu_attention_params",
+    "infer_xegpu_elementwise_params",
     "infer_xegpu_gemm_params",
     "infer_xegpu_reduction_params",
+    "match_subgraph",
     "move_offsets_to_subview",
     "narrow_vector_contract_operands",
     "param_cmp_eq",
+    "prepare_subgraphs",
     "propagate_tile_sizes",
     "register_and_load",
     "remove_asserts",
@@ -90,6 +117,8 @@ __all__ = [
     "sfc_remap_forall",
     "sink_extract_slice_into_loop",
     "sink_normalization_past_contraction",
+    "split_concat_output",
+    "tag_subgraphs",
     "trace_producers",
     "update_address_space",
     "wrap_in_benching_func",

@@ -1,5 +1,7 @@
 """Analysis helpers for inferring matmul shape and XeGPU parameters."""
 
+import math
+
 from mlir import ir
 from mlir.dialects import memref, vector
 
@@ -49,9 +51,28 @@ def _matmul_shape_and_transpose(
 
     dim_size: dict[int, int] = {}
     for dims, shape in ((a_dims, a_shape), (b_dims, b_shape)):
-        for i, d in enumerate(dims):
-            if d is not None:
-                dim_size[d] = shape[i]
+        if len(shape) == len(dims):
+            for i, d in enumerate(dims):
+                if d is not None:
+                    dim_size[d] = shape[i]
+            continue
+
+        # A vector.shape_cast may collapse several global dimensions into one
+        # parallel iteration dimension (e.g. batch and sequence into M). The
+        # reduction dimension remains the first or last physical dimension,
+        # according to its position in the contraction indexing map.
+        if len(shape) < len(dims) or len(dims) != 2:
+            raise ValueError(
+                "Could not map vector.contract indexing dimensions to operand "
+                f"shape {shape}"
+            )
+        reduction_position = dims.index(k_dim)
+        reduction_axis = 0 if reduction_position == 0 else len(shape) - 1
+        dim_size[k_dim] = shape[reduction_axis]
+        parallel_dim = next(d for d in dims if d != k_dim)
+        dim_size[parallel_dim] = math.prod(
+            extent for i, extent in enumerate(shape) if i != reduction_axis
+        )
 
     shape = (dim_size[m_dim], dim_size[n_dim], dim_size[k_dim])
     transpose_a = a_dims == [k_dim, m_dim]
@@ -116,15 +137,20 @@ def _dpas_shape_and_transpose(
     if a_shape is None or b_shape is None:
         raise ValueError("Could not infer global shape of dpas operands")
 
-    # A source is [K, M] when transposed, else [M, K].
-    m, k = (a_shape[1], a_shape[0]) if transpose_a else (a_shape[0], a_shape[1])
+    # A source is [K, M] when transposed, else [M, K]. The parallel
+    # dimension may still be expanded (e.g. [batch, sequence, K]).
+    m, k = (
+        (math.prod(a_shape[1:]), a_shape[0])
+        if transpose_a
+        else (math.prod(a_shape[:-1]), a_shape[-1])
+    )
     # B source is [N, K] when transposed, else [K, N].
-    n = b_shape[0] if transpose_b else b_shape[1]
+    n = math.prod(b_shape[:-1]) if transpose_b else math.prod(b_shape[1:])
     return (m, n, k), transpose_a, transpose_b
 
 
 def _first_producer_named(value: ir.Value, op_name: str) -> ir.Operation | None:
-    """First producer op with `op_name` in `value`'s producer chain, or None."""
+    """Find local operand plumbing, stopping at computations and rank changes."""
     if value is None or isinstance(value, ir.BlockArgument):
         return None
     op = defining_op(value)
@@ -132,10 +158,13 @@ def _first_producer_named(value: ir.Value, op_name: str) -> ir.Operation | None:
         return None
     if op.name == op_name:
         return op
-    for operand in op.operands:
-        found = _first_producer_named(operand, op_name)
-        if found is not None:
-            return found
+    if op.name in (
+        "tensor.extract_slice",
+        "tensor.cast",
+        "linalg.transpose",
+        "linalg.broadcast",
+    ):
+        return _first_producer_named(op.operands[0], op_name)
     return None
 
 

@@ -11,6 +11,7 @@ from mlir.passmanager import PassManager
 import lighthouse.dialects as lh_dialects
 from lighthouse import transform as lh_transform
 from lighthouse.dialects.transform import transform_ext
+from lighthouse.pipeline.helper import apply_registered_pass
 from lighthouse.schedule.builders import schedule_boilerplate
 from lighthouse.schedule.xegpu.attention_fusion import transform_to_flash_attention
 from lighthouse.utils.mlir import indexing_maps, linalg_inputs, reduction_dims
@@ -655,6 +656,7 @@ def test_score_producer_fusion():
             with schedule_boilerplate() as (schedule, sequence):
                 func = lh_transform.match_op(sequence.bodyTarget, "func.func")
                 transform_to_flash_attention(transform.AnyOpType.get(), func, [0, 2])
+                apply_registered_pass(func, "remove-dead-values")
                 transform.yield_([])
             schedule.body.operations[0].apply(module.operation)
             assert module.operation.verify()

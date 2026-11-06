@@ -154,6 +154,10 @@ def vectorize(
         vector.apply_patterns_vector_cast_away_vector_leading_one_dim()
         vector.apply_patterns_vector_drop_unit_dims_with_shape_cast()
     lh_transform.cleanup(payload_func)
+    payload_func = transform_ext.fold_tensor_vector_transfers(payload_func)
+    lh_transform.cleanup(payload_func)
+    payload_func = transform_ext.fold_log_of_bool(payload_func)
+    lh_transform.cleanup(payload_func)
 
     # Narrow vector.contract operands if possible to match DPAS op spec.
     contract_ops = lh_transform.match_op(payload_func, "vector.contract")
@@ -224,7 +228,11 @@ def convert_to_gpu_launch(
     payload_anchor_ops: str | list[str] | None = None,
     payload_func: transform.AnyOpType | None = None,
 ) -> transform.AnyOpType:
-    """Convert scf.forall/scf.parallel structure to gpu.launch."""
+    """Convert forall loops to GPU launches without serializing excess axes.
+
+    Collapse leading parallel dimensions when necessary to fit the three GPU
+    grid dimensions, retaining the innermost parallel tiles as grid axes.
+    """
     if payload_func is None:
         payload_func = get_payload_func(
             mod, func_name=payload_func_name, op_name=payload_anchor_ops
@@ -232,7 +240,9 @@ def convert_to_gpu_launch(
 
     forall_loops = match(payload_func, ops={"scf.forall"})
     with lh_transform.foreach(forall_loops) as forall_op:
-        loop.loop_forall_to_parallel([transform.any_op_t()], forall_op)
+        parallel = loop.loop_forall_to_parallel([transform.any_op_t()], forall_op)
+        # GPU mapping serializes dimensions beyond x/y/z unless collapsed.
+        transform_ext.collapse_parallel(parallel, max_rank=3)
         transform.yield_()
 
     # convert scf.parallel to gpu.launch

@@ -1,3 +1,26 @@
+# RUN: %PYTHON %S/kernel_bench.py --input %s --dump-kernel xegpu-wg | FileCheck %s --implicit-check-not=memref.alloc --implicit-check-not=memref.copy --implicit-check-not=gpu.alloc --implicit-check-not=math.log
+# REQUIRES: torch, torch_mlir
+
+# CHECK: gpu.func @main_kernel
+# CHECK-SAME: known_grid_size = array<i32: 32, 4, 4>
+# CHECK: %[[QUERY_BLOCK:[a-zA-Z0-9_]+]] = gpu.block_id z
+# CHECK: %[[QUERY:[a-zA-Z0-9_]+]] = arith.muli %[[QUERY_BLOCK]],
+# CHECK-NOT: scf.for
+# CHECK: vector.broadcast %[[QUERY]] : index
+# CHECK-NOT: scf.for
+# CHECK: scf.for %[[KEY:[a-zA-Z0-9_]+]] =
+# CHECK: vector.broadcast %[[KEY]] : index
+# CHECK: arith.cmpi sge, {{.*}} : vector<128x64xi64>
+# CHECK-NEXT: arith.select
+# CHECK-NOT: math.log
+# CHECK: xegpu.dpas
+# CHECK: vector.multi_reduction <maxnumf>
+# CHECK: math.exp
+# CHECK: xegpu.dpas
+# CHECK: xegpu.store_nd
+# CHECK-NOT: scf.for
+# CHECK-NOT: gpu.func
+
 import torch
 import torch.nn as nn
 
@@ -8,18 +31,28 @@ class Model(nn.Module):
     counterpart to KernelBench level1-97.
 
     Differences from the synthetic level1-97 SDPA:
+
       * d_head = 64 (Llama3.2-1B), the per-head reduction dimension, within the
-        current <= 64 lowering limit. (Llama3-8B uses d_head = 128, which still
-        needs the new Intel-GPU head tiling.)
+        current <= 64 lowering limit.
       * Grouped-query attention: 32 query heads share 8 key/value heads
         (num_heads / num_kv_heads = 4). K/V carry fewer heads than Q and are
         broadcast across the group (enable_gqa=True).
-      * Causal masking (is_causal=True), as in autoregressive decoding/prefill.
+      * Explicit causal masking, as in autoregressive decoding/prefill.
 
-    RoPE is intentionally NOT applied here; the rotary embedding is a separate
-    stepping-stone (llama-bench_4) because rotate_half is a slice+concat shuffle
-    on the innermost (head) dimension rather than a plain matmul/elementwise op.
-    Q/K/V are taken as already-projected inputs, matching level1-97.
+    Torch-MLIR 20261001 can fail to import SDPA's internal is_causal=True mask
+    on XPU: its boolean aten.empty.memory_format cannot be legalized. Build the
+    same mask from indices and pass is_causal=False to avoid that allocation.
+    SDPA's boolean-mask conversion also failed with a scalar f64
+    torch.vtensor.literal on XPU. Supply an additive mask in Q's dtype, derived
+    from the predicate rather than new_zeros (which hit empty.memory_format too).
+    log maps allowed=1 to zero and blocked=0 to -inf without a tensor factory.
+    After vectorization, fold_log_of_bool replaces this workaround's logarithm
+    with a floating-point select.
+
+    RoPE is intentionally not applied here. Q/K/V are taken as
+    already-projected inputs, matching level1-97.
+    Query tiles are independent GPU blocks; only the K/V sequence is serial
+    within each block.
     """
 
     def __init__(self):
@@ -29,9 +62,12 @@ class Model(nn.Module):
         self, Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor
     ) -> torch.Tensor:
         # Q: (batch, num_heads, n_ctx, d_head); K/V: (batch, num_kv_heads, n_ctx, d_head)
-        causal = False  # NOTE handle causal masking in the lowering
+        rows = torch.arange(Q.shape[-2], device=Q.device)
+        cols = torch.arange(K.shape[-2], device=K.device)
+        allowed = rows[:, None] >= cols[None, :]
+        mask = allowed.to(dtype=Q.dtype).log()
         return torch.nn.functional.scaled_dot_product_attention(
-            Q, K, V, is_causal=causal, enable_gqa=True
+            Q, K, V, attn_mask=mask, is_causal=False, enable_gqa=True
         )
 
 
