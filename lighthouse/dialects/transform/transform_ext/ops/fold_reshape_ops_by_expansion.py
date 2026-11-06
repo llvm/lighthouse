@@ -18,7 +18,7 @@ def _groups(reshape):
     return [[int(dim) for dim in group] for group in reshape.reassociation]
 
 
-def _plan(generic, operand_number, reshape):
+def _build_reshape_expansion_plan(generic, operand_number, reshape) -> tuple:
     maps = indexing_maps(generic)
     transpose = isinstance(generic, linalg.TransposeOp)
     outputs = [generic.init] if transpose else generic.outputs
@@ -179,7 +179,7 @@ def _fold_one(root, rewriter):
                 reshape = _producer(value)
                 if not isinstance(reshape, tensor.CollapseShapeOp):
                     continue
-                plan = _plan(candidate, i, reshape)
+                plan = _build_reshape_expansion_plan(candidate, i, reshape)
                 if plan is not None:
                     _rewrite(candidate, reshape, plan, rewriter)
                     return True
@@ -196,7 +196,7 @@ def _fold_one(root, rewriter):
                 - len(generic.results)
                 + candidate.src.result_number
             )
-            plan = _plan(generic, i, candidate)
+            plan = _build_reshape_expansion_plan(generic, i, candidate)
             if plan is not None:
                 _rewrite(generic, candidate, plan, rewriter)
                 return True
