@@ -5,7 +5,9 @@ from mlir.dialects.transform import DiagnosedSilenceableFailure
 from lighthouse.dialects.transform.transform_ext import TransformExtensionDialect
 
 
-def _plan(store):
+def _collect_epilogue_load_annotations(
+    store,
+) -> list[tuple[ir.Operation, str, ir.Attribute]]:
     layout = store.attributes["layout"]
     shape = list(ir.VectorType(store.operands[0].type).shape)
     pending = [store.operands[0]]
@@ -86,7 +88,7 @@ class AnnotateEpilogueLoadsOp(
                         "annotate_epilogue_loads: expected annotated store_nd"
                     )
                     return DiagnosedSilenceableFailure.DefiniteFailure
-                for target, name, layout in _plan(store):
+                for target, name, layout in _collect_epilogue_load_annotations(store):
                     key = (target, name)
                     existing = planned.get(key)
                     if existing is None and name in target.attributes:
