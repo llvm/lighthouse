@@ -296,7 +296,7 @@ def _image(op, tiles):
     return None
 
 
-def _plan(loop, allowed=None):
+def _build_epilogue_fusion_plan(loop, allowed=None) -> tuple:
     if (
         len(loop.results) != 1
         or loop.dynamicLowerBound
@@ -657,13 +657,13 @@ class FuseForallEpilogueOp(
                 return DiagnosedSilenceableFailure.DefiniteFailure
             loop = targets[0].opview
             if op.consumers is None:
-                plan = _plan(loop)
+                plan = _build_epilogue_fusion_plan(loop)
             else:
                 allowed = {c.operation for c in state.get_payload_ops(op.consumers)}
                 if not allowed:
                     results.set_ops(op.result, [loop.operation])
                     return DiagnosedSilenceableFailure.Success
-                plan = _plan(loop, allowed)
+                plan = _build_epilogue_fusion_plan(loop, allowed)
                 if plan is None or {n.operation for n in plan[2]} != allowed:
                     return DiagnosedSilenceableFailure.SilenceableFailure
             result = loop.operation if plan is None else _rewrite(loop, plan, rewriter)
