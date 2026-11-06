@@ -114,7 +114,7 @@ def _mixed_offsets(op):
     )
 
 
-def _plan(value, offsets, sizes, block, cache):
+def _build_slice_plan(value, offsets, sizes, block, cache) -> _Slice | None:
     key = value, offsets, sizes
     if key in cache:
         return cache[key]
@@ -162,7 +162,7 @@ def _plan(value, offsets, sizes, block, cache):
                     extents.extend(source_shape[j] for j in group)
                 else:
                     return None
-        child = _plan(op.src, tuple(starts), tuple(extents), block, cache)
+        child = _build_slice_plan(op.src, tuple(starts), tuple(extents), block, cache)
         if child is None:
             return None
         plan.kind, plan.operands = "reshape", (child,)
@@ -185,7 +185,7 @@ def _plan(value, offsets, sizes, block, cache):
         else:
             if any(not isinstance(b, int) for b in base):
                 return None
-            child = _plan(
+            child = _build_slice_plan(
                 op.source,
                 tuple(b + o for b, o in zip(base, offsets)),
                 sizes,
@@ -205,7 +205,7 @@ def _plan(value, offsets, sizes, block, cache):
             if start <= offsets[dim] and offsets[dim] + sizes[dim] <= end:
                 local = list(offsets)
                 local[dim] -= start
-                child = _plan(operand, tuple(local), sizes, block, cache)
+                child = _build_slice_plan(operand, tuple(local), sizes, block, cache)
                 if child is None:
                     return None
                 plan.kind, plan.operands = "alias", (child,)
@@ -248,7 +248,7 @@ def _plan(value, offsets, sizes, block, cache):
             if i == len(op.operands) - 1 and unused_init:
                 child = _Slice(operand, starts, extents, "empty")
             else:
-                child = _plan(operand, starts, extents, block, cache)
+                child = _build_slice_plan(operand, starts, extents, block, cache)
             if child is None:
                 return None
             operands.append(child)
@@ -348,7 +348,9 @@ def _split(insert, rewriter):
     for start, end in zip(cuts, cuts[1:]):
         offsets, sizes = [0] * len(shape), list(shape)
         offsets[dim], sizes[dim] = start, end - start
-        plan = _plan(insert.source, tuple(offsets), tuple(sizes), block, cache)
+        plan = _build_slice_plan(
+            insert.source, tuple(offsets), tuple(sizes), block, cache
+        )
         if plan is None:
             return
         plans.append((start, plan))
