@@ -10,7 +10,8 @@
 # CHECK: xegpu.load_nd {{.*}}layout = #xegpu.layout<sg_layout = [1, 1], sg_data = [128, 32]>
 # CHECK: xegpu.load_nd {{.*}}layout = #xegpu.layout<sg_layout = [1, 1], sg_data = [128, 32]>
 # CHECK: xegpu.load_nd {{.*}}layout = #xegpu.layout<sg_layout = [1, 1], sg_data = [128, 32]>
-# CHECK-COUNT-2: xegpu.store_nd {{.*}}layout = #xegpu.layout<sg_layout = [1, 1], sg_data = [128, 32]>
+# CHECK: xegpu.store_nd {{.*}}layout = #xegpu.layout<sg_layout = [1, 1], sg_data = [128, 32]>
+# CHECK-NEXT: xegpu.store_nd {{.*}}layout = #xegpu.layout<sg_layout = [1, 1], sg_data = [128, 32]>
 # CHECK-NOT: gpu.alloc
 
 import torch

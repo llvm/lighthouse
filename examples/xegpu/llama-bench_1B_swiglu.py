@@ -43,6 +43,7 @@ def get_init_inputs():
 # CHECK: gpu.func @main_kernel
 # CHECK: xegpu.dpas
 # CHECK: math.exp
+# CHECK-NEXT: arith.addf
 # CHECK: xegpu.store_nd
 # CHECK: gpu.func @main_kernel
 # CHECK: xegpu.dpas

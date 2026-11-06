@@ -23,6 +23,7 @@
 # CHECK-NOT: xegpu.dpas
 # CHECK: gpu.func @main_kernel
 # CHECK: arith.cmpi sge
+# CHECK-NEXT: arith.select
 # CHECK-NOT: math.log
 # CHECK: xegpu.dpas
 # CHECK: vector.multi_reduction

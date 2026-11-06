@@ -101,6 +101,7 @@ def get_init_inputs():
 # CHECK-COUNT-6: gpu.func @main_kernel
 # CHECK: gpu.func @main_kernel
 # CHECK: arith.cmpi sge
+# CHECK-NEXT: arith.select
 # CHECK-NOT: math.log
 # CHECK: xegpu.dpas
 # CHECK: math.exp

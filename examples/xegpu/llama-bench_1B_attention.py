@@ -11,6 +11,7 @@
 # CHECK: scf.for %[[KEY:[a-zA-Z0-9_]+]] =
 # CHECK: vector.broadcast %[[KEY]] : index
 # CHECK: arith.cmpi sge, {{.*}} : vector<128x64xi64>
+# CHECK-NEXT: arith.select
 # CHECK-NOT: math.log
 # CHECK: xegpu.dpas
 # CHECK: vector.multi_reduction <maxnumf>
