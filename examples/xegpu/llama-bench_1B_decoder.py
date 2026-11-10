@@ -1,4 +1,5 @@
 # RUN: %PYTHON %S/kernel_bench.py --input %s --dump-kernel xegpu-wg | FileCheck %s --implicit-check-not=memref.alloc --implicit-check-not=memref.copy --implicit-check-not=gpu.alloc --implicit-check-not=math.log
+# RUN: %PYTHON %S/kernel_bench.py --input %s --input-shapes 1x512x2048 512x64 512x64 --dump-kernel xegpu-wg | FileCheck %s --implicit-check-not=memref.alloc --implicit-check-not=memref.copy --implicit-check-not=gpu.alloc --implicit-check-not=math.log
 # REQUIRES: torch, torch_mlir
 
 """Complete cache-free Llama 3.2 1B decoder layer for fixed-shape prefill.
