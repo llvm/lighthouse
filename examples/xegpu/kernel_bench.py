@@ -66,9 +66,6 @@ from lighthouse.execution.runner import Runner
 from lighthouse.schedule.xegpu import XeGPUParameterSelector
 from lighthouse.schedule.parameters import ScheduleParameters
 from lighthouse.pipeline.driver import TransformDriver
-from lighthouse.schedule.xegpu import (
-    elemwise_schedule,
-)
 from lighthouse.pipeline.helper import PipelineInterrupt
 from lighthouse.ingress.torch import gpu_backend, TargetDialect
 from lighthouse.ingress.torch.compile import TorchMemoryManager
@@ -203,18 +200,8 @@ def infer_parameters(
         read_bytes = int(np.prod(shape)) * res_bytes
         write_bytes = int(np.prod(shape)) * res_bytes
 
-        # Use fixed tile sizes for now
-        layer_params = {
-            "layer_kind": "elemwise",
-            "wg_m": 128,
-            "wg_n": 256,
-            "sg_m": 32,
-            "sg_n": 32,
-            "load_m": 8,
-            "load_n": 16,
-        }
-        # NOTE assume all elemwise layers will be fused to a single layer
-        schedule_params = ScheduleParameters([layer_params])
+        # The common pipeline infers tiles independently for each subgraph.
+        schedule_params = ScheduleParameters([])
         schedule_kind = "elemwise"
     elif len(elemwise) > 0 and len(reduction) > 0 and len(batch_matmuls) == 0:
         # Elementwise + reduction kernel
@@ -578,8 +565,12 @@ def lower_to_llvm(
 ) -> ir.Module:
     """Lower payload module to LLVM using the specified schedule and parameters."""
     Runner.make_function_callable(mod, payload_func_name)
-    if schedule_kind in ("mlp", "reduction", "attention"):
-        parameters = schedule_params[0] if schedule_params is not None else None
+    if schedule_kind in ("mlp", "reduction", "attention", "elemwise"):
+        parameters = (
+            schedule_params[0]
+            if schedule_params is not None and schedule_kind != "elemwise"
+            else None
+        )
         if (
             schedule_kind == "mlp"
             and schedule_params is not None
@@ -593,17 +584,7 @@ def lower_to_llvm(
             device=device,
         )
     else:
-        if schedule_kind == "elemwise":
-            schedule = elemwise_schedule(
-                params=schedule_params,
-                payload_func_name=payload_func_name,
-                stop_at_stage=stop_at_stage,
-            )
-        else:
-            raise ValueError(f"Unsupported schedule kind: {schedule_kind}")
-        pipeline = [schedule]
-        if not stop_at_stage or stop_at_stage == "final":
-            pipeline.append(xegpu.xegpu_to_binary())
+        raise ValueError(f"Unsupported schedule kind: {schedule_kind}")
 
     # define lowering pipeline
     schedules = []

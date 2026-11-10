@@ -10,6 +10,10 @@ import lighthouse.dialects as lh_dialects
 import lighthouse.transform as lh_transform
 from lighthouse.dialects.transform import transform_ext
 from lighthouse.schedule.builders import schedule_boilerplate
+from lighthouse.dialects.transform.transform_ext.ops.infer_xegpu_elementwise_params import (
+    elementwise_sg_tile,
+    elementwise_wg_tile,
+)
 
 
 PAYLOAD = """
@@ -87,7 +91,7 @@ module {
 
         payload.operation.walk(visit)
         assert len(loops) == 1
-        assert list(loops[0].staticUpperBound) == [2, 2]
+        assert list(loops[0].staticUpperBound) == [2]
         print("Permuted output tiles are returned in iteration order")
 
 
@@ -124,6 +128,59 @@ module {{
     print("Scalar and empty elementwise shapes fail without Python exceptions")
 
 
+def test_tile_shapes():
+    for shape, expected_wg, expected_sg in (
+        ([1024, 1024], [128, 256], [32, 32]),
+        ([4, 32, 512, 64], [1, 1, 128, 0], [1, 1, 32, 32]),
+        ([1, 512, 64, 1], [0, 128, 0, 0], [1, 32, 32, 1]),
+        ([16, 16], [0, 0], [16, 16]),
+        ([1024], [256], [32]),
+        ([1, 1], [0, 0], [1, 1]),
+        ([384, 768], [128, 256], [32, 32]),
+        ([96, 192], [32, 64], [32, 32]),
+        ([17, 31], [1, 1], [1, 1]),
+        ([131, 259], [1, 1], [1, 1]),
+    ):
+        wg = elementwise_wg_tile(shape)
+        assert wg == expected_wg, (shape, wg)
+        vector_shape = [size or extent for size, extent in zip(wg, shape)]
+        sg = elementwise_sg_tile(vector_shape)
+        assert sg == expected_sg, (shape, sg)
+        assert all(w % s == 0 for w, s in zip(vector_shape, sg))
+    print("WG and SG tiles select non-unit axes and divide small and irregular shapes")
+
+
+def test_vector_anchors():
+    source = """
+func.func @memory(%value: vector<128x256xf32>,
+                  %dest: memref<128x256xf32>,
+                  %desc: !xegpu.tensor_desc<128x256xf32>) {
+  %c0 = arith.constant 0 : index
+  vector.transfer_write %value, %dest[%c0, %c0]
+    {in_bounds = [true, true]} : vector<128x256xf32>, memref<128x256xf32>
+  xegpu.store_nd %value, %desc[0,0]
+    : vector<128x256xf32>, !xegpu.tensor_desc<128x256xf32>
+  return
+}
+"""
+    with ir.Context(), ir.Location.unknown():
+        lh_dialects.register_and_load()
+        module = ir.Module.parse(source)
+        with schedule_boilerplate() as (schedule, sequence):
+            for name in ("vector.transfer_write", "xegpu.store_nd"):
+                anchor = lh_transform.match_op(sequence.bodyTarget, name)
+                wg, sg = transform_ext.infer_xegpu_elementwise_params(anchor)
+                threads = transform_ext.compute_num_threads(wg, sg, base=16)
+                expected = transform.param_constant(
+                    transform.AnyParamType.get(),
+                    ir.IntegerAttr.get(ir.IntegerType.get_signless(64), 512),
+                )
+                transform_ext.param_cmp_eq(threads, expected)
+            transform.yield_()
+        schedule.body.operations[0].apply(module.operation)
+    print("Transfer writes and XeGPU stores agree on 512 threads for a 128x256 tile")
+
+
 # CHECK: scf.forall
 # CHECK-SAME: in (4, 32, 4)
 # CHECK: tensor.extract_slice
@@ -133,6 +190,10 @@ module {{
 test()
 test_permuted_result()
 test_unsupported_shapes()
+test_tile_shapes()
+test_vector_anchors()
 
 # CHECK: Permuted output tiles are returned in iteration order
 # CHECK: Scalar and empty elementwise shapes fail without Python exceptions
+# CHECK: WG and SG tiles select non-unit axes and divide small and irregular shapes
+# CHECK: Transfer writes and XeGPU stores agree on 512 threads for a 128x256 tile
