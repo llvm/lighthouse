@@ -12,6 +12,7 @@ DEFAULT_JSON_FILE = str(Path(__file__).parent / "matmul_params.json")
 
 
 def load_param_database(json_file: str = DEFAULT_JSON_FILE) -> dict:
+    """Key entries by shape and transpose flags; omitted flags default to False."""
     matmul_param_db = {}
     with open(json_file) as f:
         data = json.load(f)
@@ -19,7 +20,9 @@ def load_param_database(json_file: str = DEFAULT_JSON_FILE) -> dict:
             M = entry["m"]
             N = entry["n"]
             K = entry["k"]
-            matmul_param_db[(M, N, K)] = entry
+            transpose_a = entry.setdefault("transpose_a", False)
+            transpose_b = entry.setdefault("transpose_b", False)
+            matmul_param_db[(M, N, K, transpose_a, transpose_b)] = entry
     return matmul_param_db
 
 
@@ -77,9 +80,9 @@ class XeGPUParameterSelector:
         fixed_wg_tile = kwargs.get("wg_tile")
         fixed_sg_tile = kwargs.get("sg_tile")
         fixed_k_tile = kwargs.get("k_tile")
-        # TODO add transposed gemms in the database
-        if shape not in self.matmul_param_db or transpose_a or transpose_b:
-            # not found in database or transposed, use heuristic
+        key = (*shape, transpose_a, transpose_b)
+        if key not in self.matmul_param_db:
+            # not found in database, use heuristic
             return get_heuristic_params(
                 shape,
                 transpose_a,
@@ -89,7 +92,7 @@ class XeGPUParameterSelector:
                 fixed_sg_tile,
                 fixed_k_tile,
             )
-        params = self.matmul_param_db[shape]
+        params = self.matmul_param_db[key]
         wg_tile = (params["wg_m"], params["wg_n"])
         sg_tile = (params["sg_m"], params["sg_n"])
         if (
@@ -107,9 +110,6 @@ class XeGPUParameterSelector:
                 fixed_sg_tile,
                 fixed_k_tile,
             )
-        # ensure transpose flags are set
-        params.setdefault("transpose_a", False)
-        params.setdefault("transpose_b", False)
         return params
 
     def get_parameters(
