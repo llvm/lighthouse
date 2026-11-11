@@ -53,7 +53,9 @@ class Model(nn.Module):
         rows = torch.arange(sequence, device=x.device)
         allowed = rows[:, None] >= rows[None, :]
         # Avoid SDPA's XPU mask-factory and boolean-mask import failures.
-        mask = allowed.to(dtype=x.dtype).log()
+        zero = torch.tensor(0.0, dtype=x.dtype)
+        neg_inf = torch.tensor(float("-inf"), dtype=x.dtype)
+        mask = torch.where(allowed, zero, neg_inf)
         attention = torch.nn.functional.scaled_dot_product_attention(
             q, k, v, attn_mask=mask, is_causal=False, enable_gqa=True
         )

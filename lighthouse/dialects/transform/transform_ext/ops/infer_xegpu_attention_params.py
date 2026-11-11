@@ -75,7 +75,6 @@ class InferXeGPUAttentionParamsOp(
                     wg, sg = [1, wg_rows], [0, sg_rows]
                     red = [0, 0, reduction_tile]
                 elif rank == 4:  # batched MHA
-                    wg_rows, sg_rows, reduction_tile = 128, 16, 64
                     wg, sg = [1, 1, wg_rows], [0, 0, sg_rows]
                     red = [0, 0, 0, reduction_tile]
                 elif rank == 5:  # batched grouped-query attention (GQA)
