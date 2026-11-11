@@ -8,9 +8,8 @@ from lighthouse.dialects.transform.transform_ext.ops.filter_elementwise import (
 )
 from lighthouse.utils.mlir import indexing_maps
 
-# Upper bounds for the elements of one workgroup tile and of its innermost dim.
-_MAX_WG_TILE_ELEMS = 8192
-_MAX_WG_TILE_INNER = 256
+_WG_TILE = (128, 256)
+_SG_TILE = (32, 32)
 
 
 def _largest_pow2_divisor(extent: int, bound: int) -> int:
@@ -23,18 +22,24 @@ def _largest_pow2_divisor(extent: int, bound: int) -> int:
 def elementwise_wg_tile(shape: list[int]) -> list[int]:
     """Workgroup tile for an elementwise iteration space.
 
-    Tiles the two innermost dims into a row-major block of at most
-    `_MAX_WG_TILE_ELEMS` elements (keeping the innermost dim whole up to
-    `_MAX_WG_TILE_INNER`) and the outer dims by one. Zero marks an untiled dim.
+    Tiles the two innermost non-unit dims by at most 128 rows and 256 columns,
+    and outer dims by one. Zero marks an untiled dim. Tiles divide the shape
+    exactly, avoiding partial tiles in the tensor-level epilogue fusion.
     """
     tile = [1] * len(shape)
-    inner = shape[-1]
-    if inner > _MAX_WG_TILE_INNER:
-        inner = _largest_pow2_divisor(inner, _MAX_WG_TILE_INNER)
-    tile[-1] = inner
-    if len(shape) > 1:
-        tile[-2] = _largest_pow2_divisor(shape[-2], _MAX_WG_TILE_ELEMS // inner)
+    dimensions = [i for i, size in enumerate(shape) if size > 1][-2:]
+    for dim, bound in zip(reversed(dimensions), reversed(_WG_TILE)):
+        tile[dim] = _largest_pow2_divisor(shape[dim], bound)
     return [0 if t == extent else t for t, extent in zip(tile, shape)]
+
+
+def elementwise_sg_tile(shape: list[int]) -> list[int]:
+    """Distribute a vector tile over SGs along its two innermost non-unit dims."""
+    tile = list(shape)
+    dimensions = [i for i, size in enumerate(shape) if size > 1][-2:]
+    for dim, bound in zip(reversed(dimensions), reversed(_SG_TILE)):
+        tile[dim] = _largest_pow2_divisor(shape[dim], bound)
+    return tile
 
 
 class InferXeGPUElementwiseParamsOp(
@@ -48,14 +53,15 @@ class InferXeGPUElementwiseParamsOp(
     iteration order. The result indexing map must be a permutation. Zero marks
     an untiled dimension; sg_tile is left empty at this stage.
 
-    For an xegpu.load_nd or xegpu.store_nd anchor, wg_tile and sg_tile are both
-    the full loaded or stored vector shape, assuming a single-subgroup kernel.
+    For a vector.transfer_write, xegpu.load_nd or xegpu.store_nd anchor, wg_tile
+    is the full vector shape and sg_tile distributes its two innermost non-unit
+    dimensions over subgroups using tiles of at most 32 by 32 elements.
 
     Args:
-        target: Handle to a single tensor elementwise or XeGPU memory anchor.
+        target: Handle to a single tensor elementwise or vector memory anchor.
     Return:
         wg_tile: One i64 per tile dimension.
-        sg_tile: One i64 per tile dimension for XeGPU anchors, empty for linalg.
+        sg_tile: One i64 per tile dimension for vector anchors, empty for linalg.
     """
 
     target: ext.Operand[transform.AnyOpType]
@@ -79,8 +85,11 @@ class InferXeGPUElementwiseParamsOp(
             if len(targets) != 1:
                 return DiagnosedSilenceableFailure.SilenceableFailure
             target = targets[0]
-            if target.name in ("xegpu.load_nd", "xegpu.store_nd"):
-                # target is a xegpu.load/store_nd op
+            if target.name in (
+                "vector.transfer_write",
+                "xegpu.load_nd",
+                "xegpu.store_nd",
+            ):
                 value = (
                     target.results[0]
                     if target.name == "xegpu.load_nd"
@@ -92,7 +101,13 @@ class InferXeGPUElementwiseParamsOp(
                 i64 = ir.IntegerType.get_signless(64)
                 tile = [ir.IntegerAttr.get(i64, size) for size in ty.shape]
                 results.set_params(op.wg_tile, tile)
-                results.set_params(op.sg_tile, tile)
+                results.set_params(
+                    op.sg_tile,
+                    [
+                        ir.IntegerAttr.get(i64, size)
+                        for size in elementwise_sg_tile(list(ty.shape))
+                    ],
+                )
                 return DiagnosedSilenceableFailure.Success
             # target is a linalg elementwise op
             if len(target.results) != 1:
@@ -151,7 +166,7 @@ def infer_xegpu_elementwise_params(
     snake_case wrapper to create an InferXeGPUElementwiseParamsOp.
 
     Args:
-        target: Handle to a single tensor elementwise or XeGPU memory anchor.
+        target: Handle to a single tensor elementwise or vector memory anchor.
     Return:
         Workgroup and subgroup tile params. The subgroup tile is empty for
         linalg anchors.

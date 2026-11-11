@@ -269,6 +269,19 @@ def test_numerics():
     for tile in ((2, 8), (4, 4), (8, 8), (2, 16), (16, 32)):
         for fuse in (False, True):
             execute(SOURCE, tile, fuse, [x, w, cos, sin], expected)
+    external = rng.normal(size=(2, 4, 4, 2)).astype(np.float32)
+    external_source = SOURCE.replace(
+        "%sin: tensor<4x4xf32>)",
+        "%sin: tensor<4x4xf32>, %external: tensor<2x4x4x2xf32>)",
+    ).replace("dim(3) %neg, %first", "dim(3) %neg, %external")
+    external_rotated = np.concatenate((-projected[..., 2:], external), axis=-1)
+    execute(
+        external_source,
+        (2, 8),
+        True,
+        [x, w, cos, sin, external],
+        projected * cos + external_rotated * sin,
+    )
     collapsed = SOURCE.replace(
         "                     -> tensor<2x4x4x4xf32>",
         "                     -> tensor<2x4x16xf32>",

@@ -8,7 +8,6 @@ from lighthouse.dialects.transform import transform_ext
 
 from .matmul_constraints import (
     DPAS,
-    NB_WORKITEMS,
     PREFETCH_INST_DATA,
 )
 
@@ -436,14 +435,7 @@ def annotate_attention(
 
 
 def annotate_elementwise(gpu_func: ir.Value[transform.AnyOpType]):
-    """Anchor single-subgroup stores and propagate layouts to epilogue loads."""
-    # Check that the elementwise kernel is using single subgroup (for now).
-    block_size = transform_ext.get_named_attribute(gpu_func, "known_block_size")
-    subgroup_size = transform.param_constant(
-        transform.AnyParamType.get(),
-        ir.DenseI32ArrayAttr.get([NB_WORKITEMS, 1, 1]),
-    )
-    transform_ext.param_cmp_eq(block_size, subgroup_size)
+    """Anchor stores with shape-derived SG tiles and propagate layouts to loads."""
     # Check that the kernel does not contain contract or reduction ops.
     unsupported = lh_transform.match_op(
         gpu_func,
@@ -493,7 +485,7 @@ def analyze_and_annotate_gpu_func(
 ):
     """
     Analyzes a GPU function operation and annotates it with layout information
-    for attention, GEMM, reduction, or single-subgroup elementwise kernels.
+    for attention, GEMM, reduction, or elementwise kernels.
 
     Args:
         gpu_func_op (ir.Operation): The GPU function operation to analyze and annotate.

@@ -4,14 +4,15 @@
 # CHECK: xegpu.dpas
 # CHECK-LABEL: gpu.func @main_kernel{{.*}}memref<4x8x512x64xbf16>
 # CHECK-NOT: gpu.alloc
-# CHECK: xegpu.load_nd {{.*}}layout = #xegpu.layout<sg_layout = [1, 1], sg_data = [128, 32]>
-# CHECK: xegpu.load_nd {{.*}}layout = #xegpu.layout<sg_layout = [1, 1], sg_data = [128, 32]>
-# CHECK: xegpu.load_nd {{.*}}layout = #xegpu.layout<sg_layout = [1, 1], sg_data = [128, 32]>
-# CHECK: xegpu.load_nd {{.*}}layout = #xegpu.layout<sg_layout = [1, 1], sg_data = [128, 32]>
-# CHECK: xegpu.load_nd {{.*}}layout = #xegpu.layout<sg_layout = [1, 1], sg_data = [128, 32]>
-# CHECK: xegpu.load_nd {{.*}}layout = #xegpu.layout<sg_layout = [1, 1], sg_data = [128, 32]>
-# CHECK: xegpu.store_nd {{.*}}layout = #xegpu.layout<sg_layout = [1, 1], sg_data = [128, 32]>
-# CHECK-NEXT: xegpu.store_nd {{.*}}layout = #xegpu.layout<sg_layout = [1, 1], sg_data = [128, 32]>
+# CHECK-SAME: known_block_size = array<i32: 64, 1, 1>
+# CHECK: xegpu.load_nd {{.*}}layout = #xegpu.layout<sg_layout = [4, 1], sg_data = [32, 32]>
+# CHECK: xegpu.load_nd {{.*}}layout = #xegpu.layout<sg_layout = [4, 1], sg_data = [32, 32]>
+# CHECK: xegpu.load_nd {{.*}}layout = #xegpu.layout<sg_layout = [4, 1], sg_data = [32, 32]>
+# CHECK: xegpu.load_nd {{.*}}layout = #xegpu.layout<sg_layout = [4, 1], sg_data = [32, 32]>
+# CHECK: xegpu.load_nd {{.*}}layout = #xegpu.layout<sg_layout = [4, 1], sg_data = [32, 32]>
+# CHECK: xegpu.load_nd {{.*}}layout = #xegpu.layout<sg_layout = [4, 1], sg_data = [32, 32]>
+# CHECK: xegpu.store_nd {{.*}}layout = #xegpu.layout<sg_layout = [4, 1], sg_data = [32, 32]>
+# CHECK-NEXT: xegpu.store_nd {{.*}}layout = #xegpu.layout<sg_layout = [4, 1], sg_data = [32, 32]>
 # CHECK-NOT: gpu.alloc
 
 import torch
