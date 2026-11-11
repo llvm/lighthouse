@@ -76,7 +76,9 @@ class Model(nn.Module):
         rows = torch.arange(sequence, device=x.device)
         allowed = rows[:, None] >= rows[None, :]
         # Avoid torch-mlir's SDPA XPU mask-factory and boolean-mask import issues.
-        mask = allowed.to(dtype=x.dtype).log()
+        zero = torch.tensor(0.0, dtype=x.dtype)
+        neg_inf = torch.tensor(float("-inf"), dtype=x.dtype)
+        mask = torch.where(allowed, zero, neg_inf)
         attention = F.scaled_dot_product_attention(
             q, k, v, attn_mask=mask, is_causal=False, enable_gqa=True, dropout_p=0.0
         )

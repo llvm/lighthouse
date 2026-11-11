@@ -156,8 +156,6 @@ def vectorize(
     lh_transform.cleanup(payload_func)
     payload_func = transform_ext.fold_tensor_vector_transfers(payload_func)
     lh_transform.cleanup(payload_func)
-    payload_func = transform_ext.fold_log_of_bool(payload_func)
-    lh_transform.cleanup(payload_func)
 
     # Narrow vector.contract operands if possible to match DPAS op spec.
     contract_ops = lh_transform.match_op(payload_func, "vector.contract")
