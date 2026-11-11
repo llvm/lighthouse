@@ -60,6 +60,7 @@ from .ops.split_concat_output import split_concat_output
 from .ops.sink_normalization_past_contraction import (
     sink_normalization_past_contraction,
 )
+from .ops.move_contraction_scale_to_lhs import move_contraction_scale_to_lhs
 
 __all__ = [
     "REDUCTION_LOOP_ATTR_NAME",
@@ -104,6 +105,7 @@ __all__ = [
     "infer_xegpu_gemm_params",
     "infer_xegpu_reduction_params",
     "match_subgraph",
+    "move_contraction_scale_to_lhs",
     "move_offsets_to_subview",
     "narrow_vector_contract_operands",
     "param_cmp_eq",
