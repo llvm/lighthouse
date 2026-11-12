@@ -3,7 +3,7 @@
 import math
 
 from mlir import ir
-from mlir.dialects import memref, vector
+from mlir.dialects import linalg, memref, scf, tensor, vector, xegpu
 
 from lighthouse.utils.mlir import defining_op, dim_position
 
@@ -114,8 +114,7 @@ def _xegpu_operand_source(value: ir.Value) -> tuple[list[int] | None, bool]:
         seen.add(op)
         if isinstance(op.opview, vector.TransposeOp):
             transposed = True
-        # xegpu dialect has no Python bindings, so match by name.
-        if op.name == "xegpu.create_nd_tdesc":
+        if isinstance(op.opview, xegpu.CreateNdDescOp):
             return _root_memref_shape(op.operands[0]), transposed
         if len(op.operands) == 0:
             break
@@ -149,22 +148,22 @@ def _dpas_shape_and_transpose(
     return (m, n, k), transpose_a, transpose_b
 
 
-def _first_producer_named(value: ir.Value, op_name: str) -> ir.Operation | None:
+def _first_producer_of_type(
+    value: ir.Value, op_type: type[ir.OpView]
+) -> ir.Operation | None:
     """Find local operand plumbing, stopping at computations and rank changes."""
     if value is None or isinstance(value, ir.BlockArgument):
         return None
     op = defining_op(value)
     if op is None:
         return None
-    if op.name == op_name:
+    if isinstance(op.opview, op_type):
         return op
-    if op.name in (
-        "tensor.extract_slice",
-        "tensor.cast",
-        "linalg.transpose",
-        "linalg.broadcast",
+    if isinstance(
+        op.opview,
+        (tensor.ExtractSliceOp, tensor.CastOp, linalg.TransposeOp, linalg.BroadcastOp),
     ):
-        return _first_producer_named(op.operands[0], op_name)
+        return _first_producer_of_type(op.operands[0], op_type)
     return None
 
 
@@ -175,13 +174,13 @@ def _linalg_matmul_operand_shape(value: ir.Value) -> tuple[list[int], bool]:
     shape: The global shape of the operand in matmul orientation.
     transposed: A boolean indicating if the operand is transposed.
     """
-    transposed = _first_producer_named(value, "linalg.transpose") is not None
-    slice_op = _first_producer_named(value, "tensor.extract_slice")
+    transposed = _first_producer_of_type(value, linalg.TransposeOp) is not None
+    slice_op = _first_producer_of_type(value, tensor.ExtractSliceOp)
     if slice_op is not None:
         source = slice_op.operands[0]
         shape = list(ir.ShapedType(source.type).shape)
         # If the transpose sits between the slice and the matmul, reverse the shape.
-        if transposed and _first_producer_named(source, "linalg.transpose") is None:
+        if transposed and _first_producer_of_type(source, linalg.TransposeOp) is None:
             shape.reverse()
     else:
         shape = list(ir.ShapedType(value.type).shape)
@@ -212,7 +211,7 @@ _MATMUL_B_DIMS = [2, 1]
 def _reject_broadcast_matmul(matmul: ir.OpView) -> None:
     """Raise if `matmul` operand is produced by a linalg.broadcast op."""
     for operand in matmul.inputs:
-        if _first_producer_named(operand, "linalg.broadcast") is not None:
+        if _first_producer_of_type(operand, linalg.BroadcastOp) is not None:
             raise ValueError(
                 "linalg.matmul has a linalg.broadcast producer, which the tile-size "
                 "analysis does not support"
@@ -237,16 +236,14 @@ def analyze_matmul_op(op: ir.OpView) -> tuple[tuple[int, int, int], bool, bool]:
     Supports linalg.matmul, vector.contract and xegpu.dpas anchor ops; other op
     kinds will be added later.
     """
-    # TODO use op name as xegpu dialect python bindings are missing
-    op_name = op.operation.name
-    if op_name == "linalg.matmul":
+    if isinstance(op, linalg.MatmulOp):
         _reject_broadcast_matmul(op)
         return _linalg_matmul_shape_and_transpose(op)
-    elif op_name == "vector.contract":
+    elif isinstance(op, vector.ContractionOp):
         return _matmul_shape_and_transpose(op)
-    elif op_name == "xegpu.dpas":
+    elif isinstance(op, xegpu.DpasOp):
         return _dpas_shape_and_transpose(op)
-    raise NotImplementedError(f"unsupported anchor op '{op_name}'")
+    raise NotImplementedError(f"unsupported anchor op '{op.operation.name}'")
 
 
 def analyze_wg_k_tile_size(op: ir.OpView) -> tuple[int, ...] | None:
@@ -254,12 +251,12 @@ def analyze_wg_k_tile_size(op: ir.OpView) -> tuple[int, ...] | None:
 
     Returns a tuple (wg_tile, k_tile) where k_tile can be None if not determined.
     """
-    op_name = op.operation.name
     wg_tile = None
     k_tile = None
-    if op_name == "linalg.matmul":
-        if op.parent.name != "scf.forall" and not (
-            op.parent.name == "scf.for" and op.parent.parent.name == "scf.forall"
+    if isinstance(op, linalg.MatmulOp):
+        if not isinstance(op.parent.opview, scf.ForallOp) and not (
+            isinstance(op.parent.opview, scf.ForOp)
+            and isinstance(op.parent.parent.opview, scf.ForallOp)
         ):
             # target is not within a scf.forall loop, so it's not workgroup tiled
             return None, None
@@ -269,9 +266,9 @@ def analyze_wg_k_tile_size(op: ir.OpView) -> tuple[int, ...] | None:
         m, k = list(ir.ShapedType(op.inputs[0].type).shape)
         _, n = list(ir.ShapedType(op.inputs[1].type).shape)
         wg_tile = (m, n)
-        if op.parent.name == "scf.for":
+        if isinstance(op.parent.opview, scf.ForOp):
             k_tile = k
-    elif op_name == "vector.contract":
+    elif isinstance(op, vector.ContractionOp):
         # Assume we are in WG loop or WG-k loop nest. The accumulator carries
         # the (M, N) tile; the reduction dim gives the K tile.
         maps_attr = op.attributes["indexing_maps"]
@@ -283,17 +280,17 @@ def analyze_wg_k_tile_size(op: ir.OpView) -> tuple[int, ...] | None:
 
         acc_shape = list(ir.ShapedType(op.operands[2].type).shape)
         wg_tile = (acc_shape[0], acc_shape[1])
-        if op.parent.name == "scf.for":
+        if isinstance(op.parent.opview, scf.ForOp):
             # index() handles a transposed operand where K precedes M.
             a_shape = list(ir.ShapedType(op.operands[0].type).shape)
             k_tile = a_shape[a_dims.index(k_dim)]
-    elif op_name == "xegpu.dpas":
+    elif isinstance(op, xegpu.DpasOp):
         # dpas consumes A as [M, K] and acc as [M, N] regardless of how the
         # source tiles are stored, so shapes read off directly.
         acc_shape = list(ir.ShapedType(op.operands[2].type).shape)
         wg_tile = (acc_shape[0], acc_shape[1])
-        if op.parent.name == "scf.for":
+        if isinstance(op.parent.opview, scf.ForOp):
             k_tile = list(ir.ShapedType(op.operands[0].type).shape)[1]
     else:
-        raise ValueError(f"unsupported anchor op '{op_name}'")
+        raise ValueError(f"unsupported anchor op '{op.operation.name}'")
     return wg_tile, k_tile

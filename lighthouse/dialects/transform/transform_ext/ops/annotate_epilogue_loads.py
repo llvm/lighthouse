@@ -1,5 +1,5 @@
 from mlir import ir
-from mlir.dialects import ext, transform
+from mlir.dialects import ext, transform, vector, xegpu
 from mlir.dialects.transform import DiagnosedSilenceableFailure
 
 from lighthouse.dialects.transform.transform_ext import TransformExtensionDialect
@@ -19,10 +19,10 @@ def _collect_epilogue_load_annotations(
             continue
         visited.add(value)
         op = value.owner.operation
-        if op.name in ("xegpu.load", "xegpu.load_nd"):
+        if isinstance(op.opview, (xegpu.LoadGatherOp, xegpu.LoadNdOp)):
             if list(ir.VectorType(value.type).shape) == shape:
                 annotations.append((op, "layout", layout))
-        elif op.name == "vector.broadcast":
+        elif isinstance(op.opview, vector.BroadcastOp):
             source = op.operands[0]
             if not isinstance(source.type, ir.VectorType):
                 continue
@@ -33,7 +33,7 @@ def _collect_epilogue_load_annotations(
             if isinstance(source.owner, ir.Block):
                 continue
             load = source.owner.operation
-            if load.name not in ("xegpu.load", "xegpu.load_nd"):
+            if not isinstance(load.opview, (xegpu.LoadGatherOp, xegpu.LoadNdOp)):
                 continue
             sliced = ir.Attribute.parse(
                 f"#xegpu.slice<{layout}, dims = {list(range(extra_dims))}>"
@@ -83,7 +83,10 @@ class AnnotateEpilogueLoadsOp(
         def apply(op, _rewriter, _results, state) -> DiagnosedSilenceableFailure:
             planned = {}
             for store in state.get_payload_ops(op.target):
-                if store.name != "xegpu.store_nd" or "layout" not in store.attributes:
+                if (
+                    not isinstance(store, xegpu.StoreNdOp)
+                    or "layout" not in store.attributes
+                ):
                     store.location.emit_error(
                         "annotate_epilogue_loads: expected annotated store_nd"
                     )

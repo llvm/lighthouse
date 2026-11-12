@@ -1,5 +1,5 @@
 from mlir import ir
-from mlir.dialects import ext, transform
+from mlir.dialects import ext, transform, vector, xegpu
 from mlir.dialects.transform import DiagnosedSilenceableFailure
 
 from lighthouse.dialects.transform.transform_ext import TransformExtensionDialect
@@ -85,14 +85,12 @@ class InferXeGPUElementwiseParamsOp(
             if len(targets) != 1:
                 return DiagnosedSilenceableFailure.SilenceableFailure
             target = targets[0]
-            if target.name in (
-                "vector.transfer_write",
-                "xegpu.load_nd",
-                "xegpu.store_nd",
+            if isinstance(
+                target, (vector.TransferWriteOp, xegpu.LoadNdOp, xegpu.StoreNdOp)
             ):
                 value = (
                     target.results[0]
-                    if target.name == "xegpu.load_nd"
+                    if isinstance(target, xegpu.LoadNdOp)
                     else target.operands[0]
                 )
                 ty = value.type

@@ -166,7 +166,7 @@ def _forward(read: vector.TransferReadOp) -> ir.Value | None:
     if isinstance(owner, ir.Block):
         return None
     owner = owner.operation
-    if owner.name == "vector.transfer_write":
+    if isinstance(owner.opview, vector.TransferWriteOp):
         write = owner.opview
         written = _region(write)
         if written is None:
@@ -186,7 +186,7 @@ def _forward(read: vector.TransferReadOp) -> ir.Value | None:
             _read(owner.operands[0], read.padding),
             list(ir.VectorType(read.result.type).shape),
         )
-    if owner.name == "tensor.concat" and full_read:
+    if isinstance(owner.opview, tensor.ConcatOp) and full_read:
         if any(_shape(operand) is None for operand in owner.operands):
             return None
         ty = ir.RankedTensorType(source.type)
@@ -209,7 +209,7 @@ def _rewrite(target: ir.Operation) -> None:
         reads, reshapes = [], []
 
         def collect(op):
-            if op.name == "vector.transfer_read":
+            if isinstance(op.opview, vector.TransferReadOp):
                 reads.append(op)
             elif op.name in ("tensor.expand_shape", "tensor.collapse_shape"):
                 reshapes.append(op)

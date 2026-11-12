@@ -1,7 +1,7 @@
 """Explicit preparation for the scheduling policy used by tag_subgraphs."""
 
 from mlir import ir
-from mlir.dialects import ext, tensor, transform
+from mlir.dialects import ext, linalg, tensor, transform
 from mlir.dialects.transform import DiagnosedSilenceableFailure
 
 from lighthouse.dialects.transform.transform_ext import TransformExtensionDialect
@@ -13,7 +13,7 @@ from lighthouse.utils.mlir import indexing_maps
 
 
 def _is_cast_generic(op):
-    if op.name != "linalg.generic" or len(op.results) != 1:
+    if not isinstance(op.opview, linalg.GenericOp) or len(op.results) != 1:
         return False
     generic = op.opview
     body = generic.regions[0].blocks[0]
@@ -24,7 +24,7 @@ def _is_cast_generic(op):
         and len(operations) == 2
         and operations[0].name in ("arith.extf", "arith.truncf")
         and list(operations[0].operands) == [body.arguments[0]]
-        and operations[1].name == "linalg.yield"
+        and isinstance(operations[1], linalg.YieldOp)
         and list(operations[1].operands) == list(operations[0].results)
         and all(
             mapping == ir.AffineMap.get_identity(mapping.n_dims)
@@ -111,7 +111,7 @@ def _prepare(block, kinds, rewriter):
         # Folding erases users of a matmul but never another matmul, so these
         # handles stay valid.
         matmuls = [
-            op.operation for op in block.operations if op.name == "linalg.matmul"
+            op.operation for op in block.operations if isinstance(op, linalg.MatmulOp)
         ]
         for matmul in matmuls:
             _fold_gemm_cast_reshape(matmul, rewriter)

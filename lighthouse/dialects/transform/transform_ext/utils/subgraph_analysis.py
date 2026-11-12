@@ -16,7 +16,7 @@ after preparation has isolated shared producers.
 from collections.abc import Callable, Iterable
 
 from mlir import ir
-from mlir.dialects import tensor
+from mlir.dialects import linalg, tensor
 
 from lighthouse.dialects.transform.transform_ext.ops.filter_elementwise import (
     is_elementwise,
@@ -127,7 +127,7 @@ def _match_gemm(
     keeps parallel projections separate and their join before the next GEMM.
     Collapses into a following GEMM remain outside to avoid tile-local
     reshape copies during bufferization."""
-    if op.name != "linalg.matmul" or is_claimed(op):
+    if not isinstance(op.opview, linalg.MatmulOp) or is_claimed(op):
         return []
     members = [op]
     anchor = op
@@ -146,14 +146,18 @@ def _match_gemm(
         if not is_claimed(producer) and _is_elementwise_linalg(producer):
             inputs = (
                 producer.opview.inputs
-                if producer.name == "linalg.generic"
+                if isinstance(producer.opview, linalg.GenericOp)
                 else producer.operands[:-1]
             )
             return all(available_input(operand) for operand in inputs)
         return False
 
     def available(user):
-        inputs = user.opview.inputs if user.name == "linalg.generic" else user.operands
+        inputs = (
+            user.opview.inputs
+            if isinstance(user.opview, linalg.GenericOp)
+            else user.operands
+        )
         return all(available_input(value) for value in inputs)
 
     while len(anchor.results) == 1:
@@ -178,7 +182,7 @@ def _match_gemm(
             if _producer(value) is not None
         ):
             continue
-        if _is_elementwise_linalg(user) and user.name == "linalg.generic":
+        if _is_elementwise_linalg(user) and isinstance(user.opview, linalg.GenericOp):
             eligible = True
         elif isinstance(user.opview, tensor.ExpandShapeOp):
             # Only reshape token dimensions; head/column splitting remains a
@@ -272,7 +276,11 @@ def _match_reduction(
     also used after normalization stays outside; the square/cast chain used only
     by normalization stays inside. Shared fills are isolated during preparation.
     """
-    if op.name != "linalg.generic" or not is_reduction_op(op) or is_claimed(op):
+    if (
+        not isinstance(op.opview, linalg.GenericOp)
+        or not is_reduction_op(op)
+        or is_claimed(op)
+    ):
         return []
 
     def candidate(value):
@@ -282,7 +290,7 @@ def _match_reduction(
             and (
                 _is_elementwise_linalg(value)
                 or (
-                    value.name == "linalg.generic"
+                    isinstance(value.opview, linalg.GenericOp)
                     and is_reduction_op(value)
                     and not is_contraction_op(value)
                 )
@@ -302,7 +310,7 @@ def _match_reduction(
                     and candidate(producer)
                     and (
                         all(user in members for user in _users(producer))
-                        or producer.name == "linalg.fill"
+                        or isinstance(producer.opview, linalg.FillOp)
                     )
                 ):
                     members.append(producer)
@@ -316,7 +324,7 @@ def _match_reduction(
     if any(
         u not in members
         for member in members
-        if member != anchor and member.name != "linalg.fill"
+        if member != anchor and not isinstance(member.opview, linalg.FillOp)
         for u in _users(member)
     ):
         return []
@@ -400,7 +408,7 @@ def _match_attention(root, block_ops, is_claimed=is_tagged):
                 "tensor.collapse_shape",
             ):
                 producer = _producer(producer.operands[0])
-            return producer is not None and producer.name == "linalg.matmul"
+            return producer is not None and isinstance(producer.opview, linalg.MatmulOp)
 
         if any(from_matmul(value) for value in op.operands):
             return False
