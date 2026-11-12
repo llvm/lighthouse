@@ -121,6 +121,47 @@ NORMALIZED = SOURCE.replace(
   %mm1 = linalg.matmul""",
 ).replace("ins(%x, %w", "ins(%norm, %w")
 
+SOFTMAX = """
+#id = affine_map<(m,n)->(m,n)>
+#row = affine_map<(m,n)->(m)>
+func.func @payload(%x: tensor<64x64xf32>, %out: memref<64x64xf32>) {
+  %neg_inf = arith.constant 0xFF800000 : f32
+  %zero = arith.constant 0.0 : f32
+  %rows = tensor.empty() : tensor<64xf32>
+  %full = tensor.empty() : tensor<64x64xf32>
+  %max_init = linalg.fill ins(%neg_inf : f32) outs(%rows : tensor<64xf32>) -> tensor<64xf32>
+  %max = linalg.generic {indexing_maps=[#id,#row], iterator_types=["parallel","reduction"]}
+    ins(%x : tensor<64x64xf32>) outs(%max_init : tensor<64xf32>) {
+  ^bb0(%a: f32, %acc: f32):
+    %v = arith.maximumf %a, %acc : f32
+    linalg.yield %v : f32
+  } -> tensor<64xf32>
+  %exp = linalg.generic {indexing_maps=[#id,#row,#id], iterator_types=["parallel","parallel"]}
+    ins(%x, %max : tensor<64x64xf32>, tensor<64xf32>) outs(%full : tensor<64x64xf32>) {
+  ^bb0(%a: f32, %m: f32, %o: f32):
+    %v = arith.subf %a, %m : f32
+    %e = math.exp %v : f32
+    linalg.yield %e : f32
+  } -> tensor<64x64xf32>
+  %sum_init = linalg.fill ins(%zero : f32) outs(%rows : tensor<64xf32>) -> tensor<64xf32>
+  %sum = linalg.generic {indexing_maps=[#id,#row], iterator_types=["parallel","reduction"]}
+    ins(%exp : tensor<64x64xf32>) outs(%sum_init : tensor<64xf32>) {
+  ^bb0(%a: f32, %acc: f32):
+    %v = arith.addf %a, %acc : f32
+    linalg.yield %v : f32
+  } -> tensor<64xf32>
+  %result = linalg.generic {indexing_maps=[#id,#row,#id], iterator_types=["parallel","parallel"]}
+    ins(%exp, %sum : tensor<64x64xf32>, tensor<64xf32>) outs(%full : tensor<64x64xf32>) {
+  ^bb0(%a: f32, %s: f32, %o: f32):
+    %v = arith.divf %a, %s : f32
+    linalg.yield %v : f32
+  } -> tensor<64x64xf32>
+  bufferization.materialize_in_destination %result in restrict writable %out
+    : (tensor<64x64xf32>, memref<64x64xf32>) -> ()
+  return
+}
+"""
+
 
 def operations(module, prefix):
     found = []
@@ -290,7 +331,7 @@ def tile(func):
 
 
 def test_tiling():
-    module = run(SOURCE, tile)
+    module = run(SOURCE, apply_subgraph_tiling)
     loops = [op for op in operations(module, "scf.forall") if op.name == "scf.forall"]
     print(f"{len(loops)} workgroup loops")
     for loop in loops:
@@ -320,7 +361,7 @@ def test_numerics(source=SOURCE):
     )
     heads = (normalized @ w2).reshape(4, 64, 256)
     expected = [np.maximum(normalized @ w1, 0), -heads * heads]
-    module = run(source, tile)
+    module = run(source, apply_subgraph_tiling)
     PassManager.parse(
         "builtin.module(empty-tensor-to-alloc-tensor,"
         "one-shot-bufferize{bufferize-function-boundaries "
@@ -346,7 +387,7 @@ def test_numerics(source=SOURCE):
 
 
 def test_mixed_reduction():
-    module = run(NORMALIZED, tile)
+    module = run(NORMALIZED, apply_subgraph_tiling)
     loops = [op for op in operations(module, "scf.forall") if op.name == "scf.forall"]
     assert len(loops) == 3, str(module)
     assert len(operations(loops[0], "math.rsqrt")) == 1
@@ -363,6 +404,47 @@ def test_mixed_reduction():
 # CHECK-LABEL: test_mixed_reduction
 # CHECK-NEXT: Tiled subgraphs match NumPy
 # CHECK-NEXT: Shared reduction is materialized once before both GEMM consumers
+
+
+def test_softmax_reductions():
+    module = run(
+        SOFTMAX,
+        lambda func: apply_subgraph_tiling(
+            func,
+            force_wg_tile=[32, 0],
+            force_reduction_tile=[0, 16],
+        ),
+    )
+    loops = [op for op in operations(module, "scf.forall") if op.name == "scf.forall"]
+    assert len(loops) == 1
+    assert (
+        len([op for op in operations(loops[0], "scf.for") if op.name == "scf.for"]) == 3
+    )
+    assert "in (2)" in str(loops[0])
+    assert str(loops[0]).count("step %c16") == 3
+    PassManager.parse(
+        "builtin.module(empty-tensor-to-alloc-tensor,"
+        "one-shot-bufferize{bufferize-function-boundaries "
+        "function-boundary-type-conversion=identity-layout-map},"
+        "scf-forall-to-for,buffer-deallocation-pipeline,"
+        "convert-linalg-to-loops,expand-strided-metadata,lower-affine,"
+        "convert-scf-to-cf,convert-math-to-llvm)"
+    ).run(module.operation)
+    Runner.make_function_callable(module, "payload")
+    PassManager.parse(
+        "builtin.module(finalize-memref-to-llvm,convert-to-llvm,"
+        "reconcile-unrealized-casts)"
+    ).run(module.operation)
+    x = np.random.default_rng(42).normal(size=(64, 64)).astype(np.float32)
+    output = np.empty_like(x)
+    Runner(module).execute("payload", [x, output])
+    exp = np.exp(x - np.max(x, axis=1, keepdims=True))
+    np.testing.assert_allclose(output, exp / exp.sum(axis=1, keepdims=True), rtol=1e-5)
+    print("Two reductions share one WG kernel and match NumPy")
+
+
+# CHECK-LABEL: test_softmax_reductions
+# CHECK-NEXT: Two reductions share one WG kernel and match NumPy
 
 
 def test_shared_normalization_input():
@@ -403,7 +485,7 @@ def test_shared_normalization_input():
         ir.StringAttr(add.parent.attributes[SUBGRAPH_KIND_ATTR_NAME]).value
         == "elementwise"
     )
-    module = run(source, tile)
+    module = run(source, apply_subgraph_tiling)
     loops = [op for op in operations(module, "scf.forall") if op.name == "scf.forall"]
     assert len(loops) == 4, str(module)
     normalization = next(loop for loop in loops if operations(loop, "math.rsqrt"))
@@ -504,7 +586,7 @@ def test_mlp_accumulators():
             )
             cleanup = cleanup_schedule()
             cleanup.body.operations[0].apply(module.operation)
-            module = run(str(module), tile)
+            module = run(str(module), tile if layers == 1 else apply_subgraph_tiling)
             loops = [
                 op for op in operations(module, "scf.forall") if op.name == "scf.forall"
             ]
@@ -617,6 +699,7 @@ with ir.Context(), ir.Location.unknown():
         test_tiling,
         test_numerics,
         test_mixed_reduction,
+        test_softmax_reductions,
         test_shared_normalization_input,
         test_late_bias_relu_setup,
         test_mlp_accumulators,

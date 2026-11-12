@@ -1,10 +1,20 @@
 # RUN: %PYTHON %s -l 2 -b 9 --dump-kernel=xegpu-wg | FileCheck %s
 # RUN: %PYTHON %s -l 2 -b 9 --dump-kernel=xegpu-wg | FileCheck %s
 # RUN: %PYTHON %s -l 1 -b 97 --input-shapes 32x32x512x64 32x32x512x64 32x32x512x64 --dump-kernel xegpu-wg | FileCheck %s
+# RUN: %PYTHON %s -l 1 -b 23 --dump-kernel xegpu-wg | FileCheck %s --check-prefix=SOFTMAX --implicit-check-not=memref.alloc --implicit-check-not=memref.copy --implicit-check-not=gpu.alloc
+# RUN: %PYTHON %s -l 1 -b 19 --input-shapes 4096x1024 --dump-kernel xegpu-wg | FileCheck %s --check-prefix=RELU
 # REQUIRES: torch
 # REQUIRES: kernel_bench
 
 # CHECK: module attributes {gpu.container_module} {
+# SOFTMAX: gpu.func @main_kernel
+# SOFTMAX: vector.multi_reduction <maxnumf>
+# SOFTMAX: vector.multi_reduction <add>
+# SOFTMAX: arith.divf
+# SOFTMAX: xegpu.store_nd
+# RELU: gpu.func @main_kernel
+# RELU: arith.select {{.*}}vector<128x256
+# RELU: xegpu.store_nd
 """
 This script executes KernelBench benchmarks using the XEGPU lowering pipeline.
 
