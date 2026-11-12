@@ -32,8 +32,7 @@ class Model(nn.Module):
 
     Differences from the synthetic level1-97 SDPA:
 
-      * d_head = 64 (Llama3.2-1B), the per-head reduction dimension, within the
-        current <= 64 lowering limit.
+      * d_head = 64 (Llama3.2-1B), the per-head reduction dimension.
       * Grouped-query attention: 32 query heads share 8 key/value heads
         (num_heads / num_kv_heads = 4). K/V carry fewer heads than Q and are
         broadcast across the group (enable_gqa=True).
@@ -77,7 +76,7 @@ batch_size = 4
 n_ctx = 512
 num_heads = 32  # query heads
 num_kv_heads = 8  # grouped key/value heads (GQA group size = 4)
-d_head = 64  # per-head reduction dim; within the current <= 64 cap
+d_head = 64  # per-head reduction dim
 
 
 def get_inputs():
