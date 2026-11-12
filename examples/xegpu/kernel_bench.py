@@ -177,13 +177,6 @@ def infer_parameters(
         )
     elif len(matmuls) > 0 and len(batch_matmuls) == 0:
         schedule_params = XeGPUParameterSelector().get_parameters_for_layers(matmuls)
-        # check that all matmul dims are powers of 2
-        for mmul in matmuls:
-            for char, dim in zip(["m", "n", "k"], mmul["shape"]):
-                assert dim & (dim - 1) == 0, (
-                    f"Matmul shape must be a power of 2, got {char}={dim}"
-                )
-
         # compute flops
         total_flops = 0
         read_bytes = 0
@@ -283,42 +276,16 @@ def infer_parameters(
         read_bytes = int(3 * batch_size * n_head * n_ctx * d_head * nbytes)
         write_bytes = int(batch_size * n_head * n_ctx * d_head * nbytes)
 
-        assert d_head == 64, f"d_head must be 64, got {d_head}"
-
         max_elemwise_dims = 0
         for layer in [s for s in func_metadata["layers"] if s["kind"] == "elemwise"]:
             max_elemwise_dims = max(max_elemwise_dims, len(layer["shape"]))
 
-        if max_elemwise_dims == 4:
-            # MHA case
-            layer_params = {
-                "layer_kind": "attention",
-                "wg_tile": [1, 1, 128],
-                "sg_tile": [0, 0, 16],
-                "reduction_tile": [0, 0, 0, 64],
-                "q_load_tile": [16, 16],
-                "v_load_tile": [32, 32],
-                "prefetch_tile": [16, 32],
-                "nb_prefetch": 1,
-            }
-        elif max_elemwise_dims == 5:
-            # GQA case
-            layer_params = {
-                "layer_kind": "attention",
-                "wg_tile": [1, 1, 1, 128],
-                "sg_tile": [0, 0, 16],
-                "reduction_tile": [0, 0, 0, 0, 64],
-                "q_load_tile": [16, 16],
-                "v_load_tile": [32, 32],
-                "prefetch_tile": [16, 32],
-                "nb_prefetch": 1,
-            }
-        else:
+        if max_elemwise_dims not in (4, 5):
             raise ValueError(
                 f"Unsupported attention layer dimensionality: {max_elemwise_dims}"
             )
 
-        schedule_params = ScheduleParameters([layer_params])
+        schedule_params = ScheduleParameters([{"layer_kind": "attention"}])
         schedule_kind = "attention"
     else:
         print("Layers:")
