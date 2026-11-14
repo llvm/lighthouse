@@ -108,9 +108,13 @@ def _isolate_producers(members, anchor):
 
 def _prepare(block, kinds, rewriter):
     if "gemm" in kinds:
-        for op in list(block.operations):
-            if op.name == "linalg.matmul":
-                _fold_gemm_cast_reshape(op.operation, rewriter)
+        # Folding erases users of a matmul but never another matmul, so these
+        # handles stay valid.
+        matmuls = [
+            op.operation for op in block.operations if op.name == "linalg.matmul"
+        ]
+        for matmul in matmuls:
+            _fold_gemm_cast_reshape(matmul, rewriter)
     claimed = {op.operation for op in block.operations if sa.is_tagged(op)}
     for kind in kinds:
         for op in list(block.operations):
