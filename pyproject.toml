@@ -29,7 +29,8 @@ ingress_torch_mlir = [
 ]
 # Additional "targets" which pull in optional dependencies -- use `uv sync --extra TARGET`
 ingress_torch_cpu = [
-    "torch==v2.13.0+cpu",
+    "torch==v2.13.0+cpu ; sys_platform != 'darwin'",
+    "torch==v2.13.0 ; sys_platform == 'darwin'",
     "lighthouse[ingress_torch_mlir]"
 ]
 ingress_torch_nvidia = [
