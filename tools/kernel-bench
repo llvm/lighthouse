@@ -17,13 +17,7 @@ from lighthouse.pipeline.descriptor import Descriptor
 from lighthouse.pipeline.driver import BackendDriver
 from lighthouse import ingress as lh_ingress
 from lighthouse.ingress.torch import cpu_backend, gpu_backend
-from lighthouse.utils.mlir import get_mlir_library_path
-import os
-
 from lighthouse.utils.types import string_to_type
-
-lib_dir = get_mlir_library_path()
-c_runner_lib = os.path.join(lib_dir, "libmlir_c_runner_utils.so")
 
 
 def from_numpy(buf):
@@ -191,7 +185,7 @@ def torch_compile(args, model: torch.nn.Module, sample_tensors: list):
             print(module)
         return module
 
-    shared_libs = [c_runner_lib]
+    shared_libs = []
     if args.target == "xegpu":
         shared_libs.append("libmlir_levelzero_runtime.so")
         backend = gpu_backend(
