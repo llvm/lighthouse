@@ -1,6 +1,7 @@
 # RUN: %PYTHON %s --dump-kernel=xegpu-wg | FileCheck %s
-# RUN: %PYTHON %s --dump-kernel=xegpu-wg --wg-rows 64 --sg-rows 32 --reduction-tile 32 --q-load-tile 16 16 --prefetch-tile 32 16 --nb-prefetch 2 | FileCheck %s
+# RUN: %PYTHON %s --dump-kernel=xegpu-wg --wg-rows 64 --sg-rows 32 --reduction-tile 32 --q-load-tile 16 16 --prefetch-tile 32 16 --nb-prefetch 2 | FileCheck %s --check-prefixes=CHECK,OVERRIDE
 # CHECK: module attributes {gpu.container_module} {
+# OVERRIDE: xegpu.dpas {{.*}}vector<64x64xf16>, vector<64x32xf16>, vector<64x32xf32>
 
 """
 XeGPU fused attention benchmark.

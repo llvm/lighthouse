@@ -11,7 +11,7 @@ def get_xegpu_pipeline(
     Get the default XeGPU schedule pipeline.
 
     Args:
-        parameters (dict, optional): Dictionary to override inferred tiling parameters. Defaults to None.
+        parameters (dict, optional): Tiling overrides for a single-subgraph payload. Defaults to None.
         stop_at_stage (str, optional): Stage at which to stop the pipeline. If None, full pipeline is returned.
         disable_multi_reduction_to_contract (bool, optional): Flag to disable vector.multi_reduction to contract conversion. Defaults to False.
 

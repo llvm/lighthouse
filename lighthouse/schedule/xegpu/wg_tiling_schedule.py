@@ -60,6 +60,8 @@ def apply_subgraph_tiling(
     force_wg_tile: list[int] | None = None,
     force_k_tile: int | None = None,
     device: str | None = None,
+    force_wg_subtile: list[int] | None = None,
+    force_reduction_tile: list[int] | None = None,
 ) -> ir.Operation:
     """Partition attention, reduction, GEMM and elementwise subgraphs and tile
     each into its own workgroup-parallel scf.forall, i.e. its own kernel.
@@ -72,6 +74,7 @@ def apply_subgraph_tiling(
     GEMM subgraphs then claim their epilogue chains; the
     remaining elementwise ops form separate subgraphs. Pure elementwise graphs
     are also supported. Fails silenceably if a linalg op is left unpartitioned.
+    Explicit tile overrides are intended for single-subgraph payloads.
     """
 
     func = _prepare_iteration_spaces(func)
@@ -82,14 +85,13 @@ def apply_subgraph_tiling(
     transform_ext.tag_subgraphs(func, kinds)
 
     with lh_transform.foreach(_subgraph_anchors(func, "reduction")) as anchor:
-        # Standalone reductions keep the existing schedule and its overrides.
-        transform_ext.extract_handle(
-            lh_transform.match_op(func, "linalg.matmul"), 0, silenceable=True
-        )
         producers, _ = transform_ext.get_subgraph_ops(anchor)
         reduction = transform_ext.filter_reduction_ops(producers)
+        reduction = transform_ext.extract_handle(reduction, 0, silenceable=True)
         wg_tile, _, reduction_tile = transform_ext.infer_xegpu_reduction_params(
-            reduction
+            reduction,
+            force_wg_tile=force_wg_tile,
+            force_reduction_tile=force_reduction_tile,
         )
         id = transform_ext.get_named_attribute(anchor, SUBGRAPH_ID_ATTR_NAME)
         producers = transform_ext.filter_by_name(
@@ -108,6 +110,19 @@ def apply_subgraph_tiling(
         lh_transform.cleanup(wg_loop)
         wg_loop = transform_ext.fuse_elementwise_region(wg_loop)
         lh_transform.cleanup(wg_loop)
+        if force_wg_subtile is not None and sum(force_wg_subtile) > 0:
+            generic_ops = match(wg_loop, ops={"linalg.generic"})
+            leaf = transform_ext.extract_handle(
+                transform_ext.filter_elementwise(generic_ops), -1, silenceable=True
+            )
+            lh_transform.tile(
+                leaf,
+                tile_sizes=force_wg_subtile,
+                fuse_producers=True,
+                use_forall=False,
+                apply_cleanup=False,
+            )
+            lh_transform.cleanup(wg_loop)
         _tile_reduction_body(wg_loop, reduction_tile)
         transform.yield_()
     transform.apply_dce(func)
@@ -150,14 +165,13 @@ def apply_subgraph_tiling(
     attention_ids = transform_ext.get_named_attribute(
         _subgraph_anchors(func, "attention"), SUBGRAPH_ID_ATTR_NAME
     )
-    with lh_transform.foreach(attention_ids):
-        # Standalone attention retains its schedule overrides and fallback path.
-        transform_ext.extract_handle(
-            lh_transform.match_op(func, "linalg.matmul"), 0, silenceable=True
-        )
-        transform.yield_()
     with lh_transform.foreach(attention_ids) as id:
-        apply_attention_tiling(func, subgraph=id)
+        apply_attention_tiling(
+            func,
+            subgraph=id,
+            force_wg_tile=force_wg_tile,
+            force_reduction_tile=force_reduction_tile,
+        )
         transform.yield_()
     func = apply_registered_pass(func, "remove-dead-values")
 
@@ -206,71 +220,6 @@ def _tile_reduction_body(wg_loop, reduction_tile):
         transform.yield_()
 
 
-def apply_reduction_tiling(
-    func: ir.Operation,
-    force_wg_tile: list[int] | None = None,
-    force_wg_subtile: list[int] | None = None,
-    force_reduction_tile: list[int] | None = None,
-) -> ir.Operation:
-    """Apply reduction tiling to the given function."""
-
-    anytype = transform.AnyOpType.get()
-
-    # Fuse elementwise ops first to simplify the graph.
-    func = apply_registered_pass(func, "linalg-fuse-elementwise-ops")
-
-    # TODO implement actual pattern matching and anchor op inference
-    anchor_op = lh_transform.match_op(func, "linalg.generic")
-    anchor_op = transform_ext.extract_handle(anchor_op, 0, silenceable=True)
-    wg_tile, _, reduction_tile = transform_ext.infer_xegpu_reduction_params(
-        anchor_op,
-        force_wg_tile=force_wg_tile,
-        force_reduction_tile=force_reduction_tile,
-    )
-
-    # Adding persistent reduction loop is only possible via forced args for now.
-    wg_subtile = None
-    if force_wg_subtile is not None:
-        wg_subtile = force_wg_subtile
-    apply_wg_subtile = wg_subtile is not None and sum(wg_subtile) > 0
-
-    # WG row tiling
-    generic_ops = structured.structured_match(anytype, func, ops=["linalg.generic"])
-    leaf_generic = transform_ext.extract_handle(generic_ops, -1, silenceable=True)
-    _, [wg_loop], _ = lh_transform.tile(
-        leaf_generic,
-        tile_sizes=wg_tile,
-        fuse_producers=True,
-        use_forall=True,
-        apply_cleanup=False,
-    )
-    lh_transform.cleanup(func)
-
-    if apply_wg_subtile:
-        # Add a persistent loop to reduce wg tile size.
-        generic_ops = structured.structured_match(anytype, func, ops=["linalg.generic"])
-        leaf_generic = transform_ext.extract_handle(generic_ops, -1)
-        lh_transform.tile(
-            leaf_generic,
-            tile_sizes=wg_subtile,
-            fuse_producers=True,
-            use_forall=False,
-            apply_cleanup=False,
-        )
-        lh_transform.cleanup(func)
-
-    wg_loop = transform_ext.extract_handle(lh_transform.match_op(func, "scf.forall"), 0)
-    _tile_reduction_body(wg_loop, reduction_tile)
-    func = apply_registered_pass(func, "linalg-fuse-elementwise-ops")
-
-    with ir.InsertionPoint(transform.apply_patterns(func).patterns):
-        structured.apply_patterns_linalg_fold_unit_extent_dims_via_slices()
-
-    # Cleanup after tiling and fusion.
-    lh_transform.cleanup(func)
-    return func
-
-
 def _prepare_iteration_spaces(func):
     """Prepare generic iteration spaces before subgraph tagging and WG tiling."""
     for i in range(3):
@@ -285,24 +234,20 @@ def _prepare_iteration_spaces(func):
 
 def apply_attention_tiling(
     func: ir.Operation,
-    force_wg_tile: int | None = None,
-    force_reduction_tile: int | None = None,
-    subgraph: ir.Value | None = None,
+    subgraph: ir.Value,
+    force_wg_tile: list[int] | None = None,
+    force_reduction_tile: list[int] | None = None,
 ) -> ir.Operation:
     """Tile attention, including causal score producers, into one WG kernel.
 
-    With a subgraph id, shapes must already be prepared. Matching and initial
+    Shapes must already be prepared. Matching and initial
     fusion are restricted to its members; online fusion stays inside the WG.
     No full score or mask tensor is stored, and mask indices retain global
     query/key offsets.
     """
     anytype = transform.AnyOpType.get()
-    if subgraph is None:
-        func = _prepare_iteration_spaces(func)
 
     def attention_ops(names):
-        if subgraph is None:
-            return lh_transform.match_op(func, names)
         return transform_ext.match_subgraph(func, subgraph, names, role="body")
 
     # Find the subtract and exp reduction loops and fuse them.
@@ -319,8 +264,7 @@ def apply_attention_tiling(
     )
     exp_loop = transform.get_parent_op(anytype, exp_op, op_name="linalg.generic")
     fused = transform_ext.fuse_elementwise_op(subf_loop, exp_loop)
-    if subgraph is not None:
-        transform.annotate(fused, SUBGRAPH_ID_ATTR_NAME, param=subgraph)
+    transform.annotate(fused, SUBGRAPH_ID_ATTR_NAME, param=subgraph)
 
     lh_transform.cleanup(func)
 
@@ -332,9 +276,8 @@ def apply_attention_tiling(
     contraction, normalization = transform_ext.sink_normalization_past_contraction(
         pv_contraction
     )
-    if subgraph is not None:
-        transform.annotate(contraction, SUBGRAPH_ID_ATTR_NAME, param=subgraph)
-        transform.annotate(normalization, SUBGRAPH_ID_ATTR_NAME, param=subgraph)
+    transform.annotate(contraction, SUBGRAPH_ID_ATTR_NAME, param=subgraph)
+    transform.annotate(normalization, SUBGRAPH_ID_ATTR_NAME, param=subgraph)
     lh_transform.cleanup(func)
 
     # Move the uniform softmax scale from K onto Q: Q is loaded once per WG,
@@ -355,51 +298,36 @@ def apply_attention_tiling(
         force_wg_tile=force_wg_tile,
         force_reduction_tile=force_reduction_tile,
     )
-    if subgraph is None:
-        _, [wg_loop], _ = lh_transform.tile(
+    # A shared producer must follow every consumer, not merely its nearest one.
+    producers = transform_ext.filter_by_name(
+        transform_ext.trace_producers(
             leaf_linalg_op,
-            tile_sizes=wg_tile,
-            fuse_producers=True,
-            use_forall=True,
-            apply_cleanup=False,
-        )
-    else:
-        # A shared producer must follow every consumer, not merely its nearest one.
-        producers = transform_ext.filter_by_name(
-            transform_ext.trace_producers(
-                leaf_linalg_op,
-                scope=func,
-                subgraph=subgraph,
-                order="reverse-topological",
-            ),
-            [
-                "linalg.generic",
-                "linalg.batch_matmul",
-                "linalg.transpose",
-                "linalg.fill",
-            ],
-        )
-        _, wg_loop = structured.TileUsingForallOp(
-            leaf_linalg_op, tile_sizes=wg_tile
-        ).results
-        _, wg_loop = structured.structured_fuse_into_containing_op(
-            anytype, anytype, producer_op=producers, containing_op=wg_loop
-        )
+            scope=func,
+            subgraph=subgraph,
+            order="reverse-topological",
+        ),
+        [
+            "linalg.generic",
+            "linalg.batch_matmul",
+            "linalg.transpose",
+            "linalg.fill",
+        ],
+    )
+    _, wg_loop = structured.TileUsingForallOp(
+        leaf_linalg_op, tile_sizes=wg_tile
+    ).results
+    _, wg_loop = structured.structured_fuse_into_containing_op(
+        anytype, anytype, producer_op=producers, containing_op=wg_loop
+    )
     lh_transform.cleanup(func)
 
     wg_loop = transform_to_flash_attention(anytype, wg_loop, reduction_tile)
-    if subgraph is not None:
-        consumers = transform_ext.match_subgraph(func, subgraph, role="epilogue")
-        wg_loop = transform_ext.fuse_forall_epilogue(wg_loop, consumers)
-    if subgraph is None:
-        func = apply_registered_pass(func, "remove-dead-values")
+    consumers = transform_ext.match_subgraph(func, subgraph, role="epilogue")
+    wg_loop = transform_ext.fuse_forall_epilogue(wg_loop, consumers)
 
     # Inline splat-constant generic inputs (e.g. masked-select zero) as
     # scalars so they are not vectorized into reads of constant tensors.
-    if subgraph is None:
-        func = transform_ext.fold_scalar_or_splat_constant(func)
-    else:
-        transform_ext.fold_scalar_or_splat_constant(wg_loop)
+    transform_ext.fold_scalar_or_splat_constant(wg_loop)
     lh_transform.cleanup(func)
 
     # Write the result through an expanded view of the output memref so the GQA
@@ -419,7 +347,7 @@ def wg_tiling_schedule(
     wg_subtile: list[int] | None = None,
     device: str | None = None,
 ) -> ir.Module:
-    """Tile the payload for workgroup parallelism and the reduction dimension."""
+    """Tile for workgroup parallelism and reduction; overrides assume one subgraph."""
 
     with schedule_boilerplate() as (schedule, named_seq):
         op_names = ["linalg.generic", "linalg.matmul"]
@@ -428,42 +356,14 @@ def wg_tiling_schedule(
             op_name=op_names,
             func_name=payload_func_name,
         )
-        # Use alternatives op to try different lowerings. The defined regions
-        # are applied in order, if one fails with a SilenceableFailure, the
-        # next alternative is tried. The last region emits a definite failure
-        # in case none of the patterns match.
-        alt = lh_transform.alternatives(
-            payload_func, num_alternatives=4, result_types=[payload_func.type]
+        payload_func = apply_subgraph_tiling(
+            payload_func,
+            force_wg_tile=wg_tile,
+            force_k_tile=k_tile,
+            force_wg_subtile=wg_subtile,
+            force_reduction_tile=reduction_tile,
+            device=device,
         )
-        with alt.region(0) as func:
-            func = apply_subgraph_tiling(
-                func,
-                force_wg_tile=wg_tile,
-                force_k_tile=k_tile,
-                device=device,
-            )
-            transform.yield_([func])
-        with alt.region(1) as func:
-            # TODO legacy path, remove. apply_subgraph_tiling should be used instead.
-            func = apply_attention_tiling(
-                func, force_wg_tile=wg_tile, force_reduction_tile=reduction_tile
-            )
-            transform.yield_([func])
-        with alt.region(2) as func:
-            # TODO legacy path, remove. apply_subgraph_tiling should be used instead.
-            func = apply_reduction_tiling(
-                func,
-                force_wg_tile=wg_tile,
-                force_wg_subtile=wg_subtile,
-                force_reduction_tile=reduction_tile,
-            )
-            transform.yield_([func])
-        with alt.region(3) as func:
-            transform_ext.emit_definite_failure(
-                func, message="wg_tiling: Could not apply any of the defined patterns."
-            )
-            transform.yield_([func])
-        payload_func = alt.results[0]
         payload_func = transform_ext.expand_output_destination(payload_func)
         lh_transform.cleanup(payload_func)
 

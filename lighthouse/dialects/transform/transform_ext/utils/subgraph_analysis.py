@@ -267,10 +267,10 @@ def _match_reduction(
 ) -> list[tuple[list, ir.Operation]]:
     """Claim normalization without crossing shared input materializations.
 
-    Follow reduction consumers first, then absorb producers only when all their
-    uses are already local. A preceding residual also used after normalization
-    stays outside; the square/cast chain used only by normalization stays inside.
-    Shared accumulator fills are included for preparation to isolate.
+    Follow reduction consumers, including subsequent reductions, then absorb
+    producers only when all their uses are already local. A preceding residual
+    also used after normalization stays outside; the square/cast chain used only
+    by normalization stays inside. Shared fills are isolated during preparation.
     """
     if op.name != "linalg.generic" or not is_reduction_op(op) or is_claimed(op):
         return []
@@ -279,7 +279,14 @@ def _match_reduction(
         return (
             value in block_ops
             and not is_claimed(value)
-            and (_is_elementwise_linalg(value) or value == op)
+            and (
+                _is_elementwise_linalg(value)
+                or (
+                    value.name == "linalg.generic"
+                    and is_reduction_op(value)
+                    and not is_contraction_op(value)
+                )
+            )
         )
 
     members = _forward_closure(op, [value for value in block_ops if candidate(value)])
