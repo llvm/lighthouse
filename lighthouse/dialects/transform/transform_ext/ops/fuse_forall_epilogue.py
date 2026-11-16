@@ -276,13 +276,19 @@ def _image(op, tiles):
         return Tile(tuple(offsets), tuple(sizes)), [tile]
     if isinstance(op, tensor.ConcatOp):
         inputs = list(op.inputs)
-        if any(value not in tiles for value in inputs):
-            return None
         dim = int(op.dim)
-        first = tiles[inputs[0]]
+        first = next((tiles[value] for value in inputs if value in tiles), None)
+        if first is None:
+            return None
+        operand_tiles = []
         for value in inputs:
-            tile = tiles[value]
-            if tile.sizes[dim] != _shape(value)[dim] or tile.offsets[dim] != _zero():
+            shape = _shape(value)
+            if shape is None or len(shape) != len(first.sizes):
+                return None
+            sizes = list(first.sizes)
+            sizes[dim] = shape[dim]
+            tile = tiles.get(value, Tile(first.offsets, tuple(sizes)))
+            if tile.sizes[dim] != shape[dim] or tile.offsets[dim] != _zero():
                 return None
             if any(
                 (tile.offsets[i], tile.sizes[i]) != (first.offsets[i], first.sizes[i])
@@ -290,9 +296,10 @@ def _image(op, tiles):
                 if i != dim
             ):
                 return None
+            operand_tiles.append(tile)
         sizes = list(first.sizes)
-        sizes[dim] = sum(tiles[value].sizes[dim] for value in inputs)
-        return Tile(first.offsets, tuple(sizes)), [tiles[value] for value in inputs]
+        sizes[dim] = sum(tile.sizes[dim] for tile in operand_tiles)
+        return Tile(first.offsets, tuple(sizes)), operand_tiles
     return None
 
 
@@ -574,10 +581,18 @@ def _rewrite(loop, plan, rewriter):
                     )
                     result = _slice(values[op.source], local, ivs)
                 else:
+                    inputs = []
+                    for input, input_tile in zip(
+                        op.inputs, operand_tiles[op.operation]
+                    ):
+                        if input in values:
+                            inputs.append(values[input])
+                        else:
+                            inputs.append(_slice(input, input_tile, ivs))
                     result = tensor.ConcatOp(
                         _type(op.result, tile),
                         int(op.dim),
-                        [values[v] for v in op.inputs],
+                        inputs,
                     ).result
                 values[op.results[0]] = result
             output_offsets = [_offsets(tiles[value], ivs) for value in outputs]
@@ -627,7 +642,8 @@ class FuseForallEpilogueOp(
 
     Supports parallel projected-permutation generics (without linalg.index),
     transpose, rectangular expand/collapse, static non-rank-reducing unit-stride
-    slices, and concat along an untiled dimension. Tiles must divide the full
+    slices, and concat along an untiled dimension, including external concat
+    inputs sliced to the same tile. Tiles must divide the full
     tensor and preserve complete slice/concat dimensions. The loop's final
     parallel_insert_slice may drop unit dimensions.
 

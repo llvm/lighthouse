@@ -110,10 +110,17 @@ def set_gpu_threads_reduction(
 
 
 def set_gpu_threads_elementwise(launch_op: ir.Value[transform.AnyOpType]):
-    """Assign one subgroup to an elementwise workgroup kernel."""
+    """Match the thread count to the elementwise output tile's SG layout."""
     writes = lh_transform.match_op(launch_op, "vector.transfer_write")
-    transform_ext.extract_handle(writes, 0, silenceable=True)
-    xegpu.set_gpu_launch_threads(launch_op, threads=[NB_WORKITEMS, 1, 1])
+    store = transform_ext.extract_handle(writes, 0, silenceable=True)
+    wg_tile, sg_tile = transform_ext.infer_xegpu_elementwise_params(store)
+    nb_threads = transform_ext.compute_num_threads(wg_tile, sg_tile, base=NB_WORKITEMS)
+    with lh_transform.foreach(writes) as write:
+        wg, sg = transform_ext.infer_xegpu_elementwise_params(write)
+        threads = transform_ext.compute_num_threads(wg, sg, base=NB_WORKITEMS)
+        transform_ext.param_cmp_eq(nb_threads, threads)
+        transform.yield_()
+    xegpu.set_gpu_launch_threads(launch_op, threads=[nb_threads, 1, 1])
 
 
 def _annotate_kernel_kind(target: ir.Value, kind: str):

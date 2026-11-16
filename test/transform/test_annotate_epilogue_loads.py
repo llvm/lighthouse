@@ -112,7 +112,7 @@ def test(source, load_name, count):
     assert before == str(module)
 
 
-def test_elementwise_schedule(source, has_broadcast):
+def test_elementwise_schedule(source, has_broadcast, expected_layout=None):
     module = ir.Module.parse(source)
     with schedule_boilerplate() as (schedule, sequence):
         gpu_func = lh_transform.match_op(sequence.bodyTarget, "gpu.func")
@@ -122,6 +122,8 @@ def test_elementwise_schedule(source, has_broadcast):
     assert module.operation.verify()
     (store,) = operations(module, "xegpu.store_nd")
     layout = store.attributes["layout"]
+    if expected_layout is not None:
+        assert layout == ir.Attribute.parse(expected_layout)
     loads = operations(module, "xegpu.load_nd")
     if has_broadcast:
         sliced = ir.Attribute.parse(f"#xegpu.slice<{layout}, dims=[0]>")
@@ -238,6 +240,16 @@ with ir.Context(), ir.Location.unknown():
     print("Directly stored loads are annotated; unrelated loads remain unchanged")
     test_ordinary_scattered_load()
     test_conflicting_layout()
+    large = ELEMENTWISE.replace("16x32", "128x256").replace(
+        "known_block_size = array<i32: 16, 1, 1>",
+        "known_block_size = array<i32: 512, 1, 1>",
+    )
+    test_elementwise_schedule(
+        large,
+        has_broadcast=True,
+        expected_layout="#xegpu.layout<sg_layout=[1,4,8], sg_data=[1,32,32]>",
+    )
+    print("Large elementwise stores and broadcast loads use a 4x8 SG grid")
 
 
 # CHECK: Both RoPE table loads use sliced store layouts; unrelated loads are unchanged
@@ -248,3 +260,4 @@ with ir.Context(), ir.Location.unknown():
 # CHECK: Directly stored loads are annotated; unrelated loads remain unchanged
 # CHECK: Ordinary scattered loads inherit the store layout through math ops
 # CHECK: Conflicting layouts still fail without partial annotations
+# CHECK: Large elementwise stores and broadcast loads use a 4x8 SG grid
