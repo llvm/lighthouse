@@ -11,7 +11,7 @@ from .lowering_common import get_payload_func
 def cleanup_schedule(
     payload_func_name: str | None = None,
 ) -> ir.Module:
-    """Normalize singleton dimensions and fuse elementwise ops in the payload."""
+    """Normalize singleton dimensions using reshapes for tensor-level fusion."""
 
     with schedule_boilerplate() as (schedule, named_seq):
         op_names = [
@@ -46,10 +46,8 @@ def cleanup_schedule(
         with ir.InsertionPoint(transform.apply_patterns(func).patterns):
             # drop unused argmax results so online fusion sees a simple row max
             structured.apply_patterns_linalg_erase_unused_operands_and_results()
-            # fold unit dims in linalg.generic op inputs
-            structured.apply_patterns_linalg_fold_unit_extent_dims_via_slices()
-            # fold tensor.extract_slice(tensor.expand_shape(x)) into x
-            tensor.apply_patterns_tensor_reassociative_reshape_folding()
+            # Keep singleton rank changes explicit for tensor-level fusion.
+            structured.apply_patterns_linalg_fold_unit_extent_dims_via_reshapes()
             # swap tensor.extract_slice(linalg.fill(...)) ops
             structured.apply_patterns_linalg_swap_extract_slice_with_fill()
             # fold tensor.extract_slice(tensor.empty(...)) into tensor.tensor_empty(...)

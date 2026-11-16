@@ -1,4 +1,5 @@
 # RUN: %PYTHON %S/kernel_bench.py --input %s --dump-kernel xegpu-wg | FileCheck %s --implicit-check-not=memref.alloc --implicit-check-not=memref.copy --implicit-check-not=gpu.alloc --implicit-check-not=math.log
+# RUN: %PYTHON %S/kernel_bench.py --input %s --input-shapes 1x512x2048 512x64 512x64 --dump-kernel xegpu-wg | FileCheck %s --implicit-check-not=memref.alloc --implicit-check-not=memref.copy --implicit-check-not=gpu.alloc --implicit-check-not=math.log
 # REQUIRES: torch, torch_mlir
 
 """Complete cache-free Llama 3.2 1B decoder layer for fixed-shape prefill.
@@ -75,7 +76,9 @@ class Model(nn.Module):
         rows = torch.arange(sequence, device=x.device)
         allowed = rows[:, None] >= rows[None, :]
         # Avoid torch-mlir's SDPA XPU mask-factory and boolean-mask import issues.
-        mask = allowed.to(dtype=x.dtype).log()
+        zero = torch.tensor(0.0, dtype=x.dtype)
+        neg_inf = torch.tensor(float("-inf"), dtype=x.dtype)
+        mask = torch.where(allowed, zero, neg_inf)
         attention = F.scaled_dot_product_attention(
             q, k, v, attn_mask=mask, is_causal=False, enable_gqa=True, dropout_p=0.0
         )

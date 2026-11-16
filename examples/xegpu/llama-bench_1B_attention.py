@@ -45,9 +45,8 @@ class Model(nn.Module):
     SDPA's boolean-mask conversion also failed with a scalar f64
     torch.vtensor.literal on XPU. Supply an additive mask in Q's dtype, derived
     from the predicate rather than new_zeros (which hit empty.memory_format too).
-    log maps allowed=1 to zero and blocked=0 to -inf without a tensor factory.
-    After vectorization, fold_log_of_bool replaces this workaround's logarithm
-    with a floating-point select.
+    Selecting between 0-d zero and -inf constants imports as a single
+    elementwise select, so no logarithm or other workaround op reaches the IR.
 
     RoPE is intentionally not applied here. Q/K/V are taken as
     already-projected inputs, matching level1-97.
@@ -65,7 +64,9 @@ class Model(nn.Module):
         rows = torch.arange(Q.shape[-2], device=Q.device)
         cols = torch.arange(K.shape[-2], device=K.device)
         allowed = rows[:, None] >= cols[None, :]
-        mask = allowed.to(dtype=Q.dtype).log()
+        zero = torch.tensor(0.0, dtype=Q.dtype)
+        neg_inf = torch.tensor(float("-inf"), dtype=Q.dtype)
+        mask = torch.where(allowed, zero, neg_inf)
         return torch.nn.functional.scaled_dot_product_attention(
             Q, K, V, attn_mask=mask, is_causal=False, enable_gqa=True
         )

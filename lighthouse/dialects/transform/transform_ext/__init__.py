@@ -14,7 +14,6 @@ from .ops.narrow_vector_contract_operands import narrow_vector_contract_operands
 from .ops.emit_definite_failure import emit_definite_failure
 from .ops.expand_output_destination import expand_output_destination
 from .ops.expand_bool_to_float import expand_bool_to_float
-from .ops.fold_log_of_bool import fold_log_of_bool
 from .ops.match_subgraph import match_subgraph
 from .ops.extract_handle import extract_handle
 from .ops.get_tileable_consumers import get_tileable_consumers
@@ -83,7 +82,6 @@ __all__ = [
     "filter_non_contraction_reductions",
     "filter_num_loops",
     "filter_reduction_ops",
-    "fold_log_of_bool",
     "fold_reshape_ops_by_expansion",
     "fold_scalar_or_splat_constant",
     "fold_tensor_vector_transfers",

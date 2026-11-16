@@ -10,7 +10,9 @@ import lighthouse.dialects as lh_dialects
 from lighthouse import transform as lh_transform
 from lighthouse.dialects.transform import transform_ext
 from lighthouse.schedule.builders import schedule_boilerplate
+from lighthouse.schedule.xegpu import cleanup_schedule
 from lighthouse.schedule.xegpu.lowering_common import vectorize
+from lighthouse.schedule.xegpu.wg_tiling_schedule import _prepare_iteration_spaces
 from lighthouse.utils.mlir import indexing_maps, linalg_inputs
 from test_attention_mask_numerics import compile_payload
 from test_sink_normalization_past_contraction import reduction_generic, sink_schedule
@@ -192,6 +194,44 @@ def test_structure_and_shared_users():
 
 
 # CHECK: Producer sinking preserves plain contractions, reshape indexing and shared users
+
+
+def test_singleton_batch_preparation():
+    source = reshaped_source().replace("tensor<2x2", "tensor<1x4")
+    p = np.arange(32, dtype=np.float32).reshape(1, 4, 8) / 32
+    scales = np.array([[1, 2, 4, 8]], dtype=np.float32)
+    mask = np.array([[False, True, False, False]])
+    v = np.arange(24, dtype=np.float32).reshape(8, 3) / 24
+    expected = np.where(mask[..., None], 0, p / scales[..., None]).reshape(4, 8) @ v
+    with ir.Context(), ir.Location.unknown():
+        lh_dialects.register_and_load()
+        module = ir.Module.parse(source)
+        cleanup = cleanup_schedule()
+        cleanup.body.operations[0].apply(module.operation)
+        with schedule_boilerplate() as (schedule, sequence):
+            func = lh_transform.match_op(sequence.bodyTarget, "func.func")
+            func = _prepare_iteration_spaces(func)
+            transform_ext.sink_normalization_past_contraction(reduction_generic(func))
+            transform.yield_([])
+        schedule.body.operations[0].apply(module.operation)
+        assert module.operation.verify()
+        (contraction,) = [
+            op
+            for op in collect(module, "linalg.generic")
+            if "reduction" in str(op.iterator_types)
+        ]
+        assert all(
+            op.operation.name != "arith.divf"
+            for op in contraction.regions[0].blocks[0].operations
+        )
+        runner, name = compile_payload(str(module))
+        output = np.empty((4, 3), dtype=np.float32)
+        runner.execute(name, [p, scales, mask, v, output])
+        np.testing.assert_allclose(output, expected, rtol=2e-6, atol=1e-7)
+    print("Singleton batch cleanup preserves normalization sinking and numerics")
+
+
+# CHECK: Singleton batch cleanup preserves normalization sinking and numerics
 
 
 def test_numerics():
@@ -442,6 +482,7 @@ def test_vectorization():
 
 if __name__ == "__main__":
     test_structure_and_shared_users()
+    test_singleton_batch_preparation()
     test_numerics()
     test_rejections()
     test_rhs_and_mixed_precision()
