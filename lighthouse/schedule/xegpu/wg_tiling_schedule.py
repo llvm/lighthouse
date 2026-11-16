@@ -337,6 +337,16 @@ def apply_attention_tiling(
         transform.annotate(normalization, SUBGRAPH_ID_ATTR_NAME, param=subgraph)
     lh_transform.cleanup(func)
 
+    # Move the uniform softmax scale from K onto Q: Q is loaded once per WG,
+    # whereas K is reloaded in every reduction iteration.
+    qk_contraction = transform_ext.extract_handle(
+        transform_ext.filter_contraction_ops(attention_ops("linalg.generic")),
+        0,
+        silenceable=True,
+    )
+    transform_ext.move_contraction_scale_to_lhs(qk_contraction)
+    lh_transform.cleanup(func)
+
     # Apply WG tiling.
     linalg_ops = attention_ops(["linalg.generic", "linalg.batch_matmul"])
     leaf_linalg_op = transform_ext.extract_handle(linalg_ops, -1, silenceable=True)
