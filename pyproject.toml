@@ -3,7 +3,7 @@ name = "lighthouse"
 dynamic = ["version"]
 requires-python = ">=3.11,<3.13"  # Bounds are due to torch-mlir's packaging
 dependencies = [
-    "mlir-python-bindings==20261020+dc61a534a",
+    "mlir-python-bindings==20261106+9af38dfa8",
     "pyyaml>=6.0",
 ]
 
