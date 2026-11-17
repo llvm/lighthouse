@@ -15,7 +15,7 @@ def is_elementwise(op: ir.Operation | ir.OpView) -> bool:
           in the Python bindings yet.
     """
     ov = opview(op)
-    if ov.operation.name == "linalg.elementwise":
+    if isinstance(ov, linalg.ElementwiseOp):
         return True
     maps = indexing_maps(ov)
     if maps is None:

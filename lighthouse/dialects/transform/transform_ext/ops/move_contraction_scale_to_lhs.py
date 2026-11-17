@@ -179,7 +179,7 @@ def _scalar_scale(value: ir.Value) -> _ScalarScale | None:
     scale_ops = [o for o in ops[:-1] if o != mul]
     args = set(body.arguments)
     for scale_op in scale_ops:
-        if scale_op.name == "linalg.index" or len(scale_op.regions):
+        if isinstance(scale_op.opview, linalg.IndexOp) or len(scale_op.regions):
             return None
         if any(operand in args for operand in scale_op.operands):
             return None

@@ -68,7 +68,7 @@ def _rewrite(func: ir.OpView) -> None:
     materializes = [
         o
         for o in func.regions[0].blocks[0].operations
-        if o.operation.name == "bufferization.materialize_in_destination"
+        if isinstance(o, bufferization.MaterializeInDestinationOp)
     ]
     for mat in materializes:
         source, dest = mat.operands[0], mat.operands[1]

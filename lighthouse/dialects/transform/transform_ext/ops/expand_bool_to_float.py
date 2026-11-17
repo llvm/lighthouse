@@ -43,7 +43,7 @@ class ExpandBoolToFloatOp(
             casts = []
 
             def visit(operation):
-                if operation.name == "arith.uitofp":
+                if isinstance(operation.opview, arith.UIToFPOp):
                     casts.append(operation.opview)
                 return ir.WalkResult.ADVANCE
 

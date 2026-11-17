@@ -1,5 +1,5 @@
 from mlir import ir
-from mlir.dialects import ext, transform, linalg, vector
+from mlir.dialects import ext, transform, linalg, vector, xegpu
 from mlir.dialects.transform import DiagnosedSilenceableFailure
 
 from lighthouse.dialects.transform.transform_ext import TransformExtensionDialect
@@ -93,9 +93,7 @@ class InferXeGPUAttentionParamsOp(
                 wg = [wg_rows]
                 sg = [sg_rows]
                 red = [0, reduction_tile]
-            elif (
-                target_op.name == "xegpu.dpas" and rank == 2
-            ):  # FIXME xegpu py bindings
+            elif isinstance(target_op, xegpu.DpasOp) and rank == 2:
                 # Assumes anchor op is the Q@K^T DPAS op is in fused reduction loop
                 # Result shape is (wg_rows, reduction_tile)
                 # Operand A shape is (wg_rows, d_head)

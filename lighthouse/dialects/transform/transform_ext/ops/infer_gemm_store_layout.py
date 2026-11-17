@@ -3,7 +3,7 @@ from dataclasses import dataclass
 from math import prod
 
 from mlir import ir
-from mlir.dialects import ext, transform
+from mlir.dialects import arith, ext, scf, transform, vector
 from mlir.dialects.transform import DiagnosedSilenceableFailure
 
 from lighthouse.dialects.transform.transform_ext import TransformExtensionDialect
@@ -95,15 +95,15 @@ def _infer_store_layout(source, store, layout):
         op = value.owner.operation
         result_shape = list(ir.VectorType(value.type).shape)
         inferred = None
-        if op.name == "scf.for":
+        if isinstance(op.opview, scf.ForOp):
             inferred = infer(
                 op.regions[0].blocks[0].operations[-1].operands[value.result_number]
             )
-        elif op.name in ("vector.shape_cast", "vector.transpose"):
+        elif isinstance(op.opview, (vector.ShapeCastOp, vector.TransposeOp)):
             operand = op.operands[0]
             parent = infer(operand)
             if parent is not None:
-                if op.name == "vector.transpose":
+                if isinstance(op.opview, vector.TransposeOp):
                     inferred = parent.transpose(list(op.opview.permutation))
                 else:
                     inferred = _reshape(
@@ -127,7 +127,7 @@ def _infer_store_layout(source, store, layout):
     stored = store.operands[0]
     if not isinstance(stored.owner, ir.Block):
         owner = stored.owner.operation
-        if owner.name == "arith.constant":
+        if isinstance(owner.opview, arith.ConstantOp):
             constant = owner.attributes["value"]
             if isinstance(constant, ir.DenseElementsAttr) and constant.is_splat:
                 return _reshape(

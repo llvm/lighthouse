@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from math import prod
 
 from mlir import ir
-from mlir.dialects import affine, ext, linalg, tensor, transform
+from mlir.dialects import affine, ext, linalg, scf, tensor, transform
 from mlir.dialects.transform import DiagnosedSilenceableFailure
 
 from lighthouse.dialects.transform.transform_ext import TransformExtensionDialect
@@ -417,11 +417,11 @@ class SplitConcatOutputOp(
             inserts = {}
 
             def visit(nested):
-                if nested.name == "scf.forall":
+                if isinstance(nested.opview, scf.ForallOp):
                     body = nested.regions[0].blocks[0]
                     terminator = list(body.operations)[-1]
                     for insert in terminator.regions[0].blocks[0].operations:
-                        if insert.operation.name == "tensor.parallel_insert_slice":
+                        if isinstance(insert, tensor.ParallelInsertSliceOp):
                             inserts[insert.operation] = insert
                 return ir.WalkResult.ADVANCE
 

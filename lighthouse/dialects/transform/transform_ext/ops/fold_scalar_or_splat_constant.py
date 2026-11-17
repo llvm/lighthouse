@@ -82,7 +82,7 @@ def _fold_all(root, rewriter) -> None:
     generics = []
 
     def visit(operation):
-        if operation.name == "linalg.generic":
+        if isinstance(operation.opview, linalg.GenericOp):
             generics.append(operation.opview)
         return ir.WalkResult.ADVANCE
 
