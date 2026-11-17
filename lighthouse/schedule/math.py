@@ -1,11 +1,11 @@
 from mlir import ir
 from mlir.dialects import transform
-from mlir.dialects.transform import math
+from mlir.dialects.transform import math, x86
 
 from lighthouse.schedule.builders import schedule_boilerplate
 
 
-def poly_approx() -> ir.Module:
+def poly_approx(enable_x86: bool = False) -> ir.Module:
     """
     Polynomial approximations for math functions.
 
@@ -18,5 +18,7 @@ def poly_approx() -> ir.Module:
         ):
             math.ApplyF32ExpansionPatternsOp()
             math.ApplyPolynomialApproximationPatternsOp()
+            if enable_x86:
+                x86.ApplyMathRsqrtApproximationPatternsOp()
         transform.yield_()
     return schedule
