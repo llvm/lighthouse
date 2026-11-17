@@ -17,6 +17,6 @@ def poly_approx() -> ir.Module:
             transform.ApplyPatternsOp(named_seq.bodyTarget).patterns
         ):
             math.ApplyF32ExpansionPatternsOp()
-            math.ApplyPolynomialApproximationPatternsOp(enable_avx2=True)
+            math.ApplyPolynomialApproximationPatternsOp()
         transform.yield_()
     return schedule
