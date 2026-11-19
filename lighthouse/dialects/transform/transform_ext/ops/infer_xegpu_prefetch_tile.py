@@ -43,7 +43,13 @@ class InferXeGPUPrefetchTileOp(
             )
             from lighthouse.schedule.xegpu.xegpu_specs import XeGPUSpecs
 
-            attrs = [a for handle in op.shape for a in state.get_params(handle)]
+            attrs = []
+            for handle in op.shape:
+                for attr in state.get_params(handle):
+                    if isinstance(attr, ir.ArrayAttr):
+                        attrs.extend(ir.ArrayAttr(attr))
+                    else:
+                        attrs.append(attr)
             if len(attrs) != 2 or not all(isinstance(a, ir.IntegerAttr) for a in attrs):
                 op.location.emit_error("infer_xegpu_prefetch_tile: expected a 2D shape")
                 return DiagnosedSilenceableFailure.DefiniteFailure

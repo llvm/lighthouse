@@ -17,7 +17,9 @@ module {
 """
 
 
-def run(name, shape, min_threads=0, device=None, expect_failure=False):
+def run(
+    name, shape, min_threads=0, device=None, expect_failure=False, packed_shape=False
+):
     print(f"Test: {name}", flush=True)
     with ir.Context(), ir.Location.unknown():
         lh_dialects.register_and_load()
@@ -25,12 +27,18 @@ def run(name, shape, min_threads=0, device=None, expect_failure=False):
         i64 = ir.IntegerType.get_signless(64)
         with schedule_boilerplate() as (schedule, named_seq):
             func = lh_transform.match_op(named_seq.bodyTarget, "func.func")
-            shape_params = [
-                transform.ParamConstantOp(
-                    transform.AnyParamType.get(), ir.IntegerAttr.get(i64, dim)
-                ).param
-                for dim in shape
-            ]
+            shape_attrs = [ir.IntegerAttr.get(i64, dim) for dim in shape]
+            if packed_shape:
+                shape_params = [
+                    transform.ParamConstantOp(
+                        transform.AnyParamType.get(), ir.ArrayAttr.get(shape_attrs)
+                    ).param
+                ]
+            else:
+                shape_params = [
+                    transform.ParamConstantOp(transform.AnyParamType.get(), attr).param
+                    for attr in shape_attrs
+                ]
             rows, cols = transform_ext.infer_xegpu_prefetch_tile(
                 shape_params, min_threads=min_threads, device=device
             )
@@ -52,6 +60,11 @@ def run(name, shape, min_threads=0, device=None, expect_failure=False):
 # CHECK-DAG: rows = 8 : i64
 # CHECK-DAG: cols = 16 : i64
 run("attention_1b", [64, 64])
+
+# CHECK-LABEL: Test: packed_shape
+# CHECK-DAG: rows = 8 : i64
+# CHECK-DAG: cols = 16 : i64
+run("packed_shape", [64, 64], packed_shape=True)
 
 # CHECK-LABEL: Test: attention_3b
 # CHECK-DAG: rows = 8 : i64
