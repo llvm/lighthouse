@@ -65,7 +65,7 @@ def set_gpu_threads_attention(
     transform_ext.extract_handle(red_op, 0, silenceable=True)
     anchor_op = lh_transform.match_op(launch_op, "vector.contract")
     anchor_op = transform_ext.extract_handle(anchor_op, 0, silenceable=True)
-    wg_tile, sg_tile, _ = transform_ext.infer_xegpu_attention_params(
+    wg_tile, sg_tile, _, _ = transform_ext.infer_xegpu_attention_params(
         anchor_op, force_sg_tile=force_sg_tile
     )
     nb_threads = transform_ext.compute_num_threads(wg_tile, sg_tile, base=NB_WORKITEMS)

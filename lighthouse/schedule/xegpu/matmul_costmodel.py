@@ -12,6 +12,7 @@ from .matmul_constraints import (
     check_wg_tile,
     check_sg_tile,
     check_k_tile,
+    check_prefetch_tile,
     check_prefetch_tile_a,
     check_prefetch_tile_b,
     check_load_tile_a,
@@ -288,6 +289,36 @@ def expand_configs_with_prefetch_depth(
     return expanded_configs
 
 
+def generate_prefetch_tiles_for_shape(
+    data_shape: tuple[int, int],
+    gpu_specs: XeGPUSpecs,
+    min_nb_threads: int | None = None,
+    transpose: bool = False,
+    name: str = "A",
+    verbose: bool = False,
+) -> list[tuple[int, int]]:
+    """Generate prefetch tiles ordered by thread count and grid balance."""
+    tiles = []
+    for rows in range(PFETCH_MIN_ROWS, PFETCH_MAX_ROWS + 1):
+        for cols in range(PFETCH_MIN_COLS, PFETCH_MAX_COLS + 1):
+            tile = (rows, cols)
+            try:
+                grid = check_prefetch_tile(
+                    tile,
+                    data_shape,
+                    gpu_specs,
+                    name=name,
+                    transpose=transpose,
+                    min_nb_threads=min_nb_threads,
+                    verbose=verbose,
+                )
+                tiles.append((tile, grid[0] * grid[1], grid))
+            except ValueError:
+                pass
+    tiles.sort(key=lambda x: (x[1], -abs(x[2][0] - x[2][1])), reverse=True)
+    return [tile for tile, _, _ in tiles]
+
+
 def generate_prefetch_tiles(
     wg_tile: tuple[int, int],
     k_tile: int,
@@ -306,42 +337,11 @@ def generate_prefetch_tiles(
     balanced the thread grid is (descending).
     """
 
-    def gridsearch(
-        check_fn: Callable[
-            [tuple[int, int], tuple[int, int], int, XeGPUSpecs, bool, bool],
-            tuple[int, int],
-        ],
-        transpose: bool = False,
-        verbose: bool = False,
-    ) -> list[tuple[int, int]]:
-        tiles = []
-        for rows in range(PFETCH_MIN_ROWS, PFETCH_MAX_ROWS + 1):
-            for cols in range(PFETCH_MIN_COLS, PFETCH_MAX_COLS + 1):
-                tile = (rows, cols)
-                try:
-                    grid = check_fn(
-                        tile,
-                        wg_tile,
-                        k_tile,
-                        gpu_specs,
-                        transpose=transpose,
-                        min_nb_threads=MIN_NB_THREADS,
-                        verbose=verbose,
-                    )
-                    nb_threads = int(grid[0] * grid[1])
-                    tiles.append((tile, nb_threads, grid))
-                except ValueError:
-                    pass
-        # sort by number of threads and then by how balanced the thread grid is
-        tiles.sort(key=lambda x: (x[1], -abs(x[2][0] - x[2][1])), reverse=True)
-        tiles = [t[0] for t in tiles]
-        return tiles
-
-    prefetch_tiles_a = gridsearch(
-        check_prefetch_tile_a, transpose=transpose_a, verbose=verbose
+    prefetch_tiles_a = generate_prefetch_tiles_for_shape(
+        (wg_tile[0], k_tile), gpu_specs, MIN_NB_THREADS, transpose_a, "A", verbose
     )
-    prefetch_tiles_b = gridsearch(
-        check_prefetch_tile_b, transpose=transpose_b, verbose=verbose
+    prefetch_tiles_b = generate_prefetch_tiles_for_shape(
+        (k_tile, wg_tile[1]), gpu_specs, MIN_NB_THREADS, transpose_b, "B", verbose
     )
     if n is not None:
         prefetch_tiles_a = prefetch_tiles_a[:n]

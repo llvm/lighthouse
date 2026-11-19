@@ -9,22 +9,29 @@ def rotate_half(x: torch.Tensor) -> torch.Tensor:
     return torch.cat((-second, first), dim=-1)
 
 
-def get_rope_tables(position_ids: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-    """Build Llama 3.2 1B's half-split RoPE tables for a 1D position tensor."""
+def get_rope_tables(
+    position_ids: torch.Tensor, d_head: int = 64, scaling_factor: float = 32.0
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Build Llama 3 half-split RoPE tables for a 1D position tensor."""
+    if d_head <= 0 or d_head % 2:
+        raise ValueError("d_head must be a positive even number")
+    if scaling_factor <= 0:
+        raise ValueError("scaling_factor must be positive")
     inv_freq = 1.0 / (
         500000.0
         ** (
-            torch.arange(0, 64, 2, dtype=torch.float32, device=position_ids.device) / 64
+            torch.arange(0, d_head, 2, dtype=torch.float32, device=position_ids.device)
+            / d_head
         )
     )
     wavelength = 2 * math.pi / inv_freq
-    # Llama 3 scaling: factor=32, original context=8192, low/high factors=1/4.
+    # Llama 3 scaling: original context=8192, low/high factors=1/4.
     smooth = (8192.0 / wavelength - 1.0) / 3.0
-    interpolated = (1.0 - smooth) * inv_freq / 32.0 + smooth * inv_freq
+    interpolated = (1.0 - smooth) * inv_freq / scaling_factor + smooth * inv_freq
     inv_freq = torch.where(
         wavelength < 2048.0,
         inv_freq,
-        torch.where(wavelength > 8192.0, inv_freq / 32.0, interpolated),
+        torch.where(wavelength > 8192.0, inv_freq / scaling_factor, interpolated),
     )
     angles = position_ids.float()[:, None] * inv_freq[None, :]
     angles = torch.cat((angles, angles), dim=-1)

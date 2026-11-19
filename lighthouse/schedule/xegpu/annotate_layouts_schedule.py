@@ -250,6 +250,7 @@ def annotate_attention(
     force_prefetch_tile: tuple[int, int] | None = None,
     force_q_load_tile: tuple[int, int] | None = None,
     force_v_load_tile: tuple[int, int] | None = None,
+    device: str | None = None,
 ):
     # Convert force_sg_tile from global problem shape to local 2D problem.
     # global sg tile: [0, n, 0] -> [n, 0]
@@ -263,8 +264,10 @@ def annotate_attention(
             force_sg_tile.append(0)
 
     # Infer tile sizes as 2D vectors
-    wg_tile_vec, sg_tile_vec, red_tile_vec = transform_ext.infer_xegpu_attention_params(
-        anchor_op, force_sg_tile=force_sg_tile
+    wg_tile_vec, sg_tile_vec, red_tile_vec, d_head = (
+        transform_ext.infer_xegpu_attention_params(
+            anchor_op, force_sg_tile=force_sg_tile
+        )
     )
 
     anytype = transform.AnyOpType.get()
@@ -278,8 +281,6 @@ def annotate_attention(
     # Q@K^T dpas: (wg_rows, d_head) * (d_head, red_tile) = (wg_rows, red_tile)
     # P@V dpas: (wg_rows, red_tile) * (red_tile, d_head) = (wg_rows, d_head)
 
-    # TODO infer d_head value, infer_xegpu_attention_params returns it?
-    d_head = int_to_param(64)
     red_tile = transform_ext.extract_handle(red_tile_vec, 1)
     sg_rows = transform_ext.extract_handle(sg_tile_vec, 0)
 
@@ -301,18 +302,21 @@ def annotate_attention(
     nb_prefetch = 1
     if force_nb_prefetch is not None:
         nb_prefetch = force_nb_prefetch
-    prefetch_shape = [red_tile, d_head]  # prefetch the whole local tile
-    prefetch_sg_data = [16, 32]
-    if force_prefetch_tile is not None:
-        assert len(force_prefetch_tile) == 2, "force_prefetch_tile must have length 2"
-        prefetch_sg_data = list(force_prefetch_tile)
-    prefetch_sg_data = [int_to_param(x) for x in prefetch_sg_data]
-    prefetch_inst_data = list(prefetch_sg_data)
-    prefetch_sg_layout, _ = transform_ext.compute_sg_layout(
-        prefetch_shape, prefetch_sg_data
-    )
-
     if nb_prefetch > 0:
+        prefetch_shape = [red_tile, d_head]
+        if force_prefetch_tile is not None:
+            assert len(force_prefetch_tile) == 2, (
+                "force_prefetch_tile must have length 2"
+            )
+            prefetch_sg_data = [int_to_param(x) for x in force_prefetch_tile]
+        else:
+            prefetch_sg_data = list(
+                transform_ext.infer_xegpu_prefetch_tile(prefetch_shape, device=device)
+            )
+        prefetch_inst_data = list(prefetch_sg_data)
+        prefetch_sg_layout, _ = transform_ext.compute_sg_layout(
+            prefetch_shape, prefetch_sg_data
+        )
         # Add prefetch ops to loads within the reduction loop.
         all_load_ops = lh_transform.match_op(gpu_func, "xegpu.load_nd")
         with lh_transform.foreach(all_load_ops) as load_op:
@@ -513,6 +517,7 @@ def analyze_and_annotate_gpu_func(
             force_prefetch_tile=prefetch_tile,
             force_q_load_tile=q_load_tile,
             force_v_load_tile=v_load_tile,
+            device=device,
         )
         transform.yield_([gpu_func])
     with alt.region(1) as gpu_func:

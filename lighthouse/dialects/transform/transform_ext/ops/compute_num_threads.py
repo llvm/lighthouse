@@ -21,7 +21,7 @@ class ComputeNumThreadsOp(
 
     Example:
 
-        wg_tile, sg_tile, _ = tr_ext.infer_xegpu_attention_params(anchor_op)
+        wg_tile, sg_tile, _, _ = tr_ext.infer_xegpu_attention_params(anchor_op)
         nb_threads = transform_ext.compute_num_threads(
             wg_tile, sg_tile, base=NB_WORKITEMS
         )

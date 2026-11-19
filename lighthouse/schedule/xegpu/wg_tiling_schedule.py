@@ -293,10 +293,12 @@ def apply_attention_tiling(
     # Apply WG tiling.
     linalg_ops = attention_ops(["linalg.generic", "linalg.batch_matmul"])
     leaf_linalg_op = transform_ext.extract_handle(linalg_ops, -1, silenceable=True)
-    wg_tile, _sg_tile, reduction_tile = transform_ext.infer_xegpu_attention_params(
-        leaf_linalg_op,
-        force_wg_tile=force_wg_tile,
-        force_reduction_tile=force_reduction_tile,
+    wg_tile, _sg_tile, reduction_tile, _d_head = (
+        transform_ext.infer_xegpu_attention_params(
+            leaf_linalg_op,
+            force_wg_tile=force_wg_tile,
+            force_reduction_tile=force_reduction_tile,
+        )
     )
     # A shared producer must follow every consumer, not merely its nearest one.
     producers = transform_ext.filter_by_name(
