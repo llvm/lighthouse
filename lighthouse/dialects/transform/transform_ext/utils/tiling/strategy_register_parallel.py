@@ -79,7 +79,7 @@ class EltwiseRegisterTiling:
             if ir.ShapedType.is_dynamic_size(extent):
                 tile = remaining
             else:
-                tile = min(extent, remaining)
+                tile = largest_divisor(extent, remaining)
             tiles[axis_index] = max(1, tile)
             remaining = max(1, remaining // max(1, tiles[axis_index]))
         return tiles
