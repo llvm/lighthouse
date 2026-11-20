@@ -64,6 +64,7 @@ class JITFunction:
             Used to skip extra torch-mlir prepended results that might not
             be necessary.
         dump_obj_file: Target output object file.
+        enable_benchmarking: Retain the most recent call's inputs for benchmarking.
     """
 
     def __init__(
@@ -74,6 +75,8 @@ class JITFunction:
         entry_func: str = "main",
         n_outputs: int | None = None,
         dump_obj_file: str = "",
+        *,
+        enable_benchmarking: bool = False,
     ):
         self.runner = Runner(
             module, mem_manager_cls=TorchMemoryManager, shared_libs=shared_libs
@@ -83,6 +86,8 @@ class JITFunction:
         self.entry_func = entry_func
         self.results = results
         self.n_outputs = n_outputs if n_outputs is not None else len(results)
+        self.enable_benchmarking = enable_benchmarking
+        self._benchmark_inputs: tuple[torch.Tensor, ...] | None = None
 
     def _generate_input_args(
         self, *args: torch.Tensor
@@ -121,6 +126,8 @@ class JITFunction:
         all_tensors, output_tensors = self._generate_input_args(*args)
 
         self.runner.execute(self.entry_func, all_tensors)
+        if self.enable_benchmarking:
+            self._benchmark_inputs = args
 
         # Return only the outputs corresponding to the FX graph's actual return
         # values. torch-mlir may prepend extra results for in-place state
@@ -128,26 +135,29 @@ class JITFunction:
         # expect in the backend callable's return value.
         return output_tensors[len(self.results) - self.n_outputs :]
 
-    def benchmark(
-        self, *args: torch.Tensor, nruns: int = 500, nwarmup: int = 500
-    ) -> np.ndarray:
+    def clear_benchmark_inputs(self) -> None:
+        """Release the retained inputs from the most recent call."""
+        self._benchmark_inputs = None
+
+    def benchmark(self, *, nruns: int = 500, nwarmup: int = 500) -> np.ndarray:
         """
         Benchmark the jitted function.
 
-        If the model has parameters, the parameter tensors must be passed as
-        the first arguments to the function:
-
-            jit_fn.benchmark(*model.parameters(), *example_inputs, ...)
+        Uses the tensors from the most recent successful call. Their current
+        contents are used, so in-place changes are visible to the benchmark.
 
         Args:
-            args: Torch model parameters and input tensors.
             nruns: Number of benchmark runs.
             nwarmup: Number of warmup runs.
 
         Returns:
             Array of execution times in seconds.
         """
-        all_tensors, _ = self._generate_input_args(*args)
+        if not self.enable_benchmarking:
+            raise RuntimeError("Benchmarking is not enabled for this JITFunction")
+        if self._benchmark_inputs is None:
+            raise RuntimeError("No compiled call inputs available for benchmarking")
+        all_tensors, _ = self._generate_input_args(*self._benchmark_inputs)
         return self.runner.benchmark(all_tensors, nruns=nruns, nwarmup=nwarmup)
 
 
@@ -176,6 +186,7 @@ class MLIRBackend:
             compiled MLIR function.
         entry_func: Name of the entry function.
         dump_obj_file: Target output object file.
+        enable_benchmarking: Retain call inputs for benchmarking.
     """
 
     def __init__(
@@ -187,6 +198,7 @@ class MLIRBackend:
         shared_libs: Sequence[str] = [],
         entry_func: str = "main",
         dump_obj_file: str = "",
+        enable_benchmarking: bool = False,
     ):
         self.device = device
         self.fn_compile = fn_compile
@@ -197,6 +209,7 @@ class MLIRBackend:
         self.shared_libs = list(shared_libs)
         self.entry_func = entry_func
         self.dump_obj_file = dump_obj_file
+        self.enable_benchmarking = enable_benchmarking
         self._last_jit_function: JITFunction | None = None
 
     @property
@@ -406,6 +419,7 @@ class MLIRBackend:
             entry_func=self.entry_func,
             n_outputs=n_fx_outputs,
             dump_obj_file=self.dump_obj_file,
+            enable_benchmarking=self.enable_benchmarking,
         )
         self._last_jit_function = jit_fn
         return jit_fn
@@ -418,6 +432,7 @@ def cpu_backend(
     shared_libs: Sequence[str] = [],
     entry_func: str = "main",
     dump_obj_file: str = "",
+    enable_benchmarking: bool = False,
 ) -> Callable[[torch.fx.GraphModule, list[torch.Tensor]], Callable]:
     """
     CPU backend for JIT-compiling a PyTorch model using MLIR.
@@ -432,6 +447,7 @@ def cpu_backend(
             compiled MLIR function.
         entry_func: Name of the entry function.
         dump_obj_file: Target output object file.
+        enable_benchmarking: Retain call inputs for benchmarking.
 
     Returns:
         A torch.compile backend object.
@@ -444,6 +460,7 @@ def cpu_backend(
         shared_libs=shared_libs,
         entry_func=entry_func,
         dump_obj_file=dump_obj_file,
+        enable_benchmarking=enable_benchmarking,
     )
 
 
@@ -455,6 +472,7 @@ def gpu_backend(
     shared_libs: Sequence[str] = [],
     entry_func: str = "main",
     dump_obj_file: str = "",
+    enable_benchmarking: bool = False,
 ) -> Callable[[torch.fx.GraphModule, list[torch.Tensor]], Callable]:
     """
     GPU backend for JIT-compiling a PyTorch model using MLIR.
@@ -470,6 +488,7 @@ def gpu_backend(
             compiled MLIR function.
         entry_func: Name of the entry function.
         dump_obj_file: Target output object file.
+        enable_benchmarking: Retain call inputs for benchmarking.
 
     Returns:
         A torch.compile backend object.
@@ -484,4 +503,5 @@ def gpu_backend(
         shared_libs=shared_libs,
         entry_func=entry_func,
         dump_obj_file=dump_obj_file,
+        enable_benchmarking=enable_benchmarking,
     )
