@@ -379,6 +379,7 @@ def tune_matmul_layer(
             shared_libs=["libmlir_levelzero_runtime.so"],
         )
         # result buffers
+        # TODO verify correct ordering of input buffers wrt func.func args
         times = runner.benchmark(
             host_input_buffers=torch_all_inputs,
             nwarmup=nwarmup,
@@ -778,6 +779,7 @@ def lower_and_execute_benchmark(
         dialect=TargetDialect.LINALG_ON_TENSORS,
         ir_context=ctx,
         shared_libs=["libmlir_levelzero_runtime.so"],
+        enable_benchmarking=True,
     )
     torch_model.compile(dynamic=False, backend=backend)
 
@@ -859,9 +861,7 @@ def lower_and_execute_benchmark(
     if verbose > 0:
         print(f"{nruns=}")
         print(f"{nwarmup=}")
-    times = backend.jit_function.benchmark(
-        *torch_model.parameters(), *torch_inputs, nruns=nruns, nwarmup=nwarmup
-    )
+    times = backend.jit_function.benchmark(nruns=nruns, nwarmup=nwarmup)
     # compute achieved GFLOPS
     total_flops = kernel_metadata["total_flops"]
     read_bytes = kernel_metadata["read_bytes"]
