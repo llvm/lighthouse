@@ -285,6 +285,7 @@ enabled via CLI arguments.
             dialect=TargetDialect.LINALG_ON_TENSORS,
             ir_context=ctx,
             shared_libs=shared_libs(),
+            enable_benchmarking=benchmark,
         )
         model.compile(
             dynamic=False,
@@ -300,7 +301,7 @@ enabled via CLI arguments.
 
         if benchmark:
             times = backend.jit_function.benchmark(
-                a, b, nruns=args.nruns, nwarmup=args.nwarmup
+                nruns=args.nruns, nwarmup=args.nwarmup
             )
 
             elapsed = times.mean() * 1e6  # convert to us
