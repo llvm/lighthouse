@@ -166,6 +166,28 @@ module {
 }
 """
 
+ELTWISE_AVX512_F32_NON_DIVIDING_4X768 = """
+module {
+  func.func @main(%a: tensor<4x768xf32>, %b: tensor<4x768xf32>) -> tensor<4x768xf32> {
+    %sum = linalg.elementwise <add>
+            ins(%a, %b : tensor<4x768xf32>, tensor<4x768xf32>)
+            outs(%a : tensor<4x768xf32>) -> tensor<4x768xf32>
+    return %sum : tensor<4x768xf32>
+  }
+}
+"""
+
+ELTWISE_AVX512_F32_NON_DIVIDING_20X40 = """
+module {
+  func.func @main(%a: tensor<20x40xf32>, %b: tensor<20x40xf32>) -> tensor<20x40xf32> {
+    %sum = linalg.elementwise <add>
+            ins(%a, %b : tensor<20x40xf32>, tensor<20x40xf32>)
+            outs(%a : tensor<20x40xf32>) -> tensor<20x40xf32>
+    return %sum : tensor<20x40xf32>
+  }
+}
+"""
+
 
 # CHECK-LABEL: Test: register_parallel_strategy
 # CHECK: linalg.batch_matmul
@@ -303,6 +325,26 @@ with TargetInfo.override(features=["avx512f"]):
 # CHECK-SAME: transform_ext.tile_sizes = array<i64: 1, 1, 16, 32>
 with TargetInfo.override(features=["avx512f"]):
     run("eltwise_register_parallel_avx512_4d", ELTWISE_4D, build_eltwise_schedule)
+
+# CHECK-LABEL: Test: eltwise_register_parallel_avx512_f32_non_dividing_4x768
+# CHECK: linalg.elementwise
+# CHECK-SAME: transform_ext.tile_sizes = array<i64: 1, 384>
+with TargetInfo.override(features=["avx512f"]):
+    run(
+        "eltwise_register_parallel_avx512_f32_non_dividing_4x768",
+        ELTWISE_AVX512_F32_NON_DIVIDING_4X768,
+        build_eltwise_schedule,
+    )
+
+# CHECK-LABEL: Test: eltwise_register_parallel_avx512_f32_non_dividing_20x40
+# CHECK: linalg.elementwise
+# CHECK-SAME: transform_ext.tile_sizes = array<i64: 10, 40>
+with TargetInfo.override(features=["avx512f"]):
+    run(
+        "eltwise_register_parallel_avx512_f32_non_dividing_20x40",
+        ELTWISE_AVX512_F32_NON_DIVIDING_20X40,
+        build_eltwise_schedule,
+    )
 
 
 def build_reduction_schedule():
